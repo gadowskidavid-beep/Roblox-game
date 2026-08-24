@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-016",
+  "title": "Golden Pet conversion with multi-pet sacrifice and chance-based system",
+  "status": "in_progress",
+  "steps": [
+    "Update PetService.convertToGoldenPet to accept a list of pet instance IDs instead of a single one",
+    "Implement chance calculation: 1=13%, 2=26%, 3=39%, 4=50%, 5=63%, 6=88%, 7=100%",
+    "All sacrificed pets must be the same petId/type, none golden, none equipped",
+    "On success: consume all pets, return 1 golden pet (2x damage, Golden prefix)",
+    "On failure: consume all pets, return nil with failure message",
+    "Update ConvertToGoldenPet handler in Main.server.lua to pass list of IDs",
+    "Add Make Golden UI in pet inventory with selection and chance display",
+    "Add ConvertToGoldenPet remote reference in Main.client.lua",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "ConvertToGoldenPet remote accepts a table of pet instance IDs",
+    "Validates all pets are same type, not golden, not equipped",
+    "Chance is calculated correctly from count (1-7 pets)",
+    "On success, all input pets are removed and 1 golden pet is created",
+    "On failure, all input pets are removed and no pet is returned",
+    "UI shows Make Golden button in pet inventory",
+    "UI allows selecting 1-7 same-type pets and shows chance percentage",
+    "BATTLE_PETS.rbxlx is regenerated"
+  ]
+}

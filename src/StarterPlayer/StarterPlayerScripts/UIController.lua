@@ -570,6 +570,43 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
+	-- "Make Golden" button (visible in multi-select mode)
+	local goldenBtn = Instance.new("TextButton")
+	goldenBtn.Name = "MakeGoldenBtn"
+	goldenBtn.Size = UDim2.fromScale(0.15, 0.06)
+	goldenBtn.Position = UDim2.fromScale(0.18, 0.92)
+	goldenBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	goldenBtn.Text = "Make Golden"
+	goldenBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
+	goldenBtn.Font = Enum.Font.GothamBold
+	goldenBtn.TextScaled = true
+	goldenBtn.Visible = false
+	goldenBtn.Parent = mainFrame
+
+	local goldenCorner = Instance.new("UICorner")
+	goldenCorner.CornerRadius = UDim.new(0, 8)
+	goldenCorner.Parent = goldenBtn
+
+	local goldenStroke = Instance.new("UIStroke")
+	goldenStroke.Thickness = 2
+	goldenStroke.Color = Color3.fromRGB(180, 140, 0)
+	goldenStroke.Parent = goldenBtn
+
+	goldenBtn.MouseButton1Click:Connect(function()
+		self:_showGoldenConversionConfirm()
+	end)
+
+	goldenBtn.MouseEnter:Connect(function()
+		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.16, 0.065),
+		}):Play()
+	end)
+	goldenBtn.MouseLeave:Connect(function()
+		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.15, 0.06),
+		}):Play()
+	end)
+
 	local scrollFrame = Instance.new("ScrollingFrame")
 	scrollFrame.Name = "PetGrid"
 	scrollFrame.Size = UDim2.fromScale(0.94, 0.78)
@@ -604,6 +641,11 @@ function UIController:_refreshPetGrid()
 	local deleteBtn = mainFrame:FindFirstChild("DeleteSelectedBtn")
 	if deleteBtn then
 		deleteBtn.Visible = self._multiSelectMode
+	end
+
+	local goldenBtn = mainFrame:FindFirstChild("MakeGoldenBtn")
+	if goldenBtn then
+		goldenBtn.Visible = self._multiSelectMode
 	end
 
 	for _, child in ipairs(scrollFrame:GetChildren()) do
@@ -772,6 +814,281 @@ function UIController:_deleteSelectedPets()
 		end
 	end
 	self._selectedPets = {}
+end
+
+--------------------------------------------------------------------------------
+-- GOLDEN CONVERSION CONFIRM PANEL
+--------------------------------------------------------------------------------
+function UIController:_showGoldenConversionConfirm()
+	-- Validate selection: must be 1-7 same-type pets, not golden, not equipped
+	local selectedIds = {}
+	for id, _ in pairs(self._selectedPets) do
+		table.insert(selectedIds, id)
+	end
+
+	if #selectedIds < 1 or #selectedIds > 7 then
+		-- Show brief error
+		self:_showGoldenError("Select 1-7 same-type pets!")
+		return
+	end
+
+	-- Check all selected pets are same type and valid
+	local requiredPetId = nil
+	for _, selId in ipairs(selectedIds) do
+		for _, pet in ipairs(self._petInventoryData) do
+			local petUniqueId = pet.uniqueId or pet.id
+			if petUniqueId == selId then
+				if pet.golden then
+					self:_showGoldenError("Cannot use golden pets!")
+					return
+				end
+				if pet.equipped then
+					self:_showGoldenError("Unequip pets first!")
+					return
+				end
+				if requiredPetId == nil then
+					requiredPetId = pet.petId
+				elseif pet.petId ~= requiredPetId then
+					self:_showGoldenError("All pets must be the same type!")
+					return
+				end
+				break
+			end
+		end
+	end
+
+	if not requiredPetId then
+		self:_showGoldenError("No valid pets selected!")
+		return
+	end
+
+	-- Calculate chance based on count
+	local chanceTable = { 13, 26, 39, 50, 63, 88, 100 }
+	local count = #selectedIds
+	local chance = chanceTable[count] or 13
+
+	-- Show confirmation overlay
+	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds)
+end
+
+function UIController:_showGoldenError(message)
+	if not self._playerGui then return end
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "GoldenError"
+	overlay.ResetOnSpawn = false
+	overlay.Parent = self._playerGui
+
+	local errorLabel = Instance.new("TextLabel")
+	errorLabel.Size = UDim2.fromScale(0.4, 0.06)
+	errorLabel.Position = UDim2.fromScale(0.3, 0.45)
+	errorLabel.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+	errorLabel.BackgroundTransparency = 0.1
+	errorLabel.Text = message
+	errorLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	errorLabel.Font = Enum.Font.GothamBold
+	errorLabel.TextScaled = true
+	errorLabel.Parent = overlay
+
+	local errorCorner = Instance.new("UICorner")
+	errorCorner.CornerRadius = UDim.new(0, 10)
+	errorCorner.Parent = errorLabel
+
+	task.delay(2, function()
+		if overlay and overlay.Parent then
+			overlay:Destroy()
+		end
+	end)
+end
+
+function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds)
+	if not self._playerGui then return end
+
+	-- Remove old overlay if exists
+	local existing = self._playerGui:FindFirstChild("GoldenConfirmOverlay")
+	if existing then existing:Destroy() end
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "GoldenConfirmOverlay"
+	overlay.ResetOnSpawn = false
+	overlay.Parent = self._playerGui
+
+	local bg = Instance.new("Frame")
+	bg.Size = UDim2.fromScale(1, 1)
+	bg.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	bg.BackgroundTransparency = 0.5
+	bg.BorderSizePixel = 0
+	bg.Parent = overlay
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.fromScale(0.4, 0.45)
+	panel.Position = UDim2.fromScale(0.3, 0.275)
+	panel.BackgroundColor3 = Color3.fromRGB(30, 40, 80)
+	panel.Parent = bg
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 16)
+	panelCorner.Parent = panel
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = Color3.fromRGB(255, 200, 0)
+	panelStroke.Parent = panel
+
+	-- Title
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.Size = UDim2.fromScale(0.8, 0.12)
+	titleLabel.Position = UDim2.fromScale(0.1, 0.03)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.Text = "MAKE GOLDEN"
+	titleLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+	titleLabel.Font = Enum.Font.GothamBold
+	titleLabel.TextScaled = true
+	titleLabel.Parent = panel
+
+	-- Info text
+	local infoLabel = Instance.new("TextLabel")
+	infoLabel.Size = UDim2.fromScale(0.8, 0.1)
+	infoLabel.Position = UDim2.fromScale(0.1, 0.17)
+	infoLabel.BackgroundTransparency = 1
+	infoLabel.Text = "Sacrificing " .. tostring(count) .. "x " .. tostring(petId)
+	infoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
+	infoLabel.Font = Enum.Font.GothamBold
+	infoLabel.TextScaled = true
+	infoLabel.Parent = panel
+
+	-- Chance display (big and prominent)
+	local chanceLabel = Instance.new("TextLabel")
+	chanceLabel.Size = UDim2.fromScale(0.8, 0.18)
+	chanceLabel.Position = UDim2.fromScale(0.1, 0.3)
+	chanceLabel.BackgroundTransparency = 1
+	chanceLabel.Text = tostring(chance) .. "% CHANCE"
+	chanceLabel.Font = Enum.Font.GothamBold
+	chanceLabel.TextScaled = true
+	chanceLabel.Parent = panel
+
+	-- Color based on chance
+	if chance >= 80 then
+		chanceLabel.TextColor3 = Color3.fromRGB(0, 220, 80)
+	elseif chance >= 50 then
+		chanceLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+	else
+		chanceLabel.TextColor3 = Color3.fromRGB(255, 100, 50)
+	end
+
+	-- Warning text
+	local warnLabel = Instance.new("TextLabel")
+	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
+	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
+	warnLabel.BackgroundTransparency = 1
+	warnLabel.Text = "WARNING: All pets are consumed even on failure!"
+	warnLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+	warnLabel.Font = Enum.Font.GothamBold
+	warnLabel.TextScaled = true
+	warnLabel.Parent = panel
+
+	-- Confirm button
+	local confirmBtn = Instance.new("TextButton")
+	confirmBtn.Name = "ConfirmBtn"
+	confirmBtn.Size = UDim2.fromScale(0.35, 0.14)
+	confirmBtn.Position = UDim2.fromScale(0.08, 0.68)
+	confirmBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	confirmBtn.Text = "CONVERT!"
+	confirmBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
+	confirmBtn.Font = Enum.Font.GothamBold
+	confirmBtn.TextScaled = true
+	confirmBtn.Parent = panel
+
+	local confirmCorner = Instance.new("UICorner")
+	confirmCorner.CornerRadius = UDim.new(0, 10)
+	confirmCorner.Parent = confirmBtn
+
+	-- Cancel button
+	local cancelBtn = Instance.new("TextButton")
+	cancelBtn.Name = "CancelBtn"
+	cancelBtn.Size = UDim2.fromScale(0.35, 0.14)
+	cancelBtn.Position = UDim2.fromScale(0.57, 0.68)
+	cancelBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
+	cancelBtn.Text = "Cancel"
+	cancelBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	cancelBtn.Font = Enum.Font.GothamBold
+	cancelBtn.TextScaled = true
+	cancelBtn.Parent = panel
+
+	local cancelCorner = Instance.new("UICorner")
+	cancelCorner.CornerRadius = UDim.new(0, 10)
+	cancelCorner.Parent = cancelBtn
+
+	-- Result label (shown after conversion)
+	local resultLabel = Instance.new("TextLabel")
+	resultLabel.Name = "ResultLabel"
+	resultLabel.Size = UDim2.fromScale(0.8, 0.12)
+	resultLabel.Position = UDim2.fromScale(0.1, 0.85)
+	resultLabel.BackgroundTransparency = 1
+	resultLabel.Text = ""
+	resultLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	resultLabel.Font = Enum.Font.GothamBold
+	resultLabel.TextScaled = true
+	resultLabel.Parent = panel
+
+	cancelBtn.MouseButton1Click:Connect(function()
+		overlay:Destroy()
+	end)
+
+	confirmBtn.MouseButton1Click:Connect(function()
+		-- Disable buttons during request
+		confirmBtn.Text = "..."
+		confirmBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+		cancelBtn.Visible = false
+
+		-- Fire remote
+		self:_convertToGolden(selectedIds, resultLabel, overlay)
+	end)
+end
+
+function UIController:_convertToGolden(petInstanceIds, resultLabel, overlay)
+	if not self._remotes then return end
+
+	local remote = self._remotes:FindFirstChild("ConvertToGoldenPet")
+	if not remote then return end
+
+	local result, err = remote:InvokeServer(petInstanceIds)
+
+	if err then
+		if resultLabel then
+			resultLabel.Text = "Error: " .. tostring(err)
+			resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+		end
+		task.delay(3, function()
+			if overlay and overlay.Parent then
+				overlay:Destroy()
+			end
+		end)
+		return
+	end
+
+	if result and result.success then
+		if resultLabel then
+			local goldenName = result.goldenPet and result.goldenPet.name or "Golden Pet"
+			resultLabel.Text = "SUCCESS! Got " .. goldenName .. "!"
+			resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		end
+	else
+		if resultLabel then
+			resultLabel.Text = "FAILED! All pets lost..."
+			resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+		end
+	end
+
+	-- Clear selection
+	self._selectedPets = {}
+
+	task.delay(3, function()
+		if overlay and overlay.Parent then
+			overlay:Destroy()
+		end
+		self:_refreshPetGrid()
+	end)
 end
 
 --------------------------------------------------------------------------------

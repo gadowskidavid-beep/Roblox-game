@@ -345,11 +345,28 @@ function PetService.getPetDamage(pet, player)
 	return baseDamage
 end
 
--- Convert a normal pet into a golden pet (sacrifice/transform)
--- Returns the golden pet and increments the goldenPetsConverted stat
-function PetService.convertToGoldenPet(player, petInstanceId)
-	if not player or type(petInstanceId) ~= "string" then
+-- Golden conversion chance table: index = number of pets sacrificed, value = success chance (0-1)
+local GOLDEN_CHANCES = {
+	[1] = 0.13,
+	[2] = 0.26,
+	[3] = 0.39,
+	[4] = 0.50,
+	[5] = 0.63,
+	[6] = 0.88,
+	[7] = 1.00,
+}
+
+-- Convert pets into a golden pet (multi-pet sacrifice with chance)
+-- petInstanceIds: table of 1-7 pet instance IDs (all must be same petId/type)
+-- Returns: { success = bool, goldenPet = pet|nil, chance = number }
+function PetService.convertToGoldenPet(player, petInstanceIds)
+	if not player or type(petInstanceIds) ~= "table" then
 		return nil, "Invalid parameters"
+	end
+
+	local count = #petInstanceIds
+	if count < 1 or count > 7 then
+		return nil, "Must sacrifice between 1 and 7 pets"
 	end
 
 	local data = PetService._dataService.getPlayerData(player)
@@ -357,36 +374,100 @@ function PetService.convertToGoldenPet(player, petInstanceId)
 		return nil, "No player data"
 	end
 
-	-- Find the pet in inventory
-	local foundPet = nil
-	local foundIndex = nil
-	for i, pet in ipairs(data.pets) do
-		if pet.id == petInstanceId then
-			foundPet = pet
-			foundIndex = i
-			break
+	-- Find all pets and validate
+	local foundPets = {}
+	local requiredPetId = nil
+
+	for _, instanceId in ipairs(petInstanceIds) do
+		if type(instanceId) ~= "string" then
+			return nil, "Invalid pet ID in list"
+		end
+
+		local foundPet = nil
+		for _, pet in ipairs(data.pets) do
+			if pet.id == instanceId then
+				foundPet = pet
+				break
+			end
+		end
+
+		if not foundPet then
+			return nil, "Pet not found in inventory: " .. tostring(instanceId)
+		end
+
+		if foundPet.golden then
+			return nil, "Cannot sacrifice a golden pet"
+		end
+
+		if foundPet.equipped then
+			return nil, "Unequip pet before converting: " .. tostring(foundPet.name)
+		end
+
+		-- Enforce all pets must be the same type (petId)
+		if requiredPetId == nil then
+			requiredPetId = foundPet.petId
+		elseif foundPet.petId ~= requiredPetId then
+			return nil, "All pets must be the same type"
+		end
+
+		table.insert(foundPets, foundPet)
+	end
+
+	-- Check for duplicate instance IDs
+	local idSet = {}
+	for _, instanceId in ipairs(petInstanceIds) do
+		if idSet[instanceId] then
+			return nil, "Duplicate pet ID in list"
+		end
+		idSet[instanceId] = true
+	end
+
+	-- Calculate chance
+	local chance = GOLDEN_CHANCES[count] or 0.13
+
+	-- Roll for success
+	local roll = math.random()
+	local success = roll <= chance
+
+	-- Remove ALL sacrificed pets from inventory (regardless of success or failure)
+	local idsToRemove = {}
+	for _, instanceId in ipairs(petInstanceIds) do
+		idsToRemove[instanceId] = true
+	end
+
+	for i = #data.pets, 1, -1 do
+		if idsToRemove[data.pets[i].id] then
+			-- Also remove from equipped list if somehow equipped (extra safety)
+			if data.pets[i].equipped then
+				for j, eqId in ipairs(data.equippedPets) do
+					if eqId == data.pets[i].id then
+						table.remove(data.equippedPets, j)
+						break
+					end
+				end
+			end
+			table.remove(data.pets, i)
 		end
 	end
 
-	if not foundPet then
-		return nil, "Pet not found in inventory"
-	end
+	local goldenPet = nil
 
-	-- Cannot convert an already golden pet
-	if foundPet.golden then
-		return nil, "Pet is already golden"
+	if success then
+		-- Create a new golden pet based on the sacrificed type
+		local petDef = PetData.Pets[requiredPetId]
+		if petDef then
+			goldenPet = {
+				id = HttpService:GenerateGUID(false),
+				petId = requiredPetId,
+				name = "Golden " .. petDef.name,
+				rarity = petDef.rarity,
+				damage = petDef.baseDamage * 2,
+				golden = true,
+				equipped = false,
+			}
+			table.insert(data.pets, goldenPet)
+		end
 	end
-
-	-- Cannot convert an equipped pet
-	if foundPet.equipped then
-		return nil, "Unequip the pet before converting"
-	end
-
-	-- Transform the pet to golden (modify in place)
-	foundPet.golden = true
-	foundPet.name = "Golden " .. foundPet.name
-	-- Golden pets get 2x base damage
-	foundPet.damage = (foundPet.damage or 5) * 2
 
 	-- Fire inventory update event
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -397,7 +478,7 @@ function PetService.convertToGoldenPet(player, petInstanceId)
 		end
 	end
 
-	return foundPet, nil
+	return { success = success, goldenPet = goldenPet, chance = chance }, nil
 end
 
 return PetService

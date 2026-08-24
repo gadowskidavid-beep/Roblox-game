@@ -61,6 +61,7 @@ local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
+local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")

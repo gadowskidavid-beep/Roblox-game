@@ -239,19 +239,29 @@ getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
 end
 
 -- ConvertToGoldenPet
-getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceId)
+getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
-	if type(petInstanceId) ~= "string" then
-		return nil, "Invalid pet ID parameter"
+	if type(petInstanceIds) ~= "table" then
+		return nil, "Invalid pet IDs parameter (expected list)"
 	end
-	local goldenPet, err = PetService.convertToGoldenPet(player, petInstanceId)
-	if goldenPet then
+	-- Validate each ID is a string
+	for _, id in ipairs(petInstanceIds) do
+		if type(id) ~= "string" then
+			return nil, "Invalid pet ID in list"
+		end
+	end
+	-- Limit to 7 pets max
+	if #petInstanceIds < 1 or #petInstanceIds > 7 then
+		return nil, "Must sacrifice between 1 and 7 pets"
+	end
+	local result, err = PetService.convertToGoldenPet(player, petInstanceIds)
+	if result and result.success then
 		-- Track quest progress for golden pet conversion
 		QuestService.incrementStat(player, "goldenPetsConverted", 1)
 	end
-	return goldenPet, err
+	return result, err
 end
 
 -- StartCampaignLevel
