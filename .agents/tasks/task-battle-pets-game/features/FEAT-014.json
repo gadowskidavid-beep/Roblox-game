@@ -3,7 +3,7 @@
   "type": "feat",
   "title": "Quest-based upgrades and Mastery system (replaces buyable upgrades)",
   "description": "Replace the coin-buying upgrade system with two new systems: (1) Quest-based upgrades - players complete quests like 'Destroy 2500 destructibles' to unlock upgrades like 'Strong Pets'. (2) Mastery system - XP/level-ups grant mastery points that can be spent on buffs (more coins, better luck, faster pets, etc.) in a Mastery tab.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create QuestData.lua shared module with quest definitions (destroy X destructibles, hatch X eggs, etc.)",
     "Create MasteryData.lua shared module with mastery buff definitions (more coins, luck, speed, etc.)",
@@ -29,5 +29,5 @@
     "BATTLE_PETS.rbxlx regenerated and valid XML"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "Successfully replaced the coin-buying upgrade system with two new systems: (1) Quest-based upgrades tracked via QuestService - players complete quests like 'Destroy 2500 destructibles' to unlock StrongPets, FasterPets, Friendship, LuckyEggs, Sprinting, DropCloner, GoldenPetsChance, ExtraSlots. (2) Mastery system - level-ups grant 1 mastery point each, spendable on buffs (MoreCoins, BetterLuck, PetSpeed, MoreDiamonds, XPBoost). UpgradeService kept as backward-compatible wrapper so PetService and CurrencyService still call getUpgradeBonus without changes. Old Config.Upgrades table emptied. UIController now has Quests tab (with progress bars) and Mastery tab (with point spending). ZoneService tracks destroys/coins, EggService tracks hatches. All remote events/functions properly registered and validated."
 }
