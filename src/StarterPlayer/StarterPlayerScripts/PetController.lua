@@ -4,6 +4,12 @@
 	player in a trailing formation, animates pets toward destructibles to attack,
 	and shows floating damage numbers. All visuals are procedural with no external assets.
 
+	TARGETING SYSTEM (Pet Simulator 1 style):
+	- Idle mode: Each pet auto-distributes to a DIFFERENT nearby destructible
+	- Single click: Send only 1 pet to the clicked target
+	- Hold click (0.3s+): Send ALL pets to the clicked target
+	- When a destructible is destroyed, pet auto-finds next available target
+
 	IMPORTANT: Only ONE model per equipped pet must exist at any time.
 	The updateEquippedPets method enforces this by destroying all old models
 	before creating new ones when the equipped list changes.
@@ -34,17 +40,22 @@ function PetController.new()
 	self._followDistance = 5 -- distance behind the player per pet slot
 	self._followSpread = 3 -- lateral spread for multiple pets in same row
 	self._followHeight = 2.5 -- height offset above ground (floating)
-	self._followLerpSpeed = 6 -- smoothing speed for following
+	self._followLerpSpeed = 3.5 -- smoothing speed for following (reduced for natural movement)
 	self._petsPerRow = 3 -- max pets per row behind the player
 	self._initialized = false
 	self._initGuard = false -- prevents double initialization
-	self._attackingPets = {} -- pets currently attacking a destructible
-	-- Auto-attack state
+	self._attackingPets = {} -- pets currently animating attack on a destructible
+	-- Auto-attack state (distributed targeting)
 	self._autoAttackEnabled = true
-	self._autoAttackInterval = 1.5 -- seconds between auto-attacks
+	self._autoAttackInterval = 1.5 -- seconds between auto-attacks per pet
 	self._autoAttackRange = 40 -- studs detection range
-	self._lastAutoAttackTime = 0
 	self._autoAttackConnection = nil
+	-- Per-pet targeting: each pet has its own assigned target
+	self._petTargets = {} -- { uniqueId = { destructibleId = string, part = BasePart, lastAttackTime = number } }
+	-- Manual targeting mode
+	self._manualTargetMode = false -- when true, pets follow manual orders instead of auto
+	self._manualTargetExpiry = 0 -- tick() when manual mode expires
+	self._manualTargetDuration = 5 -- seconds before reverting to auto-distribute
 	return self
 end
 
@@ -75,14 +86,12 @@ function PetController:init(remotes)
 
 	self._initialized = true
 
-	-- Start auto-attack loop
+	-- Start auto-attack loop (distributed targeting)
 	self:_startAutoAttack()
 end
 
 --------------------------------------------------------------------------------
 -- Create a procedural pet model: body sphere + shadow + nametag
--- Simple placeholder model - actual pet assets will be added later via Blender.
--- The pet floats 2.5 studs above ground with a circular shadow beneath it.
 --------------------------------------------------------------------------------
 function PetController:createPetModel(petData)
 	local rarity = petData.rarity or "Common"
@@ -113,7 +122,6 @@ function PetController:createPetModel(petData)
 	shadow.Transparency = 0.6
 	shadow.Anchored = true
 	shadow.CanCollide = false
-	-- Shadow is placed on the ground below the pet (will be repositioned in update)
 	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, self._followHeight - 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
 	shadow.Parent = model
 
@@ -168,8 +176,6 @@ end
 --------------------------------------------------------------------------------
 -- Update equipped pets: create/remove pet models as needed.
 -- CRITICAL: This method ensures EXACTLY 1 model per equipped pet exists.
--- It is safe to call multiple times with the same or different lists.
--- equippedList is an array of pet data tables, each with .id field
 --------------------------------------------------------------------------------
 function PetController:updateEquippedPets(equippedList)
 	if not self._initialized then return end
@@ -189,11 +195,12 @@ function PetController:updateEquippedPets(equippedList)
 				petInfo.model:Destroy()
 			end
 			self._equippedPets[uniqueId] = nil
+			-- Clear targeting info for removed pet
+			self._petTargets[uniqueId] = nil
 		end
 	end
 
 	-- Safety: destroy any orphaned models in the pets folder that are not tracked
-	-- This prevents duplicates from race conditions or script restarts
 	if self._petsFolder then
 		local trackedModelNames = {}
 		for _, petInfo in pairs(self._equippedPets) do
@@ -209,7 +216,6 @@ function PetController:updateEquippedPets(equippedList)
 	end
 
 	-- Create new models ONLY for newly equipped pets (not already tracked)
-	local idx = 1
 	for i, petData in ipairs(equippedList) do
 		if petData.id and not self._equippedPets[petData.id] then
 			local model = self:createPetModel(petData)
@@ -224,7 +230,7 @@ function PetController:updateEquippedPets(equippedList)
 	end
 
 	-- Reassign follow indices to ensure proper formation
-	idx = 1
+	local idx = 1
 	for _, petInfo in pairs(self._equippedPets) do
 		petInfo.followIndex = idx
 		idx = idx + 1
@@ -244,11 +250,8 @@ function PetController:update(deltaTime)
 	if not rootPart then return end
 
 	local playerPos = rootPart.Position
-	-- Get the direction the player is facing (look vector)
 	local lookVector = rootPart.CFrame.LookVector
-	-- The "behind" direction is opposite to look
 	local behindVector = -lookVector
-	-- Right vector for lateral offset
 	local rightVector = rootPart.CFrame.RightVector
 
 	-- Apply FasterPets upgrade to follow speed
@@ -257,27 +260,26 @@ function PetController:update(deltaTime)
 		effectiveLerpSpeed = effectiveLerpSpeed * self._fasterPetsMultiplier
 	end
 
+	-- Check if manual target mode has expired
+	if self._manualTargetMode and tick() > self._manualTargetExpiry then
+		self._manualTargetMode = false
+	end
+
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
 			local index = petInfo.followIndex or 1
-			-- Calculate row and column in the formation
-			local row = math.ceil(index / self._petsPerRow) -- which row (1, 2, 3...)
-			local col = ((index - 1) % self._petsPerRow) + 1 -- position in the row
+			local row = math.ceil(index / self._petsPerRow)
+			local col = ((index - 1) % self._petsPerRow) + 1
 
-			-- Calculate total pets to determine this row's actual count
 			local totalPets = 0
 			for _ in pairs(self._equippedPets) do
 				totalPets = totalPets + 1
 			end
 			local actualPetsInRow = math.min(self._petsPerRow, totalPets - (row - 1) * self._petsPerRow)
 
-			-- Lateral offset: center the pets in the row
 			local lateralOffset = (col - (actualPetsInRow + 1) / 2) * self._followSpread
-
-			-- Distance behind: each row is further back
 			local distanceBehind = row * self._followDistance
 
-			-- Calculate target position behind the player, floating above ground
 			local targetPos = playerPos
 				+ behindVector * distanceBehind
 				+ rightVector * lateralOffset
@@ -290,7 +292,6 @@ function PetController:update(deltaTime)
 				local newPos = currentPos:Lerp(targetPos, math.min(1, deltaTime * effectiveLerpSpeed))
 				local offset = newPos - model.PrimaryPart.Position
 
-				-- Move all parts in model (except shadow which is repositioned separately)
 				for _, part in ipairs(model:GetDescendants()) do
 					if part:IsA("BasePart") and part.Name ~= "Shadow" then
 						part.Position = part.Position + offset
@@ -300,7 +301,7 @@ function PetController:update(deltaTime)
 				-- Position shadow on the ground directly below the pet body
 				local shadowPart = model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = playerPos.Y - 2 -- approximate ground level (player feet minus a bit)
+					local groundY = playerPos.Y - 2
 					local shadowPos = Vector3.new(newPos.X, groundY + 0.05, newPos.Z)
 					shadowPart.CFrame = CFrame.new(shadowPos) * CFrame.Angles(0, 0, math.rad(90))
 				end
@@ -310,7 +311,7 @@ function PetController:update(deltaTime)
 end
 
 --------------------------------------------------------------------------------
--- Send pet to attack a destructible (visual animation + remote call)
+-- Send pet to attack a destructible (visual animation)
 -- destructibleId: string ID of the destructible
 -- destructiblePart: optional Part reference for tween target position
 -- Moves the entire pet model (all parts) to the destructible and back.
@@ -330,7 +331,6 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 	if destructiblePart and typeof(destructiblePart) == "Instance" and destructiblePart:IsA("BasePart") then
 		targetPos = destructiblePart.Position
 	else
-		-- Fallback: attack in front of player
 		local character = self._player.Character
 		if character and character:FindFirstChild("HumanoidRootPart") then
 			targetPos = character.HumanoidRootPart.Position + character.HumanoidRootPart.CFrame.LookVector * 5
@@ -340,20 +340,18 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Move entire model (all parts) to the destructible using a coroutine-based animation
+	-- Move entire model to the destructible using a coroutine-based animation
 	if model.PrimaryPart and model.PrimaryPart.Parent then
 		local startPos = model.PrimaryPart.Position
 		local attackPos = targetPos + Vector3.new(0, 1.5, -2)
-		local attackDuration = 0.35
-		local returnDuration = 0.4
+		local attackDuration = 0.45 -- slightly slower for natural feel
+		local returnDuration = 0.5
 
-		-- Animate toward destructible
 		task.spawn(function()
 			local startTime = tick()
 			while true do
 				local elapsed = tick() - startTime
 				local alpha = math.min(elapsed / attackDuration, 1)
-				-- Ease out quad
 				local easedAlpha = 1 - (1 - alpha) * (1 - alpha)
 
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
@@ -365,14 +363,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				local desiredPos = startPos:Lerp(attackPos, easedAlpha)
 				local offset = desiredPos - currentPos
 
-				-- Move all parts in model together
 				for _, part in ipairs(model:GetDescendants()) do
 					if part:IsA("BasePart") and part.Name ~= "Shadow" then
 						part.Position = part.Position + offset
 					end
 				end
 
-				-- Reposition shadow on the ground below
 				local shadowPart = model:FindFirstChild("Shadow")
 				if shadowPart then
 					local groundY = desiredPos.Y - self._followHeight + 0.05
@@ -384,7 +380,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			end
 
 			-- Brief pause at destructible (impact moment)
-			task.wait(0.2)
+			task.wait(0.25)
 
 			-- Return to follow position (let the update loop take over)
 			self._attackingPets[uniqueId] = nil
@@ -396,6 +392,7 @@ end
 
 --------------------------------------------------------------------------------
 -- Fire attack remote once with string destructibleId (called from Main.client)
+-- numPets: how many pets are attacking (1 for single click, all for hold)
 --------------------------------------------------------------------------------
 function PetController:fireAttackRemote(destructibleId)
 	if not self._initialized then return end
@@ -443,7 +440,6 @@ function PetController:showDamageText(position, damage)
 	label.TextScaled = true
 	label.Parent = billboardGui
 
-	-- Float upward and fade
 	local tweenInfo = TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	local moveTween = TweenService:Create(anchor, tweenInfo, {
 		Position = position + Vector3.new(0, 4, 0),
@@ -463,40 +459,58 @@ function PetController:showDamageText(position, damage)
 end
 
 --------------------------------------------------------------------------------
--- Get nearest destructible to player within a radius
--- Searches workspace.Zones recursively for Parts with a DestructibleId child
+-- Get ALL destructibles within range, sorted by distance
+-- Returns array of { part = BasePart, id = string, distance = number }
 --------------------------------------------------------------------------------
-function PetController:getNearestDestructible(maxDistance)
-	if not self._initialized then return nil end
+function PetController:getAllDestructiblesInRange(maxDistance)
+	if not self._initialized then return {} end
 
 	local character = self._player.Character
-	if not character then return nil end
+	if not character then return {} end
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not rootPart then return nil end
+	if not rootPart then return {} end
 
 	local playerPos = rootPart.Position
-	local nearest = nil
-	local nearestDist = maxDistance or 30
+	local results = {}
 
-	-- Look for destructibles recursively under workspace.Zones
 	local zonesFolder = workspace:FindFirstChild("Zones")
-	if not zonesFolder then return nil end
+	if not zonesFolder then return {} end
 
 	for _, obj in ipairs(zonesFolder:GetDescendants()) do
 		if obj:IsA("BasePart") and obj:FindFirstChild("DestructibleId") then
 			local dist = (obj.Position - playerPos).Magnitude
-			if dist < nearestDist then
-				nearestDist = dist
-				nearest = obj
+			if dist < (maxDistance or 40) then
+				table.insert(results, {
+					part = obj,
+					id = obj:FindFirstChild("DestructibleId").Value,
+					distance = dist,
+				})
 			end
 		end
 	end
 
-	return nearest
+	-- Sort by distance (nearest first)
+	table.sort(results, function(a, b)
+		return a.distance < b.distance
+	end)
+
+	return results
 end
 
 --------------------------------------------------------------------------------
--- Auto-attack system: pets automatically find and attack nearby destructibles
+-- Get nearest destructible (legacy helper)
+--------------------------------------------------------------------------------
+function PetController:getNearestDestructible(maxDistance)
+	local all = self:getAllDestructiblesInRange(maxDistance)
+	if #all > 0 then
+		return all[1].part
+	end
+	return nil
+end
+
+--------------------------------------------------------------------------------
+-- DISTRIBUTED AUTO-ATTACK: Each pet picks its own unique target
+-- Pets spread out to different destructibles instead of all attacking the same one
 --------------------------------------------------------------------------------
 function PetController:_startAutoAttack()
 	if self._autoAttackConnection then return end
@@ -504,12 +518,8 @@ function PetController:_startAutoAttack()
 	self._autoAttackConnection = RunService.Heartbeat:Connect(function()
 		if not self._autoAttackEnabled then return end
 		if not self._initialized then return end
-
-		-- Check if enough time has passed since last attack
-		local now = tick()
-		if now - self._lastAutoAttackTime < self._autoAttackInterval then
-			return
-		end
+		-- Skip auto-attack while in manual target mode
+		if self._manualTargetMode then return end
 
 		-- Check if we have any equipped pets
 		local hasPets = false
@@ -519,25 +529,85 @@ function PetController:_startAutoAttack()
 		end
 		if not hasPets then return end
 
-		-- Find nearest destructible within range
-		local nearest = self:getNearestDestructible(self._autoAttackRange)
-		if not nearest then return end
-
-		-- Get the destructible ID
-		local idValue = nearest:FindFirstChild("DestructibleId")
-		if not idValue then return end
-		local destructibleId = idValue.Value
-
-		-- Update last attack time
-		self._lastAutoAttackTime = now
-
-		-- Send all equipped pets to visually attack
-		for uniqueId, _ in pairs(self._equippedPets) do
-			self:sendPetToAttack(uniqueId, destructibleId, nearest)
+		-- Get all destructibles within range
+		local destructibles = self:getAllDestructiblesInRange(self._autoAttackRange)
+		if #destructibles == 0 then
+			-- Clear all targets if nothing in range
+			self._petTargets = {}
+			return
 		end
 
-		-- Fire the attack remote to server
-		self:fireAttackRemote(destructibleId)
+		-- Build a set of which destructible IDs are already targeted by a pet
+		local targetedIds = {}
+		for petId, targetInfo in pairs(self._petTargets) do
+			-- Only count as targeted if the pet still exists
+			if self._equippedPets[petId] then
+				targetedIds[targetInfo.destructibleId] = true
+			end
+		end
+
+		-- For each equipped pet, assign a target if it does not have one or its target is gone
+		local now = tick()
+		for uniqueId, _ in pairs(self._equippedPets) do
+			local currentTarget = self._petTargets[uniqueId]
+
+			-- Check if current target is still valid (exists in destructibles list)
+			local targetStillValid = false
+			if currentTarget then
+				for _, d in ipairs(destructibles) do
+					if d.id == currentTarget.destructibleId then
+						targetStillValid = true
+						break
+					end
+				end
+			end
+
+			-- If target is invalid/missing, assign a new one
+			if not targetStillValid then
+				self._petTargets[uniqueId] = nil
+				-- Remove from targeted set
+				if currentTarget then
+					targetedIds[currentTarget.destructibleId] = nil
+				end
+
+				-- Find the nearest destructible NOT already targeted by another pet
+				local assigned = false
+				for _, d in ipairs(destructibles) do
+					if not targetedIds[d.id] then
+						self._petTargets[uniqueId] = {
+							destructibleId = d.id,
+							part = d.part,
+							lastAttackTime = 0,
+						}
+						targetedIds[d.id] = true
+						assigned = true
+						break
+					end
+				end
+
+				-- If all destructibles are taken, allow sharing (pick nearest)
+				if not assigned and #destructibles > 0 then
+					local nearest = destructibles[1]
+					self._petTargets[uniqueId] = {
+						destructibleId = nearest.id,
+						part = nearest.part,
+						lastAttackTime = 0,
+					}
+				end
+			end
+
+			-- Attack the assigned target if enough time has passed
+			local targetInfo = self._petTargets[uniqueId]
+			if targetInfo and (now - targetInfo.lastAttackTime >= self._autoAttackInterval) then
+				targetInfo.lastAttackTime = now
+
+				-- Send pet to visually attack its own target
+				self:sendPetToAttack(uniqueId, targetInfo.destructibleId, targetInfo.part)
+
+				-- Fire attack remote for this specific destructible
+				self:fireAttackRemote(targetInfo.destructibleId)
+			end
+		end
 	end)
 end
 
@@ -549,7 +619,84 @@ function PetController:_stopAutoAttack()
 end
 
 --------------------------------------------------------------------------------
--- Set FasterPets upgrade multiplier (called from Main.client when upgrades update)
+-- MANUAL TARGETING: Send exactly 1 pet to a target (single click)
+-- Picks the first available (non-attacking) pet
+--------------------------------------------------------------------------------
+function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
+	if not self._initialized then return end
+
+	-- Find the first pet that is not currently in an attack animation
+	local sentPetId = nil
+	for uniqueId, _ in pairs(self._equippedPets) do
+		if not self._attackingPets[uniqueId] then
+			sentPetId = uniqueId
+			break
+		end
+	end
+
+	-- If all pets are busy, pick the first one anyway
+	if not sentPetId then
+		for uniqueId, _ in pairs(self._equippedPets) do
+			sentPetId = uniqueId
+			break
+		end
+	end
+
+	if not sentPetId then return end
+
+	-- Assign this pet's target manually
+	self._petTargets[sentPetId] = {
+		destructibleId = destructibleId,
+		part = destructiblePart,
+		lastAttackTime = tick(),
+	}
+
+	-- Send the pet visually
+	self:sendPetToAttack(sentPetId, destructibleId, destructiblePart)
+
+	-- Fire ONE attack remote (server calculates damage for 1 pet)
+	self:fireAttackRemote(destructibleId)
+
+	-- Enter manual target mode briefly so auto-attack doesn't immediately override
+	self._manualTargetMode = true
+	self._manualTargetExpiry = tick() + self._manualTargetDuration
+end
+
+--------------------------------------------------------------------------------
+-- MANUAL TARGETING: Send ALL pets to a target (hold click)
+--------------------------------------------------------------------------------
+function PetController:sendAllPetsToTarget(destructibleId, destructiblePart)
+	if not self._initialized then return end
+
+	-- Assign all pets to the same target
+	for uniqueId, _ in pairs(self._equippedPets) do
+		self._petTargets[uniqueId] = {
+			destructibleId = destructibleId,
+			part = destructiblePart,
+			lastAttackTime = tick(),
+		}
+		self:sendPetToAttack(uniqueId, destructibleId, destructiblePart)
+	end
+
+	-- Fire attack remote (server sums all equipped pet damage)
+	self:fireAttackRemote(destructibleId)
+
+	-- Enter manual target mode
+	self._manualTargetMode = true
+	self._manualTargetExpiry = tick() + self._manualTargetDuration
+end
+
+--------------------------------------------------------------------------------
+-- Clear manual targeting (return to auto-distribute)
+--------------------------------------------------------------------------------
+function PetController:clearManualTarget()
+	self._manualTargetMode = false
+	-- Clear all pet targets so they re-distribute on next frame
+	self._petTargets = {}
+end
+
+--------------------------------------------------------------------------------
+-- Set FasterPets upgrade multiplier
 --------------------------------------------------------------------------------
 function PetController:setFasterPetsMultiplier(multiplier)
 	self._fasterPetsMultiplier = multiplier or 0
@@ -567,6 +714,7 @@ function PetController:cleanup()
 	end
 	self._equippedPets = {}
 	self._attackingPets = {}
+	self._petTargets = {}
 	if self._petsFolder then
 		self._petsFolder:Destroy()
 	end

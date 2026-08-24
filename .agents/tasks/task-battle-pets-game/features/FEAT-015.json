@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-015",
+  "type": "feat",
+  "title": "Pet Simulator targeting, reduced pet speed, E-key egg hatch",
+  "description": "1. Ensure E-key ProximityPrompt works for egg hatching. 2. Reduce pet movement speed for natural look. 3. Implement Pet Simulator-style targeting: single click sends 1 pet, hold sends all pets, idle auto-distributes pets to different destructibles.",
+  "status": "in_progress",
+  "steps": [
+    "Verify and fix ProximityPrompt E-key egg interaction in ZoneService and Main.client.lua",
+    "Reduce pet follow/movement speed in PetController for smoother, more natural movement",
+    "Rework PetController auto-attack to distribute pets to DIFFERENT destructibles (each pet picks its own target)",
+    "Rework Main.client.lua input handling: single click sends 1 pet, hold (0.3s) sends all pets",
+    "Regenerate BATTLE_PETS.rbxlx",
+    "Validate XML output"
+  ],
+  "acceptance_criteria": [
+    "E-key ProximityPrompt triggers egg hatch when near egg station",
+    "Pet movement speed is noticeably slower/smoother (no teleporting feel)",
+    "Single left click on destructible sends only 1 pet to attack it",
+    "Holding left click (0.3s+) on destructible sends ALL pets to attack it",
+    "When idle (not clicking), pets auto-distribute to different destructibles (not all same target)",
+    "When a destructible is destroyed, the pet auto-finds next available target",
+    "BATTLE_PETS.rbxlx is regenerated and valid XML"
+  ]
+}
