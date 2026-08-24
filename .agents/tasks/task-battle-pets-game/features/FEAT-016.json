@@ -1,7 +1,7 @@
 {
   "id": "FEAT-016",
   "title": "Golden Pet conversion with multi-pet sacrifice and chance-based system",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Update PetService.convertToGoldenPet to accept a list of pet instance IDs instead of a single one",
     "Implement chance calculation: 1=13%, 2=26%, 3=39%, 4=50%, 5=63%, 6=88%, 7=100%",
