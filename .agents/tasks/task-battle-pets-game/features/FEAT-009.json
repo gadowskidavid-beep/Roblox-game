@@ -1,0 +1,18 @@
+{
+  "id": "FEAT-009",
+  "type": "feat",
+  "description": "Add starter pet to getDefaultData() so new players begin with 1 Common pet (Buddy) already owned and equipped",
+  "status": "in_progress",
+  "steps": [
+    "Modify getDefaultData() in DataService.lua to include a starter pet in the pets array and equippedPets array",
+    "The starter pet should be 'Buddy' (first Common pet from PetData), with id 'starter_pet_1'",
+    "Regenerate BATTLE_PETS.rbxlx using generate_rbxlx.py",
+    "Verify changes and commit"
+  ],
+  "acceptance_criteria": [
+    "getDefaultData() returns pets array with one entry: the Buddy pet with id 'starter_pet_1'",
+    "getDefaultData() returns equippedPets array with 'starter_pet_1'",
+    "The starter pet has equipped = true",
+    "BATTLE_PETS.rbxlx is regenerated and reflects the change"
+  ]
+}

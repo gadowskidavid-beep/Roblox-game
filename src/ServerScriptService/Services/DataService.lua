@@ -39,16 +39,25 @@ end
 
 -- Default player data schema
 local function getDefaultData()
+	local starterPet = {
+		id = "starter_pet_1",
+		petId = "Buddy",
+		name = "Buddy",
+		rarity = "Common",
+		damage = 5,
+		equipped = true,
+	}
+
 	return {
 		coins = 0,
 		diamonds = 0,
 		xp = 0,
 		level = 1,
-		pets = {},
+		pets = { starterPet },
 		unlockedZones = {1},
 		campaignProgress = {},
 		upgrades = {},
-		equippedPets = {},
+		equippedPets = { "starter_pet_1" },
 	}
 end
 
