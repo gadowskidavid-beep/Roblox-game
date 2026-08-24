@@ -24,6 +24,7 @@ function EffectsController.new()
 	local self = setmetatable({}, EffectsController)
 	self._progressBars = {}
 	self._initialized = false
+	self._lastHatchPosition = nil
 	return self
 end
 
@@ -100,7 +101,8 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 end
 
 --------------------------------------------------------------------------------
--- Egg Hatch Animation: egg shakes, cracks, breaks, reveals pet
+-- Egg Hatch Animation: large egg appears, wobbles 2-3 times, breaks with
+-- particle/light flash, pet revealed with rarity color/name, camera zoom (~3s)
 --------------------------------------------------------------------------------
 function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	if not self._initialized then return end
@@ -110,55 +112,146 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	local petName = resultPet and resultPet.name or "Pet"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
-	-- Create egg model (ellipsoid Part)
+	-- Store original camera settings for restore
+	local camera = workspace.CurrentCamera
+	local originalCameraType = camera and camera.CameraType or nil
+
+	-- Create LARGE egg model (much bigger for visibility)
 	local egg = Instance.new("Part")
 	egg.Name = "HatchingEgg"
 	egg.Shape = Enum.PartType.Ball
-	egg.Size = Vector3.new(3, 4, 3)
-	egg.Position = eggPosition + Vector3.new(0, 2, 0)
+	egg.Size = Vector3.new(5, 7, 5)
+	egg.Position = eggPosition + Vector3.new(0, 4, 0)
 	egg.Anchored = true
 	egg.CanCollide = false
-	egg.Color = Color3.fromRGB(255, 240, 200)
+	egg.Color = Color3.fromRGB(255, 245, 210)
 	egg.Material = Enum.Material.SmoothPlastic
 	egg.Parent = self._effectsFolder
 
-	-- Shake animation (short CFrame tweens left-right)
-	local basePos = egg.Position
-	local shakeInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut, 6, true)
-	local shakeTween = TweenService:Create(egg, shakeInfo, {
-		CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(10)),
-	})
-	shakeTween:Play()
+	-- Add a PointLight to the egg so it glows during animation
+	local eggLight = Instance.new("PointLight")
+	eggLight.Color = Color3.fromRGB(255, 255, 200)
+	eggLight.Brightness = 2
+	eggLight.Range = 12
+	eggLight.Parent = egg
 
-	-- After shake, crack effect
-	shakeTween.Completed:Connect(function()
-		-- Color change to indicate cracking
+	-- Camera zoom: swing camera to focus on the egg
+	local eggPos = egg.Position
+	if camera then
+		camera.CameraType = Enum.CameraType.Scriptable
+		local lookFrom = eggPos + Vector3.new(6, 3, 6)
+		local zoomInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local zoomTween = TweenService:Create(camera, zoomInfo, {
+			CFrame = CFrame.new(lookFrom, eggPos),
+		})
+		zoomTween:Play()
+	end
+
+	-- Wobble animation: egg tilts left-right 3 times with increasing intensity
+	local basePos = egg.Position
+	task.spawn(function()
+		-- Wobble 1 (small)
+		local w1 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble1 = TweenService:Create(egg, w1, {
+			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(8)),
+		})
+		wobble1:Play()
+		wobble1.Completed:Wait()
+		task.wait(0.15)
+
+		-- Wobble 2 (medium)
+		local w2 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble2 = TweenService:Create(egg, w2, {
+			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(-12)),
+		})
+		wobble2:Play()
+		wobble2.Completed:Wait()
+		task.wait(0.15)
+
+		-- Wobble 3 (large)
+		local w3 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble3 = TweenService:Create(egg, w3, {
+			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(15)),
+		})
+		wobble3:Play()
+		wobble3.Completed:Wait()
+		task.wait(0.1)
+
+		-- Crack phase: egg glows and expands slightly, changes to rarity color
 		local crackInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		local crackTween = TweenService:Create(egg, crackInfo, {
 			Color = rarityColor,
-			Size = Vector3.new(3.5, 4.5, 3.5),
+			Size = Vector3.new(6, 8, 6),
+		})
+		local lightFlash = TweenService:Create(eggLight, crackInfo, {
+			Brightness = 8,
+			Range = 20,
+			Color = rarityColor,
 		})
 		crackTween:Play()
+		lightFlash:Play()
+		crackTween.Completed:Wait()
 
-		crackTween.Completed:Connect(function()
-			-- Break: destroy egg, spawn particle-like Parts flying outward
-			egg:Destroy()
-			self:_spawnBreakParticles(basePos + Vector3.new(0, 2, 0), rarityColor)
+		-- BREAK: destroy egg, spawn bright flash + particles
+		egg:Destroy()
+		self:_spawnLightFlash(basePos + Vector3.new(0, 4, 0), rarityColor)
+		self:_spawnBreakParticles(basePos + Vector3.new(0, 4, 0), rarityColor)
 
-			-- Reveal pet model in center with glow
-			task.delay(0.3, function()
-				self:_showPetReveal(basePos + Vector3.new(0, 2, 0), petName, rarity, rarityColor)
-			end)
-		end)
+		-- Reveal pet after a short delay
+		task.wait(0.4)
+		self:_showPetReveal(basePos + Vector3.new(0, 4, 0), petName, rarity, rarityColor)
+
+		-- Restore camera after 2 seconds
+		task.wait(2)
+		if camera and originalCameraType then
+			camera.CameraType = originalCameraType
+		end
+	end)
+end
+
+-- Internal: bright expanding flash sphere when egg breaks
+function EffectsController:_spawnLightFlash(position, color)
+	local flash = Instance.new("Part")
+	flash.Name = "EggFlash"
+	flash.Shape = Enum.PartType.Ball
+	flash.Size = Vector3.new(2, 2, 2)
+	flash.Position = position
+	flash.Anchored = true
+	flash.CanCollide = false
+	flash.Color = color
+	flash.Material = Enum.Material.Neon
+	flash.Transparency = 0.2
+	flash.Parent = self._effectsFolder
+
+	-- PointLight for a bright burst
+	local flashLight = Instance.new("PointLight")
+	flashLight.Color = color
+	flashLight.Brightness = 10
+	flashLight.Range = 30
+	flashLight.Parent = flash
+
+	-- Expand and fade rapidly
+	local flashInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local expandTween = TweenService:Create(flash, flashInfo, {
+		Size = Vector3.new(16, 16, 16),
+		Transparency = 1,
+	})
+	local lightFade = TweenService:Create(flashLight, flashInfo, {
+		Brightness = 0,
+	})
+	expandTween:Play()
+	lightFade:Play()
+	expandTween.Completed:Connect(function()
+		flash:Destroy()
 	end)
 end
 
 -- Internal: spawn small Parts flying outward to simulate egg breaking
 function EffectsController:_spawnBreakParticles(position, color)
-	for i = 1, 12 do
+	for i = 1, 16 do
 		local particle = Instance.new("Part")
 		particle.Name = "EggParticle"
-		particle.Size = Vector3.new(0.3, 0.3, 0.3)
+		particle.Size = Vector3.new(0.5, 0.5, 0.5)
 		particle.Shape = Enum.PartType.Ball
 		particle.Position = position
 		particle.Anchored = true
@@ -167,10 +260,16 @@ function EffectsController:_spawnBreakParticles(position, color)
 		particle.Material = Enum.Material.Neon
 		particle.Parent = self._effectsFolder
 
-		local angle = (i / 12) * math.pi * 2
-		local direction = Vector3.new(math.cos(angle) * 5, math.random(2, 5), math.sin(angle) * 5)
+		local angle = (i / 16) * math.pi * 2
+		local upAngle = math.random(20, 60) / 10
+		local distance = math.random(4, 8)
+		local direction = Vector3.new(
+			math.cos(angle) * distance,
+			upAngle,
+			math.sin(angle) * distance
+		)
 
-		local tweenInfo = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local tweenInfo = TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		local tween = TweenService:Create(particle, tweenInfo, {
 			Position = position + direction,
 			Transparency = 1,
@@ -183,13 +282,13 @@ function EffectsController:_spawnBreakParticles(position, color)
 	end
 end
 
--- Internal: show pet model reveal with glow and name
+-- Internal: show pet model reveal with glow, name, and scale-in bounce
 function EffectsController:_showPetReveal(position, petName, rarity, rarityColor)
-	-- Pet model: simple sphere
+	-- Pet model: sphere with glow
 	local petPart = Instance.new("Part")
 	petPart.Name = "RevealedPet"
 	petPart.Shape = Enum.PartType.Ball
-	petPart.Size = Vector3.new(0.1, 0.1, 0.1) -- start small
+	petPart.Size = Vector3.new(0.1, 0.1, 0.1)
 	petPart.Position = position
 	petPart.Anchored = true
 	petPart.CanCollide = false
@@ -200,22 +299,22 @@ function EffectsController:_showPetReveal(position, petName, rarity, rarityColor
 	-- PointLight for glow
 	local light = Instance.new("PointLight")
 	light.Color = rarityColor
-	light.Brightness = 5
-	light.Range = 10
+	light.Brightness = 6
+	light.Range = 14
 	light.Parent = petPart
 
-	-- Scale from 0 to full size
+	-- Scale from 0 to full size with bounce (Back easing)
 	local revealInfo = TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 	local revealTween = TweenService:Create(petPart, revealInfo, {
-		Size = Vector3.new(2.5, 2.5, 2.5),
+		Size = Vector3.new(3, 3, 3),
 	})
 	revealTween:Play()
 
 	-- Floating pet name and rarity text
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "PetRevealLabel"
-	billboardGui.Size = UDim2.fromOffset(200, 60)
-	billboardGui.StudsOffset = Vector3.new(0, 3, 0)
+	billboardGui.Size = UDim2.fromOffset(240, 80)
+	billboardGui.StudsOffset = Vector3.new(0, 3.5, 0)
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = petPart
 	billboardGui.Parent = self._playerGui
@@ -246,9 +345,9 @@ function EffectsController:_showPetReveal(position, petName, rarity, rarityColor
 	rarityLabel.TextScaled = true
 	rarityLabel.Parent = billboardGui
 
-	-- Fade out after 3 seconds
-	task.delay(3, function()
-		local fadeInfo = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	-- Fade out after 2.5 seconds
+	task.delay(2.5, function()
+		local fadeInfo = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		local fadePet = TweenService:Create(petPart, fadeInfo, { Transparency = 1 })
 		local fadeLight = TweenService:Create(light, fadeInfo, { Brightness = 0 })
 		local fadeName = TweenService:Create(nameLabel, fadeInfo, { TextTransparency = 1 })

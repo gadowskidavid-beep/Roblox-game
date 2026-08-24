@@ -164,43 +164,148 @@ function ZoneService.spawnDestructibles(zoneId, zoneFolder, origin)
 	end
 end
 
--- Create a single destructible Part
+-- Create a single destructible with visually distinct appearance per type
+-- CoinPile: golden stacked flat cylinders with golden PointLight
+-- DiamondPile: cyan diamond shape (rotated cube on tip) with blue PointLight
+-- Crate: large brown box with darker lid stripe, bigger than other types
 function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, parent)
-	local part = nil
 	local uniqueId = game:GetService("HttpService"):GenerateGUID(false)
+	local model = Instance.new("Model")
+	model.Name = "Destructible_" .. uniqueId
+
+	local mainPart = nil
 
 	if dtype == "CoinPile" then
-		-- Yellow cylinder (larger for better visibility and targeting)
-		part = Instance.new("Part")
-		part.Shape = Enum.PartType.Cylinder
-		part.Size = Vector3.new(3, 4, 4)
-		part.Color = Color3.fromRGB(255, 215, 0)
-		part.Material = Enum.Material.SmoothPlastic
+		-- Stacked flat cylinders (coin pile) - 3 coins stacked
+		local coin1 = Instance.new("Part")
+		coin1.Name = "Coin1"
+		coin1.Shape = Enum.PartType.Cylinder
+		coin1.Size = Vector3.new(0.6, 4, 4)
+		coin1.Color = Color3.fromRGB(255, 200, 0)
+		coin1.Material = Enum.Material.SmoothPlastic
+		coin1.Anchored = true
+		coin1.CanCollide = true
+		coin1.CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0)) * CFrame.Angles(0, 0, math.rad(90))
+		coin1.Parent = model
+
+		local coin2 = Instance.new("Part")
+		coin2.Name = "Coin2"
+		coin2.Shape = Enum.PartType.Cylinder
+		coin2.Size = Vector3.new(0.6, 3.5, 3.5)
+		coin2.Color = Color3.fromRGB(255, 215, 0)
+		coin2.Material = Enum.Material.SmoothPlastic
+		coin2.Anchored = true
+		coin2.CanCollide = true
+		coin2.CFrame = CFrame.new(position + Vector3.new(0.3, 0.9, 0.2)) * CFrame.Angles(0, 0, math.rad(90))
+		coin2.Parent = model
+
+		local coin3 = Instance.new("Part")
+		coin3.Name = "Coin3"
+		coin3.Shape = Enum.PartType.Cylinder
+		coin3.Size = Vector3.new(0.6, 3, 3)
+		coin3.Color = Color3.fromRGB(255, 230, 50)
+		coin3.Material = Enum.Material.SmoothPlastic
+		coin3.Anchored = true
+		coin3.CanCollide = true
+		coin3.CFrame = CFrame.new(position + Vector3.new(-0.2, 1.5, -0.1)) * CFrame.Angles(0, 0, math.rad(90))
+		coin3.Parent = model
+
+		-- Golden PointLight for glow
+		local glow = Instance.new("PointLight")
+		glow.Name = "CoinGlow"
+		glow.Color = Color3.fromRGB(255, 200, 0)
+		glow.Brightness = 1.5
+		glow.Range = 8
+		glow.Parent = coin2
+
+		mainPart = coin2
+
 	elseif dtype == "DiamondPile" then
-		-- Blue wedge (larger for better visibility and targeting)
-		part = Instance.new("WedgePart")
-		part.Size = Vector3.new(3, 4, 4)
-		part.Color = Color3.fromRGB(0, 150, 255)
-		part.Material = Enum.Material.Neon
+		-- Diamond shape: a cube rotated 45 degrees on tip (like a diamond)
+		local diamond = Instance.new("Part")
+		diamond.Name = "Diamond"
+		diamond.Shape = Enum.PartType.Block
+		diamond.Size = Vector3.new(3, 3, 3)
+		diamond.Color = Color3.fromRGB(0, 200, 255)
+		diamond.Material = Enum.Material.Neon
+		diamond.Anchored = true
+		diamond.CanCollide = true
+		-- Rotate 45 degrees on X and Z to sit on a corner (diamond orientation)
+		diamond.CFrame = CFrame.new(position + Vector3.new(0, 2.5, 0)) * CFrame.Angles(math.rad(45), 0, math.rad(45))
+		diamond.Parent = model
+
+		-- Smaller inner diamond for depth effect
+		local innerDiamond = Instance.new("Part")
+		innerDiamond.Name = "InnerDiamond"
+		innerDiamond.Shape = Enum.PartType.Block
+		innerDiamond.Size = Vector3.new(1.8, 1.8, 1.8)
+		innerDiamond.Color = Color3.fromRGB(100, 240, 255)
+		innerDiamond.Material = Enum.Material.Neon
+		innerDiamond.Transparency = 0.3
+		innerDiamond.Anchored = true
+		innerDiamond.CanCollide = false
+		innerDiamond.CFrame = CFrame.new(position + Vector3.new(0, 2.5, 0)) * CFrame.Angles(math.rad(45), math.rad(30), math.rad(45))
+		innerDiamond.Parent = model
+
+		-- Blue PointLight for glow
+		local glow = Instance.new("PointLight")
+		glow.Name = "DiamondGlow"
+		glow.Color = Color3.fromRGB(0, 150, 255)
+		glow.Brightness = 2
+		glow.Range = 10
+		glow.Parent = diamond
+
+		mainPart = diamond
+
 	elseif dtype == "Crate" then
-		-- Brown cube (larger for better visibility and targeting)
-		part = Instance.new("Part")
-		part.Shape = Enum.PartType.Block
-		part.Size = Vector3.new(4, 4, 4)
-		part.Color = Color3.fromRGB(139, 90, 43)
-		part.Material = Enum.Material.Wood
+		-- Large brown box with darker lid on top (2 parts)
+		local box = Instance.new("Part")
+		box.Name = "CrateBody"
+		box.Shape = Enum.PartType.Block
+		box.Size = Vector3.new(5, 4, 5)
+		box.Color = Color3.fromRGB(139, 90, 43)
+		box.Material = Enum.Material.Wood
+		box.Anchored = true
+		box.CanCollide = true
+		box.Position = position + Vector3.new(0, 2, 0)
+		box.Parent = model
+
+		-- Darker lid on top
+		local lid = Instance.new("Part")
+		lid.Name = "CrateLid"
+		lid.Shape = Enum.PartType.Block
+		lid.Size = Vector3.new(5.4, 0.8, 5.4)
+		lid.Color = Color3.fromRGB(100, 65, 25)
+		lid.Material = Enum.Material.Wood
+		lid.Anchored = true
+		lid.CanCollide = true
+		lid.Position = position + Vector3.new(0, 4.2, 0)
+		lid.Parent = model
+
+		-- Horizontal dark stripe (band around the crate)
+		local band = Instance.new("Part")
+		band.Name = "CrateBand"
+		band.Shape = Enum.PartType.Block
+		band.Size = Vector3.new(5.1, 0.5, 5.1)
+		band.Color = Color3.fromRGB(70, 45, 15)
+		band.Material = Enum.Material.Wood
+		band.Anchored = true
+		band.CanCollide = false
+		band.Position = position + Vector3.new(0, 2, 0)
+		band.Parent = model
+
+		mainPart = box
 	end
 
-	if not part then
+	if not mainPart then
+		model:Destroy()
 		return
 	end
 
-	part.Name = "Destructible_" .. uniqueId
-	part.Anchored = true
-	part.Position = position + Vector3.new(0, 2, 0)
-	part.Parent = parent
+	model.PrimaryPart = mainPart
+	model.Parent = parent
 
-	-- Store in tracking table
+	-- Store in tracking table (use mainPart as the reference for targeting)
 	ZoneService._destructibles[uniqueId] = {
 		id = uniqueId,
 		zoneId = zoneId,
@@ -208,15 +313,16 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 		hp = dDef.hp,
 		maxHp = dDef.hp,
 		drops = dDef.drops,
-		part = part,
-		position = part.Position,
+		part = mainPart,
+		model = model,
+		position = mainPart.Position,
 	}
 
-	-- Tag the part with the destructible ID for lookup
+	-- Tag the main part with the destructible ID for client lookup
 	local idValue = Instance.new("StringValue")
 	idValue.Name = "DestructibleId"
 	idValue.Value = uniqueId
-	idValue.Parent = part
+	idValue.Parent = mainPart
 
 	return uniqueId
 end
@@ -328,6 +434,23 @@ function ZoneService._spawnEggStations()
 		interactTag.Name = "EggType"
 		interactTag.Value = stationDef.eggType
 		interactTag.Parent = interactZone
+
+		-- ProximityPrompt on the egg for E-key interaction
+		local proximityPrompt = Instance.new("ProximityPrompt")
+		proximityPrompt.Name = "HatchPrompt"
+		proximityPrompt.ActionText = "Hatch"
+		proximityPrompt.ObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)"
+		proximityPrompt.KeyboardKeyCode = Enum.KeyCode.E
+		proximityPrompt.HoldDuration = 0
+		proximityPrompt.MaxActivationDistance = 10
+		proximityPrompt.RequiresLineOfSight = false
+		proximityPrompt.Parent = egg
+
+		-- Tag the ProximityPrompt's parent egg with the egg type
+		local promptEggTag = Instance.new("StringValue")
+		promptEggTag.Name = "PromptEggType"
+		promptEggTag.Value = stationDef.eggType
+		promptEggTag.Parent = egg
 	end
 end
 
@@ -584,8 +707,10 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Remove part from workspace
-		if destructible.part and destructible.part.Parent then
+		-- Remove model (or part) from workspace
+		if destructible.model and destructible.model.Parent then
+			destructible.model:Destroy()
+		elseif destructible.part and destructible.part.Parent then
 			destructible.part:Destroy()
 		end
 

@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-013",
+  "type": "feat",
+  "title": "Enhanced egg animation, E-key interaction, visually distinct destructibles",
+  "description": "1. Enhanced egg hatch animation: large egg appears, wobbles 2-3 times, breaks with particle/light flash, pet appears with rarity color/name, camera zoom effect (~3 seconds total). 2. ProximityPrompt (E-key) at egg stations for hatch interaction. 3. Visually distinct destructibles: CoinPile as golden stacked cylinders with PointLight, DiamondPile as cyan rotated cube (diamond shape) with blue glow, Crate as large brown box with darker stripe/lid parts.",
+  "status": "in_progress",
+  "steps": [
+    "Update EffectsController.lua to enhance egg hatch animation with bigger egg, more wobble, light flash, camera zoom",
+    "Update ZoneService.lua _spawnEggStations to add ProximityPrompt to egg station parts",
+    "Update Main.client.lua to handle ProximityPrompt triggered events for egg hatching",
+    "Update ZoneService.lua _spawnSingleDestructible to create visually distinct multi-part models for each type",
+    "Regenerate BATTLE_PETS.rbxlx",
+    "Verify XML validity"
+  ],
+  "acceptance_criteria": [
+    "Egg hatch animation lasts ~3 seconds with visible wobble, crack, particle burst, and camera zoom",
+    "Egg stations have a ProximityPrompt that responds to E key",
+    "CoinPile destructibles are golden stacked flat cylinders with PointLight",
+    "DiamondPile destructibles are cyan/blue diamond-shaped (rotated cube) with blue PointLight",
+    "Crate destructibles are large brown boxes with lid detail, bigger than coins/diamonds",
+    "All three destructible types are visually clearly distinguishable",
+    "BATTLE_PETS.rbxlx regenerated and valid XML"
+  ]
+}

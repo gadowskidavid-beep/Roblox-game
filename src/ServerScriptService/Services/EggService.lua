@@ -80,8 +80,8 @@ function EggService.purchaseAndHatch(player, eggType)
 			end
 		end
 
-		-- Short delay to allow client to play animation
-		task.wait(2)
+		-- Short delay to allow client to play animation (3 seconds for full animation)
+		task.wait(3)
 
 		-- Delegate to PetService for actual hatching (cost already deducted)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)

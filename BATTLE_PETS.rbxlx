@@ -1433,43 +1433,148 @@ function ZoneService.spawnDestructibles(zoneId, zoneFolder, origin)
 	end
 end
 
--- Create a single destructible Part
+-- Create a single destructible with visually distinct appearance per type
+-- CoinPile: golden stacked flat cylinders with golden PointLight
+-- DiamondPile: cyan diamond shape (rotated cube on tip) with blue PointLight
+-- Crate: large brown box with darker lid stripe, bigger than other types
 function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, parent)
-	local part = nil
 	local uniqueId = game:GetService("HttpService"):GenerateGUID(false)
+	local model = Instance.new("Model")
+	model.Name = "Destructible_" .. uniqueId
+
+	local mainPart = nil
 
 	if dtype == "CoinPile" then
-		-- Yellow cylinder (larger for better visibility and targeting)
-		part = Instance.new("Part")
-		part.Shape = Enum.PartType.Cylinder
-		part.Size = Vector3.new(3, 4, 4)
-		part.Color = Color3.fromRGB(255, 215, 0)
-		part.Material = Enum.Material.SmoothPlastic
+		-- Stacked flat cylinders (coin pile) - 3 coins stacked
+		local coin1 = Instance.new("Part")
+		coin1.Name = "Coin1"
+		coin1.Shape = Enum.PartType.Cylinder
+		coin1.Size = Vector3.new(0.6, 4, 4)
+		coin1.Color = Color3.fromRGB(255, 200, 0)
+		coin1.Material = Enum.Material.SmoothPlastic
+		coin1.Anchored = true
+		coin1.CanCollide = true
+		coin1.CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0)) * CFrame.Angles(0, 0, math.rad(90))
+		coin1.Parent = model
+
+		local coin2 = Instance.new("Part")
+		coin2.Name = "Coin2"
+		coin2.Shape = Enum.PartType.Cylinder
+		coin2.Size = Vector3.new(0.6, 3.5, 3.5)
+		coin2.Color = Color3.fromRGB(255, 215, 0)
+		coin2.Material = Enum.Material.SmoothPlastic
+		coin2.Anchored = true
+		coin2.CanCollide = true
+		coin2.CFrame = CFrame.new(position + Vector3.new(0.3, 0.9, 0.2)) * CFrame.Angles(0, 0, math.rad(90))
+		coin2.Parent = model
+
+		local coin3 = Instance.new("Part")
+		coin3.Name = "Coin3"
+		coin3.Shape = Enum.PartType.Cylinder
+		coin3.Size = Vector3.new(0.6, 3, 3)
+		coin3.Color = Color3.fromRGB(255, 230, 50)
+		coin3.Material = Enum.Material.SmoothPlastic
+		coin3.Anchored = true
+		coin3.CanCollide = true
+		coin3.CFrame = CFrame.new(position + Vector3.new(-0.2, 1.5, -0.1)) * CFrame.Angles(0, 0, math.rad(90))
+		coin3.Parent = model
+
+		-- Golden PointLight for glow
+		local glow = Instance.new("PointLight")
+		glow.Name = "CoinGlow"
+		glow.Color = Color3.fromRGB(255, 200, 0)
+		glow.Brightness = 1.5
+		glow.Range = 8
+		glow.Parent = coin2
+
+		mainPart = coin2
+
 	elseif dtype == "DiamondPile" then
-		-- Blue wedge (larger for better visibility and targeting)
-		part = Instance.new("WedgePart")
-		part.Size = Vector3.new(3, 4, 4)
-		part.Color = Color3.fromRGB(0, 150, 255)
-		part.Material = Enum.Material.Neon
+		-- Diamond shape: a cube rotated 45 degrees on tip (like a diamond)
+		local diamond = Instance.new("Part")
+		diamond.Name = "Diamond"
+		diamond.Shape = Enum.PartType.Block
+		diamond.Size = Vector3.new(3, 3, 3)
+		diamond.Color = Color3.fromRGB(0, 200, 255)
+		diamond.Material = Enum.Material.Neon
+		diamond.Anchored = true
+		diamond.CanCollide = true
+		-- Rotate 45 degrees on X and Z to sit on a corner (diamond orientation)
+		diamond.CFrame = CFrame.new(position + Vector3.new(0, 2.5, 0)) * CFrame.Angles(math.rad(45), 0, math.rad(45))
+		diamond.Parent = model
+
+		-- Smaller inner diamond for depth effect
+		local innerDiamond = Instance.new("Part")
+		innerDiamond.Name = "InnerDiamond"
+		innerDiamond.Shape = Enum.PartType.Block
+		innerDiamond.Size = Vector3.new(1.8, 1.8, 1.8)
+		innerDiamond.Color = Color3.fromRGB(100, 240, 255)
+		innerDiamond.Material = Enum.Material.Neon
+		innerDiamond.Transparency = 0.3
+		innerDiamond.Anchored = true
+		innerDiamond.CanCollide = false
+		innerDiamond.CFrame = CFrame.new(position + Vector3.new(0, 2.5, 0)) * CFrame.Angles(math.rad(45), math.rad(30), math.rad(45))
+		innerDiamond.Parent = model
+
+		-- Blue PointLight for glow
+		local glow = Instance.new("PointLight")
+		glow.Name = "DiamondGlow"
+		glow.Color = Color3.fromRGB(0, 150, 255)
+		glow.Brightness = 2
+		glow.Range = 10
+		glow.Parent = diamond
+
+		mainPart = diamond
+
 	elseif dtype == "Crate" then
-		-- Brown cube (larger for better visibility and targeting)
-		part = Instance.new("Part")
-		part.Shape = Enum.PartType.Block
-		part.Size = Vector3.new(4, 4, 4)
-		part.Color = Color3.fromRGB(139, 90, 43)
-		part.Material = Enum.Material.Wood
+		-- Large brown box with darker lid on top (2 parts)
+		local box = Instance.new("Part")
+		box.Name = "CrateBody"
+		box.Shape = Enum.PartType.Block
+		box.Size = Vector3.new(5, 4, 5)
+		box.Color = Color3.fromRGB(139, 90, 43)
+		box.Material = Enum.Material.Wood
+		box.Anchored = true
+		box.CanCollide = true
+		box.Position = position + Vector3.new(0, 2, 0)
+		box.Parent = model
+
+		-- Darker lid on top
+		local lid = Instance.new("Part")
+		lid.Name = "CrateLid"
+		lid.Shape = Enum.PartType.Block
+		lid.Size = Vector3.new(5.4, 0.8, 5.4)
+		lid.Color = Color3.fromRGB(100, 65, 25)
+		lid.Material = Enum.Material.Wood
+		lid.Anchored = true
+		lid.CanCollide = true
+		lid.Position = position + Vector3.new(0, 4.2, 0)
+		lid.Parent = model
+
+		-- Horizontal dark stripe (band around the crate)
+		local band = Instance.new("Part")
+		band.Name = "CrateBand"
+		band.Shape = Enum.PartType.Block
+		band.Size = Vector3.new(5.1, 0.5, 5.1)
+		band.Color = Color3.fromRGB(70, 45, 15)
+		band.Material = Enum.Material.Wood
+		band.Anchored = true
+		band.CanCollide = false
+		band.Position = position + Vector3.new(0, 2, 0)
+		band.Parent = model
+
+		mainPart = box
 	end
 
-	if not part then
+	if not mainPart then
+		model:Destroy()
 		return
 	end
 
-	part.Name = "Destructible_" .. uniqueId
-	part.Anchored = true
-	part.Position = position + Vector3.new(0, 2, 0)
-	part.Parent = parent
+	model.PrimaryPart = mainPart
+	model.Parent = parent
 
-	-- Store in tracking table
+	-- Store in tracking table (use mainPart as the reference for targeting)
 	ZoneService._destructibles[uniqueId] = {
 		id = uniqueId,
 		zoneId = zoneId,
@@ -1477,15 +1582,16 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 		hp = dDef.hp,
 		maxHp = dDef.hp,
 		drops = dDef.drops,
-		part = part,
-		position = part.Position,
+		part = mainPart,
+		model = model,
+		position = mainPart.Position,
 	}
 
-	-- Tag the part with the destructible ID for lookup
+	-- Tag the main part with the destructible ID for client lookup
 	local idValue = Instance.new("StringValue")
 	idValue.Name = "DestructibleId"
 	idValue.Value = uniqueId
-	idValue.Parent = part
+	idValue.Parent = mainPart
 
 	return uniqueId
 end
@@ -1597,6 +1703,23 @@ function ZoneService._spawnEggStations()
 		interactTag.Name = "EggType"
 		interactTag.Value = stationDef.eggType
 		interactTag.Parent = interactZone
+
+		-- ProximityPrompt on the egg for E-key interaction
+		local proximityPrompt = Instance.new("ProximityPrompt")
+		proximityPrompt.Name = "HatchPrompt"
+		proximityPrompt.ActionText = "Hatch"
+		proximityPrompt.ObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)"
+		proximityPrompt.KeyboardKeyCode = Enum.KeyCode.E
+		proximityPrompt.HoldDuration = 0
+		proximityPrompt.MaxActivationDistance = 10
+		proximityPrompt.RequiresLineOfSight = false
+		proximityPrompt.Parent = egg
+
+		-- Tag the ProximityPrompt's parent egg with the egg type
+		local promptEggTag = Instance.new("StringValue")
+		promptEggTag.Name = "PromptEggType"
+		promptEggTag.Value = stationDef.eggType
+		promptEggTag.Parent = egg
 	end
 end
 
@@ -1853,8 +1976,10 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Remove part from workspace
-		if destructible.part and destructible.part.Parent then
+		-- Remove model (or part) from workspace
+		if destructible.model and destructible.model.Parent then
+			destructible.model:Destroy()
+		elseif destructible.part and destructible.part.Parent then
 			destructible.part:Destroy()
 		end
 
@@ -2580,8 +2705,8 @@ function EggService.purchaseAndHatch(player, eggType)
 			end
 		end
 
-		-- Short delay to allow client to play animation
-		task.wait(2)
+		-- Short delay to allow client to play animation (3 seconds for full animation)
+		task.wait(3)
 
 		-- Delegate to PetService for actual hatching (cost already deducted)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
@@ -2770,6 +2895,7 @@ local function buildEquippedListFromData(data)
 end
 
 -- Helper: find a Part in workspace.Zones that has a DestructibleId StringValue matching the given ID
+-- Supports both single-part and multi-part (Model-based) destructibles
 local function resolveDestructiblePart(destructibleId)
 	local zonesFolder = workspace:FindFirstChild("Zones")
 	if not zonesFolder then return nil end
@@ -2905,26 +3031,46 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
 	end
 end)
 
--- Egg hatch started (server sends eggType only; use player position for animation)
+-- Egg hatch started (server sends eggType; start the egg animation early at player position)
 EggHatchStart.OnClientEvent:Connect(function(eggType)
-	-- Animation position defaults to player character position
-	-- The result will come in EggHatchResult
-end)
-
--- Egg hatch result (server sends newPet data only; use player position for animation)
-EggHatchResult.OnClientEvent:Connect(function(petData)
-	-- Use player character position as the hatch animation origin
+	-- Show the large egg appearing in front of the player as soon as hatch starts
 	local hatchPosition = nil
 	if player.Character then
 		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		if hrp then
-			hatchPosition = hrp.Position + Vector3.new(0, 3, 5)
+			-- Position the egg in front of the player
+			local lookVector = hrp.CFrame.LookVector
+			hatchPosition = hrp.Position + lookVector * 6 + Vector3.new(0, 0, 0)
 		end
 	end
+	-- Store hatch position for the result handler
+	if hatchPosition then
+		effectsController._lastHatchPosition = hatchPosition
+	end
+end)
+
+-- Egg hatch result (server sends newPet data; play full animation)
+EggHatchResult.OnClientEvent:Connect(function(petData)
+	-- Use stored hatch position or calculate from player
+	local hatchPosition = effectsController._lastHatchPosition
+	if not hatchPosition then
+		if player.Character then
+			local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local lookVector = hrp.CFrame.LookVector
+				hatchPosition = hrp.Position + lookVector * 6
+			end
+		end
+	end
+	effectsController._lastHatchPosition = nil
+
 	if hatchPosition then
 		effectsController:showEggHatchAnimation(hatchPosition, petData)
 	end
-	uiController:showEggHatch(petData)
+	-- Show UI overlay after animation completes (delay to match animation)
+	task.delay(3, function()
+		uiController:showEggHatch(petData)
+	end)
 end)
 
 -- Campaign battle state update
@@ -3006,8 +3152,21 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			-- Check if the hit object is in the Zones folder (where destructibles live)
 			local zonesFolder = workspace:FindFirstChild("Zones")
 			if zonesFolder and hit:IsDescendantOf(zonesFolder) then
-				-- Verify this is a destructible (has DestructibleId value)
+				-- Verify this is a destructible (has DestructibleId value on self or parent model)
 				local destructibleIdValue = hit:FindFirstChild("DestructibleId")
+				-- If the hit part doesn't have the ID, check parent (Model-based destructibles)
+				if not destructibleIdValue and hit.Parent then
+					for _, sibling in ipairs(hit.Parent:GetChildren()) do
+						if sibling:IsA("BasePart") then
+							local idVal = sibling:FindFirstChild("DestructibleId")
+							if idVal then
+								destructibleIdValue = idVal
+								hit = sibling
+								break
+							end
+						end
+					end
+				end
 				if destructibleIdValue then
 					-- Extract the string ID to send to the server
 					local destructibleId = destructibleIdValue.Value
@@ -3056,6 +3215,29 @@ local function onCharacterAdded(character)
 			end
 		end
 	end
+
+	-- ProximityPrompt interaction for egg stations (E-key)
+	-- Listen for ProximityPrompts on egg model parts
+	local function connectEggPrompts()
+		local stationsFolder = workspace:FindFirstChild("EggStations")
+		if not stationsFolder then return end
+		for _, obj in ipairs(stationsFolder:GetChildren()) do
+			if obj:IsA("BasePart") and obj.Name == "EggModel" then
+				local prompt = obj:FindFirstChild("HatchPrompt")
+				local promptTag = obj:FindFirstChild("PromptEggType")
+				if prompt and promptTag then
+					prompt.Triggered:Connect(function(triggerPlayer)
+						if triggerPlayer == player then
+							uiController:showEggStationPrompt(promptTag.Value)
+						end
+					end)
+				end
+			end
+		end
+	end
+	connectEggPrompts()
+	-- Also listen for any future egg stations (in case they spawn after character loads)
+	task.delay(2, connectEggPrompts)
 end
 
 -- Connect character added
@@ -6009,6 +6191,7 @@ function EffectsController.new()
 	local self = setmetatable({}, EffectsController)
 	self._progressBars = {}
 	self._initialized = false
+	self._lastHatchPosition = nil
 	return self
 end
 
@@ -6085,7 +6268,8 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 end
 
 --------------------------------------------------------------------------------
--- Egg Hatch Animation: egg shakes, cracks, breaks, reveals pet
+-- Egg Hatch Animation: large egg appears, wobbles 2-3 times, breaks with
+-- particle/light flash, pet revealed with rarity color/name, camera zoom (~3s)
 --------------------------------------------------------------------------------
 function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	if not self._initialized then return end
@@ -6095,55 +6279,146 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	local petName = resultPet and resultPet.name or "Pet"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
-	-- Create egg model (ellipsoid Part)
+	-- Store original camera settings for restore
+	local camera = workspace.CurrentCamera
+	local originalCameraType = camera and camera.CameraType or nil
+
+	-- Create LARGE egg model (much bigger for visibility)
 	local egg = Instance.new("Part")
 	egg.Name = "HatchingEgg"
 	egg.Shape = Enum.PartType.Ball
-	egg.Size = Vector3.new(3, 4, 3)
-	egg.Position = eggPosition + Vector3.new(0, 2, 0)
+	egg.Size = Vector3.new(5, 7, 5)
+	egg.Position = eggPosition + Vector3.new(0, 4, 0)
 	egg.Anchored = true
 	egg.CanCollide = false
-	egg.Color = Color3.fromRGB(255, 240, 200)
+	egg.Color = Color3.fromRGB(255, 245, 210)
 	egg.Material = Enum.Material.SmoothPlastic
 	egg.Parent = self._effectsFolder
 
-	-- Shake animation (short CFrame tweens left-right)
-	local basePos = egg.Position
-	local shakeInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut, 6, true)
-	local shakeTween = TweenService:Create(egg, shakeInfo, {
-		CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(10)),
-	})
-	shakeTween:Play()
+	-- Add a PointLight to the egg so it glows during animation
+	local eggLight = Instance.new("PointLight")
+	eggLight.Color = Color3.fromRGB(255, 255, 200)
+	eggLight.Brightness = 2
+	eggLight.Range = 12
+	eggLight.Parent = egg
 
-	-- After shake, crack effect
-	shakeTween.Completed:Connect(function()
-		-- Color change to indicate cracking
+	-- Camera zoom: swing camera to focus on the egg
+	local eggPos = egg.Position
+	if camera then
+		camera.CameraType = Enum.CameraType.Scriptable
+		local lookFrom = eggPos + Vector3.new(6, 3, 6)
+		local zoomInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local zoomTween = TweenService:Create(camera, zoomInfo, {
+			CFrame = CFrame.new(lookFrom, eggPos),
+		})
+		zoomTween:Play()
+	end
+
+	-- Wobble animation: egg tilts left-right 3 times with increasing intensity
+	local basePos = egg.Position
+	task.spawn(function()
+		-- Wobble 1 (small)
+		local w1 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble1 = TweenService:Create(egg, w1, {
+			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(8)),
+		})
+		wobble1:Play()
+		wobble1.Completed:Wait()
+		task.wait(0.15)
+
+		-- Wobble 2 (medium)
+		local w2 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble2 = TweenService:Create(egg, w2, {
+			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(-12)),
+		})
+		wobble2:Play()
+		wobble2.Completed:Wait()
+		task.wait(0.15)
+
+		-- Wobble 3 (large)
+		local w3 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble3 = TweenService:Create(egg, w3, {
+			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(15)),
+		})
+		wobble3:Play()
+		wobble3.Completed:Wait()
+		task.wait(0.1)
+
+		-- Crack phase: egg glows and expands slightly, changes to rarity color
 		local crackInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		local crackTween = TweenService:Create(egg, crackInfo, {
 			Color = rarityColor,
-			Size = Vector3.new(3.5, 4.5, 3.5),
+			Size = Vector3.new(6, 8, 6),
+		})
+		local lightFlash = TweenService:Create(eggLight, crackInfo, {
+			Brightness = 8,
+			Range = 20,
+			Color = rarityColor,
 		})
 		crackTween:Play()
+		lightFlash:Play()
+		crackTween.Completed:Wait()
 
-		crackTween.Completed:Connect(function()
-			-- Break: destroy egg, spawn particle-like Parts flying outward
-			egg:Destroy()
-			self:_spawnBreakParticles(basePos + Vector3.new(0, 2, 0), rarityColor)
+		-- BREAK: destroy egg, spawn bright flash + particles
+		egg:Destroy()
+		self:_spawnLightFlash(basePos + Vector3.new(0, 4, 0), rarityColor)
+		self:_spawnBreakParticles(basePos + Vector3.new(0, 4, 0), rarityColor)
 
-			-- Reveal pet model in center with glow
-			task.delay(0.3, function()
-				self:_showPetReveal(basePos + Vector3.new(0, 2, 0), petName, rarity, rarityColor)
-			end)
-		end)
+		-- Reveal pet after a short delay
+		task.wait(0.4)
+		self:_showPetReveal(basePos + Vector3.new(0, 4, 0), petName, rarity, rarityColor)
+
+		-- Restore camera after 2 seconds
+		task.wait(2)
+		if camera and originalCameraType then
+			camera.CameraType = originalCameraType
+		end
+	end)
+end
+
+-- Internal: bright expanding flash sphere when egg breaks
+function EffectsController:_spawnLightFlash(position, color)
+	local flash = Instance.new("Part")
+	flash.Name = "EggFlash"
+	flash.Shape = Enum.PartType.Ball
+	flash.Size = Vector3.new(2, 2, 2)
+	flash.Position = position
+	flash.Anchored = true
+	flash.CanCollide = false
+	flash.Color = color
+	flash.Material = Enum.Material.Neon
+	flash.Transparency = 0.2
+	flash.Parent = self._effectsFolder
+
+	-- PointLight for a bright burst
+	local flashLight = Instance.new("PointLight")
+	flashLight.Color = color
+	flashLight.Brightness = 10
+	flashLight.Range = 30
+	flashLight.Parent = flash
+
+	-- Expand and fade rapidly
+	local flashInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local expandTween = TweenService:Create(flash, flashInfo, {
+		Size = Vector3.new(16, 16, 16),
+		Transparency = 1,
+	})
+	local lightFade = TweenService:Create(flashLight, flashInfo, {
+		Brightness = 0,
+	})
+	expandTween:Play()
+	lightFade:Play()
+	expandTween.Completed:Connect(function()
+		flash:Destroy()
 	end)
 end
 
 -- Internal: spawn small Parts flying outward to simulate egg breaking
 function EffectsController:_spawnBreakParticles(position, color)
-	for i = 1, 12 do
+	for i = 1, 16 do
 		local particle = Instance.new("Part")
 		particle.Name = "EggParticle"
-		particle.Size = Vector3.new(0.3, 0.3, 0.3)
+		particle.Size = Vector3.new(0.5, 0.5, 0.5)
 		particle.Shape = Enum.PartType.Ball
 		particle.Position = position
 		particle.Anchored = true
@@ -6152,10 +6427,16 @@ function EffectsController:_spawnBreakParticles(position, color)
 		particle.Material = Enum.Material.Neon
 		particle.Parent = self._effectsFolder
 
-		local angle = (i / 12) * math.pi * 2
-		local direction = Vector3.new(math.cos(angle) * 5, math.random(2, 5), math.sin(angle) * 5)
+		local angle = (i / 16) * math.pi * 2
+		local upAngle = math.random(20, 60) / 10
+		local distance = math.random(4, 8)
+		local direction = Vector3.new(
+			math.cos(angle) * distance,
+			upAngle,
+			math.sin(angle) * distance
+		)
 
-		local tweenInfo = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local tweenInfo = TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		local tween = TweenService:Create(particle, tweenInfo, {
 			Position = position + direction,
 			Transparency = 1,
@@ -6168,13 +6449,13 @@ function EffectsController:_spawnBreakParticles(position, color)
 	end
 end
 
--- Internal: show pet model reveal with glow and name
+-- Internal: show pet model reveal with glow, name, and scale-in bounce
 function EffectsController:_showPetReveal(position, petName, rarity, rarityColor)
-	-- Pet model: simple sphere
+	-- Pet model: sphere with glow
 	local petPart = Instance.new("Part")
 	petPart.Name = "RevealedPet"
 	petPart.Shape = Enum.PartType.Ball
-	petPart.Size = Vector3.new(0.1, 0.1, 0.1) -- start small
+	petPart.Size = Vector3.new(0.1, 0.1, 0.1)
 	petPart.Position = position
 	petPart.Anchored = true
 	petPart.CanCollide = false
@@ -6185,22 +6466,22 @@ function EffectsController:_showPetReveal(position, petName, rarity, rarityColor
 	-- PointLight for glow
 	local light = Instance.new("PointLight")
 	light.Color = rarityColor
-	light.Brightness = 5
-	light.Range = 10
+	light.Brightness = 6
+	light.Range = 14
 	light.Parent = petPart
 
-	-- Scale from 0 to full size
+	-- Scale from 0 to full size with bounce (Back easing)
 	local revealInfo = TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 	local revealTween = TweenService:Create(petPart, revealInfo, {
-		Size = Vector3.new(2.5, 2.5, 2.5),
+		Size = Vector3.new(3, 3, 3),
 	})
 	revealTween:Play()
 
 	-- Floating pet name and rarity text
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "PetRevealLabel"
-	billboardGui.Size = UDim2.fromOffset(200, 60)
-	billboardGui.StudsOffset = Vector3.new(0, 3, 0)
+	billboardGui.Size = UDim2.fromOffset(240, 80)
+	billboardGui.StudsOffset = Vector3.new(0, 3.5, 0)
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = petPart
 	billboardGui.Parent = self._playerGui
@@ -6231,9 +6512,9 @@ function EffectsController:_showPetReveal(position, petName, rarity, rarityColor
 	rarityLabel.TextScaled = true
 	rarityLabel.Parent = billboardGui
 
-	-- Fade out after 3 seconds
-	task.delay(3, function()
-		local fadeInfo = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	-- Fade out after 2.5 seconds
+	task.delay(2.5, function()
+		local fadeInfo = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		local fadePet = TweenService:Create(petPart, fadeInfo, { Transparency = 1 })
 		local fadeLight = TweenService:Create(light, fadeInfo, { Brightness = 0 })
 		local fadeName = TweenService:Create(nameLabel, fadeInfo, { TextTransparency = 1 })

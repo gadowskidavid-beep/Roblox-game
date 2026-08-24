@@ -111,6 +111,7 @@ local function buildEquippedListFromData(data)
 end
 
 -- Helper: find a Part in workspace.Zones that has a DestructibleId StringValue matching the given ID
+-- Supports both single-part and multi-part (Model-based) destructibles
 local function resolveDestructiblePart(destructibleId)
 	local zonesFolder = workspace:FindFirstChild("Zones")
 	if not zonesFolder then return nil end
@@ -246,26 +247,46 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
 	end
 end)
 
--- Egg hatch started (server sends eggType only; use player position for animation)
+-- Egg hatch started (server sends eggType; start the egg animation early at player position)
 EggHatchStart.OnClientEvent:Connect(function(eggType)
-	-- Animation position defaults to player character position
-	-- The result will come in EggHatchResult
-end)
-
--- Egg hatch result (server sends newPet data only; use player position for animation)
-EggHatchResult.OnClientEvent:Connect(function(petData)
-	-- Use player character position as the hatch animation origin
+	-- Show the large egg appearing in front of the player as soon as hatch starts
 	local hatchPosition = nil
 	if player.Character then
 		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		if hrp then
-			hatchPosition = hrp.Position + Vector3.new(0, 3, 5)
+			-- Position the egg in front of the player
+			local lookVector = hrp.CFrame.LookVector
+			hatchPosition = hrp.Position + lookVector * 6 + Vector3.new(0, 0, 0)
 		end
 	end
+	-- Store hatch position for the result handler
+	if hatchPosition then
+		effectsController._lastHatchPosition = hatchPosition
+	end
+end)
+
+-- Egg hatch result (server sends newPet data; play full animation)
+EggHatchResult.OnClientEvent:Connect(function(petData)
+	-- Use stored hatch position or calculate from player
+	local hatchPosition = effectsController._lastHatchPosition
+	if not hatchPosition then
+		if player.Character then
+			local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local lookVector = hrp.CFrame.LookVector
+				hatchPosition = hrp.Position + lookVector * 6
+			end
+		end
+	end
+	effectsController._lastHatchPosition = nil
+
 	if hatchPosition then
 		effectsController:showEggHatchAnimation(hatchPosition, petData)
 	end
-	uiController:showEggHatch(petData)
+	-- Show UI overlay after animation completes (delay to match animation)
+	task.delay(3, function()
+		uiController:showEggHatch(petData)
+	end)
 end)
 
 -- Campaign battle state update
@@ -347,8 +368,21 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			-- Check if the hit object is in the Zones folder (where destructibles live)
 			local zonesFolder = workspace:FindFirstChild("Zones")
 			if zonesFolder and hit:IsDescendantOf(zonesFolder) then
-				-- Verify this is a destructible (has DestructibleId value)
+				-- Verify this is a destructible (has DestructibleId value on self or parent model)
 				local destructibleIdValue = hit:FindFirstChild("DestructibleId")
+				-- If the hit part doesn't have the ID, check parent (Model-based destructibles)
+				if not destructibleIdValue and hit.Parent then
+					for _, sibling in ipairs(hit.Parent:GetChildren()) do
+						if sibling:IsA("BasePart") then
+							local idVal = sibling:FindFirstChild("DestructibleId")
+							if idVal then
+								destructibleIdValue = idVal
+								hit = sibling
+								break
+							end
+						end
+					end
+				end
 				if destructibleIdValue then
 					-- Extract the string ID to send to the server
 					local destructibleId = destructibleIdValue.Value
@@ -397,6 +431,29 @@ local function onCharacterAdded(character)
 			end
 		end
 	end
+
+	-- ProximityPrompt interaction for egg stations (E-key)
+	-- Listen for ProximityPrompts on egg model parts
+	local function connectEggPrompts()
+		local stationsFolder = workspace:FindFirstChild("EggStations")
+		if not stationsFolder then return end
+		for _, obj in ipairs(stationsFolder:GetChildren()) do
+			if obj:IsA("BasePart") and obj.Name == "EggModel" then
+				local prompt = obj:FindFirstChild("HatchPrompt")
+				local promptTag = obj:FindFirstChild("PromptEggType")
+				if prompt and promptTag then
+					prompt.Triggered:Connect(function(triggerPlayer)
+						if triggerPlayer == player then
+							uiController:showEggStationPrompt(promptTag.Value)
+						end
+					end)
+				end
+			end
+		end
+	end
+	connectEggPrompts()
+	-- Also listen for any future egg stations (in case they spawn after character loads)
+	task.delay(2, connectEggPrompts)
 end
 
 -- Connect character added
