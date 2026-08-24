@@ -3,7 +3,7 @@
   "type": "feature",
   "title": "Security hardening: rate limiting, distance checks, data copy, bulk limits",
   "description": "Comprehensive server-side security hardening including attack rate limiting with distance checks, central rate limiter for all remotes, campaign duplicate deploy prevention, client data copy function, and bulk delete size limits.",
-  "status": "in_progress",
+  "status": "completed",
   "dependencies": ["FEAT-022"],
   "steps": [
     "Add attack rate limiting and distance check to ZoneService.attackDestructible",
@@ -29,5 +29,12 @@
     "DeletePets rejects more than 100 pet IDs",
     "Rate limit entries cleaned up on player removal",
     "BATTLE_PETS.rbxlx regenerated and valid XML"
+  ],
+  "findings": [
+    "Network mode is INTEGRATIONS_ONLY - pure Luau project, no external dependencies needed",
+    "ZoneService attack rate limiting uses os.clock() for precise sub-second timing",
+    "Pet target fallback ensures backwards compatibility: if no pets assigned to target, all equipped pets are used",
+    "DataService.getClientData uses deepCopy already defined in the module",
+    "CampaignService duplicate check placed before energy deduction to prevent wasted energy on rejected deploys"
   ]
 }
