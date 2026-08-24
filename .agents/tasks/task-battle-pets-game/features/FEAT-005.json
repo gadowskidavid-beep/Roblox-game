@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-005",
+  "type": "fix",
+  "description": "Fix 5 client-server contract issues: attack remote type mismatch, PetEquipped/Unequipped payload mismatch, getNearestDestructible wrong folder, N-times damage amplification, DestructibleDamaged/Destroyed expect Part but receive string",
+  "status": "completed",
+  "steps": [
+    "Fix Main.client.lua click handler to extract DestructibleId.Value string and fire ONE AttackDestructible call (not per-pet)",
+    "Fix Main.client.lua PetEquipped/PetUnequipped handlers to handle single-pet-table and single-string payloads, maintaining a local equippedPets list",
+    "Fix Main.client.lua initial load to handle equippedPets being an array of string IDs",
+    "Fix Main.client.lua DestructibleDamaged/Destroyed handlers to resolve string ID to Part by searching workspace.Zones",
+    "Fix PetController:getNearestDestructible to search workspace.Zones recursively",
+    "Fix PetController:sendPetToAttack to accept string destructibleId and pass it to the remote",
+    "Fix PetController:updateEquippedPets to use .id field instead of .uniqueId",
+    "Regenerate BATTLE_PETS.rbxlx and validate"
+  ],
+  "acceptance_criteria": [
+    "Click handler fires exactly one AttackDestructible call per click with a string ID",
+    "PetEquipped handler adds single pet to local list and updates controllers with full list",
+    "PetUnequipped handler removes pet from local list and updates controllers with full list",
+    "getNearestDestructible searches workspace.Zones recursively for Parts with DestructibleId child",
+    "sendPetToAttack passes string destructibleId to the remote (not a Part instance)",
+    "updateEquippedPets correctly reads .id from pet data tables",
+    "DestructibleDamaged/Destroyed resolve string IDs to Parts before showing effects",
+    "BATTLE_PETS.rbxlx is valid XML after regeneration"
+  ],
+  "verification": [
+    "Run: python3 -c \"import xml.etree.ElementTree as ET; ET.parse('/projects/Roblox-game/BATTLE_PETS.rbxlx'); print('Valid')\"",
+    "Verify no reference to workspace.Destructibles in PetController.lua",
+    "Verify click handler fires one AttackDestructible call, not one per pet"
+  ],
+  "blocked_reason": null,
+  "findings": "All 5 client-server contract issues from v2 review resolved. Also added totalDamage as 4th parameter to DestructibleDamaged FireAllClients call so clients can display actual damage dealt. PetController.updateEquippedPets now uses .id field. sendPetToAttack decoupled from remote invocation - new fireAttackRemote method handles single remote call. Initial equip load resolves string ID array to pet data objects via lookup table. BATTLE_PETS.rbxlx regenerated (212,334 bytes, 92 items, valid XML)."
+}

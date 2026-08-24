@@ -1,101 +1,162 @@
-local Config = {
-	GameName = "SHIFT//BREAK",
-	DataStoreName = "ShiftBreakProfiles_v1",
-	MinimumPlayers = 1,
+--[[
+	Config.lua - Main game configuration for Battle Pets
+	Contains all game constants, upgrade definitions, zone costs, and campaign parameters.
+]]
 
-	Round = {
-		IntermissionDuration = 15,
-		WaveDuration = 70,
-		WaveClearDuration = 6,
-		ResultDuration = 8,
-		Waves = 3,
-		ShiftInterval = 22,
-		BaseQuota = 12,
-		QuotaPerPlayer = 7,
-		QuotaGrowthPerWave = 8,
-	},
+local Config = {}
 
-	Player = {
-		StartingCapacity = 5,
-		BaseWalkSpeed = 16,
-		SprintWalkSpeed = 25,
-		MaxStamina = 100,
-		StaminaDrainPerSecond = 30,
-		StaminaRegenPerSecond = 22,
-		PulseRadius = 24,
-		PulseCooldown = 9,
-		PulseStunDuration = 4,
-	},
+-- General
+Config.GameName = "Battle Pets"
+Config.DataStoreName = "BattlePets_v1"
 
-	Echo = {
-		MaximumBase = 24,
-		MaximumPerPlayer = 4,
-		SpawnInterval = 1.2,
-		Lifetime = 40,
-	},
+-- Currency types
+Config.Currencies = {
+	Coins = "Coins",
+	Diamonds = "Diamonds",
+}
 
-	Enemy = {
-		BaseMaximum = 4,
-		MaximumPerWave = 3,
-		SpawnInterval = 3.5,
-		BaseSpeed = 8,
-		SpeedPerWave = 1.4,
-		Damage = 16,
-		DamageRadius = 4.5,
-		DamageCooldown = 1.25,
-	},
+-- Pet rarity weights (must sum to 100)
+Config.RarityWeights = {
+	Common = 60,
+	Uncommon = 25,
+	Rare = 10,
+	Epic = 4,
+	Legendary = 1,
+}
 
-	Rewards = {
-		EchoFlux = 1,
-		WaveFlux = 8,
-		VictoryFlux = 45,
-		ParticipationFlux = 6,
-	},
+-- Egg costs per zone
+Config.EggCosts = {
+	[1] = { Coins = 100 },
+	[2] = { Coins = 500 },
+	[3] = { Coins = 2000 },
+	[4] = { Coins = 5000 },
+	[5] = { Coins = 15000 },
+	[6] = { Coins = 40000 },
+	[7] = { Coins = 100000 },
+	[8] = { Coins = 300000 },
+}
 
-	Upgrades = {
-		Order = { "Capacity", "Speed", "Pulse" },
-		Definitions = {
-			Capacity = {
-				DisplayName = "ECHO-TASCHE",
-				Description = "+2 Tragfähigkeit pro Stufe",
-				Costs = { 35, 80, 150 },
-				Bonuses = { 2, 4, 6 },
-			},
-			Speed = {
-				DisplayName = "PHASEN-SCHUHE",
-				Description = "+1.5 Lauftempo pro Stufe",
-				Costs = { 40, 90, 165 },
-				Bonuses = { 1.5, 3, 4.5 },
-			},
-			Pulse = {
-				DisplayName = "PULS-KERN",
-				Description = "−1 Sekunde Puls-Cooldown pro Stufe",
-				Costs = { 45, 100, 180 },
-				Bonuses = { 1, 2, 3 },
-			},
+-- Max equipped pets (base value before upgrades)
+Config.MaxEquippedPetsBase = 3
+
+-- Upgrade definitions
+Config.Upgrades = {
+	Friendship = {
+		displayName = "Friendship",
+		description = "Equip more pets at once",
+		levels = {
+			{ cost = 500, bonus = 1 },
+			{ cost = 2000, bonus = 2 },
+			{ cost = 10000, bonus = 3 },
 		},
 	},
-
-	Tags = {
-		LobbySpawn = "SB_LobbySpawn",
-		PlayerSpawn = "SB_PlayerSpawn",
-		EchoSpawn = "SB_EchoSpawn",
-		EnemySpawn = "SB_EnemySpawn",
-		DepositAnchor = "SB_DepositAnchor",
-		StableOnly = "SB_StableOnly",
-		FracturedOnly = "SB_FracturedOnly",
+	Diamonds = {
+		displayName = "Diamonds",
+		description = "More diamonds per drop",
+		levels = {
+			{ cost = 1000, bonus = 1.5 },
+			{ cost = 5000, bonus = 2.0 },
+			{ cost = 20000, bonus = 3.0 },
+		},
 	},
+	ExtraSlots = {
+		displayName = "Extra Slots",
+		description = "More pet inventory slots",
+		levels = {
+			{ cost = 750, bonus = 5 },
+			{ cost = 3000, bonus = 10 },
+			{ cost = 12000, bonus = 20 },
+		},
+	},
+	FasterPets = {
+		displayName = "Faster Pets",
+		description = "Pets move faster",
+		levels = {
+			{ cost = 600, bonus = 1.2 },
+			{ cost = 2500, bonus = 1.5 },
+			{ cost = 10000, bonus = 2.0 },
+		},
+	},
+	StrongPets = {
+		displayName = "Strong Pets",
+		description = "Pets deal more damage",
+		levels = {
+			{ cost = 800, bonus = 1.3 },
+			{ cost = 3500, bonus = 1.7 },
+			{ cost = 15000, bonus = 2.5 },
+		},
+	},
+	LuckyEggs = {
+		displayName = "Lucky Eggs",
+		description = "Better chances from eggs",
+		levels = {
+			{ cost = 1200, bonus = 1.2 },
+			{ cost = 5000, bonus = 1.5 },
+			{ cost = 25000, bonus = 2.0 },
+		},
+	},
+	GoldenPetsChance = {
+		displayName = "Golden Pets Chance",
+		description = "Chance to hatch golden variants",
+		levels = {
+			{ cost = 2000, bonus = 0.05 },
+			{ cost = 8000, bonus = 0.10 },
+			{ cost = 30000, bonus = 0.20 },
+		},
+	},
+	Sprinting = {
+		displayName = "Sprinting",
+		description = "Player moves faster",
+		levels = {
+			{ cost = 400, bonus = 1.2 },
+			{ cost = 1500, bonus = 1.5 },
+			{ cost = 6000, bonus = 2.0 },
+		},
+	},
+	DropCloner = {
+		displayName = "Drop Cloner",
+		description = "Chance to double drops",
+		levels = {
+			{ cost = 1500, bonus = 0.10 },
+			{ cost = 6000, bonus = 0.20 },
+			{ cost = 25000, bonus = 0.35 },
+		},
+	},
+	LuckyDrops = {
+		displayName = "Lucky Drops",
+		description = "More coins per drop",
+		levels = {
+			{ cost = 500, bonus = 1.3 },
+			{ cost = 2000, bonus = 1.7 },
+			{ cost = 8000, bonus = 2.5 },
+		},
+	},
+}
 
-	Colors = {
-		Background = Color3.fromRGB(7, 9, 18),
-		Panel = Color3.fromRGB(16, 20, 38),
-		Stable = Color3.fromRGB(67, 231, 255),
-		Fractured = Color3.fromRGB(255, 55, 183),
-		Echo = Color3.fromRGB(255, 232, 102),
-		Danger = Color3.fromRGB(255, 73, 91),
-		Success = Color3.fromRGB(101, 255, 157),
-		Text = Color3.fromRGB(240, 245, 255),
-		MutedText = Color3.fromRGB(151, 162, 196),
+-- Zone gate costs (coins required to unlock each zone)
+Config.ZoneGateCosts = {
+	[1] = 0,         -- Gruene Wiesen (free/starter)
+	[2] = 500,       -- Stadt
+	[3] = 2000,      -- Strand
+	[4] = 5000,      -- Wueste
+	[5] = 15000,     -- Eiswelt
+	[6] = 40000,     -- Vulkan
+	[7] = 100000,    -- Himmel
+	[8] = 300000,    -- Weltraum
+}
+
+-- Campaign parameters
+Config.Campaign = {
+	EnergyRegenRate = 1,   -- energy per second
+	MaxEnergy = 100,
+	BaseHealth = 500,      -- base HP for player's base
+	EnemyBaseHealth = 500, -- base HP for enemy base (scales with level)
+	PetDeployCosts = {
+		Common = 10,
+		Uncommon = 20,
+		Rare = 35,
+		Epic = 45,
+		Legendary = 50,
 	},
 }
 

@@ -1,141 +1,351 @@
-local ContextActionService = game:GetService("ContextActionService")
+--[[
+	Main.client.lua - Client entry point for Battle Pets
+	Initializes all client controllers, connects to RemoteEvents/RemoteFunctions,
+	sets up per-frame updates (pet following, effects), and handles input.
+]]
+
+-- Services
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
 
-local player = Players.LocalPlayer
-local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+-- Get remotes folder from ReplicatedStorage
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+-- Shared modules
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared:WaitForChild("Config"))
+local PetData = require(Shared:WaitForChild("PetData"))
+local CampaignData = require(Shared:WaitForChild("CampaignData"))
+local ZoneData = require(Shared:WaitForChild("ZoneData"))
+
+-- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
+local PetController = require(script.Parent:WaitForChild("PetController"))
+local CampaignController = require(script.Parent:WaitForChild("CampaignController"))
 local EffectsController = require(script.Parent:WaitForChild("EffectsController"))
 
-local remotes = ReplicatedStorage:WaitForChild("ShiftBreakRemotes")
-local stateRemote = remotes:WaitForChild("GameState")
-local messageRemote = remotes:WaitForChild("PlayerMessage")
-local actionRemote = remotes:WaitForChild("Action")
-local purchaseRemote = remotes:WaitForChild("PurchaseUpgrade")
+-- Create controller instances
+local uiController = UIController.new()
+local petController = PetController.new()
+local campaignController = CampaignController.new()
+local effectsController = EffectsController.new()
 
-local ui = UIController.new(Config)
-local effects = EffectsController.new(Config)
-local currentState = nil
-local sprintHeld = false
-local purchasePending = false
+-- Player reference
+local player = Players.LocalPlayer
 
-local function refreshPlayerUI()
-	ui:UpdatePlayer()
-end
+--------------------------------------------------------------------------------
+-- REMOTE REFERENCES
+--------------------------------------------------------------------------------
+-- RemoteFunctions
+local GetPlayerData = Remotes:WaitForChild("GetPlayerData")
+local HatchEgg = Remotes:WaitForChild("HatchEgg")
+local EquipPet = Remotes:WaitForChild("EquipPet")
+local UnequipPet = Remotes:WaitForChild("UnequipPet")
+local DeletePet = Remotes:WaitForChild("DeletePet")
+local DeletePets = Remotes:WaitForChild("DeletePets")
+local UnlockZone = Remotes:WaitForChild("UnlockZone")
+local PurchaseUpgrade = Remotes:WaitForChild("PurchaseUpgrade")
+local StartCampaignLevel = Remotes:WaitForChild("StartCampaignLevel")
+local DeployPetInCampaign = Remotes:WaitForChild("DeployPetInCampaign")
+local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
 
-for _, attributeName in {
-	"HeldEchoes",
-	"MaxCapacity",
-	"Flux",
-	"Stamina",
-	"UpgradeCapacity",
-	"UpgradeSpeed",
-	"UpgradePulse",
-} do
-	player:GetAttributeChangedSignal(attributeName):Connect(refreshPlayerUI)
-end
+-- RemoteEvents
+local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
+local PetInventoryUpdated = Remotes:WaitForChild("PetInventoryUpdated")
+local PetEquipped = Remotes:WaitForChild("PetEquipped")
+local PetUnequipped = Remotes:WaitForChild("PetUnequipped")
+local ZoneUnlocked = Remotes:WaitForChild("ZoneUnlocked")
+local DestructibleDamaged = Remotes:WaitForChild("DestructibleDamaged")
+local DestructibleDestroyed = Remotes:WaitForChild("DestructibleDestroyed")
+local EggHatchStart = Remotes:WaitForChild("EggHatchStart")
+local EggHatchResult = Remotes:WaitForChild("EggHatchResult")
+local CampaignBattleUpdate = Remotes:WaitForChild("CampaignBattleUpdate")
+local CampaignVictory = Remotes:WaitForChild("CampaignVictory")
+local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
+local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
+local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 
-ui:SetPurchaseCallback(function(upgradeName)
-	if purchasePending then
-		return
+--------------------------------------------------------------------------------
+-- INITIALIZATION
+--------------------------------------------------------------------------------
+-- Get initial player data from server
+local playerData = GetPlayerData:InvokeServer()
+
+-- Local list of currently equipped pet data tables (maintained incrementally)
+local localEquippedPets = {}
+
+-- Helper: resolve the initial equippedPets (array of string IDs) to full pet data
+local function buildEquippedListFromData(data)
+	local list = {}
+	if not data or not data.equippedPets or not data.pets then
+		return list
 	end
-	purchasePending = true
-	task.spawn(function()
-		local callSucceeded, success, message = pcall(function()
-			return purchaseRemote:InvokeServer(upgradeName)
-		end)
-		purchasePending = false
-		if not callSucceeded then
-			ui:ShowMessage("Werkstatt nicht erreichbar. Versuch es erneut.", "Danger")
-			return
+	-- equippedPets is an array of string IDs; look up full pet data from pets array
+	local petById = {}
+	for _, pet in ipairs(data.pets) do
+		petById[pet.id] = pet
+	end
+	for _, petId in ipairs(data.equippedPets) do
+		local petData = petById[petId]
+		if petData then
+			table.insert(list, petData)
 		end
-		ui:ShowMessage(message or "Werkstattantwort erhalten.", success and "Success" or "Danger")
-		refreshPlayerUI()
-	end)
-end)
-
-local function sprintAction(_, inputState)
-	if inputState == Enum.UserInputState.Begin then
-		sprintHeld = true
-		actionRemote:FireServer("Sprint", true)
-		ui:SetSprinting(true)
-		effects:SetSprinting(true)
-	elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
-		sprintHeld = false
-		actionRemote:FireServer("Sprint", false)
-		ui:SetSprinting(false)
-		effects:SetSprinting(false)
 	end
-	return Enum.ContextActionResult.Sink
+	return list
 end
 
-local function pulseAction(_, inputState)
-	if inputState ~= Enum.UserInputState.Begin then
-		return Enum.ContextActionResult.Pass
+-- Helper: find a Part in workspace.Zones that has a DestructibleId StringValue matching the given ID
+local function resolveDestructiblePart(destructibleId)
+	local zonesFolder = workspace:FindFirstChild("Zones")
+	if not zonesFolder then return nil end
+	for _, obj in ipairs(zonesFolder:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local idValue = obj:FindFirstChild("DestructibleId")
+			if idValue and idValue.Value == destructibleId then
+				return obj
+			end
+		end
 	end
-	if not currentState or currentState.status ~= "Running" then
-		return Enum.ContextActionResult.Sink
-	end
-
-	local now = Workspace:GetServerTimeNow()
-	local cooldownEnd = player:GetAttribute("PulseCooldownEnd") or 0
-	if now >= cooldownEnd then
-		actionRemote:FireServer("Pulse")
-		effects:Pulse(player.Character)
-	end
-	return Enum.ContextActionResult.Sink
+	return nil
 end
 
-ContextActionService:BindAction("ShiftBreakSprint", sprintAction, true, Enum.KeyCode.LeftShift, Enum.KeyCode.ButtonL3)
-ContextActionService:SetTitle("ShiftBreakSprint", "SPRINT")
-ContextActionService:SetPosition("ShiftBreakSprint", UDim2.new(1, -190, 1, -170))
+-- Initialize all controllers
+effectsController:init()
+petController:init(Remotes)
+campaignController:init(Remotes)
+uiController:init(Remotes, playerData)
 
-ContextActionService:BindAction("ShiftBreakPulse", pulseAction, true, Enum.KeyCode.Q, Enum.KeyCode.ButtonR2)
-ContextActionService:SetTitle("ShiftBreakPulse", "PULS")
-ContextActionService:SetPosition("ShiftBreakPulse", UDim2.new(1, -90, 1, -235))
+-- Initialize equipped pets visuals from initial data
+if playerData and playerData.equippedPets then
+	localEquippedPets = buildEquippedListFromData(playerData)
+	petController:updateEquippedPets(localEquippedPets)
+end
 
-stateRemote.OnClientEvent:Connect(function(state)
-	local previousPhase = currentState and currentState.phase
-	currentState = state
-	ui:SetState(state)
-	local changed = effects:SetPhase(state.phase, previousPhase == nil)
-	if changed and previousPhase ~= nil then
-		ui:FlashPhase(state.phase)
+--------------------------------------------------------------------------------
+-- REMOTE EVENT HANDLERS
+--------------------------------------------------------------------------------
+
+-- Currency updated from server
+CurrencyUpdated.OnClientEvent:Connect(function(coins, diamonds)
+	uiController:updateCurrency(coins, diamonds)
+end)
+
+-- Pet inventory updated (full refresh)
+PetInventoryUpdated.OnClientEvent:Connect(function(pets)
+	uiController:updatePetInventory(pets)
+end)
+
+-- Pet equipped (server sends a single pet table with .id field)
+PetEquipped.OnClientEvent:Connect(function(petData)
+	-- Add the newly equipped pet to our local list
+	if petData and type(petData) == "table" and petData.id then
+		-- Avoid duplicates
+		local found = false
+		for _, existing in ipairs(localEquippedPets) do
+			if existing.id == petData.id then
+				found = true
+				break
+			end
+		end
+		if not found then
+			table.insert(localEquippedPets, petData)
+		end
+	end
+	uiController:updateEquippedPets(localEquippedPets)
+	petController:updateEquippedPets(localEquippedPets)
+end)
+
+-- Pet unequipped (server sends a single string petInstanceId)
+PetUnequipped.OnClientEvent:Connect(function(petInstanceId)
+	-- Remove the unequipped pet from our local list
+	if petInstanceId and type(petInstanceId) == "string" then
+		for i, pet in ipairs(localEquippedPets) do
+			if pet.id == petInstanceId then
+				table.remove(localEquippedPets, i)
+				break
+			end
+		end
+	end
+	uiController:updateEquippedPets(localEquippedPets)
+	petController:updateEquippedPets(localEquippedPets)
+end)
+
+-- Zone unlocked
+ZoneUnlocked.OnClientEvent:Connect(function(zoneId, gatePosition)
+	if gatePosition then
+		effectsController:showZoneUnlock(gatePosition)
 	end
 end)
 
-messageRemote.OnClientEvent:Connect(function(text, tone)
-	if typeof(text) == "string" then
-		ui:ShowMessage(text, tone)
+-- Destructible damaged (server sends string destructibleId, currentHP, maxHP, damage)
+DestructibleDamaged.OnClientEvent:Connect(function(destructibleId, currentHP, maxHP, damage)
+	-- Resolve string ID to a Part in workspace.Zones
+	local destructiblePart = resolveDestructiblePart(destructibleId)
+	if destructiblePart then
+		effectsController:updateProgressBar(destructiblePart, currentHP, maxHP)
+		if damage and damage > 0 then
+			petController:showDamageText(destructiblePart.Position, damage)
+		end
 	end
 end)
 
-player.CharacterAdded:Connect(function()
-	sprintHeld = false
-	ui:SetSprinting(false)
-	effects:SetSprinting(false)
-end)
-
-RunService.RenderStepped:Connect(function()
-	local now = Workspace:GetServerTimeNow()
-	local cooldownEnd = player:GetAttribute("PulseCooldownEnd") or 0
-	ui:SetPulseCooldown(cooldownEnd - now)
-
-	local stamina = player:GetAttribute("Stamina") or Config.Player.MaxStamina
-	if sprintHeld and stamina <= 0.1 then
-		sprintHeld = false
-		actionRemote:FireServer("Sprint", false)
-		ui:SetSprinting(false)
-		effects:SetSprinting(false)
+-- Destructible destroyed (server sends string destructibleId, drops table)
+DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
+	-- Resolve string ID to a Part in workspace.Zones
+	local destructiblePart = resolveDestructiblePart(destructibleId)
+	if destructiblePart then
+		effectsController:removeProgressBar(destructiblePart)
+		-- Show currency popup at destructible position
+		local pos = destructiblePart.Position
+		if drops then
+			if drops.Coins and drops.Coins > 0 then
+				effectsController:showCurrencyPopup(pos, drops.Coins, "Coins")
+			end
+			if drops.Diamonds and drops.Diamonds > 0 then
+				effectsController:showCurrencyPopup(pos + Vector3.new(0, 1, 0), drops.Diamonds, "Diamonds")
+			end
+		end
+	else
+		-- Part may already be destroyed on server; just clean up by ID
+		effectsController:removeProgressBar(destructibleId)
 	end
 end)
 
-Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-	if Workspace.CurrentCamera then
-		Workspace.CurrentCamera.FieldOfView = sprintHeld and 78 or 70
+-- Egg hatch started (server sends eggType only; use player position for animation)
+EggHatchStart.OnClientEvent:Connect(function(eggType)
+	-- Animation position defaults to player character position
+	-- The result will come in EggHatchResult
+end)
+
+-- Egg hatch result (server sends newPet data only; use player position for animation)
+EggHatchResult.OnClientEvent:Connect(function(petData)
+	-- Use player character position as the hatch animation origin
+	local hatchPosition = nil
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hatchPosition = hrp.Position + Vector3.new(0, 3, 5)
+		end
+	end
+	if hatchPosition then
+		effectsController:showEggHatchAnimation(hatchPosition, petData)
+	end
+	uiController:showEggHatch(petData)
+end)
+
+-- Campaign battle state update
+CampaignBattleUpdate.OnClientEvent:Connect(function(battleState)
+	campaignController:updateBattle(battleState)
+end)
+
+-- Campaign victory (server sends levelNum, rewards)
+CampaignVictory.OnClientEvent:Connect(function(levelNum, rewards)
+	campaignController:onVictory(rewards)
+end)
+
+-- Campaign defeat
+CampaignDefeat.OnClientEvent:Connect(function()
+	campaignController:onDefeat()
+end)
+
+-- Upgrade purchased/updated
+UpgradeUpdated.OnClientEvent:Connect(function(upgrades)
+	uiController:updateUpgrades(upgrades)
+end)
+
+-- Currency collected (floating popup at position)
+CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
+	effectsController:showCurrencyPopup(position, amount, currencyType)
+end)
+
+--------------------------------------------------------------------------------
+-- PER-FRAME UPDATE (RenderStepped)
+--------------------------------------------------------------------------------
+RunService.RenderStepped:Connect(function(deltaTime)
+	-- Update pet following/orbiting
+	petController:update(deltaTime)
+
+	-- Check if player is near a destructible and send pets to attack
+	local nearestDestructible = petController:getNearestDestructible(20)
+	if nearestDestructible then
+		-- Show progress bar
+		local hpValue = nearestDestructible:FindFirstChild("HP")
+		local maxHPValue = nearestDestructible:FindFirstChild("MaxHP")
+		if hpValue and maxHPValue then
+			effectsController:showProgressBar(nearestDestructible, hpValue.Value, maxHPValue.Value)
+		end
 	end
 end)
 
-print(string.format("[%s] Client bereit.", Config.GameName))
+--------------------------------------------------------------------------------
+-- INPUT HANDLING
+--------------------------------------------------------------------------------
+-- Auto-attack: when player clicks/taps on a destructible
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		-- Raycast to check if player clicked a destructible
+		local camera = workspace.CurrentCamera
+		if not camera then return end
+
+		local position = input.Position
+		local ray = camera:ViewportPointToRay(position.X, position.Y)
+		local raycastParams = RaycastParams.new()
+		raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+		raycastParams.FilterDescendantsInstances = { player.Character }
+
+		local result = workspace:Raycast(ray.Origin, ray.Direction * 100, raycastParams)
+		if result and result.Instance then
+			local hit = result.Instance
+			-- Check if the hit object is in the Zones folder (where destructibles live)
+			local zonesFolder = workspace:FindFirstChild("Zones")
+			if zonesFolder and hit:IsDescendantOf(zonesFolder) then
+				-- Verify this is a destructible (has DestructibleId value)
+				local destructibleIdValue = hit:FindFirstChild("DestructibleId")
+				if destructibleIdValue then
+					-- Extract the string ID to send to the server
+					local destructibleId = destructibleIdValue.Value
+
+					-- Send all equipped pets to visually attack (animation only)
+					for uniqueId, _ in pairs(petController._equippedPets) do
+						petController:sendPetToAttack(uniqueId, destructibleId, hit)
+					end
+
+					-- Fire ONE attack remote call (server sums all equipped pet damage)
+					petController:fireAttackRemote(destructibleId)
+				end
+			end
+		end
+	end
+end)
+
+-- Campaign portal interaction (touch detection)
+local function onCharacterAdded(character)
+	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+	-- Check for campaign portal proximity
+	local campaignPortal = workspace:FindFirstChild("CampaignPortal")
+	if campaignPortal and campaignPortal:IsA("BasePart") then
+		local touchConnection
+		touchConnection = campaignPortal.Touched:Connect(function(hit)
+			if hit:IsDescendantOf(character) then
+				campaignController:showCampaignSelect(CampaignData, playerData and playerData.campaignProgress)
+			end
+		end)
+	end
+end
+
+-- Connect character added
+if player.Character then
+	onCharacterAdded(player.Character)
+end
+player.CharacterAdded:Connect(onCharacterAdded)
+
+--------------------------------------------------------------------------------
+-- READY
+--------------------------------------------------------------------------------
+print("[Battle Pets] Client initialized successfully!")

@@ -1,130 +1,103 @@
-# SHIFT//BREAK
+# Battle Pets
 
-Ein vollständiges, assetfreies Roblox-Spiel in Luau. **1–8 Spieler** bergen Echos aus einer instabilen Dimension. Alle 22 Sekunden kippt die Realität: Wege ändern sich, der Anker fällt aus und jagende Schatten erscheinen. Nach drei Wellen bleibt entweder eine versiegelte Realität – oder ein weiterer Versuch mit permanenten Upgrades.
+A Roblox Pet Simulator game with a campaign side-mode, inspired by Pet Simulator 1 and Battle Cats.
 
-Das Projekt läuft sofort mit prozeduralen Platzhaltern. Eigene Modelle können später ohne Änderung der Spiellogik eingesetzt werden; siehe [`ASSET_GUIDE.md`](ASSET_GUIDE.md).
+## How to Open
 
-## Enthalten
+Open `BATTLE_PETS.rbxlx` in Roblox Studio to play or edit the game directly.
 
-- kompletter Loop: Warten → Intermission → drei Wellen → Sieg/Niederlage → Neustart
-- serverautoritatives Sammeln, Einzahlen, Sprinten, Puls, Schaden, Belohnungen und Upgrades
-- prozedurale Lobby und Arena als sofort spielbare Fallbacks
-- Wechsel zwischen **STABIL** und **GEBROCHEN** mit anderen Brücken, Lichtstimmung und Gefahren
-- schwebende Gegner-KI mit Skalierung pro Welle
-- drei persistente Upgrades: Tragfähigkeit, Tempo und Puls-Cooldown
-- DataStore-Speicherung mit sicherem Sitzungsfallback, wenn Studio-API-Zugriff deaktiviert ist
-- vollständig per Code erzeugtes HUD, Intro, Meldungen und Shop
-- Tastatur, Gamepad und Touchsteuerung
-- Schnittstellen für eigene Lobby-, Arena-, Echo- und Schattenmodelle
-- keine externen Pakete, Plugins, Bilder, Sounds oder bezahlten Assets
+## Game Overview
 
-## Spielziel
+### Main Mode: Collecting (Pet Simulator)
+- Explore a free 3D world across 8 themed zones
+- Pets automatically destroy coin piles, diamond piles, and crates
+- Collect coins and diamonds to buy eggs and hatch new pets
+- Each pet has a rarity: Common, Uncommon, Rare, Epic, or Legendary
+- Unlock new zones by spending coins at zone gates
+- Upgrade your pets, speed, luck, and more through the upgrade system
 
-1. Berühre gelbe **Echos**, um sie in deiner Tasche zu sammeln.
-2. Kehre in der **stabilen Phase** zum gelben Riss-Anker zurück und halte **E**.
-3. In der **gebrochenen Phase** ist der Anker offline. Wege wechseln und Schatten greifen an.
-4. Nutze den **Riss-Puls**, um Gegner in der Nähe vier Sekunden zu betäuben.
-5. Erfülle die Teamquote in allen drei Wellen. Eingezahlte Echos und Wellen geben Flux für permanente Upgrades.
+### Side Mode: Campaign (Battle Cats-style)
+- Accessible through a portal in the main world
+- 48 levels across 8 regions (6 levels per region, every 6th is a boss)
+- Deploy pets using energy that regenerates automatically
+- Pets fight autonomously in a left-to-right lane
+- Destroy the enemy base to win each level
+- Earn special rewards: unique pets, eggs, diamonds, and permanent bonuses
 
-Getragene Echos gehen beim Tod verloren; bereits eingezahlte Echos und Flux bleiben erhalten.
+## Zones
 
-## Steuerung
+1. **Gruene Wiesen** - Free starter zone (green meadows)
+2. **Stadt** - City (500 coins)
+3. **Strand** - Beach (2,000 coins)
+4. **Wueste** - Desert (5,000 coins)
+5. **Eiswelt** - Ice World (15,000 coins)
+6. **Vulkan** - Volcano (40,000 coins)
+7. **Himmel** - Sky (100,000 coins)
+8. **Weltraum** - Space (300,000 coins)
 
-| Aktion | Tastatur | Gamepad | Mobil |
-|---|---|---|---|
-| Bewegen | WASD | linker Stick | virtueller Stick |
-| Sprint | Shift halten | L3 halten | SPRINT-Schaltfläche |
-| Riss-Puls | Q | R2 | PULS-Schaltfläche |
-| Echos übertragen | E am Anker | X | ProximityPrompt |
+## MVP Features
 
-## Installation mit Rojo
+- 2 fully playable collecting zones (Gruene Wiesen + Stadt)
+- 4 pets with different rarities (Dog, Cat, Dragon, Phoenix)
+- Campaign portal with level selection
+- 3 enemy types + 1 boss for campaign battles
+- Energy and deployment system for campaign
+- Automatic pet movement and combat
+- Base HP and win/lose conditions
+- Pet inventory with equip, delete, and multi-select
+- DataStore save/load system
+- Full UI in the Pet Simulator 1 style
+- Egg hatching with animations
+- Coins, diamonds, and crate destruction system
 
-Voraussetzungen: [Roblox Studio](https://create.roblox.com/) und Rojo 7.
+## Source Tree Structure
 
-```bash
-cd shift-break
-rojo build default.project.json -o SHIFT_BREAK.rbxlx
+```
+default.project.json          -- Rojo project file
+BATTLE_PETS.rbxlx             -- Directly openable place file
+README.md                     -- This file
+
+src/
+  ServerScriptService/
+    Server/
+      Main.server.lua         -- Server entry point
+      Services/
+        DataService.lua       -- Save/load with DataStore
+        PetService.lua        -- Pet hatching, equipping, inventory
+        CampaignService.lua   -- Campaign level logic
+        CurrencyService.lua   -- Coins and diamonds management
+        ZoneService.lua       -- Zone unlocking and destructibles
+
+  StarterPlayer/
+    StarterPlayerScripts/
+      Client/
+        Main.client.lua       -- Client entry point
+        UIController.lua      -- All UI management
+        PetController.lua     -- Client-side pet visuals
+        CampaignController.lua -- Campaign UI and visuals
+
+  ReplicatedStorage/
+    Shared/
+      Config.lua              -- Game constants and configuration
+      PetData.lua             -- Pet and egg definitions
+      ZoneData.lua            -- Zone properties and destructibles
+      CampaignData.lua        -- Campaign levels and enemies
 ```
 
-Öffne anschließend `SHIFT_BREAK.rbxlx` in Roblox Studio und starte **Test → Play**. Alternativ kannst du `rojo serve` nutzen und `default.project.json` über das Rojo-Studio-Plugin synchronisieren.
+## Using with Rojo (Optional)
 
-### Ohne Rojo
+If you have [Rojo](https://rojo.space/) installed, you can sync the source tree into Roblox Studio for a live development workflow:
 
-Lege die Dateien anhand ihrer Pfade manuell als Scripts/ModuleScripts an:
+1. Install Rojo (VS Code extension + Roblox Studio plugin)
+2. Run `rojo serve` in the project root
+3. Connect from Roblox Studio using the Rojo plugin
+4. Edits to `.lua` files will sync automatically
 
-- `src/ReplicatedStorage/Shared/*` → `ReplicatedStorage/Shared`
-- `src/ServerScriptService/Server/*` → `ServerScriptService/Server`
-- `src/StarterPlayer/StarterPlayerScripts/Client/*` → `StarterPlayer/StarterPlayerScripts/Client`
+Without Rojo, you can directly edit the `BATTLE_PETS.rbxlx` file in Roblox Studio.
 
-Dateien mit `.server.lua` werden zu **Scripts**, `.client.lua` zu **LocalScripts**, alle übrigen `.lua` zu **ModuleScripts**. Entferne dabei nur die Dateiendung; `Main.server.lua` heißt in Studio beispielsweise `Main`.
+## Technical Notes
 
-## DataStore in Studio
-
-Ohne API-Zugriff ist das Spiel trotzdem vollständig testbar; Profile gelten dann nur für die laufende Serversitzung und die Output-Konsole zeigt eine Warnung. Für persistente Daten:
-
-1. Experience veröffentlichen.
-2. **Game Settings → Security → Enable Studio Access to API Services** aktivieren.
-3. Nur in einer Test-Experience aktivieren, wenn du Produktionsdaten nicht mit Studio verändern willst.
-
-Verwendeter Store: `ShiftBreakProfiles_v1`. Gespeichert werden nur `Flux`, `Wins` und die drei Upgrade-Stufen.
-
-## Balancing
-
-Alle relevanten Werte stehen zentral in [`src/ReplicatedStorage/Shared/Config.lua`](src/ReplicatedStorage/Shared/Config.lua):
-
-- Rundendauer und Phasenintervall
-- Teamquoten und Skalierung pro Spieler/Welle
-- Ausdauer, Sprinttempo, Pulsradius und Cooldown
-- Gegneranzahl, Tempo und Schaden
-- Belohnungen, Upgrade-Kosten und Upgrade-Boni
-- Farben und CollectionService-Tags
-
-Für einen ersten Solotest empfiehlt sich die vorhandene Konfiguration. Das erste Ziel beträgt 19 Echos und jede Welle dauert maximal 70 Sekunden.
-
-## Projektstruktur
-
-```text
-shift-break/
-├── default.project.json
-├── README.md
-├── ASSET_GUIDE.md
-└── src/
-    ├── ReplicatedStorage/Shared/
-    │   └── Config.lua
-    ├── ServerScriptService/Server/
-    │   ├── Main.server.lua
-    │   └── Services/
-    │       ├── ArenaService.lua
-    │       ├── DataService.lua
-    │       ├── EnemyService.lua
-    │       └── GameService.lua
-    └── StarterPlayer/StarterPlayerScripts/Client/
-        ├── Main.client.lua
-        ├── UIController.lua
-        └── EffectsController.lua
-```
-
-## Architektur und Sicherheit
-
-Der Client stellt Eingaben, UI und rein visuelle Effekte bereit. Der Server prüft und entscheidet über:
-
-- Kapazität und Aufnahme jedes Echos
-- Einzahlungen und Teamfortschritt
-- Puls-Cooldown und Reichweite
-- Sprinttempo und Ausdauer
-- Käufe, Preise und Profildaten
-- Gegnerschaden, Belohnungen und Siege
-
-Remote-Aufrufe allein können daher weder Flux erzeugen noch Upgrade-Kosten umgehen. Für ein öffentliches Release sollten trotzdem Roblox-Analytics, zusätzliche Rate-Limits und Playtests mit hoher Latenz ergänzt werden.
-
-## Schnelltest-Checkliste
-
-1. Play starten; Intro schließen.
-2. 15 Sekunden Intermission abwarten.
-3. Gelbe Echos berühren und am Anker mit E einzahlen.
-4. Einen Phasenwechsel abwarten; Brückenfarbe und Atmosphäre müssen wechseln.
-5. Schatten mit Q betäuben und Schaden/Respawn prüfen.
-6. Nach einer Runde im Shop ein Upgrade kaufen.
-7. Server neu starten und – bei aktiviertem API-Zugriff – gespeicherten Flux prüfen.
-
-Viel Spaß beim Modellieren. Die Platzhalter sind absichtlich klar und minimal, damit deine visuelle Richtung das Spiel definiert.
+- Server-authoritative architecture (no client-side exploits possible)
+- All geometry is procedurally generated via code (no external assets)
+- No external packages, plugins, images, sounds, or paid assets required
+- Pure Luau codebase

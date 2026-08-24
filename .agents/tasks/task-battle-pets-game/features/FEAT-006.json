@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-006",
+  "type": "fix",
+  "description": "Fix 4 client-server event payload mismatches from v3 review: CurrencyUpdated, UpgradeUpdated, CampaignVictory, and EggHatchStart/EggHatchResult",
+  "status": "completed",
+  "steps": [
+    "Fix CurrencyService.lua to send two positional args (data.coins, data.diamonds) instead of a table",
+    "Fix UpgradeService.lua to send the full data.upgrades table instead of (upgradeId, level)",
+    "Fix Main.client.lua CampaignVictory handler to accept (levelNum, rewards) and pass rewards",
+    "Fix Main.client.lua EggHatchStart/EggHatchResult handlers to not expect position parameter",
+    "Fix EffectsController.lua showEggHatchAnimation to use player character position as fallback",
+    "Regenerate BATTLE_PETS.rbxlx and validate"
+  ],
+  "acceptance_criteria": [
+    "CurrencyUpdated fires two positional args that match client handler signature (coins, diamonds)",
+    "UpgradeUpdated fires the full upgrades table matching client handler signature (upgrades)",
+    "CampaignVictory client handler accepts both (levelNum, rewards) and passes rewards to onVictory",
+    "EggHatchStart/EggHatchResult client handlers work without position parameter from server",
+    "EffectsController egg hatch animation uses player character position as fallback when no world position provided",
+    "BATTLE_PETS.rbxlx is valid XML after regeneration"
+  ],
+  "verification": [
+    "Run: python3 -c \"import xml.etree.ElementTree as ET; ET.parse('/projects/Roblox-game/BATTLE_PETS.rbxlx'); print('Valid')\"",
+    "Verify CurrencyService no longer sends table payload",
+    "Verify UpgradeService sends full upgrades table",
+    "Verify CampaignVictory handler accepts two arguments",
+    "Verify EggHatchStart/EggHatchResult handlers do not expect position"
+  ],
+  "blocked_reason": null,
+  "findings": "All 4 v3 review payload mismatches resolved. CurrencyService had 4 FireClient calls all sending a table - changed all to two positional args. UpgradeService changed from (upgradeId, level) to full data.upgrades table. CampaignVictory client handler now accepts (levelNum, rewards) and passes rewards. EggHatch handlers use player character position (HumanoidRootPart + offset) for animation origin instead of expecting server-sent position. Added nil guard in EffectsController.showEggHatchAnimation. BATTLE_PETS.rbxlx regenerated and validated (212,670 bytes, 92 items)."
+}
