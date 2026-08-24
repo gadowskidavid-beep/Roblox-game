@@ -3,7 +3,7 @@
   "type": "fix",
   "title": "BillboardGui MaxDistance and world decoration polish",
   "description": "Restrict egg station BillboardGuis visibility with MaxDistance (pet chances = 12, station label = 25, zone gate = 25). Remove small individual flowers (pink/gray spheres that look bad). Keep trees, rocks, and planter clusters.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Add MaxDistance = 12 to PetChancesLabel BillboardGui in ZoneService._spawnEggStations",
     "Add MaxDistance = 25 to StationLabel BillboardGui in ZoneService._spawnEggStations",
