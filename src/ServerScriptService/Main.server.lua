@@ -15,6 +15,8 @@ local PetService = require(script.Parent.Services.PetService)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
+local QuestService = require(script.Parent.Services.QuestService)
+local MasteryService = require(script.Parent.Services.MasteryService)
 
 ----------------------------------------------
 -- Create Remotes Folder in ReplicatedStorage
@@ -41,6 +43,8 @@ local remoteEvents = {
 	"UpgradeUpdated",
 	"CollectCurrency",
 	"XPUpdated",
+	"QuestProgressUpdated",
+	"MasteryUpdated",
 }
 
 for _, eventName in ipairs(remoteEvents) do
@@ -62,6 +66,9 @@ local remoteFunctions = {
 	"StartCampaignLevel",
 	"DeployPetInCampaign",
 	"AttackDestructible",
+	"GetQuestProgress",
+	"PurchaseMasteryBuff",
+	"GetMasteryState",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -74,22 +81,28 @@ end
 -- Initialize Services (order matters for dependencies)
 ----------------------------------------------
 
--- UpgradeService needs DataService and CurrencyService
--- CurrencyService needs DataService and UpgradeService
--- PetService needs DataService, CurrencyService, and UpgradeService
--- ZoneService needs DataService, CurrencyService, and PetService
--- CampaignService needs DataService, CurrencyService, and PetService
--- EggService needs DataService, CurrencyService, and PetService
-
 -- Init currency first (with nil upgradeService, we set it after)
 CurrencyService.init(DataService, nil)
 UpgradeService.init(DataService, CurrencyService)
 -- Now set the upgrade reference for CurrencyService
 CurrencyService._upgradeService = UpgradeService
 
+-- Initialize quest and mastery services
+QuestService.init(DataService, CurrencyService)
+MasteryService.init(DataService)
+
+-- Set cross-references
+UpgradeService.setQuestService(QuestService)
+UpgradeService.setMasteryService(MasteryService)
+
 PetService.init(DataService, CurrencyService, UpgradeService)
 EggService.init(DataService, CurrencyService, PetService)
+EggService.setQuestService(QuestService)
+
 ZoneService.init(DataService, CurrencyService, PetService)
+ZoneService.setQuestService(QuestService)
+ZoneService.setMasteryService(MasteryService)
+
 CampaignService.init(DataService, CurrencyService, PetService)
 
 -- Start DataService auto-save loop
@@ -186,7 +199,7 @@ getRemoteFunction("UnlockZone").OnServerInvoke = function(player, zoneId)
 	return ZoneService.unlockZone(player, math.floor(zoneId))
 end
 
--- PurchaseUpgrade
+-- PurchaseUpgrade (now returns info that upgrades are quest-based)
 getRemoteFunction("PurchaseUpgrade").OnServerInvoke = function(player, upgradeId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
@@ -195,6 +208,33 @@ getRemoteFunction("PurchaseUpgrade").OnServerInvoke = function(player, upgradeId
 		return false, "Invalid upgrade ID parameter"
 	end
 	return UpgradeService.purchaseUpgrade(player, upgradeId)
+end
+
+-- GetQuestProgress
+getRemoteFunction("GetQuestProgress").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return {}
+	end
+	return QuestService.getQuestProgress(player)
+end
+
+-- PurchaseMasteryBuff
+getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if type(buffId) ~= "string" then
+		return false, "Invalid buff ID parameter"
+	end
+	return MasteryService.purchaseBuff(player, buffId)
+end
+
+-- GetMasteryState
+getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return {}
+	end
+	return MasteryService.getMasteryState(player)
 end
 
 -- StartCampaignLevel

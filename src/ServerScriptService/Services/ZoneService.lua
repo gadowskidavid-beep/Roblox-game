@@ -14,6 +14,7 @@ local ZoneService = {}
 ZoneService._dataService = nil
 ZoneService._currencyService = nil
 ZoneService._petService = nil
+ZoneService._questService = nil
 
 -- Active destructibles tracked by unique ID
 ZoneService._destructibles = {}
@@ -33,6 +34,7 @@ function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._dataService = dataService
 	ZoneService._currencyService = currencyService
 	ZoneService._petService = petService
+	ZoneService._questService = nil -- set later via setQuestService
 
 	-- Create zones folder in workspace
 	local workspace = game:GetService("Workspace")
@@ -699,6 +701,16 @@ function ZoneService.attackDestructible(player, destructibleId)
 		local xpReward = destructible.zoneId * 5
 		ZoneService._awardXP(player, xpReward)
 
+		-- Track quest progress: destructible destroyed
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+
+		-- Track coins earned for quest progress
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
+		end
+
 		-- Fire destroyed event to all clients so everyone sees the destruction
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDestroyed")
@@ -759,6 +771,14 @@ function ZoneService._awardXP(player, amount)
 	local data = ZoneService._dataService.getPlayerData(player)
 	if not data then return end
 
+	-- Apply XP Boost mastery buff if available
+	if ZoneService._masteryService then
+		local xpBoost = ZoneService._masteryService.getBuffBonus(player, "XPBoost")
+		if xpBoost > 0 then
+			amount = math.floor(amount * xpBoost)
+		end
+	end
+
 	data.xp = (data.xp or 0) + amount
 
 	-- Check for level up
@@ -767,6 +787,10 @@ function ZoneService._awardXP(player, amount)
 		data.xp = data.xp - xpNeeded
 		data.level = (data.level or 1) + 1
 		xpNeeded = data.level * 100
+		-- Award mastery point on level-up
+		if ZoneService._masteryService then
+			ZoneService._masteryService.awardMasteryPoint(player)
+		end
 	end
 
 	-- Fire XP update to client
@@ -777,6 +801,16 @@ function ZoneService._awardXP(player, amount)
 			event:FireClient(player, data.level, data.xp, data.level * 100)
 		end
 	end
+end
+
+-- Set quest service reference (called after init to avoid circular deps)
+function ZoneService.setQuestService(questService)
+	ZoneService._questService = questService
+end
+
+-- Set mastery service reference
+function ZoneService.setMasteryService(masteryService)
+	ZoneService._masteryService = masteryService
 end
 
 return ZoneService

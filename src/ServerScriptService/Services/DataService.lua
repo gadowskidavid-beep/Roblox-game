@@ -58,6 +58,15 @@ local function getDefaultData()
 		campaignProgress = {},
 		upgrades = {},
 		equippedPets = { "starter_pet_1" },
+		-- Quest progress tracking
+		questStats = {
+			destroyDestructibles = 0,
+			hatchEggs = 0,
+			earnCoins = 0,
+		},
+		-- Mastery system
+		masteryPoints = 0,
+		masteryBuffs = {},
 	}
 end
 

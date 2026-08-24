@@ -349,7 +349,7 @@ def build_replicated_storage():
     """
     # Shared folder with ModuleScripts
     shared_modules = []
-    module_names = ["Config", "PetData", "ZoneData", "CampaignData"]
+    module_names = ["Config", "PetData", "ZoneData", "CampaignData", "QuestData", "MasteryData"]
     for mod_name in module_names:
         filepath = os.path.join(SRC_DIR, "ReplicatedStorage", "Shared", f"{mod_name}.lua")
         source = read_source(filepath)
@@ -367,7 +367,8 @@ def build_server_script_service():
     # Services folder with ModuleScripts
     service_names = [
         "DataService", "CurrencyService", "PetService",
-        "UpgradeService", "ZoneService", "CampaignService", "EggService"
+        "UpgradeService", "ZoneService", "CampaignService", "EggService",
+        "QuestService", "MasteryService"
     ]
     service_scripts = []
     for svc_name in service_names:

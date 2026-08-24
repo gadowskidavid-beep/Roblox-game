@@ -19,6 +19,8 @@ local Config = require(Shared:WaitForChild("Config"))
 local PetData = require(Shared:WaitForChild("PetData"))
 local CampaignData = require(Shared:WaitForChild("CampaignData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
+local QuestData = require(Shared:WaitForChild("QuestData"))
+local MasteryData = require(Shared:WaitForChild("MasteryData"))
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -50,6 +52,9 @@ local PurchaseUpgrade = Remotes:WaitForChild("PurchaseUpgrade")
 local StartCampaignLevel = Remotes:WaitForChild("StartCampaignLevel")
 local DeployPetInCampaign = Remotes:WaitForChild("DeployPetInCampaign")
 local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
+local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
+local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
+local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -153,7 +158,7 @@ end
 -- Apply FasterPets upgrade from initial data
 if playerData and playerData.upgrades and playerData.upgrades.FasterPets then
 	local fasterLevel = playerData.upgrades.FasterPets
-	local fasterDef = Config.Upgrades.FasterPets
+	local fasterDef = QuestData.Quests.FasterPets
 	if fasterDef and fasterDef.levels[fasterLevel] then
 		petController:setFasterPetsMultiplier(fasterDef.levels[fasterLevel].bonus)
 	end
@@ -304,17 +309,29 @@ CampaignDefeat.OnClientEvent:Connect(function()
 	campaignController:onDefeat()
 end)
 
--- Upgrade purchased/updated
+-- Upgrade purchased/updated (quest-based)
 UpgradeUpdated.OnClientEvent:Connect(function(upgrades)
 	uiController:updateUpgrades(upgrades)
 	-- Apply FasterPets upgrade to PetController
 	if upgrades and upgrades.FasterPets then
 		local fasterLevel = upgrades.FasterPets
-		local fasterDef = Config.Upgrades.FasterPets
+		local fasterDef = QuestData.Quests.FasterPets
 		if fasterDef and fasterDef.levels[fasterLevel] then
 			petController:setFasterPetsMultiplier(fasterDef.levels[fasterLevel].bonus)
 		end
 	end
+end)
+
+-- Quest progress updated
+local QuestProgressUpdated = Remotes:WaitForChild("QuestProgressUpdated")
+QuestProgressUpdated.OnClientEvent:Connect(function(questProgress)
+	uiController:updateQuestProgress(questProgress)
+end)
+
+-- Mastery state updated
+local MasteryUpdated = Remotes:WaitForChild("MasteryUpdated")
+MasteryUpdated.OnClientEvent:Connect(function(masteryState)
+	uiController:updateMastery(masteryState)
 end)
 
 -- Currency collected (floating popup at position)

@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-014",
+  "type": "feat",
+  "title": "Quest-based upgrades and Mastery system (replaces buyable upgrades)",
+  "description": "Replace the coin-buying upgrade system with two new systems: (1) Quest-based upgrades - players complete quests like 'Destroy 2500 destructibles' to unlock upgrades like 'Strong Pets'. (2) Mastery system - XP/level-ups grant mastery points that can be spent on buffs (more coins, better luck, faster pets, etc.) in a Mastery tab.",
+  "status": "in_progress",
+  "steps": [
+    "Create QuestData.lua shared module with quest definitions (destroy X destructibles, hatch X eggs, etc.)",
+    "Create MasteryData.lua shared module with mastery buff definitions (more coins, luck, speed, etc.)",
+    "Add quest progress and mastery points to DataService default data schema",
+    "Replace UpgradeService with QuestService that tracks quest progress and unlocks upgrades on completion",
+    "Create MasteryService for spending mastery points on buffs",
+    "Update ZoneService to track destructible kills for quest progress",
+    "Update Main.server.lua to register QuestService and MasteryService, add remotes",
+    "Update UIController to replace Upgrades window with Quests tab and add Mastery tab",
+    "Update Main.client.lua to handle quest/mastery remote events",
+    "Update Config.lua to reference quest-based upgrades instead of buyable ones",
+    "Regenerate BATTLE_PETS.rbxlx",
+    "Validate XML"
+  ],
+  "acceptance_criteria": [
+    "Upgrades are no longer purchasable with coins",
+    "Each upgrade is unlocked by completing a specific quest (e.g. destroy 2500 destructibles for Strong Pets)",
+    "Quest progress is tracked and displayed in a Quests UI tab",
+    "Level-ups award mastery points instead of being cosmetic",
+    "Mastery tab shows available buffs that can be purchased with mastery points",
+    "Mastery buffs include: more coins per drop, better egg luck, faster pets",
+    "UpgradeService.getUpgradeBonus still works for existing bonus lookups (backward compat)",
+    "BATTLE_PETS.rbxlx regenerated and valid XML"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}

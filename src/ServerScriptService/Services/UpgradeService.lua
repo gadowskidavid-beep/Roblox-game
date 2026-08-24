@@ -1,75 +1,37 @@
 --[[
-	UpgradeService.lua - Manages purchasing and querying upgrades
-	Validates costs, deducts currency, and increments upgrade levels.
+	UpgradeService.lua - Backward-compatible wrapper for quest-based upgrades
+	Now delegates to QuestService for upgrade bonuses.
+	The old purchaseUpgrade function is removed; upgrades are earned via quests.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Config = require(game.ReplicatedStorage.Shared.Config)
+local QuestData = require(game.ReplicatedStorage.Shared.QuestData)
+local MasteryData = require(game.ReplicatedStorage.Shared.MasteryData)
 
 local UpgradeService = {}
 
 -- References to other services
 UpgradeService._dataService = nil
 UpgradeService._currencyService = nil
+UpgradeService._questService = nil
+UpgradeService._masteryService = nil
 
 function UpgradeService.init(dataService, currencyService)
 	UpgradeService._dataService = dataService
 	UpgradeService._currencyService = currencyService
 end
 
--- Purchase an upgrade for a player
-function UpgradeService.purchaseUpgrade(player, upgradeId)
-	if not player or type(upgradeId) ~= "string" then
-		return false, "Invalid parameters"
-	end
-
-	-- Validate upgrade exists
-	local upgradeDef = Config.Upgrades[upgradeId]
-	if not upgradeDef then
-		return false, "Unknown upgrade: " .. tostring(upgradeId)
-	end
-
-	local data = UpgradeService._dataService.getPlayerData(player)
-	if not data then
-		return false, "No player data"
-	end
-
-	-- Get current level (0 if not purchased yet)
-	local currentLevel = data.upgrades[upgradeId] or 0
-	local maxLevel = #upgradeDef.levels
-
-	-- Validate not max level
-	if currentLevel >= maxLevel then
-		return false, "Already at max level"
-	end
-
-	-- Get cost for next level
-	local nextLevelData = upgradeDef.levels[currentLevel + 1]
-	local cost = nextLevelData.cost
-
-	-- Deduct coins
-	local success = UpgradeService._currencyService.removeCoins(player, cost)
-	if not success then
-		return false, "Not enough coins"
-	end
-
-	-- Increment upgrade level
-	data.upgrades[upgradeId] = currentLevel + 1
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("UpgradeUpdated")
-		if event then
-			event:FireClient(player, data.upgrades)
-		end
-	end
-
-	return true, "Upgraded to level " .. tostring(data.upgrades[upgradeId])
+-- Set quest and mastery service references (called after init)
+function UpgradeService.setQuestService(questService)
+	UpgradeService._questService = questService
 end
 
--- Get current upgrade level for a player
+function UpgradeService.setMasteryService(masteryService)
+	UpgradeService._masteryService = masteryService
+end
+
+-- Get current upgrade level for a player (from quest completions)
 function UpgradeService.getUpgradeLevel(player, upgradeId)
 	if not player or type(upgradeId) ~= "string" then
 		return 0
@@ -84,27 +46,44 @@ function UpgradeService.getUpgradeLevel(player, upgradeId)
 end
 
 -- Get the bonus value for the current upgrade level
+-- Checks both quest-based upgrades AND mastery buffs
 function UpgradeService.getUpgradeBonus(player, upgradeId)
 	if not player or type(upgradeId) ~= "string" then
 		return 0
 	end
 
-	local upgradeDef = Config.Upgrades[upgradeId]
-	if not upgradeDef then
-		return 0
+	-- First check quest-based upgrades
+	local questDef = QuestData.Quests[upgradeId]
+	if questDef then
+		local data = UpgradeService._dataService.getPlayerData(player)
+		if not data then
+			return 0
+		end
+		local currentLevel = data.upgrades[upgradeId] or 0
+		if currentLevel == 0 then
+			return 0
+		end
+		return questDef.levels[currentLevel].bonus
 	end
 
-	local data = UpgradeService._dataService.getPlayerData(player)
-	if not data then
-		return 0
+	-- Check mastery buffs for matching bonus types
+	-- Map old upgrade names to mastery buff equivalents
+	local masteryMapping = {
+		LuckyDrops = "MoreCoins",
+		Diamonds = "MoreDiamonds",
+	}
+
+	local masteryId = masteryMapping[upgradeId]
+	if masteryId and UpgradeService._masteryService then
+		return UpgradeService._masteryService.getBuffBonus(player, masteryId)
 	end
 
-	local currentLevel = data.upgrades[upgradeId] or 0
-	if currentLevel == 0 then
-		return 0
-	end
+	return 0
+end
 
-	return upgradeDef.levels[currentLevel].bonus
+-- Old purchaseUpgrade is no longer available - upgrades are quest-based
+function UpgradeService.purchaseUpgrade(player, upgradeId)
+	return false, "Upgrades are now quest-based. Complete quests to unlock them!"
 end
 
 return UpgradeService

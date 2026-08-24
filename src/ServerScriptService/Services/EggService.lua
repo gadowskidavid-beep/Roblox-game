@@ -14,6 +14,7 @@ local EggService = {}
 EggService._dataService = nil
 EggService._currencyService = nil
 EggService._petService = nil
+EggService._questService = nil
 
 -- Per-player purchase lock to prevent concurrent hatch exploits
 EggService._hatchLock = {}
@@ -101,12 +102,22 @@ function EggService.purchaseAndHatch(player, eggType)
 			end
 		end
 
+		-- Track quest progress: egg hatched
+		if EggService._questService then
+			EggService._questService.incrementStat(player, "hatchEggs", 1)
+		end
+
 		return newPet, nil
 	end
 
 	local newPet, err = doHatch()
 	EggService._hatchLock[player.UserId] = nil
 	return newPet, err
+end
+
+-- Set quest service reference (called after init to avoid circular deps)
+function EggService.setQuestService(questService)
+	EggService._questService = questService
 end
 
 -- Get eggs available to a player based on their unlocked zones

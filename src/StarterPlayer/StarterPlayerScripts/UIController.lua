@@ -6,7 +6,8 @@
 	Screens:
 	- MainHUD: currency display, XP bar, navigation buttons, equipped pets bar
 	- PetInventory: scrollable pet grid with equip/delete/multi-select
-	- UpgradeWindow: large centered modal with tile upgrade cards
+	- QuestWindow: quest-based upgrades with progress bars
+	- MasteryWindow: mastery buff spending tab
 	- ShopWindow: egg station hatch prompt (station-based, like Pet Simulator)
 	- CampaignSelect: delegated to CampaignController but toggled from here
 	
@@ -21,6 +22,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
 local PetData = require(Shared:WaitForChild("PetData"))
+local QuestData = require(Shared:WaitForChild("QuestData"))
+local MasteryData = require(Shared:WaitForChild("MasteryData"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -30,7 +33,8 @@ local COLORS = {
 	Background = Color3.fromRGB(30, 40, 80),
 	DarkBg = Color3.fromRGB(20, 28, 60),
 	NavPets = Color3.fromRGB(0, 200, 80),
-	NavUpgrades = Color3.fromRGB(255, 150, 0),
+	NavQuests = Color3.fromRGB(255, 150, 0),
+	NavMastery = Color3.fromRGB(180, 80, 255),
 	NavShop = Color3.fromRGB(0, 150, 255),
 	NavSettings = Color3.fromRGB(120, 120, 140),
 	NavFavorit = Color3.fromRGB(255, 100, 180),
@@ -42,6 +46,9 @@ local COLORS = {
 	CloseRed = Color3.fromRGB(220, 50, 50),
 	XPBarOuter = Color3.fromRGB(30, 30, 50),
 	XPBarFill = Color3.fromRGB(0, 200, 100),
+	QuestProgressBg = Color3.fromRGB(40, 50, 80),
+	QuestProgressFill = Color3.fromRGB(0, 200, 80),
+	MasteryPurple = Color3.fromRGB(180, 80, 255),
 }
 
 local RARITY_COLORS = {
@@ -50,20 +57,6 @@ local RARITY_COLORS = {
 	Rare = Color3.fromRGB(0, 120, 255),
 	Epic = Color3.fromRGB(180, 0, 255),
 	Legendary = Color3.fromRGB(255, 200, 0),
-}
-
--- Upgrade icon characters
-local UPGRADE_ICONS = {
-	Friendship = "♥",
-	Diamonds = "◆",
-	ExtraSlots = "+",
-	FasterPets = "»",
-	StrongPets = "⚡",
-	LuckyEggs = "★",
-	GoldenPetsChance = "✦",
-	Sprinting = "↑",
-	DropCloner = "×2",
-	LuckyDrops = "$",
 }
 
 function UIController.new()
@@ -84,6 +77,9 @@ function UIController.new()
 	self._selectedPets = {}
 	self._currentZone = 1
 	self._initialized = false
+	-- Quest and mastery state
+	self._questProgress = {}
+	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
 	return self
 end
 
@@ -101,12 +97,18 @@ function UIController:init(remotes, playerData)
 		self._equippedPets = playerData.equippedPets or {}
 		self._upgradeData = playerData.upgrades or {}
 		self._currentZone = playerData.currentZone or 1
+		self._masteryState = {
+			masteryPoints = playerData.masteryPoints or 0,
+			level = playerData.level or 1,
+			buffs = playerData.masteryBuffs or {},
+		}
 	end
 
 	-- Create all UI
 	self:_createMainHUD(playerData)
 	self:_createPetInventory()
-	self:_createUpgradeWindow()
+	self:_createQuestWindow()
+	self:_createMasteryWindow()
 	self:_createShopWindow()
 
 	self._initialized = true
@@ -175,7 +177,6 @@ function UIController:_createCurrencyDisplay(parent, playerData)
 	coinRow.BackgroundTransparency = 1
 	coinRow.Parent = frame
 
-	-- Coin icon (yellow circle)
 	local coinIcon = Instance.new("Frame")
 	coinIcon.Name = "CoinIcon"
 	coinIcon.Size = UDim2.fromOffset(22, 22)
@@ -187,7 +188,6 @@ function UIController:_createCurrencyDisplay(parent, playerData)
 	coinIconCorner.CornerRadius = UDim.new(1, 0)
 	coinIconCorner.Parent = coinIcon
 
-	-- Coin icon text
 	local coinIconText = Instance.new("TextLabel")
 	coinIconText.Size = UDim2.fromScale(1, 1)
 	coinIconText.BackgroundTransparency = 1
@@ -197,7 +197,6 @@ function UIController:_createCurrencyDisplay(parent, playerData)
 	coinIconText.TextScaled = true
 	coinIconText.Parent = coinIcon
 
-	-- Coin amount
 	local coinLabel = Instance.new("TextLabel")
 	coinLabel.Name = "CoinAmount"
 	coinLabel.Size = UDim2.new(1, -30, 1, 0)
@@ -218,7 +217,6 @@ function UIController:_createCurrencyDisplay(parent, playerData)
 	diamondRow.BackgroundTransparency = 1
 	diamondRow.Parent = frame
 
-	-- Diamond icon (blue diamond shape - rotated frame)
 	local diamondIcon = Instance.new("Frame")
 	diamondIcon.Name = "DiamondIcon"
 	diamondIcon.Size = UDim2.fromOffset(18, 18)
@@ -231,7 +229,6 @@ function UIController:_createCurrencyDisplay(parent, playerData)
 	diamondIconCorner.CornerRadius = UDim.new(0, 3)
 	diamondIconCorner.Parent = diamondIcon
 
-	-- Diamond amount
 	local diamondLabel = Instance.new("TextLabel")
 	diamondLabel.Name = "DiamondAmount"
 	diamondLabel.Size = UDim2.new(1, -30, 1, 0)
@@ -264,7 +261,6 @@ function UIController:_createXPBar(parent, playerData)
 	barStroke.Color = Color3.fromRGB(50, 70, 110)
 	barStroke.Parent = barFrame
 
-	-- Inner fill
 	local level = playerData and playerData.level or 1
 	local xp = playerData and playerData.xp or 0
 	local xpNeeded = playerData and playerData.xpNeeded or 100
@@ -283,7 +279,6 @@ function UIController:_createXPBar(parent, playerData)
 	fillCorner.CornerRadius = UDim.new(0.5, 0)
 	fillCorner.Parent = fillFrame
 
-	-- Level number
 	local levelLabel = Instance.new("TextLabel")
 	levelLabel.Name = "LevelLabel"
 	levelLabel.Size = UDim2.fromScale(1, 1)
@@ -302,8 +297,8 @@ end
 function UIController:_createNavButtons(parent)
 	local navFrame = Instance.new("Frame")
 	navFrame.Name = "NavButtons"
-	navFrame.Size = UDim2.fromScale(0.35, 0.09)
-	navFrame.Position = UDim2.fromScale(0.63, 0.88)
+	navFrame.Size = UDim2.fromScale(0.4, 0.09)
+	navFrame.Position = UDim2.fromScale(0.58, 0.88)
 	navFrame.BackgroundTransparency = 1
 	navFrame.Parent = parent
 
@@ -316,10 +311,10 @@ function UIController:_createNavButtons(parent)
 
 	local buttons = {
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
-		{ name = "Upgrades", icon = "^", color = COLORS.NavUpgrades, screen = "UpgradeWindow" },
+		{ name = "Quests", icon = "!", color = COLORS.NavQuests, screen = "QuestWindow" },
+		{ name = "Mastery", icon = "M", color = COLORS.NavMastery, screen = "MasteryWindow" },
 		{ name = "Eggs", icon = "E", color = COLORS.NavShop, screen = "ShopWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
-		{ name = "Favorit", icon = "★", color = COLORS.NavFavorit, screen = nil },
 	}
 
 	for _, btnData in ipairs(buttons) do
@@ -337,7 +332,6 @@ function UIController:_createNavButtons(parent)
 
 		local btnStroke = Instance.new("UIStroke")
 		btnStroke.Thickness = 3
-		-- Slightly darker stroke
 		btnStroke.Color = Color3.fromRGB(
 			math.max(0, btnData.color.R * 255 - 40),
 			math.max(0, btnData.color.G * 255 - 40),
@@ -345,7 +339,6 @@ function UIController:_createNavButtons(parent)
 		)
 		btnStroke.Parent = btn
 
-		-- Icon text (top)
 		local iconLabel = Instance.new("TextLabel")
 		iconLabel.Name = "Icon"
 		iconLabel.Size = UDim2.fromScale(1, 0.55)
@@ -357,7 +350,6 @@ function UIController:_createNavButtons(parent)
 		iconLabel.TextScaled = true
 		iconLabel.Parent = btn
 
-		-- Label text (bottom)
 		local nameLabel = Instance.new("TextLabel")
 		nameLabel.Name = "Label"
 		nameLabel.Size = UDim2.fromScale(1, 0.35)
@@ -369,7 +361,6 @@ function UIController:_createNavButtons(parent)
 		nameLabel.TextScaled = true
 		nameLabel.Parent = btn
 
-		-- Hover scale effect
 		btn.MouseEnter:Connect(function()
 			TweenService:Create(btn, TweenInfo.new(0.15), {
 				Size = UDim2.fromOffset(66, 66),
@@ -382,7 +373,6 @@ function UIController:_createNavButtons(parent)
 			}):Play()
 		end)
 
-		-- Click handler
 		if btnData.screen then
 			btn.MouseButton1Click:Connect(function()
 				self:toggleScreen(btnData.screen)
@@ -417,21 +407,18 @@ function UIController:_createEquippedPetBar(parent)
 	layout.VerticalAlignment = Enum.VerticalAlignment.Center
 	layout.Parent = barFrame
 
-	-- Populate with equipped pets
 	self:_refreshEquippedBar()
 end
 
 function UIController:_refreshEquippedBar()
 	if not self._equippedBar then return end
 
-	-- Clear existing icons (only destroy Frame children, keep UIListLayout etc.)
 	for _, child in ipairs(self._equippedBar:GetChildren()) do
 		if child:IsA("Frame") or child:IsA("TextLabel") then
 			child:Destroy()
 		end
 	end
 
-	-- If no equipped pets, show a hint label
 	if #self._equippedPets == 0 then
 		local hintLabel = Instance.new("TextLabel")
 		hintLabel.Name = "HintLabel"
@@ -446,7 +433,6 @@ function UIController:_refreshEquippedBar()
 	end
 
 	for _, petData in ipairs(self._equippedPets) do
-		-- Handle both pet data tables and string IDs gracefully
 		local petName = "?"
 		local petRarity = "Common"
 		if type(petData) == "table" then
@@ -494,7 +480,6 @@ function UIController:_createPetInventory()
 	screenGui.Parent = self._playerGui
 	self._screens.PetInventory = screenGui
 
-	-- Large centered frame
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Name = "MainFrame"
 	mainFrame.Size = UDim2.fromScale(0.8, 0.7)
@@ -512,7 +497,6 @@ function UIController:_createPetInventory()
 	mainStroke.Color = Color3.fromRGB(80, 120, 200)
 	mainStroke.Parent = mainFrame
 
-	-- Title
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
 	title.Size = UDim2.fromScale(0.4, 0.08)
@@ -524,7 +508,6 @@ function UIController:_createPetInventory()
 	title.TextScaled = true
 	title.Parent = mainFrame
 
-	-- Close button (top-right, red circle with X)
 	local closeBtn = Instance.new("TextButton")
 	closeBtn.Name = "CloseBtn"
 	closeBtn.Size = UDim2.fromOffset(40, 40)
@@ -544,7 +527,6 @@ function UIController:_createPetInventory()
 		self:toggleScreen("PetInventory")
 	end)
 
-	-- Multi-select toggle button
 	local multiSelectBtn = Instance.new("TextButton")
 	multiSelectBtn.Name = "MultiSelectBtn"
 	multiSelectBtn.Size = UDim2.fromScale(0.15, 0.06)
@@ -568,7 +550,6 @@ function UIController:_createPetInventory()
 		self:_refreshPetGrid()
 	end)
 
-	-- Delete Selected button (red, appears in multi-select mode)
 	local deleteBtn = Instance.new("TextButton")
 	deleteBtn.Name = "DeleteSelectedBtn"
 	deleteBtn.Size = UDim2.fromScale(0.15, 0.06)
@@ -589,14 +570,13 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
-	-- Scrolling frame grid (scrollbar hidden but still scrollable via touch/mousewheel)
 	local scrollFrame = Instance.new("ScrollingFrame")
 	scrollFrame.Name = "PetGrid"
 	scrollFrame.Size = UDim2.fromScale(0.94, 0.78)
 	scrollFrame.Position = UDim2.fromScale(0.03, 0.1)
 	scrollFrame.BackgroundTransparency = 1
 	scrollFrame.ScrollBarThickness = 0
-	scrollFrame.CanvasSize = UDim2.fromScale(0, 0) -- will be auto-sized
+	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
 	scrollFrame.Parent = mainFrame
 
 	local gridLayout = Instance.new("UIGridLayout")
@@ -606,12 +586,10 @@ function UIController:_createPetInventory()
 	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	gridLayout.Parent = scrollFrame
 
-	-- Auto-size canvas
 	gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
 	end)
 
-	-- Initial population
 	self:_refreshPetGrid()
 end
 
@@ -623,13 +601,11 @@ function UIController:_refreshPetGrid()
 	local scrollFrame = mainFrame:FindFirstChild("PetGrid")
 	if not scrollFrame then return end
 
-	-- Show/hide delete button based on multi-select mode
 	local deleteBtn = mainFrame:FindFirstChild("DeleteSelectedBtn")
 	if deleteBtn then
 		deleteBtn.Visible = self._multiSelectMode
 	end
 
-	-- Clear existing cards (keep layout)
 	for _, child in ipairs(scrollFrame:GetChildren()) do
 		if child:IsA("Frame") then
 			child:Destroy()
@@ -647,14 +623,12 @@ function UIController:_refreshPetGrid()
 		cardCorner.CornerRadius = UDim.new(0, 12)
 		cardCorner.Parent = card
 
-		-- Rarity color border
 		local rarityColor = RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common
 		local cardStroke = Instance.new("UIStroke")
 		cardStroke.Thickness = 3
 		cardStroke.Color = rarityColor
 		cardStroke.Parent = card
 
-		-- Pet color circle (icon)
 		local petIcon = Instance.new("Frame")
 		petIcon.Name = "PetIcon"
 		petIcon.Size = UDim2.fromScale(0.45, 0.35)
@@ -666,7 +640,6 @@ function UIController:_refreshPetGrid()
 		iconCorner.CornerRadius = UDim.new(1, 0)
 		iconCorner.Parent = petIcon
 
-		-- Pet name
 		local nameLabel = Instance.new("TextLabel")
 		nameLabel.Name = "PetName"
 		nameLabel.Size = UDim2.fromScale(0.9, 0.15)
@@ -678,7 +651,6 @@ function UIController:_refreshPetGrid()
 		nameLabel.TextScaled = true
 		nameLabel.Parent = card
 
-		-- Damage stat (just the number, no label prefix)
 		local dmgLabel = Instance.new("TextLabel")
 		dmgLabel.Name = "DmgStat"
 		dmgLabel.Size = UDim2.fromScale(0.9, 0.12)
@@ -690,7 +662,6 @@ function UIController:_refreshPetGrid()
 		dmgLabel.TextScaled = true
 		dmgLabel.Parent = card
 
-		-- Equip/Unequip button (or selection checkbox in multi-select)
 		local petUniqueId = petData.uniqueId or petData.id
 		if self._multiSelectMode then
 			local isSelected = self._selectedPets[petUniqueId] ~= nil
@@ -744,7 +715,6 @@ function UIController:_refreshPetGrid()
 				end
 			end)
 
-			-- Hover effect
 			equipBtn.MouseEnter:Connect(function()
 				TweenService:Create(equipBtn, TweenInfo.new(0.1), {
 					Size = UDim2.fromScale(0.84, 0.17),
@@ -805,18 +775,17 @@ function UIController:_deleteSelectedPets()
 end
 
 --------------------------------------------------------------------------------
--- UPGRADE WINDOW
+-- QUEST WINDOW (replaces old Upgrade Window)
 --------------------------------------------------------------------------------
-function UIController:_createUpgradeWindow()
+function UIController:_createQuestWindow()
 	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "UpgradeWindow"
+	screenGui.Name = "QuestWindow"
 	screenGui.ResetOnSpawn = false
 	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	screenGui.Enabled = false
 	screenGui.Parent = self._playerGui
-	self._screens.UpgradeWindow = screenGui
+	self._screens.QuestWindow = screenGui
 
-	-- Large centered frame with THICK border
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Name = "MainFrame"
 	mainFrame.Size = UDim2.fromScale(0.75, 0.75)
@@ -831,22 +800,31 @@ function UIController:_createUpgradeWindow()
 
 	local mainStroke = Instance.new("UIStroke")
 	mainStroke.Thickness = 5
-	mainStroke.Color = COLORS.NavUpgrades
+	mainStroke.Color = COLORS.NavQuests
 	mainStroke.Parent = mainFrame
 
-	-- Title "Upgrades" at top-center
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
 	title.Size = UDim2.fromScale(0.4, 0.08)
 	title.Position = UDim2.fromScale(0.3, 0.01)
 	title.BackgroundTransparency = 1
-	title.Text = "UPGRADES"
-	title.TextColor3 = COLORS.NavUpgrades
+	title.Text = "QUESTS"
+	title.TextColor3 = COLORS.NavQuests
 	title.Font = Enum.Font.GothamBold
 	title.TextScaled = true
 	title.Parent = mainFrame
 
-	-- BIG X close button (top-right corner, 44x44)
+	local subtitle = Instance.new("TextLabel")
+	subtitle.Name = "Subtitle"
+	subtitle.Size = UDim2.fromScale(0.6, 0.04)
+	subtitle.Position = UDim2.fromScale(0.2, 0.085)
+	subtitle.BackgroundTransparency = 1
+	subtitle.Text = "Complete quests to unlock powerful upgrades!"
+	subtitle.TextColor3 = Color3.fromRGB(180, 180, 200)
+	subtitle.Font = Enum.Font.Gotham
+	subtitle.TextScaled = true
+	subtitle.Parent = mainFrame
+
 	local closeBtn = Instance.new("TextButton")
 	closeBtn.Name = "CloseBtn"
 	closeBtn.Size = UDim2.fromOffset(44, 44)
@@ -863,14 +841,13 @@ function UIController:_createUpgradeWindow()
 	closeBtnCorner.Parent = closeBtn
 
 	closeBtn.MouseButton1Click:Connect(function()
-		self:toggleScreen("UpgradeWindow")
+		self:toggleScreen("QuestWindow")
 	end)
 
-	-- Scrolling frame for upgrade grid
 	local scrollFrame = Instance.new("ScrollingFrame")
-	scrollFrame.Name = "UpgradeGrid"
-	scrollFrame.Size = UDim2.fromScale(0.94, 0.82)
-	scrollFrame.Position = UDim2.fromScale(0.03, 0.12)
+	scrollFrame.Name = "QuestGrid"
+	scrollFrame.Size = UDim2.fromScale(0.94, 0.78)
+	scrollFrame.Position = UDim2.fromScale(0.03, 0.14)
 	scrollFrame.BackgroundTransparency = 1
 	scrollFrame.ScrollBarThickness = 8
 	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 130, 200)
@@ -879,84 +856,52 @@ function UIController:_createUpgradeWindow()
 
 	local gridLayout = Instance.new("UIGridLayout")
 	gridLayout.Name = "GridLayout"
-	gridLayout.CellSize = UDim2.fromOffset(180, 200)
+	gridLayout.CellSize = UDim2.fromOffset(220, 180)
 	gridLayout.CellPadding = UDim2.fromOffset(12, 12)
 	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	gridLayout.Parent = scrollFrame
 
-	-- Auto-size canvas
 	gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
 	end)
 
-	-- Populate upgrade cards
-	self:_refreshUpgradeGrid()
+	self:_refreshQuestGrid()
 end
 
-function UIController:_refreshUpgradeGrid()
-	local screenGui = self._screens.UpgradeWindow
+function UIController:_refreshQuestGrid()
+	local screenGui = self._screens.QuestWindow
 	if not screenGui then return end
 	local mainFrame = screenGui:FindFirstChild("MainFrame")
 	if not mainFrame then return end
-	local scrollFrame = mainFrame:FindFirstChild("UpgradeGrid")
+	local scrollFrame = mainFrame:FindFirstChild("QuestGrid")
 	if not scrollFrame then return end
 
-	-- Clear existing cards (keep layout)
 	for _, child in ipairs(scrollFrame:GetChildren()) do
 		if child:IsA("Frame") then
 			child:Destroy()
 		end
 	end
 
-	-- Define upgrade order and colors
-	local upgradeOrder = {
-		"Friendship", "Diamonds", "ExtraSlots", "FasterPets", "StrongPets",
-		"LuckyEggs", "GoldenPetsChance", "Sprinting", "DropCloner", "LuckyDrops",
-	}
+	for order, questId in ipairs(QuestData.QuestOrder) do
+		local questDef = QuestData.Quests[questId]
+		if not questDef then continue end
 
-	local upgradeColors = {
-		Friendship = Color3.fromRGB(255, 100, 150),
-		Diamonds = Color3.fromRGB(0, 180, 255),
-		ExtraSlots = Color3.fromRGB(100, 200, 0),
-		FasterPets = Color3.fromRGB(255, 200, 0),
-		StrongPets = Color3.fromRGB(255, 80, 0),
-		LuckyEggs = Color3.fromRGB(200, 100, 255),
-		GoldenPetsChance = Color3.fromRGB(255, 200, 0),
-		Sprinting = Color3.fromRGB(0, 220, 150),
-		DropCloner = Color3.fromRGB(0, 150, 255),
-		LuckyDrops = Color3.fromRGB(255, 220, 0),
-	}
+		local currentLevel = self._upgradeData[questId] or 0
+		local maxLevel = #questDef.levels
+		local questColor = Color3.fromRGB(questDef.color[1], questDef.color[2], questDef.color[3])
 
-	for order, upgradeName in ipairs(upgradeOrder) do
-		local currentLevel = self._upgradeData[upgradeName] or 0
-		local cardColor = upgradeColors[upgradeName] or Color3.fromRGB(100, 100, 200)
-		local iconChar = UPGRADE_ICONS[upgradeName] or "?"
-		local displayName = upgradeName
-
-		-- Get the actual upgrade definition from Config for accurate cost display
-		local upgradeDef = Config.Upgrades[upgradeName]
-		local maxLevel = upgradeDef and #upgradeDef.levels or 3
-
-		-- Calculate cost for next level from actual Config data
-		local costText = "MAX"
-		if currentLevel < maxLevel and upgradeDef then
-			local nextLevelData = upgradeDef.levels[currentLevel + 1]
-			if nextLevelData then
-				costText = tostring(nextLevelData.cost) .. " Coins"
-			end
-		end
-
-		-- Use the display name from Config if available
-		if upgradeDef and upgradeDef.displayName then
-			displayName = upgradeDef.displayName
-		end
+		-- Get progress from questProgress state
+		local progress = self._questProgress[questId]
+		local currentProgress = progress and progress.currentProgress or 0
+		local nextRequired = progress and progress.nextRequired or questDef.levelRequirements[1]
+		local isCompleted = currentLevel >= maxLevel
 
 		local card = Instance.new("Frame")
-		card.Name = "Upgrade_" .. upgradeName
+		card.Name = "Quest_" .. questId
 		card.BackgroundColor3 = Color3.fromRGB(
-			math.floor(cardColor.R * 255 * 0.3 + 30),
-			math.floor(cardColor.G * 255 * 0.3 + 30),
-			math.floor(cardColor.B * 255 * 0.3 + 50)
+			math.floor(questColor.R * 255 * 0.2 + 25),
+			math.floor(questColor.G * 255 * 0.2 + 25),
+			math.floor(questColor.B * 255 * 0.2 + 40)
 		)
 		card.LayoutOrder = order
 		card.Parent = scrollFrame
@@ -967,32 +912,46 @@ function UIController:_refreshUpgradeGrid()
 
 		local cardStroke = Instance.new("UIStroke")
 		cardStroke.Thickness = 3
-		cardStroke.Color = cardColor
+		cardStroke.Color = isCompleted and Color3.fromRGB(100, 100, 100) or questColor
 		cardStroke.Parent = card
 
 		-- Icon
 		local iconLabel = Instance.new("TextLabel")
 		iconLabel.Name = "Icon"
-		iconLabel.Size = UDim2.fromScale(0.4, 0.25)
-		iconLabel.Position = UDim2.fromScale(0.3, 0.03)
+		iconLabel.Size = UDim2.fromScale(0.25, 0.22)
+		iconLabel.Position = UDim2.fromScale(0.02, 0.03)
 		iconLabel.BackgroundTransparency = 1
-		iconLabel.Text = iconChar
-		iconLabel.TextColor3 = cardColor
+		iconLabel.Text = questDef.icon
+		iconLabel.TextColor3 = questColor
 		iconLabel.Font = Enum.Font.GothamBold
 		iconLabel.TextScaled = true
 		iconLabel.Parent = card
 
-		-- Upgrade name (bold)
+		-- Quest name
 		local nameLabel = Instance.new("TextLabel")
-		nameLabel.Name = "UpgradeName"
-		nameLabel.Size = UDim2.fromScale(0.9, 0.14)
-		nameLabel.Position = UDim2.fromScale(0.05, 0.3)
+		nameLabel.Name = "QuestName"
+		nameLabel.Size = UDim2.fromScale(0.7, 0.16)
+		nameLabel.Position = UDim2.fromScale(0.28, 0.03)
 		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = displayName
+		nameLabel.Text = questDef.displayName
 		nameLabel.TextColor3 = COLORS.White
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 		nameLabel.Font = Enum.Font.GothamBold
 		nameLabel.TextScaled = true
 		nameLabel.Parent = card
+
+		-- Description
+		local descLabel = Instance.new("TextLabel")
+		descLabel.Name = "Description"
+		descLabel.Size = UDim2.fromScale(0.9, 0.12)
+		descLabel.Position = UDim2.fromScale(0.05, 0.22)
+		descLabel.BackgroundTransparency = 1
+		descLabel.Text = questDef.description
+		descLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+		descLabel.TextXAlignment = Enum.TextXAlignment.Left
+		descLabel.Font = Enum.Font.Gotham
+		descLabel.TextScaled = true
+		descLabel.Parent = card
 
 		-- Level indicator
 		local levelText = ""
@@ -1002,34 +961,344 @@ function UIController:_refreshUpgradeGrid()
 		local levelLabel = Instance.new("TextLabel")
 		levelLabel.Name = "LevelIndicator"
 		levelLabel.Size = UDim2.fromScale(0.9, 0.12)
-		levelLabel.Position = UDim2.fromScale(0.05, 0.45)
+		levelLabel.Position = UDim2.fromScale(0.05, 0.36)
 		levelLabel.BackgroundTransparency = 1
-		levelLabel.Text = "Lv." .. tostring(currentLevel) .. " " .. levelText
-		levelLabel.TextColor3 = cardColor
+		levelLabel.Text = "Lv." .. tostring(currentLevel) .. "/" .. tostring(maxLevel) .. " " .. levelText
+		levelLabel.TextColor3 = questColor
+		levelLabel.TextXAlignment = Enum.TextXAlignment.Left
 		levelLabel.Font = Enum.Font.GothamBold
 		levelLabel.TextScaled = true
 		levelLabel.Parent = card
 
-		-- Cost
-		local costLabel = Instance.new("TextLabel")
-		costLabel.Name = "CostLabel"
-		costLabel.Size = UDim2.fromScale(0.9, 0.1)
-		costLabel.Position = UDim2.fromScale(0.05, 0.59)
-		costLabel.BackgroundTransparency = 1
-		costLabel.Text = costText
-		costLabel.TextColor3 = COLORS.CoinYellow
-		costLabel.Font = Enum.Font.GothamBold
-		costLabel.TextScaled = true
-		costLabel.Parent = card
+		-- Requirement text
+		local reqText = questDef.requirement.displayText
+		if not isCompleted then
+			local nextReq = questDef.levelRequirements[currentLevel + 1] or 0
+			reqText = questDef.requirement.displayText:gsub("%d[%d,]*", tostring(nextReq))
+		end
+		local reqLabel = Instance.new("TextLabel")
+		reqLabel.Name = "Requirement"
+		reqLabel.Size = UDim2.fromScale(0.9, 0.1)
+		reqLabel.Position = UDim2.fromScale(0.05, 0.5)
+		reqLabel.BackgroundTransparency = 1
+		reqLabel.Text = isCompleted and "COMPLETED!" or reqText
+		reqLabel.TextColor3 = isCompleted and Color3.fromRGB(0, 200, 80) or Color3.fromRGB(200, 200, 220)
+		reqLabel.TextXAlignment = Enum.TextXAlignment.Left
+		reqLabel.Font = Enum.Font.Gotham
+		reqLabel.TextScaled = true
+		reqLabel.Parent = card
 
-		-- BUY button (green, rounded)
-		if currentLevel < maxLevel then
+		-- Progress bar (only if not fully completed)
+		if not isCompleted then
+			local progressBg = Instance.new("Frame")
+			progressBg.Name = "ProgressBg"
+			progressBg.Size = UDim2.fromScale(0.9, 0.1)
+			progressBg.Position = UDim2.fromScale(0.05, 0.65)
+			progressBg.BackgroundColor3 = COLORS.QuestProgressBg
+			progressBg.BorderSizePixel = 0
+			progressBg.Parent = card
+
+			local progressCorner = Instance.new("UICorner")
+			progressCorner.CornerRadius = UDim.new(0.5, 0)
+			progressCorner.Parent = progressBg
+
+			local fillFraction = 0
+			if nextRequired > 0 then
+				fillFraction = math.clamp(currentProgress / nextRequired, 0, 1)
+			end
+
+			local progressFill = Instance.new("Frame")
+			progressFill.Name = "ProgressFill"
+			progressFill.Size = UDim2.fromScale(fillFraction, 1)
+			progressFill.BackgroundColor3 = questColor
+			progressFill.BorderSizePixel = 0
+			progressFill.Parent = progressBg
+
+			local fillCorner = Instance.new("UICorner")
+			fillCorner.CornerRadius = UDim.new(0.5, 0)
+			fillCorner.Parent = progressFill
+
+			-- Progress text overlay
+			local progressText = Instance.new("TextLabel")
+			progressText.Name = "ProgressText"
+			progressText.Size = UDim2.fromScale(1, 1)
+			progressText.BackgroundTransparency = 1
+			progressText.Text = tostring(currentProgress) .. " / " .. tostring(nextRequired)
+			progressText.TextColor3 = COLORS.White
+			progressText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+			progressText.TextStrokeTransparency = 0.5
+			progressText.Font = Enum.Font.GothamBold
+			progressText.TextScaled = true
+			progressText.ZIndex = 2
+			progressText.Parent = progressBg
+		end
+
+		-- Bonus info at bottom
+		if currentLevel > 0 then
+			local bonusValue = questDef.levels[currentLevel].bonus
+			local bonusText = ""
+			if bonusValue >= 1 then
+				bonusText = "Active: x" .. tostring(bonusValue)
+			else
+				bonusText = "Active: " .. tostring(math.floor(bonusValue * 100)) .. "%"
+			end
+			local bonusLabel = Instance.new("TextLabel")
+			bonusLabel.Name = "BonusLabel"
+			bonusLabel.Size = UDim2.fromScale(0.9, 0.12)
+			bonusLabel.Position = UDim2.fromScale(0.05, 0.82)
+			bonusLabel.BackgroundTransparency = 1
+			bonusLabel.Text = bonusText
+			bonusLabel.TextColor3 = Color3.fromRGB(0, 220, 100)
+			bonusLabel.TextXAlignment = Enum.TextXAlignment.Left
+			bonusLabel.Font = Enum.Font.GothamBold
+			bonusLabel.TextScaled = true
+			bonusLabel.Parent = card
+		end
+	end
+end
+
+--------------------------------------------------------------------------------
+-- MASTERY WINDOW
+--------------------------------------------------------------------------------
+function UIController:_createMasteryWindow()
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "MasteryWindow"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Enabled = false
+	screenGui.Parent = self._playerGui
+	self._screens.MasteryWindow = screenGui
+
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "MainFrame"
+	mainFrame.Size = UDim2.fromScale(0.7, 0.7)
+	mainFrame.Position = UDim2.fromScale(0.15, 0.15)
+	mainFrame.BackgroundColor3 = COLORS.Background
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Parent = screenGui
+
+	local mainCorner = Instance.new("UICorner")
+	mainCorner.CornerRadius = UDim.new(0, 16)
+	mainCorner.Parent = mainFrame
+
+	local mainStroke = Instance.new("UIStroke")
+	mainStroke.Thickness = 5
+	mainStroke.Color = COLORS.MasteryPurple
+	mainStroke.Parent = mainFrame
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.fromScale(0.4, 0.08)
+	title.Position = UDim2.fromScale(0.3, 0.01)
+	title.BackgroundTransparency = 1
+	title.Text = "MASTERY"
+	title.TextColor3 = COLORS.MasteryPurple
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = mainFrame
+
+	-- Points available display
+	local pointsLabel = Instance.new("TextLabel")
+	pointsLabel.Name = "PointsLabel"
+	pointsLabel.Size = UDim2.fromScale(0.4, 0.05)
+	pointsLabel.Position = UDim2.fromScale(0.3, 0.09)
+	pointsLabel.BackgroundTransparency = 1
+	pointsLabel.Text = "Points: " .. tostring(self._masteryState.masteryPoints)
+	pointsLabel.TextColor3 = COLORS.CoinYellow
+	pointsLabel.Font = Enum.Font.GothamBold
+	pointsLabel.TextScaled = true
+	pointsLabel.Parent = mainFrame
+
+	local subtitle = Instance.new("TextLabel")
+	subtitle.Name = "Subtitle"
+	subtitle.Size = UDim2.fromScale(0.6, 0.035)
+	subtitle.Position = UDim2.fromScale(0.2, 0.14)
+	subtitle.BackgroundTransparency = 1
+	subtitle.Text = "Earn points from leveling up. Spend them on permanent buffs!"
+	subtitle.TextColor3 = Color3.fromRGB(180, 180, 200)
+	subtitle.Font = Enum.Font.Gotham
+	subtitle.TextScaled = true
+	subtitle.Parent = mainFrame
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(44, 44)
+	closeBtn.Position = UDim2.new(1, -54, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 24
+	closeBtn.Parent = mainFrame
+
+	local closeBtnCorner = Instance.new("UICorner")
+	closeBtnCorner.CornerRadius = UDim.new(1, 0)
+	closeBtnCorner.Parent = closeBtn
+
+	closeBtn.MouseButton1Click:Connect(function()
+		self:toggleScreen("MasteryWindow")
+	end)
+
+	local scrollFrame = Instance.new("ScrollingFrame")
+	scrollFrame.Name = "MasteryGrid"
+	scrollFrame.Size = UDim2.fromScale(0.94, 0.72)
+	scrollFrame.Position = UDim2.fromScale(0.03, 0.19)
+	scrollFrame.BackgroundTransparency = 1
+	scrollFrame.ScrollBarThickness = 8
+	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(150, 100, 220)
+	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
+	scrollFrame.Parent = mainFrame
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.Name = "GridLayout"
+	gridLayout.CellSize = UDim2.fromOffset(200, 180)
+	gridLayout.CellPadding = UDim2.fromOffset(12, 12)
+	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	gridLayout.Parent = scrollFrame
+
+	gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
+	end)
+
+	self:_refreshMasteryGrid()
+end
+
+function UIController:_refreshMasteryGrid()
+	local screenGui = self._screens.MasteryWindow
+	if not screenGui then return end
+	local mainFrame = screenGui:FindFirstChild("MainFrame")
+	if not mainFrame then return end
+	local scrollFrame = mainFrame:FindFirstChild("MasteryGrid")
+	if not scrollFrame then return end
+
+	-- Update points display
+	local pointsLabel = mainFrame:FindFirstChild("PointsLabel")
+	if pointsLabel then
+		pointsLabel.Text = "Points: " .. tostring(self._masteryState.masteryPoints)
+	end
+
+	for _, child in ipairs(scrollFrame:GetChildren()) do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	local buffs = self._masteryState.buffs or {}
+
+	for order, buffId in ipairs(MasteryData.BuffOrder) do
+		local buffDef = MasteryData.Buffs[buffId]
+		if not buffDef then continue end
+
+		local currentLevel = buffs[buffId] or 0
+		local maxLevel = buffDef.maxLevel
+		local buffColor = Color3.fromRGB(buffDef.color[1], buffDef.color[2], buffDef.color[3])
+		local isMaxed = currentLevel >= maxLevel
+
+		local card = Instance.new("Frame")
+		card.Name = "Buff_" .. buffId
+		card.BackgroundColor3 = Color3.fromRGB(
+			math.floor(buffColor.R * 255 * 0.2 + 25),
+			math.floor(buffColor.G * 255 * 0.2 + 25),
+			math.floor(buffColor.B * 255 * 0.2 + 40)
+		)
+		card.LayoutOrder = order
+		card.Parent = scrollFrame
+
+		local cardCorner = Instance.new("UICorner")
+		cardCorner.CornerRadius = UDim.new(0, 12)
+		cardCorner.Parent = card
+
+		local cardStroke = Instance.new("UIStroke")
+		cardStroke.Thickness = 3
+		cardStroke.Color = buffColor
+		cardStroke.Parent = card
+
+		-- Icon
+		local iconLabel = Instance.new("TextLabel")
+		iconLabel.Name = "Icon"
+		iconLabel.Size = UDim2.fromScale(0.35, 0.25)
+		iconLabel.Position = UDim2.fromScale(0.325, 0.02)
+		iconLabel.BackgroundTransparency = 1
+		iconLabel.Text = buffDef.icon
+		iconLabel.TextColor3 = buffColor
+		iconLabel.Font = Enum.Font.GothamBold
+		iconLabel.TextScaled = true
+		iconLabel.Parent = card
+
+		-- Buff name
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "BuffName"
+		nameLabel.Size = UDim2.fromScale(0.9, 0.14)
+		nameLabel.Position = UDim2.fromScale(0.05, 0.28)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = buffDef.displayName
+		nameLabel.TextColor3 = COLORS.White
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextScaled = true
+		nameLabel.Parent = card
+
+		-- Description
+		local descLabel = Instance.new("TextLabel")
+		descLabel.Name = "Description"
+		descLabel.Size = UDim2.fromScale(0.9, 0.1)
+		descLabel.Position = UDim2.fromScale(0.05, 0.42)
+		descLabel.BackgroundTransparency = 1
+		descLabel.Text = buffDef.description
+		descLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+		descLabel.Font = Enum.Font.Gotham
+		descLabel.TextScaled = true
+		descLabel.Parent = card
+
+		-- Level indicator
+		local levelText = "Lv." .. tostring(currentLevel) .. "/" .. tostring(maxLevel)
+		local levelLabel = Instance.new("TextLabel")
+		levelLabel.Name = "LevelIndicator"
+		levelLabel.Size = UDim2.fromScale(0.9, 0.1)
+		levelLabel.Position = UDim2.fromScale(0.05, 0.54)
+		levelLabel.BackgroundTransparency = 1
+		levelLabel.Text = levelText
+		levelLabel.TextColor3 = buffColor
+		levelLabel.Font = Enum.Font.GothamBold
+		levelLabel.TextScaled = true
+		levelLabel.Parent = card
+
+		-- Current bonus display
+		if currentLevel > 0 then
+			local bonusValue = buffDef.bonusPerLevel[currentLevel]
+			local bonusText = "x" .. tostring(bonusValue)
+			local activeLabel = Instance.new("TextLabel")
+			activeLabel.Name = "ActiveBonus"
+			activeLabel.Size = UDim2.fromScale(0.9, 0.09)
+			activeLabel.Position = UDim2.fromScale(0.05, 0.64)
+			activeLabel.BackgroundTransparency = 1
+			activeLabel.Text = "Bonus: " .. bonusText
+			activeLabel.TextColor3 = Color3.fromRGB(0, 220, 100)
+			activeLabel.Font = Enum.Font.GothamBold
+			activeLabel.TextScaled = true
+			activeLabel.Parent = card
+		end
+
+		-- Buy button or MAXED label
+		if isMaxed then
+			local maxLabel = Instance.new("TextLabel")
+			maxLabel.Size = UDim2.fromScale(0.7, 0.15)
+			maxLabel.Position = UDim2.fromScale(0.15, 0.78)
+			maxLabel.BackgroundTransparency = 1
+			maxLabel.Text = "MAXED"
+			maxLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+			maxLabel.Font = Enum.Font.GothamBold
+			maxLabel.TextScaled = true
+			maxLabel.Parent = card
+		else
+			local cost = buffDef.pointsPerLevel[currentLevel + 1]
+			local canAfford = (self._masteryState.masteryPoints or 0) >= cost
+
 			local buyBtn = Instance.new("TextButton")
 			buyBtn.Name = "BuyBtn"
 			buyBtn.Size = UDim2.fromScale(0.7, 0.17)
-			buyBtn.Position = UDim2.fromScale(0.15, 0.75)
-			buyBtn.BackgroundColor3 = COLORS.ButtonGreen
-			buyBtn.Text = "BUY"
+			buyBtn.Position = UDim2.fromScale(0.15, 0.78)
+			buyBtn.BackgroundColor3 = canAfford and COLORS.MasteryPurple or Color3.fromRGB(80, 80, 100)
+			buyBtn.Text = tostring(cost) .. " pts"
 			buyBtn.TextColor3 = COLORS.White
 			buyBtn.Font = Enum.Font.GothamBold
 			buyBtn.TextScaled = true
@@ -1041,14 +1310,13 @@ function UIController:_refreshUpgradeGrid()
 
 			local buyStroke = Instance.new("UIStroke")
 			buyStroke.Thickness = 2
-			buyStroke.Color = Color3.fromRGB(0, 150, 50)
+			buyStroke.Color = canAfford and Color3.fromRGB(120, 50, 180) or Color3.fromRGB(60, 60, 80)
 			buyStroke.Parent = buyBtn
 
 			buyBtn.MouseButton1Click:Connect(function()
-				self:_purchaseUpgrade(upgradeName)
+				self:_purchaseMasteryBuff(buffId)
 			end)
 
-			-- Hover effect
 			buyBtn.MouseEnter:Connect(function()
 				TweenService:Create(buyBtn, TweenInfo.new(0.1), {
 					Size = UDim2.fromScale(0.74, 0.18),
@@ -1059,35 +1327,23 @@ function UIController:_refreshUpgradeGrid()
 					Size = UDim2.fromScale(0.7, 0.17),
 				}):Play()
 			end)
-		else
-			local maxLabel = Instance.new("TextLabel")
-			maxLabel.Size = UDim2.fromScale(0.7, 0.17)
-			maxLabel.Position = UDim2.fromScale(0.15, 0.75)
-			maxLabel.BackgroundTransparency = 1
-			maxLabel.Text = "MAXED"
-			maxLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-			maxLabel.Font = Enum.Font.GothamBold
-			maxLabel.TextScaled = true
-			maxLabel.Parent = card
 		end
 	end
 end
 
-function UIController:_purchaseUpgrade(upgradeName)
+function UIController:_purchaseMasteryBuff(buffId)
 	if self._remotes then
-		local remote = self._remotes:FindFirstChild("PurchaseUpgrade")
+		local remote = self._remotes:FindFirstChild("PurchaseMasteryBuff")
 		if remote then
-			remote:InvokeServer(upgradeName)
+			remote:InvokeServer(buffId)
 		end
 	end
 end
 
 --------------------------------------------------------------------------------
--- EGG STATION PROMPT (replaces old Shop Window)
--- Shows when player walks near an egg station in the world (like Pet Simulator)
+-- EGG STATION PROMPT
 --------------------------------------------------------------------------------
 function UIController:_createShopWindow()
-	-- The "ShopWindow" screen now serves as the egg station hatch prompt
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "ShopWindow"
 	screenGui.ResetOnSpawn = false
@@ -1096,7 +1352,6 @@ function UIController:_createShopWindow()
 	screenGui.Parent = self._playerGui
 	self._screens.ShopWindow = screenGui
 
-	-- Info frame (smaller, bottom-center prompt)
 	local promptFrame = Instance.new("Frame")
 	promptFrame.Name = "EggPrompt"
 	promptFrame.Size = UDim2.fromScale(0.35, 0.2)
@@ -1115,7 +1370,6 @@ function UIController:_createShopWindow()
 	promptStroke.Color = COLORS.NavShop
 	promptStroke.Parent = promptFrame
 
-	-- Egg name label
 	local eggNameLabel = Instance.new("TextLabel")
 	eggNameLabel.Name = "EggNameLabel"
 	eggNameLabel.Size = UDim2.fromScale(0.9, 0.25)
@@ -1127,7 +1381,6 @@ function UIController:_createShopWindow()
 	eggNameLabel.TextScaled = true
 	eggNameLabel.Parent = promptFrame
 
-	-- Cost label
 	local costLabel = Instance.new("TextLabel")
 	costLabel.Name = "CostLabel"
 	costLabel.Size = UDim2.fromScale(0.9, 0.2)
@@ -1139,7 +1392,6 @@ function UIController:_createShopWindow()
 	costLabel.TextScaled = true
 	costLabel.Parent = promptFrame
 
-	-- Hatch button (big green)
 	local hatchBtn = Instance.new("TextButton")
 	hatchBtn.Name = "HatchBtn"
 	hatchBtn.Size = UDim2.fromScale(0.6, 0.3)
@@ -1160,14 +1412,12 @@ function UIController:_createShopWindow()
 	hatchStroke.Color = Color3.fromRGB(0, 150, 50)
 	hatchStroke.Parent = hatchBtn
 
-	-- Connect hatch button
 	hatchBtn.MouseButton1Click:Connect(function()
 		if self._currentEggType then
 			self:_hatchEgg(self._currentEggType)
 		end
 	end)
 
-	-- Hover effect
 	hatchBtn.MouseEnter:Connect(function()
 		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
 			Size = UDim2.fromScale(0.64, 0.32),
@@ -1179,15 +1429,12 @@ function UIController:_createShopWindow()
 		}):Play()
 	end)
 
-	-- Store current egg type for hatching
 	self._currentEggType = nil
 end
 
--- Show the egg station prompt when player is near an egg station
 function UIController:showEggStationPrompt(eggType)
 	if not self._screens.ShopWindow then return end
 
-	-- Map egg type to display info
 	local eggInfo = {
 		BasicEgg = { name = "Basic Egg", cost = Config.EggCosts[1] and Config.EggCosts[1].Coins or 100 },
 		PremiumEgg = { name = "Premium Egg", cost = Config.EggCosts[2] and Config.EggCosts[2].Coins or 500 },
@@ -1196,7 +1443,6 @@ function UIController:showEggStationPrompt(eggType)
 	local info = eggInfo[eggType]
 	if not info then return end
 
-	-- Update prompt labels
 	local screenGui = self._screens.ShopWindow
 	local promptFrame = screenGui:FindFirstChild("EggPrompt")
 	if promptFrame then
@@ -1210,20 +1456,14 @@ function UIController:showEggStationPrompt(eggType)
 		end
 	end
 
-	-- Store the egg type and show the prompt
 	self._currentEggType = eggType
 	screenGui.Enabled = true
 
-	-- Auto-hide after 5 seconds if not interacted
 	task.delay(5, function()
 		if screenGui.Enabled and self._currentEggType == eggType then
 			screenGui.Enabled = false
 		end
 	end)
-end
-
-function UIController:_refreshShop()
-	-- No longer needs to populate cards; the egg station prompt is dynamic
 end
 
 function UIController:_hatchEgg(eggType)
@@ -1239,7 +1479,6 @@ end
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
--- Update currency display
 function UIController:updateCurrency(coins, diamonds)
 	if self._coinLabel then
 		self._coinLabel.Text = tostring(coins or 0)
@@ -1249,30 +1488,35 @@ function UIController:updateCurrency(coins, diamonds)
 	end
 end
 
--- Update pet inventory data and refresh grid
 function UIController:updatePetInventory(pets)
 	self._petInventoryData = pets or {}
 	self:_refreshPetGrid()
 end
 
--- Update equipped pets and refresh bar
 function UIController:updateEquippedPets(equippedPets)
 	self._equippedPets = equippedPets or {}
 	self:_refreshEquippedBar()
 	self:_refreshPetGrid()
 end
 
--- Update upgrades data and refresh grid
 function UIController:updateUpgrades(upgrades)
 	self._upgradeData = upgrades or {}
-	self:_refreshUpgradeGrid()
+	self:_refreshQuestGrid()
 end
 
--- Show egg hatch result overlay
+function UIController:updateQuestProgress(questProgress)
+	self._questProgress = questProgress or {}
+	self:_refreshQuestGrid()
+end
+
+function UIController:updateMastery(masteryState)
+	self._masteryState = masteryState or { masteryPoints = 0, level = 1, buffs = {} }
+	self:_refreshMasteryGrid()
+end
+
 function UIController:showEggHatch(petData)
 	if not self._playerGui then return end
 
-	-- Create a simple overlay showing the hatched pet
 	local overlay = Instance.new("ScreenGui")
 	overlay.Name = "EggHatchOverlay"
 	overlay.ResetOnSpawn = false
@@ -1301,7 +1545,6 @@ function UIController:showEggHatch(petData)
 	panelStroke.Color = rarityColor
 	panelStroke.Parent = panel
 
-	-- "NEW PET!" text
 	local newPetText = Instance.new("TextLabel")
 	newPetText.Size = UDim2.fromScale(0.8, 0.15)
 	newPetText.Position = UDim2.fromScale(0.1, 0.05)
@@ -1312,7 +1555,6 @@ function UIController:showEggHatch(petData)
 	newPetText.TextScaled = true
 	newPetText.Parent = panel
 
-	-- Pet icon
 	local petIcon = Instance.new("Frame")
 	petIcon.Size = UDim2.fromScale(0.35, 0.35)
 	petIcon.Position = UDim2.fromScale(0.325, 0.22)
@@ -1323,7 +1565,6 @@ function UIController:showEggHatch(petData)
 	petIconCorner.CornerRadius = UDim.new(1, 0)
 	petIconCorner.Parent = petIcon
 
-	-- Pet name
 	local petName = Instance.new("TextLabel")
 	petName.Size = UDim2.fromScale(0.8, 0.12)
 	petName.Position = UDim2.fromScale(0.1, 0.6)
@@ -1334,7 +1575,6 @@ function UIController:showEggHatch(petData)
 	petName.TextScaled = true
 	petName.Parent = panel
 
-	-- Rarity
 	local rarityText = Instance.new("TextLabel")
 	rarityText.Size = UDim2.fromScale(0.8, 0.08)
 	rarityText.Position = UDim2.fromScale(0.1, 0.73)
@@ -1345,7 +1585,6 @@ function UIController:showEggHatch(petData)
 	rarityText.TextScaled = true
 	rarityText.Parent = panel
 
-	-- OK button
 	local okBtn = Instance.new("TextButton")
 	okBtn.Size = UDim2.fromScale(0.4, 0.12)
 	okBtn.Position = UDim2.fromScale(0.3, 0.84)
@@ -1364,7 +1603,6 @@ function UIController:showEggHatch(petData)
 		overlay:Destroy()
 	end)
 
-	-- Auto-close after 5 seconds
 	task.delay(5, function()
 		if overlay and overlay.Parent then
 			overlay:Destroy()
@@ -1372,23 +1610,46 @@ function UIController:showEggHatch(petData)
 	end)
 end
 
--- Toggle a screen on/off
 function UIController:toggleScreen(screenName)
 	local screen = self._screens[screenName]
 	if screen then
 		screen.Enabled = not screen.Enabled
-		-- Close other screens when opening one
 		if screen.Enabled then
 			for name, otherScreen in pairs(self._screens) do
 				if name ~= screenName and name ~= "MainHUD" then
 					otherScreen.Enabled = false
 				end
 			end
+			-- Refresh quest progress when opening quest window
+			if screenName == "QuestWindow" and self._remotes then
+				local remote = self._remotes:FindFirstChild("GetQuestProgress")
+				if remote then
+					task.spawn(function()
+						local progress = remote:InvokeServer()
+						if progress then
+							self._questProgress = progress
+							self:_refreshQuestGrid()
+						end
+					end)
+				end
+			end
+			-- Refresh mastery state when opening mastery window
+			if screenName == "MasteryWindow" and self._remotes then
+				local remote = self._remotes:FindFirstChild("GetMasteryState")
+				if remote then
+					task.spawn(function()
+						local state = remote:InvokeServer()
+						if state then
+							self._masteryState = state
+							self:_refreshMasteryGrid()
+						end
+					end)
+				end
+			end
 		end
 	end
 end
 
--- Update XP bar
 function UIController:updateXP(level, xp, xpNeeded)
 	if self._xpFill then
 		local fillFraction = math.clamp(xp / math.max(xpNeeded, 1), 0, 1)
@@ -1401,7 +1662,6 @@ function UIController:updateXP(level, xp, xpNeeded)
 	end
 end
 
--- Cleanup
 function UIController:cleanup()
 	for _, screen in pairs(self._screens) do
 		screen:Destroy()
