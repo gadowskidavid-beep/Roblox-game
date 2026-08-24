@@ -2,7 +2,7 @@
   "id": "FEAT-006",
   "type": "fix",
   "description": "Fix 4 client-server event payload mismatches from v3 review: CurrencyUpdated, UpgradeUpdated, CampaignVictory, and EggHatchStart/EggHatchResult",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Fix CurrencyService.lua to send two positional args (data.coins, data.diamonds) instead of a table",
     "Fix UpgradeService.lua to send the full data.upgrades table instead of (upgradeId, level)",
@@ -27,5 +27,5 @@
     "Verify EggHatchStart/EggHatchResult handlers do not expect position"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "All 4 v3 review payload mismatches resolved. CurrencyService had 4 FireClient calls all sending a table - changed all to two positional args. UpgradeService changed from (upgradeId, level) to full data.upgrades table. CampaignVictory client handler now accepts (levelNum, rewards) and passes rewards. EggHatch handlers use player character position (HumanoidRootPart + offset) for animation origin instead of expecting server-sent position. Added nil guard in EffectsController.showEggHatchAnimation. BATTLE_PETS.rbxlx regenerated and validated (212,670 bytes, 92 items)."
 }
