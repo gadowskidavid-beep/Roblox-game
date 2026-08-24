@@ -4,17 +4,13 @@
     "$className": "DataModel",
     "ServerScriptService": {
       "$className": "ServerScriptService",
-      "Server": {
-        "$path": "src/ServerScriptService/Server"
-      }
+      "$path": "src/ServerScriptService"
     },
     "StarterPlayer": {
       "$className": "StarterPlayer",
       "StarterPlayerScripts": {
         "$className": "StarterPlayerScripts",
-        "Client": {
-          "$path": "src/StarterPlayer/StarterPlayerScripts/Client"
-        }
+        "$path": "src/StarterPlayer/StarterPlayerScripts"
       }
     },
     "ReplicatedStorage": {
