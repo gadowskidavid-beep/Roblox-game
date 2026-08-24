@@ -70,8 +70,22 @@ local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 --------------------------------------------------------------------------------
 -- INITIALIZATION
 --------------------------------------------------------------------------------
--- Get initial player data from server
+-- Get initial player data from server (may be nil if DataService load fails)
 local playerData = GetPlayerData:InvokeServer()
+if not playerData then
+	-- Use safe defaults so the UI still renders
+	playerData = {
+		coins = 0,
+		diamonds = 0,
+		xp = 0,
+		level = 1,
+		pets = {},
+		unlockedZones = {1},
+		campaignProgress = {},
+		upgrades = {},
+		equippedPets = {},
+	}
+end
 
 -- Local list of currently equipped pet data tables (maintained incrementally)
 local localEquippedPets = {}
@@ -184,7 +198,8 @@ DestructibleDamaged.OnClientEvent:Connect(function(destructibleId, currentHP, ma
 	-- Resolve string ID to a Part in workspace.Zones
 	local destructiblePart = resolveDestructiblePart(destructibleId)
 	if destructiblePart then
-		effectsController:updateProgressBar(destructiblePart, currentHP, maxHP)
+		-- Show or update progress bar (show creates it if not existing)
+		effectsController:showProgressBar(destructiblePart, currentHP, maxHP)
 		if damage and damage > 0 then
 			petController:showDamageText(destructiblePart.Position, damage)
 		end
@@ -267,16 +282,11 @@ RunService.RenderStepped:Connect(function(deltaTime)
 	-- Update pet following/orbiting
 	petController:update(deltaTime)
 
-	-- Check if player is near a destructible and send pets to attack
-	local nearestDestructible = petController:getNearestDestructible(20)
-	if nearestDestructible then
-		-- Show progress bar
-		local hpValue = nearestDestructible:FindFirstChild("HP")
-		local maxHPValue = nearestDestructible:FindFirstChild("MaxHP")
-		if hpValue and maxHPValue then
-			effectsController:showProgressBar(nearestDestructible, hpValue.Value, maxHPValue.Value)
-		end
-	end
+	-- NOTE: We do NOT check for HP/MaxHP IntValue children here.
+	-- The server-side ZoneService only creates a StringValue "DestructibleId"
+	-- on each destructible Part. The client learns HP state through the
+	-- DestructibleDamaged remote event, which calls effectsController:updateProgressBar.
+	-- The progress bar is shown when the first DestructibleDamaged event arrives.
 end)
 
 --------------------------------------------------------------------------------

@@ -215,7 +215,14 @@ def make_remote_function_xml(name, lvl=4):
 
 
 def build_workspace():
-    """Build the Workspace hierarchy with procedural geometry."""
+    """Build the Workspace hierarchy with static geometry only.
+
+    NOTE: Destructible Parts (CoinPiles, DiamondPiles, Crates) are NOT placed here.
+    The server-side ZoneService.init() creates a "Zones" folder and spawns all
+    destructibles dynamically with proper DestructibleId StringValue children.
+    Placing them statically in the .rbxlx would create duplicates without the
+    required metadata and break the client code that searches workspace.Zones.
+    """
     parts = []
 
     # SpawnLocation
@@ -225,80 +232,19 @@ def build_workspace():
         255, 255, 255, material=256
     ))
 
-    # Zone 1: Gruene Wiesen - large green baseplate
+    # Zone 1: Gruene Wiesen - large green baseplate (static scenery only)
     parts.append(make_part_xml(
         "Zone1_GrueneWiesen", "Part",
         0, 0, -100, 200, 2, 200,
         76, 204, 51, material=1024
     ))
 
-    # Zone 1 Coin Piles (yellow cylinders)
-    coin_positions = [
-        (-30, 3, -80), (-50, 3, -120), (20, 3, -60),
-        (40, 3, -140), (-10, 3, -160), (60, 3, -90),
-        (-70, 3, -50), (30, 3, -180)
-    ]
-    for i, pos in enumerate(coin_positions, 1):
-        parts.append(make_part_xml(
-            f"CoinPile_{i}", "Part",
-            pos[0], pos[1], pos[2], 3, 4, 3,
-            255, 217, 25, material=256, shape_token=1
-        ))
-
-    # Zone 1 Diamond Piles (blue wedges)
-    diamond_positions = [
-        (-20, 3, -110), (50, 3, -70), (-60, 3, -150),
-        (10, 3, -190), (70, 3, -130)
-    ]
-    for i, pos in enumerate(diamond_positions, 1):
-        parts.append(make_part_xml(
-            f"DiamondPile_{i}", "WedgePart",
-            pos[0], pos[1], pos[2], 3, 5, 3,
-            51, 128, 255, material=256
-        ))
-
-    # Zone 1 Crates (brown cubes)
-    crate_positions = [
-        (-40, 3, -90), (25, 3, -100), (-15, 3, -140),
-        (55, 3, -50), (-65, 3, -170), (35, 3, -160)
-    ]
-    for i, pos in enumerate(crate_positions, 1):
-        parts.append(make_part_xml(
-            f"Crate_{i}", "Part",
-            pos[0], pos[1], pos[2], 4, 4, 4,
-            140, 89, 38, material=512
-        ))
-
-    # Zone 2: Stadt - gray baseplate
+    # Zone 2: Stadt - gray baseplate (static scenery only)
     parts.append(make_part_xml(
         "Zone2_Stadt", "Part",
         250, 0, -100, 200, 2, 200,
         128, 128, 140, material=768
     ))
-
-    # Zone 2 Urban Crates
-    urban_crate_positions = [
-        (220, 3, -80), (260, 3, -120), (240, 3, -60),
-        (280, 3, -140), (230, 3, -160), (270, 3, -90)
-    ]
-    for i, pos in enumerate(urban_crate_positions, 1):
-        parts.append(make_part_xml(
-            f"UrbanCrate_{i}", "Part",
-            pos[0], pos[1], pos[2], 5, 5, 5,
-            102, 102, 115, material=256
-        ))
-
-    # Zone 2 Urban Coin Piles
-    urban_coin_positions = [
-        (210, 3, -110), (290, 3, -70), (245, 3, -150),
-        (265, 3, -190), (235, 3, -40)
-    ]
-    for i, pos in enumerate(urban_coin_positions, 1):
-        parts.append(make_part_xml(
-            f"UrbanCoinPile_{i}", "Part",
-            pos[0], pos[1], pos[2], 3, 4, 3,
-            255, 217, 25, material=256, shape_token=1
-        ))
 
     # Campaign Portal - purple Neon archway
     parts.append(make_part_xml(
@@ -393,7 +339,14 @@ def build_lighting():
 
 
 def build_replicated_storage():
-    """Build ReplicatedStorage with Shared modules and Remotes."""
+    """Build ReplicatedStorage with Shared modules only.
+
+    NOTE: The Remotes folder is NOT included here. The server Main.server.lua
+    creates it at runtime via Instance.new("Folder") with all RemoteEvents and
+    RemoteFunctions. Including it in the .rbxlx would create a duplicate folder
+    that conflicts with the server-created one. The client uses WaitForChild("Remotes")
+    which correctly waits for the server to create it.
+    """
     # Shared folder with ModuleScripts
     shared_modules = []
     module_names = ["Config", "PetData", "ZoneData", "CampaignData"]
@@ -405,50 +358,8 @@ def build_replicated_storage():
     shared_children = "\n".join(shared_modules)
     shared_folder = make_folder_xml("Shared", shared_children, lvl=3)
 
-    # Remotes folder - extracted from Main.server.lua
-    remote_events = [
-        "CurrencyUpdated",
-        "PetInventoryUpdated",
-        "PetEquipped",
-        "PetUnequipped",
-        "ZoneUnlocked",
-        "DestructibleDamaged",
-        "DestructibleDestroyed",
-        "EggHatchStart",
-        "EggHatchResult",
-        "CampaignBattleUpdate",
-        "CampaignVictory",
-        "CampaignDefeat",
-        "UpgradeUpdated",
-        "CollectCurrency",
-    ]
-
-    remote_functions = [
-        "HatchEgg",
-        "EquipPet",
-        "UnequipPet",
-        "DeletePet",
-        "DeletePets",
-        "UnlockZone",
-        "PurchaseUpgrade",
-        "GetPlayerData",
-        "StartCampaignLevel",
-        "DeployPetInCampaign",
-        "AttackDestructible",
-    ]
-
-    remotes_items = []
-    for ev_name in remote_events:
-        remotes_items.append(make_remote_event_xml(ev_name, lvl=4))
-    for fn_name in remote_functions:
-        remotes_items.append(make_remote_function_xml(fn_name, lvl=4))
-
-    remotes_children = "\n".join(remotes_items)
-    remotes_folder = make_folder_xml("Remotes", remotes_children, lvl=3)
-
-    # Combine into ReplicatedStorage
-    rs_children = f"{shared_folder}\n{remotes_folder}"
-    return make_service_xml("ReplicatedStorage", "ReplicatedStorage", rs_children)
+    # ReplicatedStorage contains only the Shared folder
+    return make_service_xml("ReplicatedStorage", "ReplicatedStorage", shared_folder)
 
 
 def build_server_script_service():

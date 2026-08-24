@@ -340,8 +340,11 @@ function EffectsController:showProgressBar(destructible, currentHP, maxHP)
 	if not self._initialized then return end
 	if not destructible or not destructible:IsA("BasePart") then return end
 
-	-- Remove existing bar if present
-	self:removeProgressBar(destructible)
+	-- If a bar already exists for this destructible, update it instead of recreating
+	if self._progressBars[destructible] then
+		self:updateProgressBar(destructible, currentHP, maxHP)
+		return
+	end
 
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "HPBar"
@@ -364,10 +367,10 @@ function EffectsController:showProgressBar(destructible, currentHP, maxHP)
 	outerCorner.Parent = outerFrame
 
 	-- Inner fill frame
-	local fillFraction = math.clamp(currentHP / maxHP, 0, 1)
+	local fillFraction = math.clamp(currentHP / math.max(maxHP, 1), 0, 1)
 	local fillFrame = Instance.new("Frame")
 	fillFrame.Name = "Fill"
-	fillFrame.Size = UDim2.fromScale(fillFraction, 0.8)
+	fillFrame.Size = UDim2.fromScale(fillFraction * 0.98, 0.8)
 	fillFrame.Position = UDim2.fromScale(0.01, 0.1)
 	fillFrame.BackgroundColor3 = Color3.fromRGB(0, 200, 50)
 	fillFrame.BorderSizePixel = 0
@@ -391,7 +394,7 @@ function EffectsController:updateProgressBar(destructible, currentHP, maxHP)
 	local fillFrame = outerFrame:FindFirstChild("Fill")
 	if not fillFrame then return end
 
-	local fillFraction = math.clamp(currentHP / maxHP, 0, 1)
+	local fillFraction = math.clamp(currentHP / math.max(maxHP, 1), 0, 1)
 
 	-- Change color based on HP percentage
 	local color

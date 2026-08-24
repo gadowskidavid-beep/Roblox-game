@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-007",
+  "type": "fix",
+  "description": "Fix runtime crashes: remove duplicate Remotes from .rbxlx (server creates them), restructure Workspace to not include raw destructible Parts (ZoneService spawns them dynamically), fix client RenderStepped nil access on HP/MaxHP IntValues, add nil guard for playerData",
+  "status": "in_progress",
+  "steps": [
+    "Update generate_rbxlx.py: Remove the Remotes folder from ReplicatedStorage (server Main creates it at runtime)",
+    "Update generate_rbxlx.py: Remove all destructible Parts (CoinPile, DiamondPile, Crate, UrbanCrate, UrbanCoinPile) from Workspace - ZoneService spawns them dynamically with proper DestructibleId children",
+    "Keep only SpawnLocation, zone ground baseplates (Zone1_GrueneWiesen, Zone2_Stadt), CampaignPortal, ZoneGate, Terrain, Camera in Workspace",
+    "Fix Main.client.lua RenderStepped: remove check for HP/MaxHP IntValues since server does not create them on Parts - the client learns HP only through DestructibleDamaged events",
+    "Add nil guard in Main.client.lua: if GetPlayerData returns nil, use default empty data",
+    "Regenerate BATTLE_PETS.rbxlx and validate"
+  ],
+  "acceptance_criteria": [
+    "No Remotes folder in .rbxlx ReplicatedStorage (server creates it)",
+    "No raw destructible Parts in Workspace (ZoneService creates them with DestructibleId at runtime)",
+    "Workspace still contains SpawnLocation, zone baseplates, CampaignPortal, ZoneGate",
+    "Client RenderStepped does not crash on nil HP/MaxHP IntValues",
+    "Client handles nil playerData gracefully",
+    "BATTLE_PETS.rbxlx is valid XML"
+  ],
+  "verification": [
+    "Run: PYENV_VERSION=3.11.15 python -c \"import xml.etree.ElementTree as ET; ET.parse('/projects/Roblox-game/BATTLE_PETS.rbxlx'); print('Valid')\"",
+    "Verify no RemoteEvent/RemoteFunction items in .rbxlx",
+    "Verify no CoinPile/DiamondPile/Crate Parts in .rbxlx workspace"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}
