@@ -44,9 +44,10 @@ function ZoneService.init(dataService, currencyService, petService)
 	end
 	ZoneService._zonesFolder = zonesFolder
 
-	-- Spawn destructibles for zones 1 and 2 (MVP)
-	ZoneService.spawnZone(1)
-	ZoneService.spawnZone(2)
+	-- Spawn all 8 zones with destructibles
+	for zoneId = 1, 8 do
+		ZoneService.spawnZone(zoneId)
+	end
 
 	-- Spawn zone gates between adjacent zones
 	ZoneService._spawnZoneGates()
@@ -235,6 +236,12 @@ function ZoneService._spawnEggStations()
 	local stationDefs = {
 		[1] = { eggType = "BasicEgg", name = "Basic Egg", cost = Config.EggCosts[1].Coins },
 		[2] = { eggType = "PremiumEgg", name = "Premium Egg", cost = Config.EggCosts[2].Coins },
+		[3] = { eggType = "StrandEgg", name = "Strand Egg", cost = Config.EggCosts[3].Coins },
+		[4] = { eggType = "WuesteEgg", name = "Wueste Egg", cost = Config.EggCosts[4].Coins },
+		[5] = { eggType = "EisweltEgg", name = "Eiswelt Egg", cost = Config.EggCosts[5].Coins },
+		[6] = { eggType = "VulkanEgg", name = "Vulkan Egg", cost = Config.EggCosts[6].Coins },
+		[7] = { eggType = "HimmelEgg", name = "Himmel Egg", cost = Config.EggCosts[7].Coins },
+		[8] = { eggType = "WeltraumEgg", name = "Weltraum Egg", cost = Config.EggCosts[8].Coins },
 	}
 
 	for zoneId, stationDef in pairs(stationDefs) do
@@ -263,7 +270,14 @@ function ZoneService._spawnEggStations()
 		egg.Position = stationPos + Vector3.new(0, 5, 0)
 		egg.Anchored = true
 		egg.CanCollide = false
-		egg.Color = zoneId == 1 and Color3.fromRGB(200, 230, 180) or Color3.fromRGB(180, 200, 255)
+		egg.Color = zoneId == 1 and Color3.fromRGB(200, 230, 180)
+			or zoneId == 2 and Color3.fromRGB(180, 200, 255)
+			or zoneId == 3 and Color3.fromRGB(237, 220, 160)
+			or zoneId == 4 and Color3.fromRGB(230, 200, 120)
+			or zoneId == 5 and Color3.fromRGB(180, 220, 255)
+			or zoneId == 6 and Color3.fromRGB(255, 120, 80)
+			or zoneId == 7 and Color3.fromRGB(255, 255, 200)
+			or Color3.fromRGB(120, 80, 200)
 		egg.Material = Enum.Material.SmoothPlastic
 		egg.Parent = stationsFolder
 
@@ -341,8 +355,8 @@ function ZoneService._spawnZoneGates()
 		gatesFolder.Parent = workspace
 	end
 
-	-- Create gates between zone 1->2, 2->3, etc. (MVP: only 1->2)
-	for gateZone = 2, 2 do
+	-- Create gates between zone 1->2, 2->3, ..., 7->8 (all adjacent pairs)
+	for gateZone = 2, 8 do
 		local zoneDef = ZoneData.Zones[gateZone]
 		if not zoneDef then continue end
 

@@ -232,19 +232,24 @@ def build_workspace():
         255, 255, 255, material=256
     ))
 
-    # Zone 1: Gruene Wiesen - large green baseplate (static scenery only)
-    parts.append(make_part_xml(
-        "Zone1_GrueneWiesen", "Part",
-        0, 0, -100, 200, 2, 200,
-        76, 204, 51, material=1024
-    ))
-
-    # Zone 2: Stadt - gray baseplate (static scenery only)
-    parts.append(make_part_xml(
-        "Zone2_Stadt", "Part",
-        250, 0, -100, 200, 2, 200,
-        128, 128, 140, material=768
-    ))
+    # All 8 zone baseplates (static scenery - server also spawns dynamic ground)
+    zone_baseplates = [
+        # (name, x, r, g, b, material)
+        ("Zone1_GrueneWiesen", 0, 76, 204, 51, 1024),      # Grass
+        ("Zone2_Stadt", 250, 128, 128, 140, 768),           # Slate
+        ("Zone3_Strand", 500, 237, 201, 136, 256),          # Sand
+        ("Zone4_Wueste", 750, 210, 180, 100, 256),          # Sand (darker)
+        ("Zone5_Eiswelt", 1000, 200, 230, 255, 1536),       # Ice
+        ("Zone6_Vulkan", 1250, 80, 30, 10, 804),            # Rock
+        ("Zone7_Himmel", 1500, 255, 255, 220, 1536),        # Ice (light)
+        ("Zone8_Weltraum", 1750, 20, 10, 40, 288),          # Neon (dark)
+    ]
+    for bp_name, bp_x, bp_r, bp_g, bp_b, bp_mat in zone_baseplates:
+        parts.append(make_part_xml(
+            bp_name, "Part",
+            bp_x, 0, -100, 200, 2, 200,
+            bp_r, bp_g, bp_b, material=bp_mat
+        ))
 
     # Campaign Portal - purple Neon archway
     parts.append(make_part_xml(
@@ -253,12 +258,14 @@ def build_workspace():
         153, 25, 230, material=288, transparency=0.2
     ))
 
-    # Zone Gate between Zone 1 and Zone 2
-    parts.append(make_part_xml(
-        "ZoneGate_1_2", "Part",
-        125, 8, -100, 4, 16, 16,
-        230, 179, 25, material=288, transparency=0.3
-    ))
+    # Zone Gates between all adjacent zones (7 gates total)
+    for gate_idx in range(1, 8):
+        gate_x = gate_idx * 250 - 125  # Halfway between adjacent zone centers
+        parts.append(make_part_xml(
+            f"ZoneGate_{gate_idx}_{gate_idx+1}", "Part",
+            gate_x, 8, -100, 4, 16, 16,
+            230, 179, 25, material=288, transparency=0.3
+        ))
 
     # Terrain (placeholder)
     terrain_ref = next_ref()

@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-013",
+  "type": "feat",
+  "title": "Expand all 8 zones with gates between each adjacent pair",
+  "description": "Activate all 8 zones: spawn zones 1-8 with destructibles, create zone gates between all adjacent zone pairs (1-2, 2-3, ..., 7-8), add egg stations for all zones, and add egg types in PetData for zones 3-8.",
+  "status": "in_progress",
+  "steps": [
+    "Update ZoneService.init() to spawn all 8 zones instead of just 1 and 2",
+    "Update _spawnZoneGates() loop from 'for gateZone = 2, 2' to 'for gateZone = 2, 8'",
+    "Update _spawnEggStations() to include egg stations for zones 3-8",
+    "Add egg definitions in PetData.lua for zones 3-8 (StrandEgg, WuesteEgg, EisweltEgg, VulkanEgg, HimmelEgg, WeltraumEgg)",
+    "Regenerate BATTLE_PETS.rbxlx using tools/generate_rbxlx.py",
+    "Validate XML output"
+  ],
+  "acceptance_criteria": [
+    "All 8 zones spawn with ground and destructibles",
+    "Zone gates exist between each adjacent pair (7 gates total: zones 2-8)",
+    "Egg stations exist in all 8 zones",
+    "PetData.Eggs has 8 egg types (one per zone)",
+    "BATTLE_PETS.rbxlx regenerated and valid XML"
+  ],
+  "verification": [
+    "Run: python3 -c \"import xml.etree.ElementTree as ET; ET.parse('/projects/Roblox-game/BATTLE_PETS.rbxlx'); print('Valid')\"",
+    "Verify ZoneService spawns zones 1-8",
+    "Verify gates loop covers zones 2-8",
+    "Verify PetData has 8 egg types"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}
