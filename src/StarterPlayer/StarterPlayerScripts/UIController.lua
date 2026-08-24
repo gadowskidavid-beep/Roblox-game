@@ -133,9 +133,6 @@ function UIController:_createMainHUD(playerData)
 
 	-- ===== BOTTOM-RIGHT: Navigation Buttons =====
 	self:_createNavButtons(screenGui)
-
-	-- ===== EQUIPPED PET BAR (above nav buttons) =====
-	self:_createEquippedPetBar(screenGui)
 end
 
 function UIController:_createCurrencyDisplay(parent, playerData)
@@ -313,7 +310,6 @@ function UIController:_createNavButtons(parent)
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
 		{ name = "Quests", icon = "!", color = COLORS.NavQuests, screen = "QuestWindow" },
 		{ name = "Mastery", icon = "M", color = COLORS.NavMastery, screen = "MasteryWindow" },
-		{ name = "Eggs", icon = "E", color = COLORS.NavShop, screen = "ShopWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
 	}
 
@@ -381,92 +377,7 @@ function UIController:_createNavButtons(parent)
 	end
 end
 
-function UIController:_createEquippedPetBar(parent)
-	local barFrame = Instance.new("Frame")
-	barFrame.Name = "EquippedPetBar"
-	barFrame.Size = UDim2.fromScale(0.35, 0.06)
-	barFrame.Position = UDim2.fromScale(0.63, 0.81)
-	barFrame.BackgroundColor3 = COLORS.Background
-	barFrame.BackgroundTransparency = 0.4
-	barFrame.Parent = parent
-	self._equippedBar = barFrame
-
-	local barCorner = Instance.new("UICorner")
-	barCorner.CornerRadius = UDim.new(0, 10)
-	barCorner.Parent = barFrame
-
-	local barStroke = Instance.new("UIStroke")
-	barStroke.Thickness = 2
-	barStroke.Color = Color3.fromRGB(60, 80, 130)
-	barStroke.Parent = barFrame
-
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 4)
-	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	layout.VerticalAlignment = Enum.VerticalAlignment.Center
-	layout.Parent = barFrame
-
-	self:_refreshEquippedBar()
-end
-
-function UIController:_refreshEquippedBar()
-	if not self._equippedBar then return end
-
-	for _, child in ipairs(self._equippedBar:GetChildren()) do
-		if child:IsA("Frame") or child:IsA("TextLabel") then
-			child:Destroy()
-		end
-	end
-
-	if #self._equippedPets == 0 then
-		local hintLabel = Instance.new("TextLabel")
-		hintLabel.Name = "HintLabel"
-		hintLabel.Size = UDim2.fromScale(0.9, 0.8)
-		hintLabel.BackgroundTransparency = 1
-		hintLabel.Text = "No pets equipped"
-		hintLabel.TextColor3 = Color3.fromRGB(150, 150, 170)
-		hintLabel.Font = Enum.Font.GothamBold
-		hintLabel.TextScaled = true
-		hintLabel.Parent = self._equippedBar
-		return
-	end
-
-	for _, petData in ipairs(self._equippedPets) do
-		local petName = "?"
-		local petRarity = "Common"
-		if type(petData) == "table" then
-			petName = petData.name or "?"
-			petRarity = petData.rarity or "Common"
-		end
-
-		local rarityColor = RARITY_COLORS[petRarity] or RARITY_COLORS.Common
-
-		local slot = Instance.new("Frame")
-		slot.Name = "Slot_" .. petName
-		slot.Size = UDim2.fromOffset(44, 44)
-		slot.BackgroundColor3 = rarityColor
-		slot.Parent = self._equippedBar
-
-		local slotCorner = Instance.new("UICorner")
-		slotCorner.CornerRadius = UDim.new(0, 8)
-		slotCorner.Parent = slot
-
-		local slotStroke = Instance.new("UIStroke")
-		slotStroke.Thickness = 2
-		slotStroke.Color = Color3.fromRGB(255, 255, 255)
-		slotStroke.Parent = slot
-
-		local petLabel = Instance.new("TextLabel")
-		petLabel.Size = UDim2.fromScale(1, 1)
-		petLabel.BackgroundTransparency = 1
-		petLabel.Text = string.sub(petName, 1, 2)
-		petLabel.TextColor3 = COLORS.White
-		petLabel.Font = Enum.Font.GothamBold
-		petLabel.TextScaled = true
-		petLabel.Parent = slot
-	end
-end
+-- Equipped pet bar removed (no longer shown in UI)
 
 --------------------------------------------------------------------------------
 -- PET INVENTORY SCREEN
@@ -785,7 +696,9 @@ function UIController:_equipPet(uniqueId)
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("EquipPet")
 		if remote then
-			remote:InvokeServer(uniqueId)
+			print("[UIController] Calling EquipPet remote with id=" .. tostring(uniqueId))
+			local success, err = remote:InvokeServer(uniqueId)
+			print("[UIController] EquipPet result: success=" .. tostring(success) .. " err=" .. tostring(err))
 		end
 	end
 end
@@ -794,7 +707,9 @@ function UIController:_unequipPet(uniqueId)
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("UnequipPet")
 		if remote then
-			remote:InvokeServer(uniqueId)
+			print("[UIController] Calling UnequipPet remote with id=" .. tostring(uniqueId))
+			local success, err = remote:InvokeServer(uniqueId)
+			print("[UIController] UnequipPet result: success=" .. tostring(success) .. " err=" .. tostring(err))
 		end
 	end
 end
@@ -1658,9 +1573,13 @@ function UIController:_purchaseMasteryBuff(buffId)
 end
 
 --------------------------------------------------------------------------------
--- EGG STATION PROMPT
+-- EGG STATION - No overlay menu needed (E-key directly hatches via ProximityPrompt)
+-- The old ShopWindow/EggPrompt overlay is removed.
+-- BillboardGuis showing pet probabilities are created server-side on the egg stations.
 --------------------------------------------------------------------------------
 function UIController:_createShopWindow()
+	-- No shop window overlay needed - E-key hatches directly
+	-- Create an empty disabled ScreenGui so toggleScreen references still work
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "ShopWindow"
 	screenGui.ResetOnSpawn = false
@@ -1668,119 +1587,10 @@ function UIController:_createShopWindow()
 	screenGui.Enabled = false
 	screenGui.Parent = self._playerGui
 	self._screens.ShopWindow = screenGui
-
-	local promptFrame = Instance.new("Frame")
-	promptFrame.Name = "EggPrompt"
-	promptFrame.Size = UDim2.fromScale(0.35, 0.2)
-	promptFrame.Position = UDim2.fromScale(0.325, 0.72)
-	promptFrame.BackgroundColor3 = COLORS.Background
-	promptFrame.BackgroundTransparency = 0.1
-	promptFrame.BorderSizePixel = 0
-	promptFrame.Parent = screenGui
-
-	local promptCorner = Instance.new("UICorner")
-	promptCorner.CornerRadius = UDim.new(0, 14)
-	promptCorner.Parent = promptFrame
-
-	local promptStroke = Instance.new("UIStroke")
-	promptStroke.Thickness = 3
-	promptStroke.Color = COLORS.NavShop
-	promptStroke.Parent = promptFrame
-
-	local eggNameLabel = Instance.new("TextLabel")
-	eggNameLabel.Name = "EggNameLabel"
-	eggNameLabel.Size = UDim2.fromScale(0.9, 0.25)
-	eggNameLabel.Position = UDim2.fromScale(0.05, 0.05)
-	eggNameLabel.BackgroundTransparency = 1
-	eggNameLabel.Text = "Basic Egg"
-	eggNameLabel.TextColor3 = COLORS.White
-	eggNameLabel.Font = Enum.Font.GothamBold
-	eggNameLabel.TextScaled = true
-	eggNameLabel.Parent = promptFrame
-
-	local costLabel = Instance.new("TextLabel")
-	costLabel.Name = "CostLabel"
-	costLabel.Size = UDim2.fromScale(0.9, 0.2)
-	costLabel.Position = UDim2.fromScale(0.05, 0.3)
-	costLabel.BackgroundTransparency = 1
-	costLabel.Text = "100 Coins"
-	costLabel.TextColor3 = COLORS.CoinYellow
-	costLabel.Font = Enum.Font.GothamBold
-	costLabel.TextScaled = true
-	costLabel.Parent = promptFrame
-
-	local hatchBtn = Instance.new("TextButton")
-	hatchBtn.Name = "HatchBtn"
-	hatchBtn.Size = UDim2.fromScale(0.6, 0.3)
-	hatchBtn.Position = UDim2.fromScale(0.2, 0.58)
-	hatchBtn.BackgroundColor3 = COLORS.ButtonGreen
-	hatchBtn.Text = "HATCH!"
-	hatchBtn.TextColor3 = COLORS.White
-	hatchBtn.Font = Enum.Font.GothamBold
-	hatchBtn.TextScaled = true
-	hatchBtn.Parent = promptFrame
-
-	local hatchCorner = Instance.new("UICorner")
-	hatchCorner.CornerRadius = UDim.new(0, 10)
-	hatchCorner.Parent = hatchBtn
-
-	local hatchStroke = Instance.new("UIStroke")
-	hatchStroke.Thickness = 2
-	hatchStroke.Color = Color3.fromRGB(0, 150, 50)
-	hatchStroke.Parent = hatchBtn
-
-	hatchBtn.MouseButton1Click:Connect(function()
-		if self._currentEggType then
-			self:_hatchEgg(self._currentEggType)
-		end
-	end)
-
-	hatchBtn.MouseEnter:Connect(function()
-		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-			Size = UDim2.fromScale(0.64, 0.32),
-		}):Play()
-	end)
-	hatchBtn.MouseLeave:Connect(function()
-		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-			Size = UDim2.fromScale(0.6, 0.3),
-		}):Play()
-	end)
-
-	self._currentEggType = nil
 end
 
 function UIController:showEggStationPrompt(eggType)
-	if not self._screens.ShopWindow then return end
-
-	local eggInfo = {
-		BasicEgg = { name = "Basic Egg", cost = Config.EggCosts[1] and Config.EggCosts[1].Coins or 100 },
-		PremiumEgg = { name = "Premium Egg", cost = Config.EggCosts[2] and Config.EggCosts[2].Coins or 500 },
-	}
-
-	local info = eggInfo[eggType]
-	if not info then return end
-
-	local screenGui = self._screens.ShopWindow
-	local promptFrame = screenGui:FindFirstChild("EggPrompt")
-	if promptFrame then
-		local nameLabel = promptFrame:FindFirstChild("EggNameLabel")
-		if nameLabel then
-			nameLabel.Text = info.name
-		end
-		local costLabel = promptFrame:FindFirstChild("CostLabel")
-		if costLabel then
-			costLabel.Text = tostring(info.cost) .. " Coins"
-		end
-	end
-
-	self._currentEggType = eggType
-	screenGui.Enabled = true
-
-	task.delay(5, function()
-		if screenGui.Enabled and self._currentEggType == eggType then
-			screenGui.Enabled = false
-		end
-	end)
+	-- No-op: E-key ProximityPrompt handles hatching directly
 end
 
 function UIController:_hatchEgg(eggType)
@@ -1812,7 +1622,6 @@ end
 
 function UIController:updateEquippedPets(equippedPets)
 	self._equippedPets = equippedPets or {}
-	self:_refreshEquippedBar()
 	self:_refreshPetGrid()
 end
 

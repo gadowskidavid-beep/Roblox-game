@@ -427,8 +427,24 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Check level-based quests on join (in case they already meet requirements)
+	-- Create leaderstats folder for Roblox built-in leaderboard
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
 	local data = DataService.getPlayerData(player)
+
+	local levelStat = Instance.new("IntValue")
+	levelStat.Name = "Level"
+	levelStat.Value = data and data.level or 1
+	levelStat.Parent = leaderstats
+
+	local diamondsStat = Instance.new("IntValue")
+	diamondsStat.Name = "Diamonds"
+	diamondsStat.Value = data and data.diamonds or 0
+	diamondsStat.Parent = leaderstats
+
+	-- Check level-based quests on join (in case they already meet requirements)
 	if data then
 		QuestService.setStat(player, "reachLevel", data.level or 1)
 	end
@@ -456,12 +472,67 @@ for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(function()
 		DataService.loadPlayerData(player)
 		_sessionJoinTimes[player.UserId] = os.time()
+
+		-- Create leaderstats for already-connected players
+		local leaderstats = player:FindFirstChild("leaderstats")
+		if not leaderstats then
+			leaderstats = Instance.new("Folder")
+			leaderstats.Name = "leaderstats"
+			leaderstats.Parent = player
+		end
+
 		local data = DataService.getPlayerData(player)
+
+		local levelStat = leaderstats:FindFirstChild("Level")
+		if not levelStat then
+			levelStat = Instance.new("IntValue")
+			levelStat.Name = "Level"
+			levelStat.Parent = leaderstats
+		end
+		levelStat.Value = data and data.level or 1
+
+		local diamondsStat = leaderstats:FindFirstChild("Diamonds")
+		if not diamondsStat then
+			diamondsStat = Instance.new("IntValue")
+			diamondsStat.Name = "Diamonds"
+			diamondsStat.Parent = leaderstats
+		end
+		diamondsStat.Value = data and data.diamonds or 0
+
 		if data then
 			QuestService.setStat(player, "reachLevel", data.level or 1)
 		end
 	end)
 end
+
+-- Helper: update leaderstats for a player from their current data
+local function updateLeaderstats(player)
+	local data = DataService.getPlayerData(player)
+	if not data then return end
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not leaderstats then return end
+	local levelStat = leaderstats:FindFirstChild("Level")
+	if levelStat then
+		levelStat.Value = data.level or 1
+	end
+	local diamondsStat = leaderstats:FindFirstChild("Diamonds")
+	if diamondsStat then
+		diamondsStat.Value = data.diamonds or 0
+	end
+end
+
+-- Update leaderstats whenever currency or XP changes
+-- Hook into existing remote events: listen for CurrencyUpdated and XPUpdated firing
+local originalCurrencyUpdatedFire = nil
+-- Use a periodic check (every 5 seconds) to keep leaderstats in sync
+task.spawn(function()
+	while true do
+		task.wait(5)
+		for _, player in ipairs(Players:GetPlayers()) do
+			updateLeaderstats(player)
+		end
+	end
+end)
 
 -- Periodic playtime tracking: every 60 seconds, update playtime stats
 -- This ensures quest progress is visible even during long sessions
@@ -539,6 +610,7 @@ if dsSuccess then
 else
 	DataService._useMemoryOnly = true
 	warn("[DataService] DataStore unavailable - running in memory-only mode (session data will not persist). Reason: " .. tostring(dsResult))
+	print("[Battle Pets] Memory-only mode - publish game to enable saving")
 end
 
 -- Default player data schema
@@ -600,6 +672,7 @@ function DataService.loadPlayerData(player)
 	if DataService._useMemoryOnly then
 		DataService._cache[player.UserId] = getDefaultData()
 		DataService._canSave[player.UserId] = false
+		print("[Battle Pets] Memory-only mode - publish game to enable saving")
 		return DataService._cache[player.UserId]
 	end
 
@@ -1064,12 +1137,16 @@ end
 
 -- Equip a pet by instance ID
 function PetService.equipPet(player, petInstanceId)
+	print("[PetService] equipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
+
 	if not player or type(petInstanceId) ~= "string" then
+		print("[PetService] equipPet FAILED: Invalid parameters")
 		return false, "Invalid parameters"
 	end
 
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
+		print("[PetService] equipPet FAILED: No player data")
 		return false, "No player data"
 	end
 
@@ -1084,6 +1161,7 @@ function PetService.equipPet(player, petInstanceId)
 	-- Validate max equipped
 	local maxEquipped = getMaxEquipped(player)
 	if equippedCount >= maxEquipped then
+		print("[PetService] equipPet FAILED: Max equipped (" .. tostring(equippedCount) .. "/" .. tostring(maxEquipped) .. ")")
 		return false, "Maximum pets equipped (" .. tostring(maxEquipped) .. ")"
 	end
 
@@ -1091,6 +1169,7 @@ function PetService.equipPet(player, petInstanceId)
 	for _, pet in ipairs(data.pets) do
 		if pet.id == petInstanceId then
 			if pet.equipped then
+				print("[PetService] equipPet FAILED: Pet already equipped")
 				return false, "Pet already equipped"
 			end
 			pet.equipped = true
@@ -1103,6 +1182,7 @@ function PetService.equipPet(player, petInstanceId)
 			if remotes then
 				local event = remotes:FindFirstChild("PetEquipped")
 				if event then
+					print("[PetService] equipPet SUCCESS: Firing PetEquipped event for " .. tostring(pet.name))
 					event:FireClient(player, pet)
 				end
 			end
@@ -1111,17 +1191,22 @@ function PetService.equipPet(player, petInstanceId)
 		end
 	end
 
+	print("[PetService] equipPet FAILED: Pet not found in inventory")
 	return false, "Pet not found in inventory"
 end
 
 -- Unequip a pet by instance ID
 function PetService.unequipPet(player, petInstanceId)
+	print("[PetService] unequipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
+
 	if not player or type(petInstanceId) ~= "string" then
+		print("[PetService] unequipPet FAILED: Invalid parameters")
 		return false, "Invalid parameters"
 	end
 
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
+		print("[PetService] unequipPet FAILED: No player data")
 		return false, "No player data"
 	end
 
@@ -1129,6 +1214,7 @@ function PetService.unequipPet(player, petInstanceId)
 	for _, pet in ipairs(data.pets) do
 		if pet.id == petInstanceId then
 			if not pet.equipped then
+				print("[PetService] unequipPet FAILED: Pet is not equipped (pet.equipped=" .. tostring(pet.equipped) .. ")")
 				return false, "Pet is not equipped"
 			end
 			pet.equipped = false
@@ -1146,6 +1232,7 @@ function PetService.unequipPet(player, petInstanceId)
 			if remotes then
 				local event = remotes:FindFirstChild("PetUnequipped")
 				if event then
+					print("[PetService] unequipPet SUCCESS: Firing PetUnequipped event for " .. tostring(pet.name))
 					event:FireClient(player, petInstanceId)
 				end
 			end
@@ -1154,6 +1241,7 @@ function PetService.unequipPet(player, petInstanceId)
 		end
 	end
 
+	print("[PetService] unequipPet FAILED: Pet not found in inventory (searched " .. tostring(#data.pets) .. " pets)")
 	return false, "Pet not found in inventory"
 end
 
@@ -1675,7 +1763,13 @@ function ZoneService.spawnDestructibles(zoneId, zoneFolder, origin)
 		"DiamondPile", "Crate", "Crate", "Crate", "Crate",
 		"Crate", "CoinPile", "CoinPile", "DiamondPile", "Crate" }
 
+	-- Gather positions from ALL existing destructibles (all zones, all types) to prevent overlap
 	local existingPositions = {}
+	for _, d in pairs(ZoneService._destructibles) do
+		if d.position then
+			table.insert(existingPositions, d.position)
+		end
+	end
 
 	for i = 1, DESTRUCTIBLES_PER_ZONE do
 		-- Pick a type from the weighted list
@@ -1943,6 +2037,80 @@ function ZoneService._spawnEggStations()
 		costLabel.Font = Enum.Font.GothamBold
 		costLabel.TextScaled = true
 		costLabel.Parent = billboard
+
+		-- BillboardGui showing which pets are in this egg with their % chance
+		local PetData = require(game.ReplicatedStorage.Shared.PetData)
+		local eggDef = PetData.Eggs[stationDef.eggType]
+		if eggDef and eggDef.petPool then
+			-- Calculate total weight for percentage
+			local totalWeight = 0
+			for _, entry in ipairs(eggDef.petPool) do
+				totalWeight = totalWeight + entry.weight
+			end
+
+			local numPets = #eggDef.petPool
+			local petsBillboard = Instance.new("BillboardGui")
+			petsBillboard.Name = "PetChancesLabel"
+			petsBillboard.Size = UDim2.fromOffset(200, 20 + numPets * 22)
+			petsBillboard.StudsOffset = Vector3.new(0, 7, 0)
+			petsBillboard.AlwaysOnTop = true
+			petsBillboard.Adornee = egg
+			petsBillboard.Parent = egg
+
+			local petsBg = Instance.new("Frame")
+			petsBg.Name = "Background"
+			petsBg.Size = UDim2.fromScale(1, 1)
+			petsBg.BackgroundColor3 = Color3.fromRGB(20, 30, 60)
+			petsBg.BackgroundTransparency = 0.3
+			petsBg.BorderSizePixel = 0
+			petsBg.Parent = petsBillboard
+
+			local petsBgCorner = Instance.new("UICorner")
+			petsBgCorner.CornerRadius = UDim.new(0, 8)
+			petsBgCorner.Parent = petsBg
+
+			local petsLayout = Instance.new("UIListLayout")
+			petsLayout.FillDirection = Enum.FillDirection.Vertical
+			petsLayout.Padding = UDim.new(0, 2)
+			petsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+			petsLayout.Parent = petsBg
+
+			local petsPadding = Instance.new("UIPadding")
+			petsPadding.PaddingTop = UDim.new(0, 4)
+			petsPadding.PaddingBottom = UDim.new(0, 4)
+			petsPadding.PaddingLeft = UDim.new(0, 6)
+			petsPadding.PaddingRight = UDim.new(0, 6)
+			petsPadding.Parent = petsBg
+
+			-- Rarity colors for pet chance display
+			local rarityColors = {
+				Common = Color3.fromRGB(255, 255, 255),
+				Uncommon = Color3.fromRGB(0, 200, 0),
+				Rare = Color3.fromRGB(0, 120, 255),
+				Epic = Color3.fromRGB(180, 0, 255),
+				Legendary = Color3.fromRGB(255, 200, 0),
+			}
+
+			for _, entry in ipairs(eggDef.petPool) do
+				local petDef = PetData.Pets[entry.petId]
+				if petDef then
+					local percentage = math.floor((entry.weight / totalWeight) * 100 + 0.5)
+					local petColor = rarityColors[petDef.rarity] or Color3.fromRGB(255, 255, 255)
+
+					local petLine = Instance.new("TextLabel")
+					petLine.Name = "Pet_" .. entry.petId
+					petLine.Size = UDim2.new(1, 0, 0, 18)
+					petLine.BackgroundTransparency = 1
+					petLine.Text = petDef.name .. " (" .. petDef.rarity .. ") - " .. tostring(percentage) .. "%"
+					petLine.TextColor3 = petColor
+					petLine.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+					petLine.TextStrokeTransparency = 0.3
+					petLine.Font = Enum.Font.GothamBold
+					petLine.TextScaled = true
+					petLine.Parent = petsBg
+				end
+			end
+		end
 
 		-- Interaction zone: invisible larger part around the station for proximity detection
 		local interactZone = Instance.new("Part")
@@ -2262,10 +2430,10 @@ function ZoneService.attackDestructible(player, destructibleId)
 			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
 			if zoneFolder then
 				local origin = getZoneOrigin(zoneId)
-				-- Gather positions of all existing destructibles in this zone to prevent overlap
+				-- Gather positions of ALL existing destructibles (all zones) to prevent overlap
 				local existingPositions = {}
 				for _, d in pairs(ZoneService._destructibles) do
-					if d.zoneId == zoneId and d.position then
+					if d.position then
 						table.insert(existingPositions, d.position)
 					end
 				end
@@ -3944,6 +4112,7 @@ PetInventoryUpdated.OnClientEvent:Connect(function(pets)
 end)
 
 PetEquipped.OnClientEvent:Connect(function(petData)
+	print("[Client] PetEquipped event received: " .. tostring(petData and petData.name or "nil"))
 	if petData and type(petData) == "table" and petData.id then
 		for i = #localEquippedPets, 1, -1 do
 			if localEquippedPets[i].id == petData.id then
@@ -3957,6 +4126,7 @@ PetEquipped.OnClientEvent:Connect(function(petData)
 end)
 
 PetUnequipped.OnClientEvent:Connect(function(petInstanceId)
+	print("[Client] PetUnequipped event received: " .. tostring(petInstanceId))
 	if petInstanceId and type(petInstanceId) == "string" then
 		for i, pet in ipairs(localEquippedPets) do
 			if pet.id == petInstanceId then
@@ -4157,6 +4327,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			mouseDownTime = tick()
 			mouseDownTarget = target
 			isMouseDown = true
+			holdFired = false
+		else
+			-- Clicked on empty space: cancel all pet attacks, return them to player
+			petController:cancelAllAttacks()
+			isMouseDown = false
+			mouseDownTarget = nil
 			holdFired = false
 		end
 	end
@@ -4405,9 +4581,6 @@ function UIController:_createMainHUD(playerData)
 
 	-- ===== BOTTOM-RIGHT: Navigation Buttons =====
 	self:_createNavButtons(screenGui)
-
-	-- ===== EQUIPPED PET BAR (above nav buttons) =====
-	self:_createEquippedPetBar(screenGui)
 end
 
 function UIController:_createCurrencyDisplay(parent, playerData)
@@ -4585,7 +4758,6 @@ function UIController:_createNavButtons(parent)
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
 		{ name = "Quests", icon = "!", color = COLORS.NavQuests, screen = "QuestWindow" },
 		{ name = "Mastery", icon = "M", color = COLORS.NavMastery, screen = "MasteryWindow" },
-		{ name = "Eggs", icon = "E", color = COLORS.NavShop, screen = "ShopWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
 	}
 
@@ -4653,92 +4825,7 @@ function UIController:_createNavButtons(parent)
 	end
 end
 
-function UIController:_createEquippedPetBar(parent)
-	local barFrame = Instance.new("Frame")
-	barFrame.Name = "EquippedPetBar"
-	barFrame.Size = UDim2.fromScale(0.35, 0.06)
-	barFrame.Position = UDim2.fromScale(0.63, 0.81)
-	barFrame.BackgroundColor3 = COLORS.Background
-	barFrame.BackgroundTransparency = 0.4
-	barFrame.Parent = parent
-	self._equippedBar = barFrame
-
-	local barCorner = Instance.new("UICorner")
-	barCorner.CornerRadius = UDim.new(0, 10)
-	barCorner.Parent = barFrame
-
-	local barStroke = Instance.new("UIStroke")
-	barStroke.Thickness = 2
-	barStroke.Color = Color3.fromRGB(60, 80, 130)
-	barStroke.Parent = barFrame
-
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 4)
-	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	layout.VerticalAlignment = Enum.VerticalAlignment.Center
-	layout.Parent = barFrame
-
-	self:_refreshEquippedBar()
-end
-
-function UIController:_refreshEquippedBar()
-	if not self._equippedBar then return end
-
-	for _, child in ipairs(self._equippedBar:GetChildren()) do
-		if child:IsA("Frame") or child:IsA("TextLabel") then
-			child:Destroy()
-		end
-	end
-
-	if #self._equippedPets == 0 then
-		local hintLabel = Instance.new("TextLabel")
-		hintLabel.Name = "HintLabel"
-		hintLabel.Size = UDim2.fromScale(0.9, 0.8)
-		hintLabel.BackgroundTransparency = 1
-		hintLabel.Text = "No pets equipped"
-		hintLabel.TextColor3 = Color3.fromRGB(150, 150, 170)
-		hintLabel.Font = Enum.Font.GothamBold
-		hintLabel.TextScaled = true
-		hintLabel.Parent = self._equippedBar
-		return
-	end
-
-	for _, petData in ipairs(self._equippedPets) do
-		local petName = "?"
-		local petRarity = "Common"
-		if type(petData) == "table" then
-			petName = petData.name or "?"
-			petRarity = petData.rarity or "Common"
-		end
-
-		local rarityColor = RARITY_COLORS[petRarity] or RARITY_COLORS.Common
-
-		local slot = Instance.new("Frame")
-		slot.Name = "Slot_" .. petName
-		slot.Size = UDim2.fromOffset(44, 44)
-		slot.BackgroundColor3 = rarityColor
-		slot.Parent = self._equippedBar
-
-		local slotCorner = Instance.new("UICorner")
-		slotCorner.CornerRadius = UDim.new(0, 8)
-		slotCorner.Parent = slot
-
-		local slotStroke = Instance.new("UIStroke")
-		slotStroke.Thickness = 2
-		slotStroke.Color = Color3.fromRGB(255, 255, 255)
-		slotStroke.Parent = slot
-
-		local petLabel = Instance.new("TextLabel")
-		petLabel.Size = UDim2.fromScale(1, 1)
-		petLabel.BackgroundTransparency = 1
-		petLabel.Text = string.sub(petName, 1, 2)
-		petLabel.TextColor3 = COLORS.White
-		petLabel.Font = Enum.Font.GothamBold
-		petLabel.TextScaled = true
-		petLabel.Parent = slot
-	end
-end
+-- Equipped pet bar removed (no longer shown in UI)
 
 --------------------------------------------------------------------------------
 -- PET INVENTORY SCREEN
@@ -5057,7 +5144,9 @@ function UIController:_equipPet(uniqueId)
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("EquipPet")
 		if remote then
-			remote:InvokeServer(uniqueId)
+			print("[UIController] Calling EquipPet remote with id=" .. tostring(uniqueId))
+			local success, err = remote:InvokeServer(uniqueId)
+			print("[UIController] EquipPet result: success=" .. tostring(success) .. " err=" .. tostring(err))
 		end
 	end
 end
@@ -5066,7 +5155,9 @@ function UIController:_unequipPet(uniqueId)
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("UnequipPet")
 		if remote then
-			remote:InvokeServer(uniqueId)
+			print("[UIController] Calling UnequipPet remote with id=" .. tostring(uniqueId))
+			local success, err = remote:InvokeServer(uniqueId)
+			print("[UIController] UnequipPet result: success=" .. tostring(success) .. " err=" .. tostring(err))
 		end
 	end
 end
@@ -5930,9 +6021,13 @@ function UIController:_purchaseMasteryBuff(buffId)
 end
 
 --------------------------------------------------------------------------------
--- EGG STATION PROMPT
+-- EGG STATION - No overlay menu needed (E-key directly hatches via ProximityPrompt)
+-- The old ShopWindow/EggPrompt overlay is removed.
+-- BillboardGuis showing pet probabilities are created server-side on the egg stations.
 --------------------------------------------------------------------------------
 function UIController:_createShopWindow()
+	-- No shop window overlay needed - E-key hatches directly
+	-- Create an empty disabled ScreenGui so toggleScreen references still work
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "ShopWindow"
 	screenGui.ResetOnSpawn = false
@@ -5940,119 +6035,10 @@ function UIController:_createShopWindow()
 	screenGui.Enabled = false
 	screenGui.Parent = self._playerGui
 	self._screens.ShopWindow = screenGui
-
-	local promptFrame = Instance.new("Frame")
-	promptFrame.Name = "EggPrompt"
-	promptFrame.Size = UDim2.fromScale(0.35, 0.2)
-	promptFrame.Position = UDim2.fromScale(0.325, 0.72)
-	promptFrame.BackgroundColor3 = COLORS.Background
-	promptFrame.BackgroundTransparency = 0.1
-	promptFrame.BorderSizePixel = 0
-	promptFrame.Parent = screenGui
-
-	local promptCorner = Instance.new("UICorner")
-	promptCorner.CornerRadius = UDim.new(0, 14)
-	promptCorner.Parent = promptFrame
-
-	local promptStroke = Instance.new("UIStroke")
-	promptStroke.Thickness = 3
-	promptStroke.Color = COLORS.NavShop
-	promptStroke.Parent = promptFrame
-
-	local eggNameLabel = Instance.new("TextLabel")
-	eggNameLabel.Name = "EggNameLabel"
-	eggNameLabel.Size = UDim2.fromScale(0.9, 0.25)
-	eggNameLabel.Position = UDim2.fromScale(0.05, 0.05)
-	eggNameLabel.BackgroundTransparency = 1
-	eggNameLabel.Text = "Basic Egg"
-	eggNameLabel.TextColor3 = COLORS.White
-	eggNameLabel.Font = Enum.Font.GothamBold
-	eggNameLabel.TextScaled = true
-	eggNameLabel.Parent = promptFrame
-
-	local costLabel = Instance.new("TextLabel")
-	costLabel.Name = "CostLabel"
-	costLabel.Size = UDim2.fromScale(0.9, 0.2)
-	costLabel.Position = UDim2.fromScale(0.05, 0.3)
-	costLabel.BackgroundTransparency = 1
-	costLabel.Text = "100 Coins"
-	costLabel.TextColor3 = COLORS.CoinYellow
-	costLabel.Font = Enum.Font.GothamBold
-	costLabel.TextScaled = true
-	costLabel.Parent = promptFrame
-
-	local hatchBtn = Instance.new("TextButton")
-	hatchBtn.Name = "HatchBtn"
-	hatchBtn.Size = UDim2.fromScale(0.6, 0.3)
-	hatchBtn.Position = UDim2.fromScale(0.2, 0.58)
-	hatchBtn.BackgroundColor3 = COLORS.ButtonGreen
-	hatchBtn.Text = "HATCH!"
-	hatchBtn.TextColor3 = COLORS.White
-	hatchBtn.Font = Enum.Font.GothamBold
-	hatchBtn.TextScaled = true
-	hatchBtn.Parent = promptFrame
-
-	local hatchCorner = Instance.new("UICorner")
-	hatchCorner.CornerRadius = UDim.new(0, 10)
-	hatchCorner.Parent = hatchBtn
-
-	local hatchStroke = Instance.new("UIStroke")
-	hatchStroke.Thickness = 2
-	hatchStroke.Color = Color3.fromRGB(0, 150, 50)
-	hatchStroke.Parent = hatchBtn
-
-	hatchBtn.MouseButton1Click:Connect(function()
-		if self._currentEggType then
-			self:_hatchEgg(self._currentEggType)
-		end
-	end)
-
-	hatchBtn.MouseEnter:Connect(function()
-		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-			Size = UDim2.fromScale(0.64, 0.32),
-		}):Play()
-	end)
-	hatchBtn.MouseLeave:Connect(function()
-		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-			Size = UDim2.fromScale(0.6, 0.3),
-		}):Play()
-	end)
-
-	self._currentEggType = nil
 end
 
 function UIController:showEggStationPrompt(eggType)
-	if not self._screens.ShopWindow then return end
-
-	local eggInfo = {
-		BasicEgg = { name = "Basic Egg", cost = Config.EggCosts[1] and Config.EggCosts[1].Coins or 100 },
-		PremiumEgg = { name = "Premium Egg", cost = Config.EggCosts[2] and Config.EggCosts[2].Coins or 500 },
-	}
-
-	local info = eggInfo[eggType]
-	if not info then return end
-
-	local screenGui = self._screens.ShopWindow
-	local promptFrame = screenGui:FindFirstChild("EggPrompt")
-	if promptFrame then
-		local nameLabel = promptFrame:FindFirstChild("EggNameLabel")
-		if nameLabel then
-			nameLabel.Text = info.name
-		end
-		local costLabel = promptFrame:FindFirstChild("CostLabel")
-		if costLabel then
-			costLabel.Text = tostring(info.cost) .. " Coins"
-		end
-	end
-
-	self._currentEggType = eggType
-	screenGui.Enabled = true
-
-	task.delay(5, function()
-		if screenGui.Enabled and self._currentEggType == eggType then
-			screenGui.Enabled = false
-		end
-	end)
+	-- No-op: E-key ProximityPrompt handles hatching directly
 end
 
 function UIController:_hatchEgg(eggType)
@@ -6084,7 +6070,6 @@ end
 
 function UIController:updateEquippedPets(equippedPets)
 	self._equippedPets = equippedPets or {}
-	self:_refreshEquippedBar()
 	self:_refreshPetGrid()
 end
 
@@ -6338,8 +6323,8 @@ function PetController.new()
 	-- Follow-behind settings
 	self._followDistance = 5 -- distance behind the player per pet slot
 	self._followSpread = 3 -- lateral spread for multiple pets in same row
-	self._followHeight = 2.5 -- height offset above ground (floating)
-	self._followLerpSpeed = 3.5 -- smoothing speed for following (reduced for natural movement)
+	self._followHeight = 0.5 -- height offset above ground (ground level walking)
+	self._followLerpSpeed = 1.5 -- smoothing speed for following (very slow for natural walking)
 	self._petsPerRow = 3 -- max pets per row behind the player
 	self._initialized = false
 	self._initGuard = false -- prevents double initialization
@@ -6421,7 +6406,7 @@ function PetController:createPetModel(petData)
 	shadow.Transparency = 0.6
 	shadow.Anchored = true
 	shadow.CanCollide = false
-	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, self._followHeight - 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, self._followHeight + 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
 	shadow.Parent = model
 
 	-- Name label above pet (nametag with pet name and rarity)
@@ -6701,7 +6686,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 
 	local model = petInfo.model
 
-	-- Determine target position: 1 stud offset beside the destructible
+	-- Determine target position: on the ground beside the destructible
 	local targetPos
 	if destructiblePart and typeof(destructiblePart) == "Instance" and destructiblePart:IsA("BasePart") then
 		-- Offset to the side (use a per-pet angle to distribute around the destructible)
@@ -6709,7 +6694,9 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		local angle = (petIndex - 1) * (math.pi * 2 / 6) -- distribute evenly around
 		local offsetX = math.cos(angle) * 2.5
 		local offsetZ = math.sin(angle) * 2.5
-		targetPos = destructiblePart.Position + Vector3.new(offsetX, 1.5, offsetZ)
+		targetPos = destructiblePart.Position + Vector3.new(offsetX, 0, offsetZ)
+		-- Keep pet at ground level (use followHeight offset)
+		targetPos = Vector3.new(targetPos.X, destructiblePart.Position.Y - destructiblePart.Size.Y / 2 + self._followHeight, targetPos.Z)
 	else
 		local character = self._player.Character
 		if character and character:FindFirstChild("HumanoidRootPart") then
@@ -6720,10 +6707,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Slow approach using per-frame lerp at speed 2.5 (very slow and natural)
+	-- Slow approach using per-frame lerp at speed 1.5 (very slow and natural, walking pace)
 	if model.PrimaryPart and model.PrimaryPart.Parent then
 		task.spawn(function()
-			local APPROACH_SPEED = 2.5 -- slow lerp speed
+			local APPROACH_SPEED = 1.5 -- very slow lerp speed (walking)
 			local BOUNCE_SPEED = 3.0 -- oscillation speed when stationed
 			local BOUNCE_HEIGHT = 0.3 -- how much it bobs up and down
 			local MAX_PLAYER_DIST = 60 -- return threshold
@@ -7165,6 +7152,16 @@ end
 function PetController:clearManualTarget()
 	self._manualTargetMode = false
 	-- Clear all pet targets and release stationing so they re-distribute on next frame
+	self._petTargets = {}
+	self._attackingPets = {}
+end
+
+--------------------------------------------------------------------------------
+-- Cancel all pet attacks and return them to following the player
+-- Called when player clicks elsewhere or moves away
+--------------------------------------------------------------------------------
+function PetController:cancelAllAttacks()
+	self._manualTargetMode = false
 	self._petTargets = {}
 	self._attackingPets = {}
 end
@@ -8243,9 +8240,7 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	local petName = resultPet and resultPet.name or "Pet"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
-	-- Store original camera settings for restore
-	local camera = workspace.CurrentCamera
-	local originalCameraType = camera and camera.CameraType or nil
+	-- NO camera manipulation - camera stays in normal player-controlled mode
 
 	-- Create LARGE egg model (much bigger for visibility)
 	local egg = Instance.new("Part")
@@ -8265,18 +8260,6 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	eggLight.Brightness = 2
 	eggLight.Range = 12
 	eggLight.Parent = egg
-
-	-- Camera zoom: swing camera to focus on the egg
-	local eggPos = egg.Position
-	if camera then
-		camera.CameraType = Enum.CameraType.Scriptable
-		local lookFrom = eggPos + Vector3.new(6, 3, 6)
-		local zoomInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		local zoomTween = TweenService:Create(camera, zoomInfo, {
-			CFrame = CFrame.new(lookFrom, eggPos),
-		})
-		zoomTween:Play()
-	end
 
 	-- Wobble animation: egg tilts left-right 3 times with increasing intensity
 	local basePos = egg.Position
@@ -8331,12 +8314,6 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 		-- Reveal pet after a short delay
 		task.wait(0.4)
 		self:_showPetReveal(basePos + Vector3.new(0, 4, 0), petName, rarity, rarityColor)
-
-		-- Restore camera after 2 seconds
-		task.wait(2)
-		if camera and originalCameraType then
-			camera.CameraType = originalCameraType
-		end
 	end)
 end
 

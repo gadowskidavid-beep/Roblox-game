@@ -311,8 +311,24 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Check level-based quests on join (in case they already meet requirements)
+	-- Create leaderstats folder for Roblox built-in leaderboard
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
 	local data = DataService.getPlayerData(player)
+
+	local levelStat = Instance.new("IntValue")
+	levelStat.Name = "Level"
+	levelStat.Value = data and data.level or 1
+	levelStat.Parent = leaderstats
+
+	local diamondsStat = Instance.new("IntValue")
+	diamondsStat.Name = "Diamonds"
+	diamondsStat.Value = data and data.diamonds or 0
+	diamondsStat.Parent = leaderstats
+
+	-- Check level-based quests on join (in case they already meet requirements)
 	if data then
 		QuestService.setStat(player, "reachLevel", data.level or 1)
 	end
@@ -340,12 +356,67 @@ for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(function()
 		DataService.loadPlayerData(player)
 		_sessionJoinTimes[player.UserId] = os.time()
+
+		-- Create leaderstats for already-connected players
+		local leaderstats = player:FindFirstChild("leaderstats")
+		if not leaderstats then
+			leaderstats = Instance.new("Folder")
+			leaderstats.Name = "leaderstats"
+			leaderstats.Parent = player
+		end
+
 		local data = DataService.getPlayerData(player)
+
+		local levelStat = leaderstats:FindFirstChild("Level")
+		if not levelStat then
+			levelStat = Instance.new("IntValue")
+			levelStat.Name = "Level"
+			levelStat.Parent = leaderstats
+		end
+		levelStat.Value = data and data.level or 1
+
+		local diamondsStat = leaderstats:FindFirstChild("Diamonds")
+		if not diamondsStat then
+			diamondsStat = Instance.new("IntValue")
+			diamondsStat.Name = "Diamonds"
+			diamondsStat.Parent = leaderstats
+		end
+		diamondsStat.Value = data and data.diamonds or 0
+
 		if data then
 			QuestService.setStat(player, "reachLevel", data.level or 1)
 		end
 	end)
 end
+
+-- Helper: update leaderstats for a player from their current data
+local function updateLeaderstats(player)
+	local data = DataService.getPlayerData(player)
+	if not data then return end
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not leaderstats then return end
+	local levelStat = leaderstats:FindFirstChild("Level")
+	if levelStat then
+		levelStat.Value = data.level or 1
+	end
+	local diamondsStat = leaderstats:FindFirstChild("Diamonds")
+	if diamondsStat then
+		diamondsStat.Value = data.diamonds or 0
+	end
+end
+
+-- Update leaderstats whenever currency or XP changes
+-- Hook into existing remote events: listen for CurrencyUpdated and XPUpdated firing
+local originalCurrencyUpdatedFire = nil
+-- Use a periodic check (every 5 seconds) to keep leaderstats in sync
+task.spawn(function()
+	while true do
+		task.wait(5)
+		for _, player in ipairs(Players:GetPlayers()) do
+			updateLeaderstats(player)
+		end
+	end
+end)
 
 -- Periodic playtime tracking: every 60 seconds, update playtime stats
 -- This ensures quest progress is visible even during long sessions

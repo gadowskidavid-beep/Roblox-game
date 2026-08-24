@@ -35,6 +35,7 @@ if dsSuccess then
 else
 	DataService._useMemoryOnly = true
 	warn("[DataService] DataStore unavailable - running in memory-only mode (session data will not persist). Reason: " .. tostring(dsResult))
+	print("[Battle Pets] Memory-only mode - publish game to enable saving")
 end
 
 -- Default player data schema
@@ -96,6 +97,7 @@ function DataService.loadPlayerData(player)
 	if DataService._useMemoryOnly then
 		DataService._cache[player.UserId] = getDefaultData()
 		DataService._canSave[player.UserId] = false
+		print("[Battle Pets] Memory-only mode - publish game to enable saving")
 		return DataService._cache[player.UserId]
 	end
 

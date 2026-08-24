@@ -132,9 +132,7 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	local petName = resultPet and resultPet.name or "Pet"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
-	-- Store original camera settings for restore
-	local camera = workspace.CurrentCamera
-	local originalCameraType = camera and camera.CameraType or nil
+	-- NO camera manipulation - camera stays in normal player-controlled mode
 
 	-- Create LARGE egg model (much bigger for visibility)
 	local egg = Instance.new("Part")
@@ -154,18 +152,6 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	eggLight.Brightness = 2
 	eggLight.Range = 12
 	eggLight.Parent = egg
-
-	-- Camera zoom: swing camera to focus on the egg
-	local eggPos = egg.Position
-	if camera then
-		camera.CameraType = Enum.CameraType.Scriptable
-		local lookFrom = eggPos + Vector3.new(6, 3, 6)
-		local zoomInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		local zoomTween = TweenService:Create(camera, zoomInfo, {
-			CFrame = CFrame.new(lookFrom, eggPos),
-		})
-		zoomTween:Play()
-	end
 
 	-- Wobble animation: egg tilts left-right 3 times with increasing intensity
 	local basePos = egg.Position
@@ -220,12 +206,6 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 		-- Reveal pet after a short delay
 		task.wait(0.4)
 		self:_showPetReveal(basePos + Vector3.new(0, 4, 0), petName, rarity, rarityColor)
-
-		-- Restore camera after 2 seconds
-		task.wait(2)
-		if camera and originalCameraType then
-			camera.CameraType = originalCameraType
-		end
 	end)
 end
 

@@ -134,12 +134,16 @@ end
 
 -- Equip a pet by instance ID
 function PetService.equipPet(player, petInstanceId)
+	print("[PetService] equipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
+
 	if not player or type(petInstanceId) ~= "string" then
+		print("[PetService] equipPet FAILED: Invalid parameters")
 		return false, "Invalid parameters"
 	end
 
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
+		print("[PetService] equipPet FAILED: No player data")
 		return false, "No player data"
 	end
 
@@ -154,6 +158,7 @@ function PetService.equipPet(player, petInstanceId)
 	-- Validate max equipped
 	local maxEquipped = getMaxEquipped(player)
 	if equippedCount >= maxEquipped then
+		print("[PetService] equipPet FAILED: Max equipped (" .. tostring(equippedCount) .. "/" .. tostring(maxEquipped) .. ")")
 		return false, "Maximum pets equipped (" .. tostring(maxEquipped) .. ")"
 	end
 
@@ -161,6 +166,7 @@ function PetService.equipPet(player, petInstanceId)
 	for _, pet in ipairs(data.pets) do
 		if pet.id == petInstanceId then
 			if pet.equipped then
+				print("[PetService] equipPet FAILED: Pet already equipped")
 				return false, "Pet already equipped"
 			end
 			pet.equipped = true
@@ -173,6 +179,7 @@ function PetService.equipPet(player, petInstanceId)
 			if remotes then
 				local event = remotes:FindFirstChild("PetEquipped")
 				if event then
+					print("[PetService] equipPet SUCCESS: Firing PetEquipped event for " .. tostring(pet.name))
 					event:FireClient(player, pet)
 				end
 			end
@@ -181,17 +188,22 @@ function PetService.equipPet(player, petInstanceId)
 		end
 	end
 
+	print("[PetService] equipPet FAILED: Pet not found in inventory")
 	return false, "Pet not found in inventory"
 end
 
 -- Unequip a pet by instance ID
 function PetService.unequipPet(player, petInstanceId)
+	print("[PetService] unequipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
+
 	if not player or type(petInstanceId) ~= "string" then
+		print("[PetService] unequipPet FAILED: Invalid parameters")
 		return false, "Invalid parameters"
 	end
 
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
+		print("[PetService] unequipPet FAILED: No player data")
 		return false, "No player data"
 	end
 
@@ -199,6 +211,7 @@ function PetService.unequipPet(player, petInstanceId)
 	for _, pet in ipairs(data.pets) do
 		if pet.id == petInstanceId then
 			if not pet.equipped then
+				print("[PetService] unequipPet FAILED: Pet is not equipped (pet.equipped=" .. tostring(pet.equipped) .. ")")
 				return false, "Pet is not equipped"
 			end
 			pet.equipped = false
@@ -216,6 +229,7 @@ function PetService.unequipPet(player, petInstanceId)
 			if remotes then
 				local event = remotes:FindFirstChild("PetUnequipped")
 				if event then
+					print("[PetService] unequipPet SUCCESS: Firing PetUnequipped event for " .. tostring(pet.name))
 					event:FireClient(player, petInstanceId)
 				end
 			end
@@ -224,6 +238,7 @@ function PetService.unequipPet(player, petInstanceId)
 		end
 	end
 
+	print("[PetService] unequipPet FAILED: Pet not found in inventory (searched " .. tostring(#data.pets) .. " pets)")
 	return false, "Pet not found in inventory"
 end
 

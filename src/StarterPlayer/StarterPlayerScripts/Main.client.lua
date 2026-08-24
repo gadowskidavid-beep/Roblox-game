@@ -182,6 +182,7 @@ PetInventoryUpdated.OnClientEvent:Connect(function(pets)
 end)
 
 PetEquipped.OnClientEvent:Connect(function(petData)
+	print("[Client] PetEquipped event received: " .. tostring(petData and petData.name or "nil"))
 	if petData and type(petData) == "table" and petData.id then
 		for i = #localEquippedPets, 1, -1 do
 			if localEquippedPets[i].id == petData.id then
@@ -195,6 +196,7 @@ PetEquipped.OnClientEvent:Connect(function(petData)
 end)
 
 PetUnequipped.OnClientEvent:Connect(function(petInstanceId)
+	print("[Client] PetUnequipped event received: " .. tostring(petInstanceId))
 	if petInstanceId and type(petInstanceId) == "string" then
 		for i, pet in ipairs(localEquippedPets) do
 			if pet.id == petInstanceId then
@@ -395,6 +397,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			mouseDownTime = tick()
 			mouseDownTarget = target
 			isMouseDown = true
+			holdFired = false
+		else
+			-- Clicked on empty space: cancel all pet attacks, return them to player
+			petController:cancelAllAttacks()
+			isMouseDown = false
+			mouseDownTarget = nil
 			holdFired = false
 		end
 	end

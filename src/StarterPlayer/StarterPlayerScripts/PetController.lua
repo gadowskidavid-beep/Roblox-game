@@ -39,8 +39,8 @@ function PetController.new()
 	-- Follow-behind settings
 	self._followDistance = 5 -- distance behind the player per pet slot
 	self._followSpread = 3 -- lateral spread for multiple pets in same row
-	self._followHeight = 2.5 -- height offset above ground (floating)
-	self._followLerpSpeed = 3.5 -- smoothing speed for following (reduced for natural movement)
+	self._followHeight = 0.5 -- height offset above ground (ground level walking)
+	self._followLerpSpeed = 1.5 -- smoothing speed for following (very slow for natural walking)
 	self._petsPerRow = 3 -- max pets per row behind the player
 	self._initialized = false
 	self._initGuard = false -- prevents double initialization
@@ -122,7 +122,7 @@ function PetController:createPetModel(petData)
 	shadow.Transparency = 0.6
 	shadow.Anchored = true
 	shadow.CanCollide = false
-	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, self._followHeight - 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, self._followHeight + 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
 	shadow.Parent = model
 
 	-- Name label above pet (nametag with pet name and rarity)
@@ -402,7 +402,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 
 	local model = petInfo.model
 
-	-- Determine target position: 1 stud offset beside the destructible
+	-- Determine target position: on the ground beside the destructible
 	local targetPos
 	if destructiblePart and typeof(destructiblePart) == "Instance" and destructiblePart:IsA("BasePart") then
 		-- Offset to the side (use a per-pet angle to distribute around the destructible)
@@ -410,7 +410,9 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		local angle = (petIndex - 1) * (math.pi * 2 / 6) -- distribute evenly around
 		local offsetX = math.cos(angle) * 2.5
 		local offsetZ = math.sin(angle) * 2.5
-		targetPos = destructiblePart.Position + Vector3.new(offsetX, 1.5, offsetZ)
+		targetPos = destructiblePart.Position + Vector3.new(offsetX, 0, offsetZ)
+		-- Keep pet at ground level (use followHeight offset)
+		targetPos = Vector3.new(targetPos.X, destructiblePart.Position.Y - destructiblePart.Size.Y / 2 + self._followHeight, targetPos.Z)
 	else
 		local character = self._player.Character
 		if character and character:FindFirstChild("HumanoidRootPart") then
@@ -421,10 +423,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Slow approach using per-frame lerp at speed 2.5 (very slow and natural)
+	-- Slow approach using per-frame lerp at speed 1.5 (very slow and natural, walking pace)
 	if model.PrimaryPart and model.PrimaryPart.Parent then
 		task.spawn(function()
-			local APPROACH_SPEED = 2.5 -- slow lerp speed
+			local APPROACH_SPEED = 1.5 -- very slow lerp speed (walking)
 			local BOUNCE_SPEED = 3.0 -- oscillation speed when stationed
 			local BOUNCE_HEIGHT = 0.3 -- how much it bobs up and down
 			local MAX_PLAYER_DIST = 60 -- return threshold
@@ -866,6 +868,16 @@ end
 function PetController:clearManualTarget()
 	self._manualTargetMode = false
 	-- Clear all pet targets and release stationing so they re-distribute on next frame
+	self._petTargets = {}
+	self._attackingPets = {}
+end
+
+--------------------------------------------------------------------------------
+-- Cancel all pet attacks and return them to following the player
+-- Called when player clicks elsewhere or moves away
+--------------------------------------------------------------------------------
+function PetController:cancelAllAttacks()
+	self._manualTargetMode = false
 	self._petTargets = {}
 	self._attackingPets = {}
 end

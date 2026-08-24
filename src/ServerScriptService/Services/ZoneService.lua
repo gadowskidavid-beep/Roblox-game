@@ -158,7 +158,13 @@ function ZoneService.spawnDestructibles(zoneId, zoneFolder, origin)
 		"DiamondPile", "Crate", "Crate", "Crate", "Crate",
 		"Crate", "CoinPile", "CoinPile", "DiamondPile", "Crate" }
 
+	-- Gather positions from ALL existing destructibles (all zones, all types) to prevent overlap
 	local existingPositions = {}
+	for _, d in pairs(ZoneService._destructibles) do
+		if d.position then
+			table.insert(existingPositions, d.position)
+		end
+	end
 
 	for i = 1, DESTRUCTIBLES_PER_ZONE do
 		-- Pick a type from the weighted list
@@ -426,6 +432,80 @@ function ZoneService._spawnEggStations()
 		costLabel.Font = Enum.Font.GothamBold
 		costLabel.TextScaled = true
 		costLabel.Parent = billboard
+
+		-- BillboardGui showing which pets are in this egg with their % chance
+		local PetData = require(game.ReplicatedStorage.Shared.PetData)
+		local eggDef = PetData.Eggs[stationDef.eggType]
+		if eggDef and eggDef.petPool then
+			-- Calculate total weight for percentage
+			local totalWeight = 0
+			for _, entry in ipairs(eggDef.petPool) do
+				totalWeight = totalWeight + entry.weight
+			end
+
+			local numPets = #eggDef.petPool
+			local petsBillboard = Instance.new("BillboardGui")
+			petsBillboard.Name = "PetChancesLabel"
+			petsBillboard.Size = UDim2.fromOffset(200, 20 + numPets * 22)
+			petsBillboard.StudsOffset = Vector3.new(0, 7, 0)
+			petsBillboard.AlwaysOnTop = true
+			petsBillboard.Adornee = egg
+			petsBillboard.Parent = egg
+
+			local petsBg = Instance.new("Frame")
+			petsBg.Name = "Background"
+			petsBg.Size = UDim2.fromScale(1, 1)
+			petsBg.BackgroundColor3 = Color3.fromRGB(20, 30, 60)
+			petsBg.BackgroundTransparency = 0.3
+			petsBg.BorderSizePixel = 0
+			petsBg.Parent = petsBillboard
+
+			local petsBgCorner = Instance.new("UICorner")
+			petsBgCorner.CornerRadius = UDim.new(0, 8)
+			petsBgCorner.Parent = petsBg
+
+			local petsLayout = Instance.new("UIListLayout")
+			petsLayout.FillDirection = Enum.FillDirection.Vertical
+			petsLayout.Padding = UDim.new(0, 2)
+			petsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+			petsLayout.Parent = petsBg
+
+			local petsPadding = Instance.new("UIPadding")
+			petsPadding.PaddingTop = UDim.new(0, 4)
+			petsPadding.PaddingBottom = UDim.new(0, 4)
+			petsPadding.PaddingLeft = UDim.new(0, 6)
+			petsPadding.PaddingRight = UDim.new(0, 6)
+			petsPadding.Parent = petsBg
+
+			-- Rarity colors for pet chance display
+			local rarityColors = {
+				Common = Color3.fromRGB(255, 255, 255),
+				Uncommon = Color3.fromRGB(0, 200, 0),
+				Rare = Color3.fromRGB(0, 120, 255),
+				Epic = Color3.fromRGB(180, 0, 255),
+				Legendary = Color3.fromRGB(255, 200, 0),
+			}
+
+			for _, entry in ipairs(eggDef.petPool) do
+				local petDef = PetData.Pets[entry.petId]
+				if petDef then
+					local percentage = math.floor((entry.weight / totalWeight) * 100 + 0.5)
+					local petColor = rarityColors[petDef.rarity] or Color3.fromRGB(255, 255, 255)
+
+					local petLine = Instance.new("TextLabel")
+					petLine.Name = "Pet_" .. entry.petId
+					petLine.Size = UDim2.new(1, 0, 0, 18)
+					petLine.BackgroundTransparency = 1
+					petLine.Text = petDef.name .. " (" .. petDef.rarity .. ") - " .. tostring(percentage) .. "%"
+					petLine.TextColor3 = petColor
+					petLine.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+					petLine.TextStrokeTransparency = 0.3
+					petLine.Font = Enum.Font.GothamBold
+					petLine.TextScaled = true
+					petLine.Parent = petsBg
+				end
+			end
+		end
 
 		-- Interaction zone: invisible larger part around the station for proximity detection
 		local interactZone = Instance.new("Part")
@@ -745,10 +825,10 @@ function ZoneService.attackDestructible(player, destructibleId)
 			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
 			if zoneFolder then
 				local origin = getZoneOrigin(zoneId)
-				-- Gather positions of all existing destructibles in this zone to prevent overlap
+				-- Gather positions of ALL existing destructibles (all zones) to prevent overlap
 				local existingPositions = {}
 				for _, d in pairs(ZoneService._destructibles) do
-					if d.zoneId == zoneId and d.position then
+					if d.position then
 						table.insert(existingPositions, d.position)
 					end
 				end
