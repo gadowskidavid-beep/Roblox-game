@@ -2,7 +2,7 @@
   "id": "FEAT-007",
   "type": "fix",
   "description": "Fix runtime crashes: remove duplicate Remotes from .rbxlx (server creates them), restructure Workspace to not include raw destructible Parts (ZoneService spawns them dynamically), fix client RenderStepped nil access on HP/MaxHP IntValues, add nil guard for playerData",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Update generate_rbxlx.py: Remove the Remotes folder from ReplicatedStorage (server Main creates it at runtime)",
     "Update generate_rbxlx.py: Remove all destructible Parts (CoinPile, DiamondPile, Crate, UrbanCrate, UrbanCoinPile) from Workspace - ZoneService spawns them dynamically with proper DestructibleId children",
@@ -25,5 +25,5 @@
     "Verify no CoinPile/DiamondPile/Crate Parts in .rbxlx workspace"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "Removed Remotes folder (14 events + 11 functions) from .rbxlx since server creates them at runtime. Removed all 30 static destructible Parts from Workspace since ZoneService dynamically spawns them with DestructibleId StringValue children. Reduced .rbxlx from ~213KB/95 items to 192KB/39 items. Fixed client RenderStepped that tried to read HP/MaxHP IntValue children (never created by server). Added nil guard for playerData. Fixed EffectsController to reuse existing progress bars and guard against division by zero. The architecture is: server creates Remotes folder + Zones folder with destructible Parts at runtime, client uses WaitForChild for Remotes and searches workspace.Zones for destructibles."
 }
