@@ -3,7 +3,7 @@
   "type": "fix",
   "title": "Fix duplicate pet model bug, improve pet visuals, fix various gameplay issues",
   "description": "Fix the duplicate pet model bug where 2 identical models spawn for 1 equipped pet. Improve pet visuals with floating height (2-3 studs), shadow effect, and nametag. Fix various gameplay flow issues across egg hatching, upgrades, zone gates, and currency collection.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Fix PetController duplicate model bug by adding initialization guard and cleanup in updateEquippedPets",
     "Increase pet follow height to 2.5 studs above ground and add shadow Part below each pet",
@@ -24,5 +24,5 @@
     "BATTLE_PETS.rbxlx regenerated and valid XML"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "Fixed multiple issues: (1) Duplicate pet model bug fixed with init guard, orphan cleanup in updateEquippedPets, and strict deduplication in PetEquipped handler. (2) Pet visuals improved: 2.5 stud float height, shadow cylinder beneath, rarity subtitle in nametag, PointLight glow. (3) Follow distance increased from 3 to 5 studs behind player. (4) Campaign flow fixed: CampaignController was expecting a table result from InvokeServer but server returns (boolean, string) - fixed to handle multiple return values. (5) CampaignService now broadcasts battle state every 0.5s with entity positions and sends available pets on level start. (6) XP system now functional: destructible kills award XP, level-up logic implemented, XPUpdated remote event added, client updates XP bar. (7) DataService.getPlayerData now includes computed xpNeeded for XP bar initialization."
 }
