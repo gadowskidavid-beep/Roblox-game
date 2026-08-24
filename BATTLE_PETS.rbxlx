@@ -182,6 +182,7 @@ local remoteFunctions = {
 	"StartCampaignLevel",
 	"DeployPetInCampaign",
 	"AttackDestructible",
+	"ClickAttackDestructible",
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
@@ -413,6 +414,17 @@ getRemoteFunction("AttackDestructible").OnServerInvoke = function(player, destru
 	return ZoneService.attackDestructible(player, destructibleId)
 end
 
+-- ClickAttackDestructible (player tap/click damage - always 1 per click)
+getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, destructibleId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if type(destructibleId) ~= "string" then
+		return false, "Invalid destructible ID parameter"
+	end
+	return ZoneService.clickAttackDestructible(player, destructibleId)
+end
+
 ----------------------------------------------
 -- Player Lifecycle
 ----------------------------------------------
@@ -620,7 +632,7 @@ local function getDefaultData()
 		petId = "Buddy",
 		name = "Buddy",
 		rarity = "Common",
-		damage = 5,
+		damage = 1,
 		equipped = true,
 	}
 
@@ -2473,6 +2485,126 @@ function ZoneService.attackDestructible(player, destructibleId)
 	return true, nil
 end
 
+-- Click-attack a destructible (player tap/click damage, always 1 damage per click)
+-- This is separate from pet auto-attack and does not require equipped pets.
+function ZoneService.clickAttackDestructible(player, destructibleId)
+	if not player or type(destructibleId) ~= "string" then
+		return false, "Invalid parameters"
+	end
+
+	local destructible = ZoneService._destructibles[destructibleId]
+	if not destructible then
+		return false, "Destructible not found"
+	end
+
+	local data = ZoneService._dataService.getPlayerData(player)
+	if not data then
+		return false, "No player data"
+	end
+
+	-- Validate player has unlocked the zone
+	local zoneUnlocked = false
+	for _, unlockedId in ipairs(data.unlockedZones) do
+		if unlockedId == destructible.zoneId then
+			zoneUnlocked = true
+			break
+		end
+	end
+	if not zoneUnlocked then
+		return false, "Zone not unlocked"
+	end
+
+	-- Player click always deals exactly 1 damage
+	local clickDamage = 1
+
+	-- Apply damage
+	destructible.hp = destructible.hp - clickDamage
+
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+
+	if destructible.hp <= 0 then
+		-- Destructible destroyed
+		destructible.hp = 0
+
+		-- Resolve drops
+		local resolvedDrops = {}
+		for currencyType, dropValue in pairs(destructible.drops) do
+			if type(dropValue) == "table" and dropValue.min and dropValue.max then
+				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
+			else
+				resolvedDrops[currencyType] = dropValue
+			end
+		end
+
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
+		end
+
+		-- Award XP
+		local xpReward = destructible.zoneId * 5
+		ZoneService._awardXP(player, xpReward)
+
+		-- Track quest progress
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
+		end
+
+		-- Fire destroyed event
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDestroyed")
+			if event then
+				event:FireAllClients(destructibleId, resolvedDrops)
+			end
+		end
+
+		-- Remove model from workspace
+		if destructible.model and destructible.model.Parent then
+			destructible.model:Destroy()
+		elseif destructible.part and destructible.part.Parent then
+			destructible.part:Destroy()
+		end
+
+		-- Schedule respawn
+		local zoneId = destructible.zoneId
+		local dtype = destructible.dtype
+		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
+
+		ZoneService._destructibles[destructibleId] = nil
+
+		task.delay(10, function()
+			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
+			if zoneFolder then
+				local origin = getZoneOrigin(zoneId)
+				local existingPositions = {}
+				for _, d in pairs(ZoneService._destructibles) do
+					if d.position then
+						table.insert(existingPositions, d.position)
+					end
+				end
+				local newPosition = getRandomPositionInZone(origin, existingPositions)
+				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
+			end
+		end)
+	else
+		-- Fire damaged event with click damage
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDamaged")
+			if event then
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, clickDamage)
+			end
+		end
+	end
+
+	return true, nil
+end
+
 -- Award XP to a player and handle level-ups
 -- XP needed for next level: level * 100 (linear scaling)
 function ZoneService._awardXP(player, amount)
@@ -3972,6 +4104,7 @@ local PurchaseUpgrade = Remotes:WaitForChild("PurchaseUpgrade")
 local StartCampaignLevel = Remotes:WaitForChild("StartCampaignLevel")
 local DeployPetInCampaign = Remotes:WaitForChild("DeployPetInCampaign")
 local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
+local ClickAttackDestructible = Remotes:WaitForChild("ClickAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
@@ -4249,15 +4382,20 @@ RunService.RenderStepped:Connect(function(deltaTime)
 end)
 
 --------------------------------------------------------------------------------
--- INPUT HANDLING - Pet Simulator 1 style targeting
--- Single click: send 1 pet to target
--- Hold click (0.3s+): send ALL pets to target
+-- INPUT HANDLING - Pet Simulator 1 style targeting + QTE Click-to-Damage
+-- Single click: send 1 pet to target + deal 1 click damage
+-- Hold click (0.3s+): send ALL pets to target + auto-click every 0.2s for damage
+-- Each click deals 1 damage (player click damage, separate from pet auto-attack)
 --------------------------------------------------------------------------------
 local HOLD_THRESHOLD = 0.3 -- seconds to distinguish click from hold
+local CLICK_COOLDOWN = 0.2 -- seconds between click damage (spam protection)
+local AUTO_CLICK_INTERVAL = 0.2 -- seconds between auto-clicks when holding
 local mouseDownTime = 0
 local mouseDownTarget = nil -- { destructibleId, part }
 local isMouseDown = false
 local holdFired = false -- whether we already sent all-pets command during this hold
+local lastClickDamageTime = 0 -- cooldown tracker for click damage
+local autoClickActive = false -- whether auto-click is running from hold
 
 -- Helper: Raycast from screen position to find a destructible
 local function raycastForDestructible(screenPosition)
@@ -4300,7 +4438,36 @@ local function raycastForDestructible(screenPosition)
 	}
 end
 
--- Mouse/Touch down: start tracking for click vs hold
+-- Helper: fire click damage to server and show effects
+local function fireClickDamage(target)
+	if not target or not target.destructibleId then return end
+
+	local now = tick()
+	if (now - lastClickDamageTime) < CLICK_COOLDOWN then return end
+	lastClickDamageTime = now
+
+	-- Fire click attack to server (always 1 damage)
+	ClickAttackDestructible:InvokeServer(target.destructibleId)
+
+	-- Show visual effects for the click
+	if target.part and target.part.Parent then
+		-- Show "1" damage popup at the destructible position
+		local popupPos = target.part.Position + Vector3.new(
+			(math.random() - 0.5) * 2,
+			1,
+			(math.random() - 0.5) * 2
+		)
+		petController:showDamageText(popupPos, 1)
+
+		-- Show hit effect (shake/flash) on the destructible
+		effectsController:showClickHitEffect(target.part)
+
+		-- Play satisfying click sound
+		effectsController:playClickSound(target.part.Position)
+	end
+end
+
+-- Mouse/Touch down: start tracking for click vs hold + immediate click damage
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 
@@ -4313,12 +4480,17 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			mouseDownTarget = target
 			isMouseDown = true
 			holdFired = false
+			autoClickActive = false
+
+			-- Immediate click damage on first press
+			fireClickDamage(target)
 		else
 			-- Clicked on empty space: cancel all pet attacks, return them to player
 			petController:cancelAllAttacks()
 			isMouseDown = false
 			mouseDownTarget = nil
 			holdFired = false
+			autoClickActive = false
 		end
 	end
 end)
@@ -4340,18 +4512,36 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 		isMouseDown = false
 		mouseDownTarget = nil
 		holdFired = false
+		autoClickActive = false
 	end
 end)
 
 -- Per-frame check: detect hold (0.3s+) while mouse is still down
+-- Also handles auto-click damage every 0.2s while holding
 RunService.Heartbeat:Connect(function()
-	if not isMouseDown or not mouseDownTarget or holdFired then return end
+	if not isMouseDown or not mouseDownTarget then return end
 
 	local elapsed = tick() - mouseDownTime
-	if elapsed >= HOLD_THRESHOLD then
-		-- HOLD: send ALL pets to the target
+
+	-- Send all pets once when hold threshold reached
+	if not holdFired and elapsed >= HOLD_THRESHOLD then
 		holdFired = true
+		autoClickActive = true
 		petController:sendAllPetsToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
+	end
+
+	-- Auto-click damage while holding (every AUTO_CLICK_INTERVAL seconds)
+	if autoClickActive and mouseDownTarget then
+		-- Check if the target still exists
+		if mouseDownTarget.part and mouseDownTarget.part.Parent then
+			fireClickDamage(mouseDownTarget)
+		else
+			-- Target destroyed, stop auto-clicking
+			autoClickActive = false
+			isMouseDown = false
+			mouseDownTarget = nil
+			holdFired = false
+		end
 	end
 end)
 
@@ -8947,6 +9137,92 @@ function EffectsController:showDestructiblePoof(position, color)
 	end
 end
 
+--------------------------------------------------------------------------------
+-- Click Hit Effect: brief flash + rotation shake on the destructible model
+-- Makes the destructible wobble slightly when the player clicks on it.
+--------------------------------------------------------------------------------
+function EffectsController:showClickHitEffect(destructiblePart)
+	if not self._initialized then return end
+	if not destructiblePart or not destructiblePart:IsA("BasePart") then return end
+
+	-- Find the parent model to shake all parts
+	local model = destructiblePart.Parent
+	if not model or not model:IsA("Model") then return end
+
+	-- Brief white highlight flash on the main part
+	local originalColor = destructiblePart.Color
+	local originalMaterial = destructiblePart.Material
+
+	-- Flash to white briefly
+	destructiblePart.Color = Color3.fromRGB(255, 255, 255)
+	task.delay(0.05, function()
+		if destructiblePart and destructiblePart.Parent then
+			destructiblePart.Color = originalColor
+		end
+	end)
+
+	-- Rotation shake: tilt the model parts slightly and return
+	-- Apply a small random rotation offset to all anchored parts in the model
+	local shakeAngle = math.rad(3 + math.random() * 4) -- 3-7 degrees
+	local shakeDir = (math.random() > 0.5) and 1 or -1
+
+	for _, part in ipairs(model:GetDescendants()) do
+		if part:IsA("BasePart") and part.Anchored then
+			local originalCFrame = part.CFrame
+			-- Apply shake rotation around Z axis (wobble left-right)
+			part.CFrame = originalCFrame * CFrame.Angles(0, 0, shakeAngle * shakeDir)
+
+			-- Return to original after a brief delay
+			task.delay(0.06, function()
+				if part and part.Parent then
+					part.CFrame = originalCFrame
+				end
+			end)
+		end
+	end
+end
+
+--------------------------------------------------------------------------------
+-- Click Sound: play a satisfying "kling" sound per click using Roblox built-in
+-- Uses a short pitched click/hit sound
+--------------------------------------------------------------------------------
+function EffectsController:playClickSound(position)
+	if not self._initialized then return end
+
+	-- Create a sound at the position (attach to an anchor part)
+	local soundAnchor = Instance.new("Part")
+	soundAnchor.Name = "ClickSoundAnchor"
+	soundAnchor.Size = Vector3.new(0.1, 0.1, 0.1)
+	soundAnchor.Position = position
+	soundAnchor.Anchored = true
+	soundAnchor.CanCollide = false
+	soundAnchor.Transparency = 1
+	soundAnchor.Parent = self._effectsFolder
+
+	local sound = Instance.new("Sound")
+	sound.Name = "ClickHitSound"
+	-- Use Roblox built-in coin/hit sound (public asset)
+	sound.SoundId = "rbxassetid://6042053626"
+	sound.Volume = 0.5
+	sound.PlaybackSpeed = 1.2 + math.random() * 0.3 -- slight pitch variation for satisfaction
+	sound.RollOffMaxDistance = 50
+	sound.Parent = soundAnchor
+
+	sound:Play()
+
+	-- Cleanup after sound finishes
+	sound.Ended:Connect(function()
+		soundAnchor:Destroy()
+	end)
+
+	-- Safety cleanup in case Ended never fires
+	task.delay(2, function()
+		if soundAnchor and soundAnchor.Parent then
+			soundAnchor:Destroy()
+		end
+	end)
+end
+
 return EffectsController
 ]]></ProtectedString>
 					</Properties>
@@ -9240,7 +9516,7 @@ PetData.Pets = {
 		name = "Buddy",
 		species = "Dog",
 		rarity = "Common",
-		baseDamage = 5,
+		baseDamage = 1,
 		baseSpeed = 10,
 		modelDescription = "A friendly brown dog with floppy ears and a wagging tail",
 	},
@@ -9329,17 +9605,17 @@ ZoneData.Zones = {
 		destructibles = {
 			CoinPile = {
 				displayName = "Coin Pile",
-				hp = 10,
+				hp = 15,
 				drops = { Coins = { min = 5, max = 15 } },
 			},
 			DiamondPile = {
 				displayName = "Diamond Pile",
-				hp = 20,
+				hp = 25,
 				drops = { Diamonds = { min = 1, max = 3 } },
 			},
 			Crate = {
 				displayName = "Crate",
-				hp = 15,
+				hp = 40,
 				drops = { Coins = { min = 10, max = 30 }, Diamonds = { min = 1, max = 2 } },
 			},
 		},

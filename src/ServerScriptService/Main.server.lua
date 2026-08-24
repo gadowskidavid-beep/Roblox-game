@@ -66,6 +66,7 @@ local remoteFunctions = {
 	"StartCampaignLevel",
 	"DeployPetInCampaign",
 	"AttackDestructible",
+	"ClickAttackDestructible",
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
@@ -295,6 +296,17 @@ getRemoteFunction("AttackDestructible").OnServerInvoke = function(player, destru
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.attackDestructible(player, destructibleId)
+end
+
+-- ClickAttackDestructible (player tap/click damage - always 1 per click)
+getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, destructibleId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if type(destructibleId) ~= "string" then
+		return false, "Invalid destructible ID parameter"
+	end
+	return ZoneService.clickAttackDestructible(player, destructibleId)
 end
 
 ----------------------------------------------

@@ -11,7 +11,7 @@ PetData.Pets = {
 		name = "Buddy",
 		species = "Dog",
 		rarity = "Common",
-		baseDamage = 5,
+		baseDamage = 1,
 		baseSpeed = 10,
 		modelDescription = "A friendly brown dog with floppy ears and a wagging tail",
 	},

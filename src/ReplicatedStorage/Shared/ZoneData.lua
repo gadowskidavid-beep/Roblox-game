@@ -27,17 +27,17 @@ ZoneData.Zones = {
 		destructibles = {
 			CoinPile = {
 				displayName = "Coin Pile",
-				hp = 10,
+				hp = 15,
 				drops = { Coins = { min = 5, max = 15 } },
 			},
 			DiamondPile = {
 				displayName = "Diamond Pile",
-				hp = 20,
+				hp = 25,
 				drops = { Diamonds = { min = 1, max = 3 } },
 			},
 			Crate = {
 				displayName = "Crate",
-				hp = 15,
+				hp = 40,
 				drops = { Coins = { min = 10, max = 30 }, Diamonds = { min = 1, max = 2 } },
 			},
 		},

@@ -868,6 +868,126 @@ function ZoneService.attackDestructible(player, destructibleId)
 	return true, nil
 end
 
+-- Click-attack a destructible (player tap/click damage, always 1 damage per click)
+-- This is separate from pet auto-attack and does not require equipped pets.
+function ZoneService.clickAttackDestructible(player, destructibleId)
+	if not player or type(destructibleId) ~= "string" then
+		return false, "Invalid parameters"
+	end
+
+	local destructible = ZoneService._destructibles[destructibleId]
+	if not destructible then
+		return false, "Destructible not found"
+	end
+
+	local data = ZoneService._dataService.getPlayerData(player)
+	if not data then
+		return false, "No player data"
+	end
+
+	-- Validate player has unlocked the zone
+	local zoneUnlocked = false
+	for _, unlockedId in ipairs(data.unlockedZones) do
+		if unlockedId == destructible.zoneId then
+			zoneUnlocked = true
+			break
+		end
+	end
+	if not zoneUnlocked then
+		return false, "Zone not unlocked"
+	end
+
+	-- Player click always deals exactly 1 damage
+	local clickDamage = 1
+
+	-- Apply damage
+	destructible.hp = destructible.hp - clickDamage
+
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+
+	if destructible.hp <= 0 then
+		-- Destructible destroyed
+		destructible.hp = 0
+
+		-- Resolve drops
+		local resolvedDrops = {}
+		for currencyType, dropValue in pairs(destructible.drops) do
+			if type(dropValue) == "table" and dropValue.min and dropValue.max then
+				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
+			else
+				resolvedDrops[currencyType] = dropValue
+			end
+		end
+
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
+		end
+
+		-- Award XP
+		local xpReward = destructible.zoneId * 5
+		ZoneService._awardXP(player, xpReward)
+
+		-- Track quest progress
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
+		end
+
+		-- Fire destroyed event
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDestroyed")
+			if event then
+				event:FireAllClients(destructibleId, resolvedDrops)
+			end
+		end
+
+		-- Remove model from workspace
+		if destructible.model and destructible.model.Parent then
+			destructible.model:Destroy()
+		elseif destructible.part and destructible.part.Parent then
+			destructible.part:Destroy()
+		end
+
+		-- Schedule respawn
+		local zoneId = destructible.zoneId
+		local dtype = destructible.dtype
+		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
+
+		ZoneService._destructibles[destructibleId] = nil
+
+		task.delay(10, function()
+			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
+			if zoneFolder then
+				local origin = getZoneOrigin(zoneId)
+				local existingPositions = {}
+				for _, d in pairs(ZoneService._destructibles) do
+					if d.position then
+						table.insert(existingPositions, d.position)
+					end
+				end
+				local newPosition = getRandomPositionInZone(origin, existingPositions)
+				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
+			end
+		end)
+	else
+		-- Fire damaged event with click damage
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDamaged")
+			if event then
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, clickDamage)
+			end
+		end
+	end
+
+	return true, nil
+end
+
 -- Award XP to a player and handle level-ups
 -- XP needed for next level: level * 100 (linear scaling)
 function ZoneService._awardXP(player, amount)

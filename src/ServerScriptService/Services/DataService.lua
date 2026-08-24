@@ -45,7 +45,7 @@ local function getDefaultData()
 		petId = "Buddy",
 		name = "Buddy",
 		rarity = "Common",
-		damage = 5,
+		damage = 1,
 		equipped = true,
 	}
 

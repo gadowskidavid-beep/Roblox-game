@@ -780,4 +780,90 @@ function EffectsController:showDestructiblePoof(position, color)
 	end
 end
 
+--------------------------------------------------------------------------------
+-- Click Hit Effect: brief flash + rotation shake on the destructible model
+-- Makes the destructible wobble slightly when the player clicks on it.
+--------------------------------------------------------------------------------
+function EffectsController:showClickHitEffect(destructiblePart)
+	if not self._initialized then return end
+	if not destructiblePart or not destructiblePart:IsA("BasePart") then return end
+
+	-- Find the parent model to shake all parts
+	local model = destructiblePart.Parent
+	if not model or not model:IsA("Model") then return end
+
+	-- Brief white highlight flash on the main part
+	local originalColor = destructiblePart.Color
+	local originalMaterial = destructiblePart.Material
+
+	-- Flash to white briefly
+	destructiblePart.Color = Color3.fromRGB(255, 255, 255)
+	task.delay(0.05, function()
+		if destructiblePart and destructiblePart.Parent then
+			destructiblePart.Color = originalColor
+		end
+	end)
+
+	-- Rotation shake: tilt the model parts slightly and return
+	-- Apply a small random rotation offset to all anchored parts in the model
+	local shakeAngle = math.rad(3 + math.random() * 4) -- 3-7 degrees
+	local shakeDir = (math.random() > 0.5) and 1 or -1
+
+	for _, part in ipairs(model:GetDescendants()) do
+		if part:IsA("BasePart") and part.Anchored then
+			local originalCFrame = part.CFrame
+			-- Apply shake rotation around Z axis (wobble left-right)
+			part.CFrame = originalCFrame * CFrame.Angles(0, 0, shakeAngle * shakeDir)
+
+			-- Return to original after a brief delay
+			task.delay(0.06, function()
+				if part and part.Parent then
+					part.CFrame = originalCFrame
+				end
+			end)
+		end
+	end
+end
+
+--------------------------------------------------------------------------------
+-- Click Sound: play a satisfying "kling" sound per click using Roblox built-in
+-- Uses a short pitched click/hit sound
+--------------------------------------------------------------------------------
+function EffectsController:playClickSound(position)
+	if not self._initialized then return end
+
+	-- Create a sound at the position (attach to an anchor part)
+	local soundAnchor = Instance.new("Part")
+	soundAnchor.Name = "ClickSoundAnchor"
+	soundAnchor.Size = Vector3.new(0.1, 0.1, 0.1)
+	soundAnchor.Position = position
+	soundAnchor.Anchored = true
+	soundAnchor.CanCollide = false
+	soundAnchor.Transparency = 1
+	soundAnchor.Parent = self._effectsFolder
+
+	local sound = Instance.new("Sound")
+	sound.Name = "ClickHitSound"
+	-- Use Roblox built-in coin/hit sound (public asset)
+	sound.SoundId = "rbxassetid://6042053626"
+	sound.Volume = 0.5
+	sound.PlaybackSpeed = 1.2 + math.random() * 0.3 -- slight pitch variation for satisfaction
+	sound.RollOffMaxDistance = 50
+	sound.Parent = soundAnchor
+
+	sound:Play()
+
+	-- Cleanup after sound finishes
+	sound.Ended:Connect(function()
+		soundAnchor:Destroy()
+	end)
+
+	-- Safety cleanup in case Ended never fires
+	task.delay(2, function()
+		if soundAnchor and soundAnchor.Parent then
+			soundAnchor:Destroy()
+		end
+	end)
+end
+
 return EffectsController

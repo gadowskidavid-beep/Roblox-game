@@ -60,6 +60,7 @@ local PurchaseUpgrade = Remotes:WaitForChild("PurchaseUpgrade")
 local StartCampaignLevel = Remotes:WaitForChild("StartCampaignLevel")
 local DeployPetInCampaign = Remotes:WaitForChild("DeployPetInCampaign")
 local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
+local ClickAttackDestructible = Remotes:WaitForChild("ClickAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
@@ -337,15 +338,20 @@ RunService.RenderStepped:Connect(function(deltaTime)
 end)
 
 --------------------------------------------------------------------------------
--- INPUT HANDLING - Pet Simulator 1 style targeting
--- Single click: send 1 pet to target
--- Hold click (0.3s+): send ALL pets to target
+-- INPUT HANDLING - Pet Simulator 1 style targeting + QTE Click-to-Damage
+-- Single click: send 1 pet to target + deal 1 click damage
+-- Hold click (0.3s+): send ALL pets to target + auto-click every 0.2s for damage
+-- Each click deals 1 damage (player click damage, separate from pet auto-attack)
 --------------------------------------------------------------------------------
 local HOLD_THRESHOLD = 0.3 -- seconds to distinguish click from hold
+local CLICK_COOLDOWN = 0.2 -- seconds between click damage (spam protection)
+local AUTO_CLICK_INTERVAL = 0.2 -- seconds between auto-clicks when holding
 local mouseDownTime = 0
 local mouseDownTarget = nil -- { destructibleId, part }
 local isMouseDown = false
 local holdFired = false -- whether we already sent all-pets command during this hold
+local lastClickDamageTime = 0 -- cooldown tracker for click damage
+local autoClickActive = false -- whether auto-click is running from hold
 
 -- Helper: Raycast from screen position to find a destructible
 local function raycastForDestructible(screenPosition)
@@ -388,7 +394,36 @@ local function raycastForDestructible(screenPosition)
 	}
 end
 
--- Mouse/Touch down: start tracking for click vs hold
+-- Helper: fire click damage to server and show effects
+local function fireClickDamage(target)
+	if not target or not target.destructibleId then return end
+
+	local now = tick()
+	if (now - lastClickDamageTime) < CLICK_COOLDOWN then return end
+	lastClickDamageTime = now
+
+	-- Fire click attack to server (always 1 damage)
+	ClickAttackDestructible:InvokeServer(target.destructibleId)
+
+	-- Show visual effects for the click
+	if target.part and target.part.Parent then
+		-- Show "1" damage popup at the destructible position
+		local popupPos = target.part.Position + Vector3.new(
+			(math.random() - 0.5) * 2,
+			1,
+			(math.random() - 0.5) * 2
+		)
+		petController:showDamageText(popupPos, 1)
+
+		-- Show hit effect (shake/flash) on the destructible
+		effectsController:showClickHitEffect(target.part)
+
+		-- Play satisfying click sound
+		effectsController:playClickSound(target.part.Position)
+	end
+end
+
+-- Mouse/Touch down: start tracking for click vs hold + immediate click damage
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 
@@ -401,12 +436,17 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			mouseDownTarget = target
 			isMouseDown = true
 			holdFired = false
+			autoClickActive = false
+
+			-- Immediate click damage on first press
+			fireClickDamage(target)
 		else
 			-- Clicked on empty space: cancel all pet attacks, return them to player
 			petController:cancelAllAttacks()
 			isMouseDown = false
 			mouseDownTarget = nil
 			holdFired = false
+			autoClickActive = false
 		end
 	end
 end)
@@ -428,18 +468,36 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 		isMouseDown = false
 		mouseDownTarget = nil
 		holdFired = false
+		autoClickActive = false
 	end
 end)
 
 -- Per-frame check: detect hold (0.3s+) while mouse is still down
+-- Also handles auto-click damage every 0.2s while holding
 RunService.Heartbeat:Connect(function()
-	if not isMouseDown or not mouseDownTarget or holdFired then return end
+	if not isMouseDown or not mouseDownTarget then return end
 
 	local elapsed = tick() - mouseDownTime
-	if elapsed >= HOLD_THRESHOLD then
-		-- HOLD: send ALL pets to the target
+
+	-- Send all pets once when hold threshold reached
+	if not holdFired and elapsed >= HOLD_THRESHOLD then
 		holdFired = true
+		autoClickActive = true
 		petController:sendAllPetsToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
+	end
+
+	-- Auto-click damage while holding (every AUTO_CLICK_INTERVAL seconds)
+	if autoClickActive and mouseDownTarget then
+		-- Check if the target still exists
+		if mouseDownTarget.part and mouseDownTarget.part.Parent then
+			fireClickDamage(mouseDownTarget)
+		else
+			-- Target destroyed, stop auto-clicking
+			autoClickActive = false
+			isMouseDown = false
+			mouseDownTarget = nil
+			holdFired = false
+		end
 	end
 end)
 
