@@ -7,7 +7,7 @@
 	- MainHUD: currency display, XP bar, navigation buttons, equipped pets bar
 	- PetInventory: scrollable pet grid with equip/delete/multi-select
 	- UpgradeWindow: large centered modal with tile upgrade cards
-	- ShopWindow: egg purchase UI
+	- ShopWindow: egg station hatch prompt (station-based, like Pet Simulator)
 	- CampaignSelect: delegated to CampaignController but toggled from here
 	
 	Style: Large rounded buttons, thick UIStroke borders, bright saturated colors,
@@ -16,6 +16,11 @@
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared:WaitForChild("Config"))
+local PetData = require(Shared:WaitForChild("PetData"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -312,7 +317,7 @@ function UIController:_createNavButtons(parent)
 	local buttons = {
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
 		{ name = "Upgrades", icon = "^", color = COLORS.NavUpgrades, screen = "UpgradeWindow" },
-		{ name = "Shop", icon = "S", color = COLORS.NavShop, screen = "ShopWindow" },
+		{ name = "Eggs", icon = "E", color = COLORS.NavShop, screen = "ShopWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
 		{ name = "Favorit", icon = "★", color = COLORS.NavFavorit, screen = nil },
 	}
@@ -673,13 +678,13 @@ function UIController:_refreshPetGrid()
 		nameLabel.TextScaled = true
 		nameLabel.Parent = card
 
-		-- Damage stat
+		-- Damage stat (just the number, no label prefix)
 		local dmgLabel = Instance.new("TextLabel")
 		dmgLabel.Name = "DmgStat"
 		dmgLabel.Size = UDim2.fromScale(0.9, 0.12)
 		dmgLabel.Position = UDim2.fromScale(0.05, 0.58)
 		dmgLabel.BackgroundTransparency = 1
-		dmgLabel.Text = "DMG: " .. tostring(petData.damage or petData.baseDamage or 5)
+		dmgLabel.Text = tostring(petData.damage or petData.baseDamage or 5)
 		dmgLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 		dmgLabel.Font = Enum.Font.GothamBold
 		dmgLabel.TextScaled = true
@@ -924,18 +929,26 @@ function UIController:_refreshUpgradeGrid()
 
 	for order, upgradeName in ipairs(upgradeOrder) do
 		local currentLevel = self._upgradeData[upgradeName] or 0
-		local maxLevel = 3  -- from Config
 		local cardColor = upgradeColors[upgradeName] or Color3.fromRGB(100, 100, 200)
 		local iconChar = UPGRADE_ICONS[upgradeName] or "?"
 		local displayName = upgradeName
 
-		-- Calculate cost for next level
+		-- Get the actual upgrade definition from Config for accurate cost display
+		local upgradeDef = Config.Upgrades[upgradeName]
+		local maxLevel = upgradeDef and #upgradeDef.levels or 3
+
+		-- Calculate cost for next level from actual Config data
 		local costText = "MAX"
-		if currentLevel < maxLevel then
-			-- Estimated costs (actual would come from Config)
-			local baseCosts = { 500, 2000, 10000 }
-			local nextCost = baseCosts[currentLevel + 1] or 10000
-			costText = tostring(nextCost) .. " Coins"
+		if currentLevel < maxLevel and upgradeDef then
+			local nextLevelData = upgradeDef.levels[currentLevel + 1]
+			if nextLevelData then
+				costText = tostring(nextLevelData.cost) .. " Coins"
+			end
+		end
+
+		-- Use the display name from Config if available
+		if upgradeDef and upgradeDef.displayName then
+			displayName = upgradeDef.displayName
 		end
 
 		local card = Instance.new("Frame")
@@ -1070,9 +1083,11 @@ function UIController:_purchaseUpgrade(upgradeName)
 end
 
 --------------------------------------------------------------------------------
--- SHOP WINDOW
+-- EGG STATION PROMPT (replaces old Shop Window)
+-- Shows when player walks near an egg station in the world (like Pet Simulator)
 --------------------------------------------------------------------------------
 function UIController:_createShopWindow()
+	-- The "ShopWindow" screen now serves as the egg station hatch prompt
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "ShopWindow"
 	screenGui.ResetOnSpawn = false
@@ -1081,218 +1096,134 @@ function UIController:_createShopWindow()
 	screenGui.Parent = self._playerGui
 	self._screens.ShopWindow = screenGui
 
-	-- Main frame
-	local mainFrame = Instance.new("Frame")
-	mainFrame.Name = "MainFrame"
-	mainFrame.Size = UDim2.fromScale(0.7, 0.65)
-	mainFrame.Position = UDim2.fromScale(0.15, 0.175)
-	mainFrame.BackgroundColor3 = COLORS.Background
-	mainFrame.BorderSizePixel = 0
-	mainFrame.Parent = screenGui
+	-- Info frame (smaller, bottom-center prompt)
+	local promptFrame = Instance.new("Frame")
+	promptFrame.Name = "EggPrompt"
+	promptFrame.Size = UDim2.fromScale(0.35, 0.2)
+	promptFrame.Position = UDim2.fromScale(0.325, 0.72)
+	promptFrame.BackgroundColor3 = COLORS.Background
+	promptFrame.BackgroundTransparency = 0.1
+	promptFrame.BorderSizePixel = 0
+	promptFrame.Parent = screenGui
 
-	local mainCorner = Instance.new("UICorner")
-	mainCorner.CornerRadius = UDim.new(0, 16)
-	mainCorner.Parent = mainFrame
+	local promptCorner = Instance.new("UICorner")
+	promptCorner.CornerRadius = UDim.new(0, 14)
+	promptCorner.Parent = promptFrame
 
-	local mainStroke = Instance.new("UIStroke")
-	mainStroke.Thickness = 4
-	mainStroke.Color = COLORS.NavShop
-	mainStroke.Parent = mainFrame
+	local promptStroke = Instance.new("UIStroke")
+	promptStroke.Thickness = 3
+	promptStroke.Color = COLORS.NavShop
+	promptStroke.Parent = promptFrame
 
-	-- Title
-	local title = Instance.new("TextLabel")
-	title.Name = "Title"
-	title.Size = UDim2.fromScale(0.4, 0.1)
-	title.Position = UDim2.fromScale(0.3, 0.01)
-	title.BackgroundTransparency = 1
-	title.Text = "EGG SHOP"
-	title.TextColor3 = COLORS.NavShop
-	title.Font = Enum.Font.GothamBold
-	title.TextScaled = true
-	title.Parent = mainFrame
+	-- Egg name label
+	local eggNameLabel = Instance.new("TextLabel")
+	eggNameLabel.Name = "EggNameLabel"
+	eggNameLabel.Size = UDim2.fromScale(0.9, 0.25)
+	eggNameLabel.Position = UDim2.fromScale(0.05, 0.05)
+	eggNameLabel.BackgroundTransparency = 1
+	eggNameLabel.Text = "Basic Egg"
+	eggNameLabel.TextColor3 = COLORS.White
+	eggNameLabel.Font = Enum.Font.GothamBold
+	eggNameLabel.TextScaled = true
+	eggNameLabel.Parent = promptFrame
 
-	-- Close button
-	local closeBtn = Instance.new("TextButton")
-	closeBtn.Name = "CloseBtn"
-	closeBtn.Size = UDim2.fromOffset(42, 42)
-	closeBtn.Position = UDim2.new(1, -52, 0, 10)
-	closeBtn.BackgroundColor3 = COLORS.CloseRed
-	closeBtn.Text = "X"
-	closeBtn.TextColor3 = COLORS.White
-	closeBtn.Font = Enum.Font.GothamBold
-	closeBtn.TextSize = 22
-	closeBtn.Parent = mainFrame
+	-- Cost label
+	local costLabel = Instance.new("TextLabel")
+	costLabel.Name = "CostLabel"
+	costLabel.Size = UDim2.fromScale(0.9, 0.2)
+	costLabel.Position = UDim2.fromScale(0.05, 0.3)
+	costLabel.BackgroundTransparency = 1
+	costLabel.Text = "100 Coins"
+	costLabel.TextColor3 = COLORS.CoinYellow
+	costLabel.Font = Enum.Font.GothamBold
+	costLabel.TextScaled = true
+	costLabel.Parent = promptFrame
 
-	local closeBtnCorner = Instance.new("UICorner")
-	closeBtnCorner.CornerRadius = UDim.new(1, 0)
-	closeBtnCorner.Parent = closeBtn
+	-- Hatch button (big green)
+	local hatchBtn = Instance.new("TextButton")
+	hatchBtn.Name = "HatchBtn"
+	hatchBtn.Size = UDim2.fromScale(0.6, 0.3)
+	hatchBtn.Position = UDim2.fromScale(0.2, 0.58)
+	hatchBtn.BackgroundColor3 = COLORS.ButtonGreen
+	hatchBtn.Text = "HATCH!"
+	hatchBtn.TextColor3 = COLORS.White
+	hatchBtn.Font = Enum.Font.GothamBold
+	hatchBtn.TextScaled = true
+	hatchBtn.Parent = promptFrame
 
-	closeBtn.MouseButton1Click:Connect(function()
-		self:toggleScreen("ShopWindow")
+	local hatchCorner = Instance.new("UICorner")
+	hatchCorner.CornerRadius = UDim.new(0, 10)
+	hatchCorner.Parent = hatchBtn
+
+	local hatchStroke = Instance.new("UIStroke")
+	hatchStroke.Thickness = 2
+	hatchStroke.Color = Color3.fromRGB(0, 150, 50)
+	hatchStroke.Parent = hatchBtn
+
+	-- Connect hatch button
+	hatchBtn.MouseButton1Click:Connect(function()
+		if self._currentEggType then
+			self:_hatchEgg(self._currentEggType)
+		end
 	end)
 
-	-- Egg cards container
-	local eggFrame = Instance.new("ScrollingFrame")
-	eggFrame.Name = "EggCards"
-	eggFrame.Size = UDim2.fromScale(0.94, 0.78)
-	eggFrame.Position = UDim2.fromScale(0.03, 0.14)
-	eggFrame.BackgroundTransparency = 1
-	eggFrame.ScrollBarThickness = 6
-	eggFrame.CanvasSize = UDim2.fromScale(0, 0)
-	eggFrame.Parent = mainFrame
+	-- Hover effect
+	hatchBtn.MouseEnter:Connect(function()
+		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.64, 0.32),
+		}):Play()
+	end)
+	hatchBtn.MouseLeave:Connect(function()
+		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.6, 0.3),
+		}):Play()
+	end)
 
-	local eggLayout = Instance.new("UIListLayout")
-	eggLayout.FillDirection = Enum.FillDirection.Horizontal
-	eggLayout.Padding = UDim.new(0, 12)
-	eggLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	eggLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	eggLayout.Parent = eggFrame
-
-	-- Populate with sample egg cards
-	self:_refreshShop()
+	-- Store current egg type for hatching
+	self._currentEggType = nil
 end
 
-function UIController:_refreshShop()
-	local screenGui = self._screens.ShopWindow
-	if not screenGui then return end
-	local mainFrame = screenGui:FindFirstChild("MainFrame")
-	if not mainFrame then return end
-	local eggFrame = mainFrame:FindFirstChild("EggCards")
-	if not eggFrame then return end
+-- Show the egg station prompt when player is near an egg station
+function UIController:showEggStationPrompt(eggType)
+	if not self._screens.ShopWindow then return end
 
-	-- Clear existing
-	for _, child in ipairs(eggFrame:GetChildren()) do
-		if child:IsA("Frame") then
-			child:Destroy()
+	-- Map egg type to display info
+	local eggInfo = {
+		BasicEgg = { name = "Basic Egg", cost = Config.EggCosts[1] and Config.EggCosts[1].Coins or 100 },
+		PremiumEgg = { name = "Premium Egg", cost = Config.EggCosts[2] and Config.EggCosts[2].Coins or 500 },
+	}
+
+	local info = eggInfo[eggType]
+	if not info then return end
+
+	-- Update prompt labels
+	local screenGui = self._screens.ShopWindow
+	local promptFrame = screenGui:FindFirstChild("EggPrompt")
+	if promptFrame then
+		local nameLabel = promptFrame:FindFirstChild("EggNameLabel")
+		if nameLabel then
+			nameLabel.Text = info.name
+		end
+		local costLabel = promptFrame:FindFirstChild("CostLabel")
+		if costLabel then
+			costLabel.Text = tostring(info.cost) .. " Coins"
 		end
 	end
 
-	-- Egg types based on current zone
-	local eggTypes = {
-		{ name = "Basic Egg", cost = 100, zone = 1, rarities = "60% Common, 25% Uncommon, 10% Rare, 4% Epic, 1% Legendary" },
-		{ name = "Premium Egg", cost = 500, zone = 2, rarities = "40% Common, 30% Uncommon, 20% Rare, 10% Legendary" },
-	}
+	-- Store the egg type and show the prompt
+	self._currentEggType = eggType
+	screenGui.Enabled = true
 
-	local eggColors = {
-		Color3.fromRGB(200, 230, 180),
-		Color3.fromRGB(180, 200, 255),
-		Color3.fromRGB(255, 200, 180),
-	}
+	-- Auto-hide after 5 seconds if not interacted
+	task.delay(5, function()
+		if screenGui.Enabled and self._currentEggType == eggType then
+			screenGui.Enabled = false
+		end
+	end)
+end
 
-	for i, eggData in ipairs(eggTypes) do
-		local card = Instance.new("Frame")
-		card.Name = "EggCard_" .. i
-		card.Size = UDim2.fromOffset(200, 280)
-		card.BackgroundColor3 = COLORS.DarkBg
-		card.Parent = eggFrame
-
-		local cardCorner = Instance.new("UICorner")
-		cardCorner.CornerRadius = UDim.new(0, 14)
-		cardCorner.Parent = card
-
-		local cardStroke = Instance.new("UIStroke")
-		cardStroke.Thickness = 3
-		cardStroke.Color = eggColors[i] or eggColors[1]
-		cardStroke.Parent = card
-
-		-- Egg icon (ellipsoid representation: oval frame)
-		local eggIcon = Instance.new("Frame")
-		eggIcon.Name = "EggIcon"
-		eggIcon.Size = UDim2.fromScale(0.4, 0.3)
-		eggIcon.Position = UDim2.fromScale(0.3, 0.05)
-		eggIcon.BackgroundColor3 = eggColors[i] or eggColors[1]
-		eggIcon.Parent = card
-
-		local eggIconCorner = Instance.new("UICorner")
-		eggIconCorner.CornerRadius = UDim.new(0.5, 0)
-		eggIconCorner.Parent = eggIcon
-
-		-- Egg text inside
-		local eggText = Instance.new("TextLabel")
-		eggText.Size = UDim2.fromScale(1, 1)
-		eggText.BackgroundTransparency = 1
-		eggText.Text = "?"
-		eggText.TextColor3 = Color3.fromRGB(80, 80, 80)
-		eggText.Font = Enum.Font.GothamBold
-		eggText.TextScaled = true
-		eggText.Parent = eggIcon
-
-		-- Egg name
-		local nameLabel = Instance.new("TextLabel")
-		nameLabel.Name = "EggName"
-		nameLabel.Size = UDim2.fromScale(0.9, 0.1)
-		nameLabel.Position = UDim2.fromScale(0.05, 0.38)
-		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = eggData.name
-		nameLabel.TextColor3 = COLORS.White
-		nameLabel.Font = Enum.Font.GothamBold
-		nameLabel.TextScaled = true
-		nameLabel.Parent = card
-
-		-- Cost
-		local costLabel = Instance.new("TextLabel")
-		costLabel.Name = "Cost"
-		costLabel.Size = UDim2.fromScale(0.9, 0.08)
-		costLabel.Position = UDim2.fromScale(0.05, 0.5)
-		costLabel.BackgroundTransparency = 1
-		costLabel.Text = tostring(eggData.cost) .. " Coins"
-		costLabel.TextColor3 = COLORS.CoinYellow
-		costLabel.Font = Enum.Font.GothamBold
-		costLabel.TextScaled = true
-		costLabel.Parent = card
-
-		-- Rarity chances
-		local rarityLabel = Instance.new("TextLabel")
-		rarityLabel.Name = "Rarities"
-		rarityLabel.Size = UDim2.fromScale(0.9, 0.18)
-		rarityLabel.Position = UDim2.fromScale(0.05, 0.6)
-		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = eggData.rarities
-		rarityLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
-		rarityLabel.Font = Enum.Font.Gotham
-		rarityLabel.TextScaled = true
-		rarityLabel.TextWrapped = true
-		rarityLabel.Parent = card
-
-		-- Hatch button
-		local hatchBtn = Instance.new("TextButton")
-		hatchBtn.Name = "HatchBtn"
-		hatchBtn.Size = UDim2.fromScale(0.7, 0.12)
-		hatchBtn.Position = UDim2.fromScale(0.15, 0.82)
-		hatchBtn.BackgroundColor3 = COLORS.ButtonGreen
-		hatchBtn.Text = "Hatch!"
-		hatchBtn.TextColor3 = COLORS.White
-		hatchBtn.Font = Enum.Font.GothamBold
-		hatchBtn.TextScaled = true
-		hatchBtn.Parent = card
-
-		local hatchCorner = Instance.new("UICorner")
-		hatchCorner.CornerRadius = UDim.new(0, 10)
-		hatchCorner.Parent = hatchBtn
-
-		local hatchStroke = Instance.new("UIStroke")
-		hatchStroke.Thickness = 2
-		hatchStroke.Color = Color3.fromRGB(0, 150, 50)
-		hatchStroke.Parent = hatchBtn
-
-		-- Hatch on click
-		local eggType = (i == 1) and "BasicEgg" or "PremiumEgg"
-		hatchBtn.MouseButton1Click:Connect(function()
-			self:_hatchEgg(eggType)
-		end)
-
-		-- Hover effect
-		hatchBtn.MouseEnter:Connect(function()
-			TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-				Size = UDim2.fromScale(0.74, 0.13),
-			}):Play()
-		end)
-		hatchBtn.MouseLeave:Connect(function()
-			TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-				Size = UDim2.fromScale(0.7, 0.12),
-			}):Play()
-		end)
-	end
+function UIController:_refreshShop()
+	-- No longer needs to populate cards; the egg station prompt is dynamic
 end
 
 function UIController:_hatchEgg(eggType)

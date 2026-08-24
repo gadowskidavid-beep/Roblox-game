@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-012",
+  "type": "fix",
+  "title": "Gameplay improvements: rewards, upgrades, pet attack animation, zone gates, UI fixes",
+  "description": "1. Increase Zone 1 destructible rewards (CoinPile: 5-15, DiamondPile: 1-3, Crate: 10-30+1-2). 2. Fix upgrade grid to use actual costs from Config. 3. Fix pet attack animation to move all parts to destructible and return. 4. Add zone gate visualization and interaction. 5. UI improvements: currency popups show correct amounts, level display next to XP bar.",
+  "status": "in_progress",
+  "steps": [
+    "Update ZoneData.lua Zone 1 destructible rewards to match requirements",
+    "Fix UIController upgrade grid to read actual costs from Config module",
+    "Fix PetController sendPetToAttack to move all model parts together",
+    "Add zone gate creation in ZoneService and client-side gate interaction",
+    "Verify upgrade system applies bonuses (FasterPets speed, StrongPets damage)",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "Zone 1 CoinPile drops 5-15 Coins randomly",
+    "Zone 1 DiamondPile drops 1-3 Diamonds randomly",
+    "Zone 1 Crate drops 10-30 Coins + 1-2 Diamonds randomly",
+    "Upgrade grid shows actual costs from Config per upgrade",
+    "Pet models visually fly to destructible when attacking and return after",
+    "Zone gates are visible between zones and can be interacted with",
+    "FasterPets upgrade increases pet follow speed",
+    "StrongPets upgrade increases pet damage (already works via PetService.getPetDamage)"
+  ]
+}

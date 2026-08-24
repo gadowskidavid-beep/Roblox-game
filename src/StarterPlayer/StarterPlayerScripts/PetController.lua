@@ -68,6 +68,11 @@ function PetController:init(remotes)
 	self._petsFolder.Name = "ClientPets"
 	self._petsFolder.Parent = workspace
 
+	-- Load shared Config for upgrade bonuses
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local Shared = ReplicatedStorage:WaitForChild("Shared")
+	self._config = require(Shared:WaitForChild("Config"))
+
 	self._initialized = true
 
 	-- Start auto-attack loop
@@ -75,7 +80,8 @@ function PetController:init(remotes)
 end
 
 --------------------------------------------------------------------------------
--- Create a procedural pet model: body sphere + head sphere + eyes + shadow + nametag
+-- Create a procedural pet model: body sphere + shadow + nametag
+-- Simple placeholder model - actual pet assets will be added later via Blender.
 -- The pet floats 2.5 studs above ground with a circular shadow beneath it.
 --------------------------------------------------------------------------------
 function PetController:createPetModel(petData)
@@ -86,52 +92,16 @@ function PetController:createPetModel(petData)
 	local model = Instance.new("Model")
 	model.Name = petName .. "_Model"
 
-	-- Body: larger sphere
+	-- Body: sphere (placeholder for future Blender model)
 	local body = Instance.new("Part")
 	body.Name = "Body"
 	body.Shape = Enum.PartType.Ball
-	body.Size = Vector3.new(1.8, 1.8, 1.8)
+	body.Size = Vector3.new(2.2, 2.2, 2.2)
 	body.Color = bodyColor
 	body.Material = Enum.Material.SmoothPlastic
 	body.Anchored = true
 	body.CanCollide = false
 	body.Parent = model
-
-	-- Head: smaller sphere on top
-	local head = Instance.new("Part")
-	head.Name = "Head"
-	head.Shape = Enum.PartType.Ball
-	head.Size = Vector3.new(1.2, 1.2, 1.2)
-	head.Color = bodyColor
-	head.Material = Enum.Material.SmoothPlastic
-	head.Anchored = true
-	head.CanCollide = false
-	head.CFrame = body.CFrame + Vector3.new(0, 1.2, 0)
-	head.Parent = model
-
-	-- Left eye: tiny black sphere
-	local leftEye = Instance.new("Part")
-	leftEye.Name = "LeftEye"
-	leftEye.Shape = Enum.PartType.Ball
-	leftEye.Size = Vector3.new(0.25, 0.25, 0.25)
-	leftEye.Color = Color3.fromRGB(10, 10, 10)
-	leftEye.Material = Enum.Material.SmoothPlastic
-	leftEye.Anchored = true
-	leftEye.CanCollide = false
-	leftEye.CFrame = head.CFrame + Vector3.new(-0.25, 0.1, -0.5)
-	leftEye.Parent = model
-
-	-- Right eye: tiny black sphere
-	local rightEye = Instance.new("Part")
-	rightEye.Name = "RightEye"
-	rightEye.Shape = Enum.PartType.Ball
-	rightEye.Size = Vector3.new(0.25, 0.25, 0.25)
-	rightEye.Color = Color3.fromRGB(10, 10, 10)
-	rightEye.Material = Enum.Material.SmoothPlastic
-	rightEye.Anchored = true
-	rightEye.CanCollide = false
-	rightEye.CFrame = head.CFrame + Vector3.new(0.25, 0.1, -0.5)
-	rightEye.Parent = model
 
 	-- Shadow: flat dark cylinder beneath the pet (visual ground shadow)
 	local shadow = Instance.new("Part")
@@ -151,9 +121,9 @@ function PetController:createPetModel(petData)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "NameLabel"
 	billboardGui.Size = UDim2.fromOffset(120, 30)
-	billboardGui.StudsOffset = Vector3.new(0, 2.2, 0)
+	billboardGui.StudsOffset = Vector3.new(0, 1.8, 0)
 	billboardGui.AlwaysOnTop = true
-	billboardGui.Adornee = head
+	billboardGui.Adornee = body
 	billboardGui.Parent = model
 
 	local nameLabel = Instance.new("TextLabel")
@@ -281,6 +251,12 @@ function PetController:update(deltaTime)
 	-- Right vector for lateral offset
 	local rightVector = rootPart.CFrame.RightVector
 
+	-- Apply FasterPets upgrade to follow speed
+	local effectiveLerpSpeed = self._followLerpSpeed
+	if self._fasterPetsMultiplier and self._fasterPetsMultiplier > 0 then
+		effectiveLerpSpeed = effectiveLerpSpeed * self._fasterPetsMultiplier
+	end
+
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
 			local index = petInfo.followIndex or 1
@@ -311,7 +287,7 @@ function PetController:update(deltaTime)
 			local model = petInfo.model
 			if model and model.PrimaryPart and model.PrimaryPart.Parent then
 				local currentPos = model.PrimaryPart.Position
-				local newPos = currentPos:Lerp(targetPos, math.min(1, deltaTime * self._followLerpSpeed))
+				local newPos = currentPos:Lerp(targetPos, math.min(1, deltaTime * effectiveLerpSpeed))
 				local offset = newPos - model.PrimaryPart.Position
 
 				-- Move all parts in model (except shadow which is repositioned separately)
@@ -337,6 +313,7 @@ end
 -- Send pet to attack a destructible (visual animation + remote call)
 -- destructibleId: string ID of the destructible
 -- destructiblePart: optional Part reference for tween target position
+-- Moves the entire pet model (all parts) to the destructible and back.
 --------------------------------------------------------------------------------
 function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePart)
 	if not self._initialized then return end
@@ -363,20 +340,54 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Tween pet toward destructible
+	-- Move entire model (all parts) to the destructible using a coroutine-based animation
 	if model.PrimaryPart and model.PrimaryPart.Parent then
-		local attackPos = targetPos + Vector3.new(0, 1, -2)
-		local tweenInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		local tween = TweenService:Create(model.PrimaryPart, tweenInfo, {
-			Position = attackPos,
-		})
-		tween:Play()
+		local startPos = model.PrimaryPart.Position
+		local attackPos = targetPos + Vector3.new(0, 1.5, -2)
+		local attackDuration = 0.35
+		local returnDuration = 0.4
 
-		tween.Completed:Connect(function()
-			-- Return to follow position after a short delay
-			task.delay(0.3, function()
-				self._attackingPets[uniqueId] = nil
-			end)
+		-- Animate toward destructible
+		task.spawn(function()
+			local startTime = tick()
+			while true do
+				local elapsed = tick() - startTime
+				local alpha = math.min(elapsed / attackDuration, 1)
+				-- Ease out quad
+				local easedAlpha = 1 - (1 - alpha) * (1 - alpha)
+
+				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
+					self._attackingPets[uniqueId] = nil
+					return
+				end
+
+				local currentPos = model.PrimaryPart.Position
+				local desiredPos = startPos:Lerp(attackPos, easedAlpha)
+				local offset = desiredPos - currentPos
+
+				-- Move all parts in model together
+				for _, part in ipairs(model:GetDescendants()) do
+					if part:IsA("BasePart") and part.Name ~= "Shadow" then
+						part.Position = part.Position + offset
+					end
+				end
+
+				-- Reposition shadow on the ground below
+				local shadowPart = model:FindFirstChild("Shadow")
+				if shadowPart then
+					local groundY = desiredPos.Y - self._followHeight + 0.05
+					shadowPart.CFrame = CFrame.new(desiredPos.X, groundY, desiredPos.Z) * CFrame.Angles(0, 0, math.rad(90))
+				end
+
+				if alpha >= 1 then break end
+				task.wait()
+			end
+
+			-- Brief pause at destructible (impact moment)
+			task.wait(0.2)
+
+			-- Return to follow position (let the update loop take over)
+			self._attackingPets[uniqueId] = nil
 		end)
 	else
 		self._attackingPets[uniqueId] = nil
@@ -535,6 +546,13 @@ function PetController:_stopAutoAttack()
 		self._autoAttackConnection:Disconnect()
 		self._autoAttackConnection = nil
 	end
+end
+
+--------------------------------------------------------------------------------
+-- Set FasterPets upgrade multiplier (called from Main.client when upgrades update)
+--------------------------------------------------------------------------------
+function PetController:setFasterPetsMultiplier(multiplier)
+	self._fasterPetsMultiplier = multiplier or 0
 end
 
 --------------------------------------------------------------------------------

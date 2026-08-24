@@ -1316,6 +1316,12 @@ function ZoneService.init(dataService, currencyService, petService)
 	-- Spawn destructibles for zones 1 and 2 (MVP)
 	ZoneService.spawnZone(1)
 	ZoneService.spawnZone(2)
+
+	-- Spawn zone gates between adjacent zones
+	ZoneService._spawnZoneGates()
+
+	-- Spawn egg hatching stations in each zone
+	ZoneService._spawnEggStations()
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -1484,6 +1490,233 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	return uniqueId
 end
 
+-- Spawn egg hatching stations in each zone (like Pet Simulator egg pedestals)
+function ZoneService._spawnEggStations()
+	local workspace = game:GetService("Workspace")
+	local stationsFolder = workspace:FindFirstChild("EggStations")
+	if not stationsFolder then
+		stationsFolder = Instance.new("Folder")
+		stationsFolder.Name = "EggStations"
+		stationsFolder.Parent = workspace
+	end
+
+	-- Egg station definitions per zone (type maps to PetData.Eggs keys)
+	local stationDefs = {
+		[1] = { eggType = "BasicEgg", name = "Basic Egg", cost = Config.EggCosts[1].Coins },
+		[2] = { eggType = "PremiumEgg", name = "Premium Egg", cost = Config.EggCosts[2].Coins },
+	}
+
+	for zoneId, stationDef in pairs(stationDefs) do
+		-- Position the egg station at a prominent spot near the zone entrance
+		local zoneCenter = (zoneId - 1) * ZONE_SPACING
+		local stationPos = Vector3.new(zoneCenter - 40, 0, -70)
+
+		-- Base pedestal
+		local pedestal = Instance.new("Part")
+		pedestal.Name = "EggStation_" .. stationDef.eggType
+		pedestal.Shape = Enum.PartType.Cylinder
+		pedestal.Size = Vector3.new(3, 8, 8)
+		pedestal.Position = stationPos + Vector3.new(0, 1.5, 0)
+		pedestal.Anchored = true
+		pedestal.CanCollide = true
+		pedestal.Color = Color3.fromRGB(200, 180, 140)
+		pedestal.Material = Enum.Material.Marble
+		pedestal.CFrame = CFrame.new(stationPos + Vector3.new(0, 1.5, 0)) * CFrame.Angles(0, 0, math.rad(90))
+		pedestal.Parent = stationsFolder
+
+		-- Egg on top (ball)
+		local egg = Instance.new("Part")
+		egg.Name = "EggModel"
+		egg.Shape = Enum.PartType.Ball
+		egg.Size = Vector3.new(4, 5, 4)
+		egg.Position = stationPos + Vector3.new(0, 5, 0)
+		egg.Anchored = true
+		egg.CanCollide = false
+		egg.Color = zoneId == 1 and Color3.fromRGB(200, 230, 180) or Color3.fromRGB(180, 200, 255)
+		egg.Material = Enum.Material.SmoothPlastic
+		egg.Parent = stationsFolder
+
+		-- Tag the egg with station info
+		local eggTypeTag = Instance.new("StringValue")
+		eggTypeTag.Name = "EggType"
+		eggTypeTag.Value = stationDef.eggType
+		eggTypeTag.Parent = egg
+
+		local zoneTag = Instance.new("IntValue")
+		zoneTag.Name = "StationZone"
+		zoneTag.Value = zoneId
+		zoneTag.Parent = egg
+
+		-- Billboard label above the egg showing name and cost
+		local billboard = Instance.new("BillboardGui")
+		billboard.Name = "StationLabel"
+		billboard.Size = UDim2.fromOffset(180, 70)
+		billboard.StudsOffset = Vector3.new(0, 4, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Adornee = egg
+		billboard.Parent = egg
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "EggName"
+		nameLabel.Size = UDim2.fromScale(1, 0.5)
+		nameLabel.Position = UDim2.fromScale(0, 0)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = stationDef.name
+		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		nameLabel.TextStrokeTransparency = 0.3
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextScaled = true
+		nameLabel.Parent = billboard
+
+		local costLabel = Instance.new("TextLabel")
+		costLabel.Name = "EggCost"
+		costLabel.Size = UDim2.fromScale(1, 0.5)
+		costLabel.Position = UDim2.fromScale(0, 0.5)
+		costLabel.BackgroundTransparency = 1
+		costLabel.Text = tostring(stationDef.cost) .. " Coins"
+		costLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		costLabel.TextStrokeTransparency = 0.3
+		costLabel.Font = Enum.Font.GothamBold
+		costLabel.TextScaled = true
+		costLabel.Parent = billboard
+
+		-- Interaction zone: invisible larger part around the station for proximity detection
+		local interactZone = Instance.new("Part")
+		interactZone.Name = "InteractZone_" .. stationDef.eggType
+		interactZone.Size = Vector3.new(12, 10, 12)
+		interactZone.Position = stationPos + Vector3.new(0, 5, 0)
+		interactZone.Anchored = true
+		interactZone.CanCollide = false
+		interactZone.Transparency = 1
+		interactZone.Parent = stationsFolder
+
+		-- Tag for client detection
+		local interactTag = Instance.new("StringValue")
+		interactTag.Name = "EggType"
+		interactTag.Value = stationDef.eggType
+		interactTag.Parent = interactZone
+	end
+end
+
+-- Spawn zone gates between adjacent zones (visible barriers with cost labels)
+function ZoneService._spawnZoneGates()
+	local workspace = game:GetService("Workspace")
+	local gatesFolder = workspace:FindFirstChild("ZoneGates")
+	if not gatesFolder then
+		gatesFolder = Instance.new("Folder")
+		gatesFolder.Name = "ZoneGates"
+		gatesFolder.Parent = workspace
+	end
+
+	-- Create gates between zone 1->2, 2->3, etc. (MVP: only 1->2)
+	for gateZone = 2, 2 do
+		local zoneDef = ZoneData.Zones[gateZone]
+		if not zoneDef then continue end
+
+		-- Gate position: at the boundary between zones (halfway between zone centers)
+		local prevCenter = (gateZone - 2) * ZONE_SPACING
+		local currCenter = (gateZone - 1) * ZONE_SPACING
+		local gateX = (prevCenter + currCenter) / 2
+		local gateZ = -100 -- center Z of zones
+
+		-- Gate wall (tall translucent barrier)
+		local gate = Instance.new("Part")
+		gate.Name = "ZoneGate_" .. tostring(gateZone)
+		gate.Size = Vector3.new(4, 20, 60)
+		gate.Position = Vector3.new(gateX, 10, gateZ)
+		gate.Anchored = true
+		gate.CanCollide = true
+		gate.Color = Color3.fromRGB(255, 80, 80)
+		gate.Material = Enum.Material.ForceField
+		gate.Transparency = 0.4
+		gate.Parent = gatesFolder
+
+		-- Tag it so client can identify it
+		local zoneTag = Instance.new("IntValue")
+		zoneTag.Name = "GateZoneId"
+		zoneTag.Value = gateZone
+		zoneTag.Parent = gate
+
+		-- Cost label (BillboardGui with the unlock cost)
+		local cost = Config.ZoneGateCosts[gateZone] or 0
+		local billboard = Instance.new("BillboardGui")
+		billboard.Name = "GateLabel"
+		billboard.Size = UDim2.fromOffset(200, 80)
+		billboard.StudsOffset = Vector3.new(0, 12, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Adornee = gate
+		billboard.Parent = gate
+
+		local costLabel = Instance.new("TextLabel")
+		costLabel.Name = "CostText"
+		costLabel.Size = UDim2.fromScale(1, 0.5)
+		costLabel.Position = UDim2.fromScale(0, 0)
+		costLabel.BackgroundTransparency = 1
+		costLabel.Text = zoneDef.name
+		costLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		costLabel.TextStrokeTransparency = 0.3
+		costLabel.Font = Enum.Font.GothamBold
+		costLabel.TextScaled = true
+		costLabel.Parent = billboard
+
+		local priceLabel = Instance.new("TextLabel")
+		priceLabel.Name = "PriceText"
+		priceLabel.Size = UDim2.fromScale(1, 0.5)
+		priceLabel.Position = UDim2.fromScale(0, 0.5)
+		priceLabel.BackgroundTransparency = 1
+		priceLabel.Text = tostring(cost) .. " Coins"
+		priceLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		priceLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		priceLabel.TextStrokeTransparency = 0.3
+		priceLabel.Font = Enum.Font.GothamBold
+		priceLabel.TextScaled = true
+		priceLabel.Parent = billboard
+
+		-- Connect Touched event so players can unlock by walking into the gate
+		gate.Touched:Connect(function(hit)
+			local player = game:GetService("Players"):GetPlayerFromCharacter(hit.Parent)
+			if not player then return end
+
+			-- Check if player already unlocked this zone
+			local data = ZoneService._dataService.getPlayerData(player)
+			if not data then return end
+
+			local alreadyUnlocked = false
+			for _, unlockedId in ipairs(data.unlockedZones) do
+				if unlockedId == gateZone then
+					alreadyUnlocked = true
+					break
+				end
+			end
+
+			if alreadyUnlocked then
+				-- Remove the gate for this player (destroy it since single-player focus)
+				gate:Destroy()
+				return
+			end
+
+			-- Try to unlock the zone
+			local success, err = ZoneService.unlockZone(player, gateZone)
+			if success then
+				-- Store gate position before destroying
+				local gatePosition = gate.Position
+				gate:Destroy()
+				-- Fire zone unlock effect with gate position
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				if remotes then
+					local event = remotes:FindFirstChild("ZoneUnlocked")
+					if event then
+						event:FireClient(player, gateZone, gatePosition)
+					end
+				end
+			end
+		end)
+	end
+end
+
 -- Unlock a zone for a player
 function ZoneService.unlockZone(player, zoneId)
 	if not player or type(zoneId) ~= "number" then
@@ -1590,12 +1823,22 @@ function ZoneService.attackDestructible(player, destructibleId)
 		-- Destructible destroyed
 		destructible.hp = 0
 
-		-- Award drops
-		if destructible.drops.Coins then
-			ZoneService._currencyService.addCoins(player, destructible.drops.Coins)
+		-- Resolve drops: support both fixed numbers and {min, max} tables for randomization
+		local resolvedDrops = {}
+		for currencyType, dropValue in pairs(destructible.drops) do
+			if type(dropValue) == "table" and dropValue.min and dropValue.max then
+				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
+			else
+				resolvedDrops[currencyType] = dropValue
+			end
 		end
-		if destructible.drops.Diamonds then
-			ZoneService._currencyService.addDiamonds(player, destructible.drops.Diamonds)
+
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
 		end
 
 		-- Award XP for destroying a destructible
@@ -1606,7 +1849,7 @@ function ZoneService.attackDestructible(player, destructibleId)
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDestroyed")
 			if event then
-				event:FireAllClients(destructibleId, destructible.drops)
+				event:FireAllClients(destructibleId, resolvedDrops)
 			end
 		end
 
@@ -2565,6 +2808,15 @@ if playerData and playerData.equippedPets then
 	uiController:updateEquippedPets(localEquippedPets)
 end
 
+-- Apply FasterPets upgrade from initial data
+if playerData and playerData.upgrades and playerData.upgrades.FasterPets then
+	local fasterLevel = playerData.upgrades.FasterPets
+	local fasterDef = Config.Upgrades.FasterPets
+	if fasterDef and fasterDef.levels[fasterLevel] then
+		petController:setFasterPetsMultiplier(fasterDef.levels[fasterLevel].bonus)
+	end
+end
+
 --------------------------------------------------------------------------------
 -- REMOTE EVENT HANDLERS
 --------------------------------------------------------------------------------
@@ -2693,6 +2945,14 @@ end)
 -- Upgrade purchased/updated
 UpgradeUpdated.OnClientEvent:Connect(function(upgrades)
 	uiController:updateUpgrades(upgrades)
+	-- Apply FasterPets upgrade to PetController
+	if upgrades and upgrades.FasterPets then
+		local fasterLevel = upgrades.FasterPets
+		local fasterDef = Config.Upgrades.FasterPets
+		if fasterDef and fasterDef.levels[fasterLevel] then
+			petController:setFasterPetsMultiplier(fasterDef.levels[fasterLevel].bonus)
+		end
+	end
 end)
 
 -- Currency collected (floating popup at position)
@@ -2779,6 +3039,23 @@ local function onCharacterAdded(character)
 			end
 		end)
 	end
+
+	-- Egg station proximity detection: when player touches the interact zone, trigger hatch
+	local eggStationsFolder = workspace:FindFirstChild("EggStations")
+	if eggStationsFolder then
+		for _, obj in ipairs(eggStationsFolder:GetChildren()) do
+			if obj:IsA("BasePart") and obj.Name:find("InteractZone_") then
+				local eggTypeTag = obj:FindFirstChild("EggType")
+				if eggTypeTag then
+					obj.Touched:Connect(function(hit)
+						if hit:IsDescendantOf(character) then
+							uiController:showEggStationPrompt(eggTypeTag.Value)
+						end
+					end)
+				end
+			end
+		end
+	end
 end
 
 -- Connect character added
@@ -2807,7 +3084,7 @@ print("[Battle Pets] Client initialized successfully!")
 	- MainHUD: currency display, XP bar, navigation buttons, equipped pets bar
 	- PetInventory: scrollable pet grid with equip/delete/multi-select
 	- UpgradeWindow: large centered modal with tile upgrade cards
-	- ShopWindow: egg purchase UI
+	- ShopWindow: egg station hatch prompt (station-based, like Pet Simulator)
 	- CampaignSelect: delegated to CampaignController but toggled from here
 	
 	Style: Large rounded buttons, thick UIStroke borders, bright saturated colors,
@@ -2816,6 +3093,11 @@ print("[Battle Pets] Client initialized successfully!")
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared:WaitForChild("Config"))
+local PetData = require(Shared:WaitForChild("PetData"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -3112,7 +3394,7 @@ function UIController:_createNavButtons(parent)
 	local buttons = {
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
 		{ name = "Upgrades", icon = "^", color = COLORS.NavUpgrades, screen = "UpgradeWindow" },
-		{ name = "Shop", icon = "S", color = COLORS.NavShop, screen = "ShopWindow" },
+		{ name = "Eggs", icon = "E", color = COLORS.NavShop, screen = "ShopWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
 		{ name = "Favorit", icon = "★", color = COLORS.NavFavorit, screen = nil },
 	}
@@ -3473,13 +3755,13 @@ function UIController:_refreshPetGrid()
 		nameLabel.TextScaled = true
 		nameLabel.Parent = card
 
-		-- Damage stat
+		-- Damage stat (just the number, no label prefix)
 		local dmgLabel = Instance.new("TextLabel")
 		dmgLabel.Name = "DmgStat"
 		dmgLabel.Size = UDim2.fromScale(0.9, 0.12)
 		dmgLabel.Position = UDim2.fromScale(0.05, 0.58)
 		dmgLabel.BackgroundTransparency = 1
-		dmgLabel.Text = "DMG: " .. tostring(petData.damage or petData.baseDamage or 5)
+		dmgLabel.Text = tostring(petData.damage or petData.baseDamage or 5)
 		dmgLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 		dmgLabel.Font = Enum.Font.GothamBold
 		dmgLabel.TextScaled = true
@@ -3724,18 +4006,26 @@ function UIController:_refreshUpgradeGrid()
 
 	for order, upgradeName in ipairs(upgradeOrder) do
 		local currentLevel = self._upgradeData[upgradeName] or 0
-		local maxLevel = 3  -- from Config
 		local cardColor = upgradeColors[upgradeName] or Color3.fromRGB(100, 100, 200)
 		local iconChar = UPGRADE_ICONS[upgradeName] or "?"
 		local displayName = upgradeName
 
-		-- Calculate cost for next level
+		-- Get the actual upgrade definition from Config for accurate cost display
+		local upgradeDef = Config.Upgrades[upgradeName]
+		local maxLevel = upgradeDef and #upgradeDef.levels or 3
+
+		-- Calculate cost for next level from actual Config data
 		local costText = "MAX"
-		if currentLevel < maxLevel then
-			-- Estimated costs (actual would come from Config)
-			local baseCosts = { 500, 2000, 10000 }
-			local nextCost = baseCosts[currentLevel + 1] or 10000
-			costText = tostring(nextCost) .. " Coins"
+		if currentLevel < maxLevel and upgradeDef then
+			local nextLevelData = upgradeDef.levels[currentLevel + 1]
+			if nextLevelData then
+				costText = tostring(nextLevelData.cost) .. " Coins"
+			end
+		end
+
+		-- Use the display name from Config if available
+		if upgradeDef and upgradeDef.displayName then
+			displayName = upgradeDef.displayName
 		end
 
 		local card = Instance.new("Frame")
@@ -3870,9 +4160,11 @@ function UIController:_purchaseUpgrade(upgradeName)
 end
 
 --------------------------------------------------------------------------------
--- SHOP WINDOW
+-- EGG STATION PROMPT (replaces old Shop Window)
+-- Shows when player walks near an egg station in the world (like Pet Simulator)
 --------------------------------------------------------------------------------
 function UIController:_createShopWindow()
+	-- The "ShopWindow" screen now serves as the egg station hatch prompt
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "ShopWindow"
 	screenGui.ResetOnSpawn = false
@@ -3881,218 +4173,134 @@ function UIController:_createShopWindow()
 	screenGui.Parent = self._playerGui
 	self._screens.ShopWindow = screenGui
 
-	-- Main frame
-	local mainFrame = Instance.new("Frame")
-	mainFrame.Name = "MainFrame"
-	mainFrame.Size = UDim2.fromScale(0.7, 0.65)
-	mainFrame.Position = UDim2.fromScale(0.15, 0.175)
-	mainFrame.BackgroundColor3 = COLORS.Background
-	mainFrame.BorderSizePixel = 0
-	mainFrame.Parent = screenGui
+	-- Info frame (smaller, bottom-center prompt)
+	local promptFrame = Instance.new("Frame")
+	promptFrame.Name = "EggPrompt"
+	promptFrame.Size = UDim2.fromScale(0.35, 0.2)
+	promptFrame.Position = UDim2.fromScale(0.325, 0.72)
+	promptFrame.BackgroundColor3 = COLORS.Background
+	promptFrame.BackgroundTransparency = 0.1
+	promptFrame.BorderSizePixel = 0
+	promptFrame.Parent = screenGui
 
-	local mainCorner = Instance.new("UICorner")
-	mainCorner.CornerRadius = UDim.new(0, 16)
-	mainCorner.Parent = mainFrame
+	local promptCorner = Instance.new("UICorner")
+	promptCorner.CornerRadius = UDim.new(0, 14)
+	promptCorner.Parent = promptFrame
 
-	local mainStroke = Instance.new("UIStroke")
-	mainStroke.Thickness = 4
-	mainStroke.Color = COLORS.NavShop
-	mainStroke.Parent = mainFrame
+	local promptStroke = Instance.new("UIStroke")
+	promptStroke.Thickness = 3
+	promptStroke.Color = COLORS.NavShop
+	promptStroke.Parent = promptFrame
 
-	-- Title
-	local title = Instance.new("TextLabel")
-	title.Name = "Title"
-	title.Size = UDim2.fromScale(0.4, 0.1)
-	title.Position = UDim2.fromScale(0.3, 0.01)
-	title.BackgroundTransparency = 1
-	title.Text = "EGG SHOP"
-	title.TextColor3 = COLORS.NavShop
-	title.Font = Enum.Font.GothamBold
-	title.TextScaled = true
-	title.Parent = mainFrame
+	-- Egg name label
+	local eggNameLabel = Instance.new("TextLabel")
+	eggNameLabel.Name = "EggNameLabel"
+	eggNameLabel.Size = UDim2.fromScale(0.9, 0.25)
+	eggNameLabel.Position = UDim2.fromScale(0.05, 0.05)
+	eggNameLabel.BackgroundTransparency = 1
+	eggNameLabel.Text = "Basic Egg"
+	eggNameLabel.TextColor3 = COLORS.White
+	eggNameLabel.Font = Enum.Font.GothamBold
+	eggNameLabel.TextScaled = true
+	eggNameLabel.Parent = promptFrame
 
-	-- Close button
-	local closeBtn = Instance.new("TextButton")
-	closeBtn.Name = "CloseBtn"
-	closeBtn.Size = UDim2.fromOffset(42, 42)
-	closeBtn.Position = UDim2.new(1, -52, 0, 10)
-	closeBtn.BackgroundColor3 = COLORS.CloseRed
-	closeBtn.Text = "X"
-	closeBtn.TextColor3 = COLORS.White
-	closeBtn.Font = Enum.Font.GothamBold
-	closeBtn.TextSize = 22
-	closeBtn.Parent = mainFrame
+	-- Cost label
+	local costLabel = Instance.new("TextLabel")
+	costLabel.Name = "CostLabel"
+	costLabel.Size = UDim2.fromScale(0.9, 0.2)
+	costLabel.Position = UDim2.fromScale(0.05, 0.3)
+	costLabel.BackgroundTransparency = 1
+	costLabel.Text = "100 Coins"
+	costLabel.TextColor3 = COLORS.CoinYellow
+	costLabel.Font = Enum.Font.GothamBold
+	costLabel.TextScaled = true
+	costLabel.Parent = promptFrame
 
-	local closeBtnCorner = Instance.new("UICorner")
-	closeBtnCorner.CornerRadius = UDim.new(1, 0)
-	closeBtnCorner.Parent = closeBtn
+	-- Hatch button (big green)
+	local hatchBtn = Instance.new("TextButton")
+	hatchBtn.Name = "HatchBtn"
+	hatchBtn.Size = UDim2.fromScale(0.6, 0.3)
+	hatchBtn.Position = UDim2.fromScale(0.2, 0.58)
+	hatchBtn.BackgroundColor3 = COLORS.ButtonGreen
+	hatchBtn.Text = "HATCH!"
+	hatchBtn.TextColor3 = COLORS.White
+	hatchBtn.Font = Enum.Font.GothamBold
+	hatchBtn.TextScaled = true
+	hatchBtn.Parent = promptFrame
 
-	closeBtn.MouseButton1Click:Connect(function()
-		self:toggleScreen("ShopWindow")
+	local hatchCorner = Instance.new("UICorner")
+	hatchCorner.CornerRadius = UDim.new(0, 10)
+	hatchCorner.Parent = hatchBtn
+
+	local hatchStroke = Instance.new("UIStroke")
+	hatchStroke.Thickness = 2
+	hatchStroke.Color = Color3.fromRGB(0, 150, 50)
+	hatchStroke.Parent = hatchBtn
+
+	-- Connect hatch button
+	hatchBtn.MouseButton1Click:Connect(function()
+		if self._currentEggType then
+			self:_hatchEgg(self._currentEggType)
+		end
 	end)
 
-	-- Egg cards container
-	local eggFrame = Instance.new("ScrollingFrame")
-	eggFrame.Name = "EggCards"
-	eggFrame.Size = UDim2.fromScale(0.94, 0.78)
-	eggFrame.Position = UDim2.fromScale(0.03, 0.14)
-	eggFrame.BackgroundTransparency = 1
-	eggFrame.ScrollBarThickness = 6
-	eggFrame.CanvasSize = UDim2.fromScale(0, 0)
-	eggFrame.Parent = mainFrame
+	-- Hover effect
+	hatchBtn.MouseEnter:Connect(function()
+		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.64, 0.32),
+		}):Play()
+	end)
+	hatchBtn.MouseLeave:Connect(function()
+		TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.6, 0.3),
+		}):Play()
+	end)
 
-	local eggLayout = Instance.new("UIListLayout")
-	eggLayout.FillDirection = Enum.FillDirection.Horizontal
-	eggLayout.Padding = UDim.new(0, 12)
-	eggLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	eggLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	eggLayout.Parent = eggFrame
-
-	-- Populate with sample egg cards
-	self:_refreshShop()
+	-- Store current egg type for hatching
+	self._currentEggType = nil
 end
 
-function UIController:_refreshShop()
-	local screenGui = self._screens.ShopWindow
-	if not screenGui then return end
-	local mainFrame = screenGui:FindFirstChild("MainFrame")
-	if not mainFrame then return end
-	local eggFrame = mainFrame:FindFirstChild("EggCards")
-	if not eggFrame then return end
+-- Show the egg station prompt when player is near an egg station
+function UIController:showEggStationPrompt(eggType)
+	if not self._screens.ShopWindow then return end
 
-	-- Clear existing
-	for _, child in ipairs(eggFrame:GetChildren()) do
-		if child:IsA("Frame") then
-			child:Destroy()
+	-- Map egg type to display info
+	local eggInfo = {
+		BasicEgg = { name = "Basic Egg", cost = Config.EggCosts[1] and Config.EggCosts[1].Coins or 100 },
+		PremiumEgg = { name = "Premium Egg", cost = Config.EggCosts[2] and Config.EggCosts[2].Coins or 500 },
+	}
+
+	local info = eggInfo[eggType]
+	if not info then return end
+
+	-- Update prompt labels
+	local screenGui = self._screens.ShopWindow
+	local promptFrame = screenGui:FindFirstChild("EggPrompt")
+	if promptFrame then
+		local nameLabel = promptFrame:FindFirstChild("EggNameLabel")
+		if nameLabel then
+			nameLabel.Text = info.name
+		end
+		local costLabel = promptFrame:FindFirstChild("CostLabel")
+		if costLabel then
+			costLabel.Text = tostring(info.cost) .. " Coins"
 		end
 	end
 
-	-- Egg types based on current zone
-	local eggTypes = {
-		{ name = "Basic Egg", cost = 100, zone = 1, rarities = "60% Common, 25% Uncommon, 10% Rare, 4% Epic, 1% Legendary" },
-		{ name = "Premium Egg", cost = 500, zone = 2, rarities = "40% Common, 30% Uncommon, 20% Rare, 10% Legendary" },
-	}
+	-- Store the egg type and show the prompt
+	self._currentEggType = eggType
+	screenGui.Enabled = true
 
-	local eggColors = {
-		Color3.fromRGB(200, 230, 180),
-		Color3.fromRGB(180, 200, 255),
-		Color3.fromRGB(255, 200, 180),
-	}
+	-- Auto-hide after 5 seconds if not interacted
+	task.delay(5, function()
+		if screenGui.Enabled and self._currentEggType == eggType then
+			screenGui.Enabled = false
+		end
+	end)
+end
 
-	for i, eggData in ipairs(eggTypes) do
-		local card = Instance.new("Frame")
-		card.Name = "EggCard_" .. i
-		card.Size = UDim2.fromOffset(200, 280)
-		card.BackgroundColor3 = COLORS.DarkBg
-		card.Parent = eggFrame
-
-		local cardCorner = Instance.new("UICorner")
-		cardCorner.CornerRadius = UDim.new(0, 14)
-		cardCorner.Parent = card
-
-		local cardStroke = Instance.new("UIStroke")
-		cardStroke.Thickness = 3
-		cardStroke.Color = eggColors[i] or eggColors[1]
-		cardStroke.Parent = card
-
-		-- Egg icon (ellipsoid representation: oval frame)
-		local eggIcon = Instance.new("Frame")
-		eggIcon.Name = "EggIcon"
-		eggIcon.Size = UDim2.fromScale(0.4, 0.3)
-		eggIcon.Position = UDim2.fromScale(0.3, 0.05)
-		eggIcon.BackgroundColor3 = eggColors[i] or eggColors[1]
-		eggIcon.Parent = card
-
-		local eggIconCorner = Instance.new("UICorner")
-		eggIconCorner.CornerRadius = UDim.new(0.5, 0)
-		eggIconCorner.Parent = eggIcon
-
-		-- Egg text inside
-		local eggText = Instance.new("TextLabel")
-		eggText.Size = UDim2.fromScale(1, 1)
-		eggText.BackgroundTransparency = 1
-		eggText.Text = "?"
-		eggText.TextColor3 = Color3.fromRGB(80, 80, 80)
-		eggText.Font = Enum.Font.GothamBold
-		eggText.TextScaled = true
-		eggText.Parent = eggIcon
-
-		-- Egg name
-		local nameLabel = Instance.new("TextLabel")
-		nameLabel.Name = "EggName"
-		nameLabel.Size = UDim2.fromScale(0.9, 0.1)
-		nameLabel.Position = UDim2.fromScale(0.05, 0.38)
-		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = eggData.name
-		nameLabel.TextColor3 = COLORS.White
-		nameLabel.Font = Enum.Font.GothamBold
-		nameLabel.TextScaled = true
-		nameLabel.Parent = card
-
-		-- Cost
-		local costLabel = Instance.new("TextLabel")
-		costLabel.Name = "Cost"
-		costLabel.Size = UDim2.fromScale(0.9, 0.08)
-		costLabel.Position = UDim2.fromScale(0.05, 0.5)
-		costLabel.BackgroundTransparency = 1
-		costLabel.Text = tostring(eggData.cost) .. " Coins"
-		costLabel.TextColor3 = COLORS.CoinYellow
-		costLabel.Font = Enum.Font.GothamBold
-		costLabel.TextScaled = true
-		costLabel.Parent = card
-
-		-- Rarity chances
-		local rarityLabel = Instance.new("TextLabel")
-		rarityLabel.Name = "Rarities"
-		rarityLabel.Size = UDim2.fromScale(0.9, 0.18)
-		rarityLabel.Position = UDim2.fromScale(0.05, 0.6)
-		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = eggData.rarities
-		rarityLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
-		rarityLabel.Font = Enum.Font.Gotham
-		rarityLabel.TextScaled = true
-		rarityLabel.TextWrapped = true
-		rarityLabel.Parent = card
-
-		-- Hatch button
-		local hatchBtn = Instance.new("TextButton")
-		hatchBtn.Name = "HatchBtn"
-		hatchBtn.Size = UDim2.fromScale(0.7, 0.12)
-		hatchBtn.Position = UDim2.fromScale(0.15, 0.82)
-		hatchBtn.BackgroundColor3 = COLORS.ButtonGreen
-		hatchBtn.Text = "Hatch!"
-		hatchBtn.TextColor3 = COLORS.White
-		hatchBtn.Font = Enum.Font.GothamBold
-		hatchBtn.TextScaled = true
-		hatchBtn.Parent = card
-
-		local hatchCorner = Instance.new("UICorner")
-		hatchCorner.CornerRadius = UDim.new(0, 10)
-		hatchCorner.Parent = hatchBtn
-
-		local hatchStroke = Instance.new("UIStroke")
-		hatchStroke.Thickness = 2
-		hatchStroke.Color = Color3.fromRGB(0, 150, 50)
-		hatchStroke.Parent = hatchBtn
-
-		-- Hatch on click
-		local eggType = (i == 1) and "BasicEgg" or "PremiumEgg"
-		hatchBtn.MouseButton1Click:Connect(function()
-			self:_hatchEgg(eggType)
-		end)
-
-		-- Hover effect
-		hatchBtn.MouseEnter:Connect(function()
-			TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-				Size = UDim2.fromScale(0.74, 0.13),
-			}):Play()
-		end)
-		hatchBtn.MouseLeave:Connect(function()
-			TweenService:Create(hatchBtn, TweenInfo.new(0.1), {
-				Size = UDim2.fromScale(0.7, 0.12),
-			}):Play()
-		end)
-	end
+function UIController:_refreshShop()
+	-- No longer needs to populate cards; the egg station prompt is dynamic
 end
 
 function UIController:_hatchEgg(eggType)
@@ -4356,6 +4564,11 @@ function PetController:init(remotes)
 	self._petsFolder.Name = "ClientPets"
 	self._petsFolder.Parent = workspace
 
+	-- Load shared Config for upgrade bonuses
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local Shared = ReplicatedStorage:WaitForChild("Shared")
+	self._config = require(Shared:WaitForChild("Config"))
+
 	self._initialized = true
 
 	-- Start auto-attack loop
@@ -4363,7 +4576,8 @@ function PetController:init(remotes)
 end
 
 --------------------------------------------------------------------------------
--- Create a procedural pet model: body sphere + head sphere + eyes + shadow + nametag
+-- Create a procedural pet model: body sphere + shadow + nametag
+-- Simple placeholder model - actual pet assets will be added later via Blender.
 -- The pet floats 2.5 studs above ground with a circular shadow beneath it.
 --------------------------------------------------------------------------------
 function PetController:createPetModel(petData)
@@ -4374,52 +4588,16 @@ function PetController:createPetModel(petData)
 	local model = Instance.new("Model")
 	model.Name = petName .. "_Model"
 
-	-- Body: larger sphere
+	-- Body: sphere (placeholder for future Blender model)
 	local body = Instance.new("Part")
 	body.Name = "Body"
 	body.Shape = Enum.PartType.Ball
-	body.Size = Vector3.new(1.8, 1.8, 1.8)
+	body.Size = Vector3.new(2.2, 2.2, 2.2)
 	body.Color = bodyColor
 	body.Material = Enum.Material.SmoothPlastic
 	body.Anchored = true
 	body.CanCollide = false
 	body.Parent = model
-
-	-- Head: smaller sphere on top
-	local head = Instance.new("Part")
-	head.Name = "Head"
-	head.Shape = Enum.PartType.Ball
-	head.Size = Vector3.new(1.2, 1.2, 1.2)
-	head.Color = bodyColor
-	head.Material = Enum.Material.SmoothPlastic
-	head.Anchored = true
-	head.CanCollide = false
-	head.CFrame = body.CFrame + Vector3.new(0, 1.2, 0)
-	head.Parent = model
-
-	-- Left eye: tiny black sphere
-	local leftEye = Instance.new("Part")
-	leftEye.Name = "LeftEye"
-	leftEye.Shape = Enum.PartType.Ball
-	leftEye.Size = Vector3.new(0.25, 0.25, 0.25)
-	leftEye.Color = Color3.fromRGB(10, 10, 10)
-	leftEye.Material = Enum.Material.SmoothPlastic
-	leftEye.Anchored = true
-	leftEye.CanCollide = false
-	leftEye.CFrame = head.CFrame + Vector3.new(-0.25, 0.1, -0.5)
-	leftEye.Parent = model
-
-	-- Right eye: tiny black sphere
-	local rightEye = Instance.new("Part")
-	rightEye.Name = "RightEye"
-	rightEye.Shape = Enum.PartType.Ball
-	rightEye.Size = Vector3.new(0.25, 0.25, 0.25)
-	rightEye.Color = Color3.fromRGB(10, 10, 10)
-	rightEye.Material = Enum.Material.SmoothPlastic
-	rightEye.Anchored = true
-	rightEye.CanCollide = false
-	rightEye.CFrame = head.CFrame + Vector3.new(0.25, 0.1, -0.5)
-	rightEye.Parent = model
 
 	-- Shadow: flat dark cylinder beneath the pet (visual ground shadow)
 	local shadow = Instance.new("Part")
@@ -4439,9 +4617,9 @@ function PetController:createPetModel(petData)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "NameLabel"
 	billboardGui.Size = UDim2.fromOffset(120, 30)
-	billboardGui.StudsOffset = Vector3.new(0, 2.2, 0)
+	billboardGui.StudsOffset = Vector3.new(0, 1.8, 0)
 	billboardGui.AlwaysOnTop = true
-	billboardGui.Adornee = head
+	billboardGui.Adornee = body
 	billboardGui.Parent = model
 
 	local nameLabel = Instance.new("TextLabel")
@@ -4569,6 +4747,12 @@ function PetController:update(deltaTime)
 	-- Right vector for lateral offset
 	local rightVector = rootPart.CFrame.RightVector
 
+	-- Apply FasterPets upgrade to follow speed
+	local effectiveLerpSpeed = self._followLerpSpeed
+	if self._fasterPetsMultiplier and self._fasterPetsMultiplier > 0 then
+		effectiveLerpSpeed = effectiveLerpSpeed * self._fasterPetsMultiplier
+	end
+
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
 			local index = petInfo.followIndex or 1
@@ -4599,7 +4783,7 @@ function PetController:update(deltaTime)
 			local model = petInfo.model
 			if model and model.PrimaryPart and model.PrimaryPart.Parent then
 				local currentPos = model.PrimaryPart.Position
-				local newPos = currentPos:Lerp(targetPos, math.min(1, deltaTime * self._followLerpSpeed))
+				local newPos = currentPos:Lerp(targetPos, math.min(1, deltaTime * effectiveLerpSpeed))
 				local offset = newPos - model.PrimaryPart.Position
 
 				-- Move all parts in model (except shadow which is repositioned separately)
@@ -4625,6 +4809,7 @@ end
 -- Send pet to attack a destructible (visual animation + remote call)
 -- destructibleId: string ID of the destructible
 -- destructiblePart: optional Part reference for tween target position
+-- Moves the entire pet model (all parts) to the destructible and back.
 --------------------------------------------------------------------------------
 function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePart)
 	if not self._initialized then return end
@@ -4651,20 +4836,54 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Tween pet toward destructible
+	-- Move entire model (all parts) to the destructible using a coroutine-based animation
 	if model.PrimaryPart and model.PrimaryPart.Parent then
-		local attackPos = targetPos + Vector3.new(0, 1, -2)
-		local tweenInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		local tween = TweenService:Create(model.PrimaryPart, tweenInfo, {
-			Position = attackPos,
-		})
-		tween:Play()
+		local startPos = model.PrimaryPart.Position
+		local attackPos = targetPos + Vector3.new(0, 1.5, -2)
+		local attackDuration = 0.35
+		local returnDuration = 0.4
 
-		tween.Completed:Connect(function()
-			-- Return to follow position after a short delay
-			task.delay(0.3, function()
-				self._attackingPets[uniqueId] = nil
-			end)
+		-- Animate toward destructible
+		task.spawn(function()
+			local startTime = tick()
+			while true do
+				local elapsed = tick() - startTime
+				local alpha = math.min(elapsed / attackDuration, 1)
+				-- Ease out quad
+				local easedAlpha = 1 - (1 - alpha) * (1 - alpha)
+
+				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
+					self._attackingPets[uniqueId] = nil
+					return
+				end
+
+				local currentPos = model.PrimaryPart.Position
+				local desiredPos = startPos:Lerp(attackPos, easedAlpha)
+				local offset = desiredPos - currentPos
+
+				-- Move all parts in model together
+				for _, part in ipairs(model:GetDescendants()) do
+					if part:IsA("BasePart") and part.Name ~= "Shadow" then
+						part.Position = part.Position + offset
+					end
+				end
+
+				-- Reposition shadow on the ground below
+				local shadowPart = model:FindFirstChild("Shadow")
+				if shadowPart then
+					local groundY = desiredPos.Y - self._followHeight + 0.05
+					shadowPart.CFrame = CFrame.new(desiredPos.X, groundY, desiredPos.Z) * CFrame.Angles(0, 0, math.rad(90))
+				end
+
+				if alpha >= 1 then break end
+				task.wait()
+			end
+
+			-- Brief pause at destructible (impact moment)
+			task.wait(0.2)
+
+			-- Return to follow position (let the update loop take over)
+			self._attackingPets[uniqueId] = nil
 		end)
 	else
 		self._attackingPets[uniqueId] = nil
@@ -4823,6 +5042,13 @@ function PetController:_stopAutoAttack()
 		self._autoAttackConnection:Disconnect()
 		self._autoAttackConnection = nil
 	end
+end
+
+--------------------------------------------------------------------------------
+-- Set FasterPets upgrade multiplier (called from Main.client when upgrades update)
+--------------------------------------------------------------------------------
+function PetController:setFasterPetsMultiplier(multiplier)
+	self._fasterPetsMultiplier = multiplier or 0
 end
 
 --------------------------------------------------------------------------------
@@ -6473,17 +6699,17 @@ ZoneData.Zones = {
 			CoinPile = {
 				displayName = "Coin Pile",
 				hp = 10,
-				drops = { Coins = 5 },
+				drops = { Coins = { min = 5, max = 15 } },
 			},
 			DiamondPile = {
 				displayName = "Diamond Pile",
 				hp = 20,
-				drops = { Diamonds = 2 },
+				drops = { Diamonds = { min = 1, max = 3 } },
 			},
 			Crate = {
 				displayName = "Crate",
 				hp = 15,
-				drops = { Coins = 10, Diamonds = 1 },
+				drops = { Coins = { min = 10, max = 30 }, Diamonds = { min = 1, max = 2 } },
 			},
 		},
 	},
@@ -6496,17 +6722,17 @@ ZoneData.Zones = {
 			CoinPile = {
 				displayName = "Coin Pile",
 				hp = 25,
-				drops = { Coins = 12 },
+				drops = { Coins = { min = 10, max = 25 } },
 			},
 			DiamondPile = {
 				displayName = "Diamond Pile",
 				hp = 50,
-				drops = { Diamonds = 5 },
+				drops = { Diamonds = { min = 3, max = 8 } },
 			},
 			Crate = {
 				displayName = "Crate",
 				hp = 35,
-				drops = { Coins = 25, Diamonds = 3 },
+				drops = { Coins = { min = 20, max = 50 }, Diamonds = { min = 2, max = 5 } },
 			},
 		},
 	},

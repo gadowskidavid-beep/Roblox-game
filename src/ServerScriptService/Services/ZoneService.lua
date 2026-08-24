@@ -47,6 +47,12 @@ function ZoneService.init(dataService, currencyService, petService)
 	-- Spawn destructibles for zones 1 and 2 (MVP)
 	ZoneService.spawnZone(1)
 	ZoneService.spawnZone(2)
+
+	-- Spawn zone gates between adjacent zones
+	ZoneService._spawnZoneGates()
+
+	-- Spawn egg hatching stations in each zone
+	ZoneService._spawnEggStations()
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -215,6 +221,233 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	return uniqueId
 end
 
+-- Spawn egg hatching stations in each zone (like Pet Simulator egg pedestals)
+function ZoneService._spawnEggStations()
+	local workspace = game:GetService("Workspace")
+	local stationsFolder = workspace:FindFirstChild("EggStations")
+	if not stationsFolder then
+		stationsFolder = Instance.new("Folder")
+		stationsFolder.Name = "EggStations"
+		stationsFolder.Parent = workspace
+	end
+
+	-- Egg station definitions per zone (type maps to PetData.Eggs keys)
+	local stationDefs = {
+		[1] = { eggType = "BasicEgg", name = "Basic Egg", cost = Config.EggCosts[1].Coins },
+		[2] = { eggType = "PremiumEgg", name = "Premium Egg", cost = Config.EggCosts[2].Coins },
+	}
+
+	for zoneId, stationDef in pairs(stationDefs) do
+		-- Position the egg station at a prominent spot near the zone entrance
+		local zoneCenter = (zoneId - 1) * ZONE_SPACING
+		local stationPos = Vector3.new(zoneCenter - 40, 0, -70)
+
+		-- Base pedestal
+		local pedestal = Instance.new("Part")
+		pedestal.Name = "EggStation_" .. stationDef.eggType
+		pedestal.Shape = Enum.PartType.Cylinder
+		pedestal.Size = Vector3.new(3, 8, 8)
+		pedestal.Position = stationPos + Vector3.new(0, 1.5, 0)
+		pedestal.Anchored = true
+		pedestal.CanCollide = true
+		pedestal.Color = Color3.fromRGB(200, 180, 140)
+		pedestal.Material = Enum.Material.Marble
+		pedestal.CFrame = CFrame.new(stationPos + Vector3.new(0, 1.5, 0)) * CFrame.Angles(0, 0, math.rad(90))
+		pedestal.Parent = stationsFolder
+
+		-- Egg on top (ball)
+		local egg = Instance.new("Part")
+		egg.Name = "EggModel"
+		egg.Shape = Enum.PartType.Ball
+		egg.Size = Vector3.new(4, 5, 4)
+		egg.Position = stationPos + Vector3.new(0, 5, 0)
+		egg.Anchored = true
+		egg.CanCollide = false
+		egg.Color = zoneId == 1 and Color3.fromRGB(200, 230, 180) or Color3.fromRGB(180, 200, 255)
+		egg.Material = Enum.Material.SmoothPlastic
+		egg.Parent = stationsFolder
+
+		-- Tag the egg with station info
+		local eggTypeTag = Instance.new("StringValue")
+		eggTypeTag.Name = "EggType"
+		eggTypeTag.Value = stationDef.eggType
+		eggTypeTag.Parent = egg
+
+		local zoneTag = Instance.new("IntValue")
+		zoneTag.Name = "StationZone"
+		zoneTag.Value = zoneId
+		zoneTag.Parent = egg
+
+		-- Billboard label above the egg showing name and cost
+		local billboard = Instance.new("BillboardGui")
+		billboard.Name = "StationLabel"
+		billboard.Size = UDim2.fromOffset(180, 70)
+		billboard.StudsOffset = Vector3.new(0, 4, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Adornee = egg
+		billboard.Parent = egg
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "EggName"
+		nameLabel.Size = UDim2.fromScale(1, 0.5)
+		nameLabel.Position = UDim2.fromScale(0, 0)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = stationDef.name
+		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		nameLabel.TextStrokeTransparency = 0.3
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextScaled = true
+		nameLabel.Parent = billboard
+
+		local costLabel = Instance.new("TextLabel")
+		costLabel.Name = "EggCost"
+		costLabel.Size = UDim2.fromScale(1, 0.5)
+		costLabel.Position = UDim2.fromScale(0, 0.5)
+		costLabel.BackgroundTransparency = 1
+		costLabel.Text = tostring(stationDef.cost) .. " Coins"
+		costLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		costLabel.TextStrokeTransparency = 0.3
+		costLabel.Font = Enum.Font.GothamBold
+		costLabel.TextScaled = true
+		costLabel.Parent = billboard
+
+		-- Interaction zone: invisible larger part around the station for proximity detection
+		local interactZone = Instance.new("Part")
+		interactZone.Name = "InteractZone_" .. stationDef.eggType
+		interactZone.Size = Vector3.new(12, 10, 12)
+		interactZone.Position = stationPos + Vector3.new(0, 5, 0)
+		interactZone.Anchored = true
+		interactZone.CanCollide = false
+		interactZone.Transparency = 1
+		interactZone.Parent = stationsFolder
+
+		-- Tag for client detection
+		local interactTag = Instance.new("StringValue")
+		interactTag.Name = "EggType"
+		interactTag.Value = stationDef.eggType
+		interactTag.Parent = interactZone
+	end
+end
+
+-- Spawn zone gates between adjacent zones (visible barriers with cost labels)
+function ZoneService._spawnZoneGates()
+	local workspace = game:GetService("Workspace")
+	local gatesFolder = workspace:FindFirstChild("ZoneGates")
+	if not gatesFolder then
+		gatesFolder = Instance.new("Folder")
+		gatesFolder.Name = "ZoneGates"
+		gatesFolder.Parent = workspace
+	end
+
+	-- Create gates between zone 1->2, 2->3, etc. (MVP: only 1->2)
+	for gateZone = 2, 2 do
+		local zoneDef = ZoneData.Zones[gateZone]
+		if not zoneDef then continue end
+
+		-- Gate position: at the boundary between zones (halfway between zone centers)
+		local prevCenter = (gateZone - 2) * ZONE_SPACING
+		local currCenter = (gateZone - 1) * ZONE_SPACING
+		local gateX = (prevCenter + currCenter) / 2
+		local gateZ = -100 -- center Z of zones
+
+		-- Gate wall (tall translucent barrier)
+		local gate = Instance.new("Part")
+		gate.Name = "ZoneGate_" .. tostring(gateZone)
+		gate.Size = Vector3.new(4, 20, 60)
+		gate.Position = Vector3.new(gateX, 10, gateZ)
+		gate.Anchored = true
+		gate.CanCollide = true
+		gate.Color = Color3.fromRGB(255, 80, 80)
+		gate.Material = Enum.Material.ForceField
+		gate.Transparency = 0.4
+		gate.Parent = gatesFolder
+
+		-- Tag it so client can identify it
+		local zoneTag = Instance.new("IntValue")
+		zoneTag.Name = "GateZoneId"
+		zoneTag.Value = gateZone
+		zoneTag.Parent = gate
+
+		-- Cost label (BillboardGui with the unlock cost)
+		local cost = Config.ZoneGateCosts[gateZone] or 0
+		local billboard = Instance.new("BillboardGui")
+		billboard.Name = "GateLabel"
+		billboard.Size = UDim2.fromOffset(200, 80)
+		billboard.StudsOffset = Vector3.new(0, 12, 0)
+		billboard.AlwaysOnTop = true
+		billboard.Adornee = gate
+		billboard.Parent = gate
+
+		local costLabel = Instance.new("TextLabel")
+		costLabel.Name = "CostText"
+		costLabel.Size = UDim2.fromScale(1, 0.5)
+		costLabel.Position = UDim2.fromScale(0, 0)
+		costLabel.BackgroundTransparency = 1
+		costLabel.Text = zoneDef.name
+		costLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		costLabel.TextStrokeTransparency = 0.3
+		costLabel.Font = Enum.Font.GothamBold
+		costLabel.TextScaled = true
+		costLabel.Parent = billboard
+
+		local priceLabel = Instance.new("TextLabel")
+		priceLabel.Name = "PriceText"
+		priceLabel.Size = UDim2.fromScale(1, 0.5)
+		priceLabel.Position = UDim2.fromScale(0, 0.5)
+		priceLabel.BackgroundTransparency = 1
+		priceLabel.Text = tostring(cost) .. " Coins"
+		priceLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		priceLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		priceLabel.TextStrokeTransparency = 0.3
+		priceLabel.Font = Enum.Font.GothamBold
+		priceLabel.TextScaled = true
+		priceLabel.Parent = billboard
+
+		-- Connect Touched event so players can unlock by walking into the gate
+		gate.Touched:Connect(function(hit)
+			local player = game:GetService("Players"):GetPlayerFromCharacter(hit.Parent)
+			if not player then return end
+
+			-- Check if player already unlocked this zone
+			local data = ZoneService._dataService.getPlayerData(player)
+			if not data then return end
+
+			local alreadyUnlocked = false
+			for _, unlockedId in ipairs(data.unlockedZones) do
+				if unlockedId == gateZone then
+					alreadyUnlocked = true
+					break
+				end
+			end
+
+			if alreadyUnlocked then
+				-- Remove the gate for this player (destroy it since single-player focus)
+				gate:Destroy()
+				return
+			end
+
+			-- Try to unlock the zone
+			local success, err = ZoneService.unlockZone(player, gateZone)
+			if success then
+				-- Store gate position before destroying
+				local gatePosition = gate.Position
+				gate:Destroy()
+				-- Fire zone unlock effect with gate position
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				if remotes then
+					local event = remotes:FindFirstChild("ZoneUnlocked")
+					if event then
+						event:FireClient(player, gateZone, gatePosition)
+					end
+				end
+			end
+		end)
+	end
+end
+
 -- Unlock a zone for a player
 function ZoneService.unlockZone(player, zoneId)
 	if not player or type(zoneId) ~= "number" then
@@ -321,12 +554,22 @@ function ZoneService.attackDestructible(player, destructibleId)
 		-- Destructible destroyed
 		destructible.hp = 0
 
-		-- Award drops
-		if destructible.drops.Coins then
-			ZoneService._currencyService.addCoins(player, destructible.drops.Coins)
+		-- Resolve drops: support both fixed numbers and {min, max} tables for randomization
+		local resolvedDrops = {}
+		for currencyType, dropValue in pairs(destructible.drops) do
+			if type(dropValue) == "table" and dropValue.min and dropValue.max then
+				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
+			else
+				resolvedDrops[currencyType] = dropValue
+			end
 		end
-		if destructible.drops.Diamonds then
-			ZoneService._currencyService.addDiamonds(player, destructible.drops.Diamonds)
+
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
 		end
 
 		-- Award XP for destroying a destructible
@@ -337,7 +580,7 @@ function ZoneService.attackDestructible(player, destructibleId)
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDestroyed")
 			if event then
-				event:FireAllClients(destructibleId, destructible.drops)
+				event:FireAllClients(destructibleId, resolvedDrops)
 			end
 		end
 

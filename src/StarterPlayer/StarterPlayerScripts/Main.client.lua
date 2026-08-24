@@ -149,6 +149,15 @@ if playerData and playerData.equippedPets then
 	uiController:updateEquippedPets(localEquippedPets)
 end
 
+-- Apply FasterPets upgrade from initial data
+if playerData and playerData.upgrades and playerData.upgrades.FasterPets then
+	local fasterLevel = playerData.upgrades.FasterPets
+	local fasterDef = Config.Upgrades.FasterPets
+	if fasterDef and fasterDef.levels[fasterLevel] then
+		petController:setFasterPetsMultiplier(fasterDef.levels[fasterLevel].bonus)
+	end
+end
+
 --------------------------------------------------------------------------------
 -- REMOTE EVENT HANDLERS
 --------------------------------------------------------------------------------
@@ -277,6 +286,14 @@ end)
 -- Upgrade purchased/updated
 UpgradeUpdated.OnClientEvent:Connect(function(upgrades)
 	uiController:updateUpgrades(upgrades)
+	-- Apply FasterPets upgrade to PetController
+	if upgrades and upgrades.FasterPets then
+		local fasterLevel = upgrades.FasterPets
+		local fasterDef = Config.Upgrades.FasterPets
+		if fasterDef and fasterDef.levels[fasterLevel] then
+			petController:setFasterPetsMultiplier(fasterDef.levels[fasterLevel].bonus)
+		end
+	end
 end)
 
 -- Currency collected (floating popup at position)
@@ -362,6 +379,23 @@ local function onCharacterAdded(character)
 				campaignController:showCampaignSelect(CampaignData, playerData and playerData.campaignProgress)
 			end
 		end)
+	end
+
+	-- Egg station proximity detection: when player touches the interact zone, trigger hatch
+	local eggStationsFolder = workspace:FindFirstChild("EggStations")
+	if eggStationsFolder then
+		for _, obj in ipairs(eggStationsFolder:GetChildren()) do
+			if obj:IsA("BasePart") and obj.Name:find("InteractZone_") then
+				local eggTypeTag = obj:FindFirstChild("EggType")
+				if eggTypeTag then
+					obj.Touched:Connect(function(hit)
+						if hit:IsDescendantOf(character) then
+							uiController:showEggStationPrompt(eggTypeTag.Value)
+						end
+					end)
+				end
+			end
+		end
 	end
 end
 

@@ -16,17 +16,17 @@ ZoneData.Zones = {
 			CoinPile = {
 				displayName = "Coin Pile",
 				hp = 10,
-				drops = { Coins = 5 },
+				drops = { Coins = { min = 5, max = 15 } },
 			},
 			DiamondPile = {
 				displayName = "Diamond Pile",
 				hp = 20,
-				drops = { Diamonds = 2 },
+				drops = { Diamonds = { min = 1, max = 3 } },
 			},
 			Crate = {
 				displayName = "Crate",
 				hp = 15,
-				drops = { Coins = 10, Diamonds = 1 },
+				drops = { Coins = { min = 10, max = 30 }, Diamonds = { min = 1, max = 2 } },
 			},
 		},
 	},
@@ -39,17 +39,17 @@ ZoneData.Zones = {
 			CoinPile = {
 				displayName = "Coin Pile",
 				hp = 25,
-				drops = { Coins = 12 },
+				drops = { Coins = { min = 10, max = 25 } },
 			},
 			DiamondPile = {
 				displayName = "Diamond Pile",
 				hp = 50,
-				drops = { Diamonds = 5 },
+				drops = { Diamonds = { min = 3, max = 8 } },
 			},
 			Crate = {
 				displayName = "Crate",
 				hp = 35,
-				drops = { Coins = 25, Diamonds = 3 },
+				drops = { Coins = { min = 20, max = 50 }, Diamonds = { min = 2, max = 5 } },
 			},
 		},
 	},
