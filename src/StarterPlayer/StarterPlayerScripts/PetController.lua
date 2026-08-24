@@ -39,7 +39,7 @@ function PetController.new()
 	-- Follow-behind settings
 	self._followDistance = 5 -- distance behind the player per pet slot
 	self._followSpread = 3 -- lateral spread for multiple pets in same row
-	self._followHeight = 0.5 -- height offset above ground (ground level walking)
+	self._followHeight = 0 -- NO height offset: pets walk on the ground surface
 	self._followLerpSpeed = 1.5 -- smoothing speed for following (very slow for natural walking)
 	self._petsPerRow = 3 -- max pets per row behind the player
 	self._initialized = false
@@ -91,6 +91,38 @@ function PetController:init(remotes)
 end
 
 --------------------------------------------------------------------------------
+-- Raycast downward to find the ground surface Y at a given XZ position.
+-- Returns the ground Y + half the pet body size so the pet sits on the surface.
+-- If no ground is found, falls back to the player's HumanoidRootPart Y.
+--------------------------------------------------------------------------------
+function PetController:_getGroundY(position, fallbackY)
+	local rayOrigin = Vector3.new(position.X, position.Y + 50, position.Z)
+	local rayDirection = Vector3.new(0, -200, 0)
+
+	-- Create raycast params to ignore the ClientPets folder and the player character
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	local filterList = {}
+	if self._petsFolder then
+		table.insert(filterList, self._petsFolder)
+	end
+	local character = self._player and self._player.Character
+	if character then
+		table.insert(filterList, character)
+	end
+	rayParams.FilterDescendantsInstances = filterList
+
+	local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
+	if result then
+		-- Ground hit: return hit position Y + half pet body radius (1.1 studs for 2.2 body)
+		return result.Position.Y + 1.1
+	end
+
+	-- No ground found: use fallback (player ground level)
+	return (fallbackY or position.Y)
+end
+
+--------------------------------------------------------------------------------
 -- Create a procedural pet model: body sphere + shadow + nametag + rarity glow
 --------------------------------------------------------------------------------
 function PetController:createPetModel(petData)
@@ -122,7 +154,7 @@ function PetController:createPetModel(petData)
 	shadow.Transparency = 0.6
 	shadow.Anchored = true
 	shadow.CanCollide = false
-	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, self._followHeight + 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, 1.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
 	shadow.Parent = model
 
 	-- Name label above pet (nametag with pet name and rarity)
@@ -278,7 +310,7 @@ end
 
 --------------------------------------------------------------------------------
 -- Per-frame update: pets follow behind the player in a trailing formation
--- Pets float 2.5 studs above the ground with a shadow beneath them
+-- Pets are raycast-snapped to the ground with a shadow beneath them
 -- Rarity glow particles orbit the pet body for Rare+ pets
 --------------------------------------------------------------------------------
 function PetController:update(deltaTime)
@@ -326,10 +358,14 @@ function PetController:update(deltaTime)
 			local lateralOffset = (col - (actualPetsInRow + 1) / 2) * self._followSpread
 			local distanceBehind = row * self._followDistance
 
-			local targetPos = playerPos
+			local rawTargetPos = playerPos
 				+ behindVector * distanceBehind
 				+ rightVector * lateralOffset
-				+ Vector3.new(0, self._followHeight, 0)
+
+			-- Raycast to snap pet to the ground surface
+			local fallbackY = playerPos.Y - 2 + 1.1 -- player feet level + half pet size
+			local groundY = self:_getGroundY(rawTargetPos, fallbackY)
+			local targetPos = Vector3.new(rawTargetPos.X, groundY, rawTargetPos.Z)
 
 			-- Move pet model smoothly toward target
 			local model = petInfo.model
@@ -347,8 +383,8 @@ function PetController:update(deltaTime)
 				-- Position shadow on the ground directly below the pet body
 				local shadowPart = model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = playerPos.Y - 2
-					local shadowPos = Vector3.new(newPos.X, groundY + 0.05, newPos.Z)
+					local groundY = newPos.Y - 1.1 + 0.05
+					local shadowPos = Vector3.new(newPos.X, groundY, newPos.Z)
 					shadowPart.CFrame = CFrame.new(shadowPos) * CFrame.Angles(0, 0, math.rad(90))
 				end
 
@@ -410,9 +446,11 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		local angle = (petIndex - 1) * (math.pi * 2 / 6) -- distribute evenly around
 		local offsetX = math.cos(angle) * 2.5
 		local offsetZ = math.sin(angle) * 2.5
-		targetPos = destructiblePart.Position + Vector3.new(offsetX, 0, offsetZ)
-		-- Keep pet at ground level (use followHeight offset)
-		targetPos = Vector3.new(targetPos.X, destructiblePart.Position.Y - destructiblePart.Size.Y / 2 + self._followHeight, targetPos.Z)
+		local rawPos = destructiblePart.Position + Vector3.new(offsetX, 0, offsetZ)
+		-- Raycast to snap pet to the ground beside the destructible
+		local fallbackY = destructiblePart.Position.Y - destructiblePart.Size.Y / 2 + 1.1
+		local groundY = self:_getGroundY(rawPos, fallbackY)
+		targetPos = Vector3.new(rawPos.X, groundY, rawPos.Z)
 	else
 		local character = self._player.Character
 		if character and character:FindFirstChild("HumanoidRootPart") then
@@ -471,6 +509,9 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				local dt = task.wait()
 				local alpha = math.min(1, dt * APPROACH_SPEED)
 				local newPos = currentPos:Lerp(targetPos, alpha)
+				-- Snap Y to ground via raycast during approach
+				local approachGroundY = self:_getGroundY(newPos, targetPos.Y)
+				newPos = Vector3.new(newPos.X, approachGroundY, newPos.Z)
 				local offset = newPos - currentPos
 
 				for _, part in ipairs(model:GetDescendants()) do
@@ -482,7 +523,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				-- Update shadow
 				local shadowPart = model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = newPos.Y - self._followHeight + 0.05
+					local groundY = newPos.Y - 1.1 + 0.05
 					shadowPart.CFrame = CFrame.new(newPos.X, groundY, newPos.Z) * CFrame.Angles(0, 0, math.rad(90))
 				end
 			end
@@ -535,7 +576,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				-- Update shadow
 				local shadowPart = model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = desiredPos.Y - self._followHeight + 0.05
+					local groundY = desiredPos.Y - 1.1 + 0.05
 					shadowPart.CFrame = CFrame.new(desiredPos.X, groundY, desiredPos.Z) * CFrame.Angles(0, 0, math.rad(90))
 				end
 			end
