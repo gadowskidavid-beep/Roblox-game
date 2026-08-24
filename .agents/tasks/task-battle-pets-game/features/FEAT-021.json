@@ -1,0 +1,15 @@
+{
+  "id": "FEAT-021",
+  "type": "fix",
+  "title": "Final equip/unequip fix, pet stay-at-destructible behavior, destructible poof effect and fade-in respawn",
+  "description": "1. Fix equip/unequip: ensure _isPetEquipped checks both local equipped list and the pet's own equipped boolean. Ensure UIController refreshes correctly after equip/unequip events. 2. Verify pet stay-at-destructible behavior in PetController (already correct). 3. Add destructible poof effect (3-4 particles in destructible color) on destroy. 4. Add fade-in animation on destructible respawn (Transparency 1->0 over 0.5s). 5. Ensure currency popup appears at destructible position (already correct).",
+  "status": "in_progress",
+  "steps": [
+    "Fix UIController._isPetEquipped to work correctly with both string IDs and pet data objects",
+    "Ensure UIController refreshes pet grid after equip/unequip to reflect button state change",
+    "Add destructible destruction poof effect in EffectsController (3-4 colored particles)",
+    "Add fade-in animation for respawned destructibles in ZoneService",
+    "Ensure currency popup uses destructible position (verify existing code)",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ]
+}

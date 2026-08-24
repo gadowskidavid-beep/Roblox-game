@@ -1787,7 +1787,8 @@ end
 -- CoinPile: golden stacked flat cylinders with golden PointLight
 -- DiamondPile: cyan diamond shape (rotated cube on tip) with blue PointLight
 -- Crate: large brown box with darker lid stripe, bigger than other types
-function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, parent)
+-- fadeIn: if true, all parts start transparent and fade in over 0.5 seconds
+function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, parent, fadeIn)
 	local uniqueId = game:GetService("HttpService"):GenerateGUID(false)
 	local model = Instance.new("Model")
 	model.Name = "Destructible_" .. uniqueId
@@ -1942,6 +1943,21 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	idValue.Name = "DestructibleId"
 	idValue.Value = uniqueId
 	idValue.Parent = mainPart
+
+	-- Fade-in animation for respawned destructibles (Transparency 1 -> 0 over 0.5 seconds)
+	if fadeIn then
+		local TweenService = game:GetService("TweenService")
+		local fadeInInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		for _, part in ipairs(model:GetDescendants()) do
+			if part:IsA("BasePart") then
+				local targetTransparency = part.Transparency
+				part.Transparency = 1
+				TweenService:Create(part, fadeInInfo, {
+					Transparency = targetTransparency,
+				}):Play()
+			end
+		end
+	end
 
 	return uniqueId
 end
@@ -2441,7 +2457,7 @@ function ZoneService.attackDestructible(player, destructibleId)
 					end
 				end
 				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder)
+				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
 			end
 		end)
 	else
@@ -4126,6 +4142,9 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
 	if destructiblePart then
 		effectsController:removeProgressBar(destructiblePart)
 		local pos = destructiblePart.Position
+		-- Show poof effect with the destructible's color
+		local poofColor = destructiblePart.Color or Color3.fromRGB(200, 200, 200)
+		effectsController:showDestructiblePoof(pos, poofColor)
 		if drops then
 			if drops.Coins and drops.Coins > 0 then
 				effectsController:showCurrencyPopup(pos, drops.Coins, "Coins")
@@ -5097,10 +5116,25 @@ function UIController:_refreshPetGrid()
 end
 
 function UIController:_isPetEquipped(uniqueId)
+	-- Check the local equipped pets list (contains full pet data objects or string IDs)
 	for _, pet in ipairs(self._equippedPets) do
-		local petId = pet.uniqueId or pet.id
+		if type(pet) == "string" then
+			-- Legacy: equippedPets might contain raw string IDs
+			if pet == uniqueId then
+				return true
+			end
+		elseif type(pet) == "table" then
+			local petId = pet.uniqueId or pet.id
+			if petId == uniqueId then
+				return true
+			end
+		end
+	end
+	-- Fallback: check the pet's own equipped boolean from inventory data
+	for _, petData in ipairs(self._petInventoryData) do
+		local petId = petData.uniqueId or petData.id
 		if petId == uniqueId then
-			return true
+			return petData.equipped == true
 		end
 	end
 	return false
@@ -6036,6 +6070,24 @@ end
 
 function UIController:updateEquippedPets(equippedPets)
 	self._equippedPets = equippedPets or {}
+	-- Also update the equipped boolean on inventory data to keep in sync
+	local equippedIdSet = {}
+	for _, pet in ipairs(self._equippedPets) do
+		if type(pet) == "string" then
+			equippedIdSet[pet] = true
+		elseif type(pet) == "table" then
+			local id = pet.uniqueId or pet.id
+			if id then
+				equippedIdSet[id] = true
+			end
+		end
+	end
+	for _, petData in ipairs(self._petInventoryData) do
+		local id = petData.uniqueId or petData.id
+		if id then
+			petData.equipped = equippedIdSet[id] or false
+		end
+	end
 	self:_refreshPetGrid()
 end
 
@@ -8842,6 +8894,56 @@ function EffectsController:cleanup()
 	self._progressBars = {}
 	if self._effectsFolder then
 		self._effectsFolder:Destroy()
+	end
+end
+
+--------------------------------------------------------------------------------
+-- Destructible Poof Effect: 3-4 colored particles fly outward when destroyed
+-- color: the Color3 of the destructible (taken from its main part)
+--------------------------------------------------------------------------------
+function EffectsController:showDestructiblePoof(position, color)
+	if not self._initialized then return end
+
+	local particleColor = color or Color3.fromRGB(200, 200, 200)
+	local numParticles = math.random(3, 4)
+
+	for i = 1, numParticles do
+		local particle = Instance.new("Part")
+		particle.Name = "PoofParticle"
+		particle.Shape = Enum.PartType.Ball
+		particle.Size = Vector3.new(1.2, 1.2, 1.2)
+		particle.Position = position + Vector3.new(
+			(math.random() - 0.5) * 1,
+			math.random() * 0.5,
+			(math.random() - 0.5) * 1
+		)
+		particle.Anchored = true
+		particle.CanCollide = false
+		particle.Color = particleColor
+		particle.Material = Enum.Material.Neon
+		particle.Transparency = 0.2
+		particle.Parent = self._effectsFolder
+
+		-- Each particle flies in a different random direction
+		local angle = (i / numParticles) * math.pi * 2 + math.random() * 0.5
+		local upward = 2 + math.random() * 2
+		local outward = 3 + math.random() * 2
+		local targetPos = position + Vector3.new(
+			math.cos(angle) * outward,
+			upward,
+			math.sin(angle) * outward
+		)
+
+		local tweenInfo = TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local moveTween = TweenService:Create(particle, tweenInfo, {
+			Position = targetPos,
+			Size = Vector3.new(0.3, 0.3, 0.3),
+			Transparency = 1,
+		})
+		moveTween:Play()
+		moveTween.Completed:Connect(function()
+			particle:Destroy()
+		end)
 	end
 end
 

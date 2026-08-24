@@ -730,4 +730,54 @@ function EffectsController:cleanup()
 	end
 end
 
+--------------------------------------------------------------------------------
+-- Destructible Poof Effect: 3-4 colored particles fly outward when destroyed
+-- color: the Color3 of the destructible (taken from its main part)
+--------------------------------------------------------------------------------
+function EffectsController:showDestructiblePoof(position, color)
+	if not self._initialized then return end
+
+	local particleColor = color or Color3.fromRGB(200, 200, 200)
+	local numParticles = math.random(3, 4)
+
+	for i = 1, numParticles do
+		local particle = Instance.new("Part")
+		particle.Name = "PoofParticle"
+		particle.Shape = Enum.PartType.Ball
+		particle.Size = Vector3.new(1.2, 1.2, 1.2)
+		particle.Position = position + Vector3.new(
+			(math.random() - 0.5) * 1,
+			math.random() * 0.5,
+			(math.random() - 0.5) * 1
+		)
+		particle.Anchored = true
+		particle.CanCollide = false
+		particle.Color = particleColor
+		particle.Material = Enum.Material.Neon
+		particle.Transparency = 0.2
+		particle.Parent = self._effectsFolder
+
+		-- Each particle flies in a different random direction
+		local angle = (i / numParticles) * math.pi * 2 + math.random() * 0.5
+		local upward = 2 + math.random() * 2
+		local outward = 3 + math.random() * 2
+		local targetPos = position + Vector3.new(
+			math.cos(angle) * outward,
+			upward,
+			math.sin(angle) * outward
+		)
+
+		local tweenInfo = TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local moveTween = TweenService:Create(particle, tweenInfo, {
+			Position = targetPos,
+			Size = Vector3.new(0.3, 0.3, 0.3),
+			Transparency = 1,
+		})
+		moveTween:Play()
+		moveTween.Completed:Connect(function()
+			particle:Destroy()
+		end)
+	end
+end
+
 return EffectsController

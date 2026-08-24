@@ -230,6 +230,9 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
 	if destructiblePart then
 		effectsController:removeProgressBar(destructiblePart)
 		local pos = destructiblePart.Position
+		-- Show poof effect with the destructible's color
+		local poofColor = destructiblePart.Color or Color3.fromRGB(200, 200, 200)
+		effectsController:showDestructiblePoof(pos, poofColor)
 		if drops then
 			if drops.Coins and drops.Coins > 0 then
 				effectsController:showCurrencyPopup(pos, drops.Coins, "Coins")

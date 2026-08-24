@@ -182,7 +182,8 @@ end
 -- CoinPile: golden stacked flat cylinders with golden PointLight
 -- DiamondPile: cyan diamond shape (rotated cube on tip) with blue PointLight
 -- Crate: large brown box with darker lid stripe, bigger than other types
-function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, parent)
+-- fadeIn: if true, all parts start transparent and fade in over 0.5 seconds
+function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, parent, fadeIn)
 	local uniqueId = game:GetService("HttpService"):GenerateGUID(false)
 	local model = Instance.new("Model")
 	model.Name = "Destructible_" .. uniqueId
@@ -337,6 +338,21 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	idValue.Name = "DestructibleId"
 	idValue.Value = uniqueId
 	idValue.Parent = mainPart
+
+	-- Fade-in animation for respawned destructibles (Transparency 1 -> 0 over 0.5 seconds)
+	if fadeIn then
+		local TweenService = game:GetService("TweenService")
+		local fadeInInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		for _, part in ipairs(model:GetDescendants()) do
+			if part:IsA("BasePart") then
+				local targetTransparency = part.Transparency
+				part.Transparency = 1
+				TweenService:Create(part, fadeInInfo, {
+					Transparency = targetTransparency,
+				}):Play()
+			end
+		end
+	end
 
 	return uniqueId
 end
@@ -836,7 +852,7 @@ function ZoneService.attackDestructible(player, destructibleId)
 					end
 				end
 				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder)
+				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
 			end
 		end)
 	else

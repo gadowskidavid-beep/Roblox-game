@@ -683,10 +683,25 @@ function UIController:_refreshPetGrid()
 end
 
 function UIController:_isPetEquipped(uniqueId)
+	-- Check the local equipped pets list (contains full pet data objects or string IDs)
 	for _, pet in ipairs(self._equippedPets) do
-		local petId = pet.uniqueId or pet.id
+		if type(pet) == "string" then
+			-- Legacy: equippedPets might contain raw string IDs
+			if pet == uniqueId then
+				return true
+			end
+		elseif type(pet) == "table" then
+			local petId = pet.uniqueId or pet.id
+			if petId == uniqueId then
+				return true
+			end
+		end
+	end
+	-- Fallback: check the pet's own equipped boolean from inventory data
+	for _, petData in ipairs(self._petInventoryData) do
+		local petId = petData.uniqueId or petData.id
 		if petId == uniqueId then
-			return true
+			return petData.equipped == true
 		end
 	end
 	return false
@@ -1622,6 +1637,24 @@ end
 
 function UIController:updateEquippedPets(equippedPets)
 	self._equippedPets = equippedPets or {}
+	-- Also update the equipped boolean on inventory data to keep in sync
+	local equippedIdSet = {}
+	for _, pet in ipairs(self._equippedPets) do
+		if type(pet) == "string" then
+			equippedIdSet[pet] = true
+		elseif type(pet) == "table" then
+			local id = pet.uniqueId or pet.id
+			if id then
+				equippedIdSet[id] = true
+			end
+		end
+	end
+	for _, petData in ipairs(self._petInventoryData) do
+		local id = petData.uniqueId or petData.id
+		if id then
+			petData.equipped = equippedIdSet[id] or false
+		end
+	end
 	self:_refreshPetGrid()
 end
 
