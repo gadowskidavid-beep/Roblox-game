@@ -1,6 +1,8 @@
 --[[
 	DataService.lua - Player data persistence service
 	Handles save/load with DataStoreService, caching, and auto-save.
+	Falls back to memory-only (session) storage when DataStore is unavailable
+	(e.g. unpublished places or Studio testing).
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
@@ -17,8 +19,23 @@ DataService._cache = {}
 -- Track whether a player's data loaded successfully (prevents overwriting real saves with defaults)
 DataService._canSave = {}
 
--- DataStore reference
-local dataStore = DataStoreService:GetDataStore(Config.DataStoreName)
+-- Flag: if true, DataStore is unavailable and we operate in memory-only mode
+DataService._useMemoryOnly = false
+
+-- DataStore reference (may be nil if unavailable)
+local dataStore = nil
+
+-- Attempt to acquire DataStore handle safely
+local dsSuccess, dsResult = pcall(function()
+	return DataStoreService:GetDataStore(Config.DataStoreName)
+end)
+
+if dsSuccess then
+	dataStore = dsResult
+else
+	DataService._useMemoryOnly = true
+	warn("[DataService] DataStore unavailable - running in memory-only mode (session data will not persist). Reason: " .. tostring(dsResult))
+end
 
 -- Default player data schema
 local function getDefaultData()
@@ -52,6 +69,13 @@ end
 function DataService.loadPlayerData(player)
 	if not player or not player:IsA("Player") then
 		return nil
+	end
+
+	-- Memory-only mode: just give defaults immediately
+	if DataService._useMemoryOnly then
+		DataService._cache[player.UserId] = getDefaultData()
+		DataService._canSave[player.UserId] = false
+		return DataService._cache[player.UserId]
 	end
 
 	local key = "Player_" .. tostring(player.UserId)
@@ -100,6 +124,11 @@ function DataService.savePlayerData(player)
 		return false
 	end
 
+	-- Guard: skip save in memory-only mode
+	if DataService._useMemoryOnly then
+		return false
+	end
+
 	-- Guard: do not save if initial load failed (prevents overwriting real data with defaults)
 	if not DataService._canSave[player.UserId] then
 		warn("[DataService] Skipping save for " .. player.Name .. " - initial load failed")
@@ -140,6 +169,11 @@ end
 
 -- Periodic auto-save for all online players (every 60 seconds)
 function DataService.startAutoSave()
+	-- No need to auto-save in memory-only mode
+	if DataService._useMemoryOnly then
+		return
+	end
+
 	task.spawn(function()
 		while true do
 			task.wait(60)
@@ -154,6 +188,11 @@ end
 
 -- Bind to server shutdown: save all players before the server exits
 function DataService.bindToClose()
+	-- No need to bind in memory-only mode
+	if DataService._useMemoryOnly then
+		return
+	end
+
 	game:BindToClose(function()
 		for _, player in ipairs(Players:GetPlayers()) do
 			if DataService._cache[player.UserId] then

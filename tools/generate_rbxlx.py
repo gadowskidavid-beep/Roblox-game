@@ -363,7 +363,7 @@ def build_replicated_storage():
 
 
 def build_server_script_service():
-    """Build ServerScriptService with Server scripts."""
+    """Build ServerScriptService with scripts (flattened structure - no Server/ subfolder)."""
     # Services folder with ModuleScripts
     service_names = [
         "DataService", "CurrencyService", "PetService",
@@ -371,43 +371,41 @@ def build_server_script_service():
     ]
     service_scripts = []
     for svc_name in service_names:
-        filepath = os.path.join(SRC_DIR, "ServerScriptService", "Server", "Services", f"{svc_name}.lua")
+        filepath = os.path.join(SRC_DIR, "ServerScriptService", "Services", f"{svc_name}.lua")
         source = read_source(filepath)
-        service_scripts.append(make_script_xml("ModuleScript", svc_name, source, lvl=5))
+        service_scripts.append(make_script_xml("ModuleScript", svc_name, source, lvl=4))
 
     services_children = "\n".join(service_scripts)
-    services_folder = make_folder_xml("Services", services_children, lvl=4)
+    services_folder = make_folder_xml("Services", services_children, lvl=3)
 
     # Main.server.lua -> Script
-    main_path = os.path.join(SRC_DIR, "ServerScriptService", "Server", "Main.server.lua")
+    main_path = os.path.join(SRC_DIR, "ServerScriptService", "Main.server.lua")
     main_source = read_source(main_path)
-    main_script = make_script_xml("Script", "Main", main_source, lvl=4)
+    main_script = make_script_xml("Script", "Main", main_source, lvl=3)
 
-    # Server folder containing Main script and Services subfolder
-    server_children = f"{main_script}\n{services_folder}"
-    server_folder = make_folder_xml("Server", server_children, lvl=3)
+    # ServerScriptService contains Main script and Services subfolder directly
+    children_str = f"{main_script}\n{services_folder}"
 
-    return make_service_xml("ServerScriptService", "ServerScriptService", server_folder)
+    return make_service_xml("ServerScriptService", "ServerScriptService", children_str)
 
 
 def build_starter_player():
-    """Build StarterPlayer with StarterPlayerScripts."""
+    """Build StarterPlayer with StarterPlayerScripts (flattened structure - no Client/ subfolder)."""
     # Controller ModuleScripts
     controller_names = ["UIController", "PetController", "CampaignController", "EffectsController"]
     controller_scripts = []
     for ctrl_name in controller_names:
-        filepath = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", "Client", f"{ctrl_name}.lua")
+        filepath = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", f"{ctrl_name}.lua")
         source = read_source(filepath)
-        controller_scripts.append(make_script_xml("ModuleScript", ctrl_name, source, lvl=5))
+        controller_scripts.append(make_script_xml("ModuleScript", ctrl_name, source, lvl=4))
 
     # Main.client.lua -> LocalScript
-    main_path = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", "Client", "Main.client.lua")
+    main_path = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", "Main.client.lua")
     main_source = read_source(main_path)
-    main_script = make_script_xml("LocalScript", "Main", main_source, lvl=5)
+    main_script = make_script_xml("LocalScript", "Main", main_source, lvl=4)
 
-    # Client folder
-    client_children = f"{main_script}\n" + "\n".join(controller_scripts)
-    client_folder = make_folder_xml("Client", client_children, lvl=4)
+    # StarterPlayerScripts contains scripts directly (no Client subfolder)
+    scripts_children = f"{main_script}\n" + "\n".join(controller_scripts)
 
     # StarterPlayerScripts
     sps_ref = next_ref()
@@ -416,7 +414,7 @@ def build_starter_player():
         f'\t\t\t<Properties>\n'
         f'\t\t\t\t<string name="Name">StarterPlayerScripts</string>\n'
         f'\t\t\t</Properties>\n'
-        f'{client_folder}\n'
+        f'{scripts_children}\n'
         f'\t\t</Item>'
     )
 
