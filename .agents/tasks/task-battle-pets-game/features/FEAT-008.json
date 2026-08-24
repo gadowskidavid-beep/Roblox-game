@@ -1,0 +1,34 @@
+{
+  "id": "FEAT-008",
+  "type": "fix",
+  "description": "Flatten script hierarchy in BATTLE_PETS.rbxlx so Roblox Studio auto-runs Scripts and LocalScripts. Remove intermediate 'Server' and 'Client' folders that prevented auto-execution.",
+  "status": "completed",
+  "steps": [
+    "Remove 'Server' folder from ServerScriptService in BATTLE_PETS.rbxlx, move Script 'Main' and Folder 'Services' to be direct children",
+    "Remove 'Client' folder from StarterPlayerScripts in BATTLE_PETS.rbxlx, move LocalScript 'Main' and all ModuleScript controllers to be direct children",
+    "Update default.project.json to point to flattened src paths",
+    "Move src files from Server/ and Client/ subdirectories to their parent directories",
+    "Validate CDATA sections preserved (17 total) and XML well-formedness",
+    "Validate structure matches requirements via Python XML parser"
+  ],
+  "acceptance_criteria": [
+    "Script 'Main' is a direct child of ServerScriptService (no intermediate folder)",
+    "Folder 'Services' is a direct child of ServerScriptService (sibling of Main)",
+    "LocalScript 'Main' is a direct child of StarterPlayerScripts (no intermediate folder)",
+    "ModuleScript 'UIController' is a direct child of StarterPlayerScripts",
+    "ModuleScript 'PetController' is a direct child of StarterPlayerScripts",
+    "ModuleScript 'CampaignController' is a direct child of StarterPlayerScripts",
+    "ModuleScript 'EffectsController' is a direct child of StarterPlayerScripts",
+    "All 17 CDATA script source blocks preserved",
+    "XML is well-formed",
+    "Require paths in Lua scripts still valid (script.Parent.Services.X and script.Parent:WaitForChild(Y))"
+  ],
+  "verification": [
+    "python3 -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('Valid')\"",
+    "grep -c 'CDATA' BATTLE_PETS.rbxlx returns 17",
+    "Python XML parser confirms Script 'Main' is direct child of ServerScriptService",
+    "Python XML parser confirms no Folder 'Server' or Folder 'Client' in hierarchy"
+  ],
+  "blocked_reason": null,
+  "findings": "Roblox Studio does not auto-run Scripts placed inside sub-Folders of ServerScriptService or StarterPlayerScripts. Used text-based XML manipulation (tools/fix_hierarchy.py) to preserve CDATA sections that xml.etree.ElementTree would strip. De-indented child elements by one tab level when removing wrapper folders. Require paths in Main.server.lua and Main.client.lua were already correct for the flat structure (script.Parent references the containing service, and siblings are accessed via script.Parent.Services.X or script.Parent:WaitForChild('X'))."
+}

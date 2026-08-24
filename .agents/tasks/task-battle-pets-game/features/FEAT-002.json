@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Implement all server-side services: Main.server.lua entry point, DataService (save/load with DataStore), PetService (inventory, hatching, equipping), CurrencyService (coins/diamonds), ZoneService (zone unlocking, destructibles), and CampaignService (level progression, combat logic, rewards)",
+  "status": "completed",
+  "steps": [
+    "Create src/ServerScriptService/Server/Main.server.lua - server entry point that initializes all services on PlayerAdded/PlayerRemoving, sets up RemoteEvents and RemoteFunctions in ReplicatedStorage, initializes zones",
+    "Create src/ServerScriptService/Server/Services/DataService.lua - DataStore2-pattern save/load. Player data schema: {coins, diamonds, xp, level, pets (array of {id, name, rarity, damage, equipped}), unlockedZones (array), campaignProgress (highest level beaten per region), upgrades (table of upgrade levels), equipped pets (max based on Friendship upgrade)}. Handle PlayerRemoving auto-save, periodic auto-save every 60s, and session-locking.",
+    "Create src/ServerScriptService/Server/Services/CurrencyService.lua - handles coin/diamond transactions. Functions: addCoins, removeCoins, addDiamonds, removeDiamonds. Fires client updates via RemoteEvent. Server-authoritative validation (cannot go negative).",
+    "Create src/ServerScriptService/Server/Services/PetService.lua - pet inventory management. Functions: hatchEgg (weighted random from PetData rarity tables, deducts egg cost via CurrencyService), equipPet, unequipPet, deletePet, getPetInventory. Enforces max equipped limit from Config. Each pet gets unique ID on hatch. Fire client updates.",
+    "Create src/ServerScriptService/Server/Services/ZoneService.lua - zone unlocking and destructible management. Functions: unlockZone (validates coin cost, adds to player unlockedZones), spawnDestructibles (creates coin piles, diamond piles, crates in zone with HP bars), damageDestructible (called when pet attacks, drops currency on destroy). Procedurally generates Part-based destructibles with color coding per type.",
+    "Create src/ServerScriptService/Server/Services/CampaignService.lua - campaign battle logic. Functions: startLevel (validates player has beaten prerequisite), deployPet (deducts energy, spawns pet entity on lane), processFrame (moves entities, handles combat between pets and enemies, checks base HP). Manages battle state per player. Spawns enemy waves per CampaignData definitions. Awards rewards on victory. Boss battles every 6th level with enhanced enemy.",
+    "Create src/ServerScriptService/Server/Services/UpgradeService.lua - handles purchasing upgrades. Functions: purchaseUpgrade (validates cost from Config, deducts currency, increments level). Each upgrade has escalating costs. Fire update to client.",
+    "Create src/ServerScriptService/Server/Services/EggService.lua - egg hatching orchestration. Functions: purchaseEgg (validates cost), hatchEgg (triggers animation event to client, waits, then reveals pet via PetService). Different egg types per zone with different pet pools."
+  ],
+  "acceptance_criteria": [
+    "Main.server.lua initializes all services and creates RemoteEvents/RemoteFunctions",
+    "DataService saves/loads complete player profile with proper schema",
+    "PetService handles full lifecycle: hatch, equip, unequip, delete with server validation",
+    "CurrencyService prevents negative balances and fires client updates",
+    "ZoneService spawns procedural destructibles and handles damage/drops",
+    "CampaignService manages full battle loop: deploy, move, fight, win/lose",
+    "UpgradeService validates and applies all upgrade types from Config",
+    "All RemoteEvent/RemoteFunction calls validate input server-side (no trusting client data)"
+  ],
+  "verification": [
+    "Run: find /projects/Roblox-game/src/ServerScriptService -name '*.lua' | sort to confirm all files exist",
+    "Run: python3 -c \"import os; services=['DataService','PetService','CurrencyService','ZoneService','CampaignService','UpgradeService','EggService']; assert all(os.path.exists(f'/projects/Roblox-game/src/ServerScriptService/Server/Services/{s}.lua') for s in services)\"",
+    "Verify all lua files have proper module return pattern by checking last lines contain 'return'"
+  ],
+  "blocked_reason": null,
+  "findings": "All 8 server-side service files created and verified. Block balance checks pass after removing comments/strings. BATTLE_PETS.rbxlx does not exist yet (will be created by a separate feature). No luau CLI available for syntax checking but manual structure validation confirms proper module patterns, return statements, and function signatures. CurrencyService init uses a two-phase approach to handle circular dependency with UpgradeService. CampaignService uses RunService.Heartbeat for battle updates."
+}

@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Remove all old SHIFT//BREAK files and create the shared data foundation for Battle Pets: Config, PetData, ZoneData, CampaignData modules, plus default.project.json and README.md",
+  "status": "completed",
+  "steps": [
+    "Delete all old files: SHIFT_BREAK.rbxlx, ASSET_GUIDE.md, old README.md, old default.project.json, and entire src/ directory",
+    "Create new directory structure: src/ServerScriptService/Server/Services/, src/StarterPlayer/StarterPlayerScripts/Client/, src/ReplicatedStorage/Shared/",
+    "Create src/ReplicatedStorage/Shared/Config.lua - main game configuration with: GameName='Battle Pets', DataStoreName, currency names, pet rarity weights (Common 60%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%), egg costs, upgrade definitions (Friendship, Diamonds, Extra Slots, Faster Pets, Strong Pets, Lucky Eggs, Golden Pets Chance, Sprinting, Drop Cloner, Lucky Drops), zone gate costs, campaign energy regen rate, base health values",
+    "Create src/ReplicatedStorage/Shared/PetData.lua - define 4 pets with different rarities: a basic dog (Common), a cat (Uncommon), a dragon (Rare), a phoenix (Legendary). Each pet has: name, rarity, baseDamage, baseSpeed, model description (for procedural generation). Also define egg types with their pet pools.",
+    "Create src/ReplicatedStorage/Shared/ZoneData.lua - define 8 zones (Gruene Wiesen, Stadt, Strand, Wueste, Eiswelt, Vulkan, Himmel, Weltraum) with: name, unlockCost, groundColor, skyColor, destructible types and HP values, coin/diamond drop rates. Only zones 1-2 are fully playable in MVP but all 8 are defined.",
+    "Create src/ReplicatedStorage/Shared/CampaignData.lua - define 48 levels across 8 regions (6 levels each, every 6th is a boss). Include: enemy types (3 basic + 1 boss for MVP), enemy stats (HP, damage, speed), wave compositions per level, energy costs for deploying pets, reward tables.",
+    "Create new default.project.json for Battle Pets with proper Rojo tree mapping all source paths, workspace with spawn platform, lighting with ColorCorrection",
+    "Create new README.md documenting Battle Pets game, how to open in Roblox Studio, and the source tree structure"
+  ],
+  "acceptance_criteria": [
+    "No SHIFT_BREAK files remain in the repository",
+    "All 4 shared data modules (Config, PetData, ZoneData, CampaignData) are valid Luau and return proper tables",
+    "default.project.json is valid JSON with correct Rojo structure mapping all new source paths",
+    "README.md describes Battle Pets and usage instructions",
+    "Config.lua contains all upgrade definitions, zone costs, rarity weights, and campaign parameters"
+  ],
+  "verification": [
+    "Run: python3 -c \"import json; json.load(open('/projects/Roblox-game/default.project.json'))\" to validate JSON",
+    "Run: python3 -c \"import os; assert not os.path.exists('/projects/Roblox-game/SHIFT_BREAK.rbxlx')\" to confirm old files removed",
+    "Run: python3 -c \"import os; assert all(os.path.exists(f'/projects/Roblox-game/src/ReplicatedStorage/Shared/{f}.lua') for f in ['Config','PetData','ZoneData','CampaignData'])\"",
+    "Run: find /projects/Roblox-game/src -name '*.lua' | head -20 to list created files"
+  ],
+  "blocked_reason": null,
+  "findings": "All old SHIFT//BREAK files removed. Created 4 shared data modules (Config.lua, PetData.lua, ZoneData.lua, CampaignData.lua), default.project.json with Rojo tree, and README.md. The old project had existing Lua files in the same directory structure which were properly deleted. Added .gitkeep files to maintain empty Server/Services and Client directories for subsequent features. All verification checks passed: JSON valid, Lua balanced braces, old files confirmed deleted."
+}

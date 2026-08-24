@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Generate the BATTLE_PETS.rbxlx place file that embeds all Luau source code and creates the complete game world with procedural geometry for two zones, campaign portal, spawn area, and all required game services",
+  "status": "completed",
+  "steps": [
+    "Create a Python3 script at tools/generate_rbxlx.py that reads all .lua files from the src/ tree and generates BATTLE_PETS.rbxlx. The script must: (1) Build proper XML structure with roblox version=4 root, (2) Create Workspace hierarchy with: SpawnLocation, Zone1 (Gruene Wiesen - green baseplate with coin piles as yellow cylinders, diamond piles as blue wedges, crates as brown cubes), Zone2 (Stadt - gray baseplate with urban-colored destructibles), Campaign Portal (glowing purple archway Part), zone gates between areas (large Part with SurfaceGui showing cost), (3) Create Lighting with ColorCorrection and Atmosphere for cartoon look, (4) Embed all source code in proper locations: ServerScriptService/Server scripts, StarterPlayer/StarterPlayerScripts/Client scripts, ReplicatedStorage/Shared modules, (5) Create ReplicatedStorage/Remotes folder with all RemoteEvents and RemoteFunctions, (6) Create StarterGui placeholder, (7) Create SoundService with placeholder references",
+    "Run the generate script: python3 tools/generate_rbxlx.py to produce BATTLE_PETS.rbxlx",
+    "Validate the output: python3 -c \"import xml.etree.ElementTree as ET; tree=ET.parse('BATTLE_PETS.rbxlx'); root=tree.getroot(); print(f'Root tag: {root.tag}, Items: {len(root.findall(\".//Item\"))}')\"",
+    "Verify the .rbxlx contains all expected service containers and embedded scripts by checking for key class names and script sources",
+    "Ensure the file is reasonably sized and well-structured (not bloated with unnecessary data)"
+  ],
+  "acceptance_criteria": [
+    "BATTLE_PETS.rbxlx is valid XML that can be parsed without errors",
+    "The place file contains Workspace with procedural geometry for 2 zones, portal, gates, and spawn",
+    "All Luau source code from src/ is properly embedded in CDATA sections within the correct Script/LocalScript/ModuleScript items",
+    "ServerScriptService contains Main.server (Script class) and all service ModuleScripts",
+    "StarterPlayerScripts contains Main.client (LocalScript class) and all controller ModuleScripts",
+    "ReplicatedStorage contains all shared ModuleScripts (Config, PetData, ZoneData, CampaignData)",
+    "RemoteEvents and RemoteFunctions are defined in ReplicatedStorage/Remotes",
+    "Lighting has ColorCorrection for cartoon aesthetic",
+    "No references to external assets, images, sounds, or meshes",
+    "Old SHIFT_BREAK.rbxlx does not exist"
+  ],
+  "verification": [
+    "Run: python3 -c \"import xml.etree.ElementTree as ET; ET.parse('/projects/Roblox-game/BATTLE_PETS.rbxlx'); print('XML valid')\"",
+    "Run: python3 -c \"import xml.etree.ElementTree as ET; tree=ET.parse('/projects/Roblox-game/BATTLE_PETS.rbxlx'); items=tree.getroot().findall('.//Item'); classes=[i.get('class') for i in items]; print('Script' in classes, 'LocalScript' in classes, 'ModuleScript' in classes)\" should print True True True",
+    "Run: python3 -c \"import os; assert os.path.getsize('/projects/Roblox-game/BATTLE_PETS.rbxlx') > 10000, 'File too small'\"",
+    "Run: python3 -c \"import os; assert not os.path.exists('/projects/Roblox-game/SHIFT_BREAK.rbxlx'), 'Old file still exists'\""
+  ],
+  "blocked_reason": null,
+  "findings": "Regenerated BATTLE_PETS.rbxlx (213,221 bytes, 95 XML items) with correct Roblox Studio XML format. Fixed all format issues preventing script execution and GUI display: added xmlns:xmime/xmlns:xsi/noNamespaceSchemaLocation attributes, Meta ExplicitAutoJoints, External null/nil, Disabled=false on Script/LocalScript, LinkedSource with null content on all script types, CFrame with rotation matrix instead of Position, lowercase size property name, Color3uint8 format. 14 RemoteEvents and 11 RemoteFunctions (matching Main.server.lua exactly). Rewrote generate_rbxlx.py to use string-based XML generation for proper CDATA support."
+}

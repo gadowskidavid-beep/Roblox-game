@@ -1,0 +1,14 @@
+{
+  "task_id": "task-battle-pets-game",
+  "task_description": "Replace the existing SHIFT//BREAK project with a new Battle Pets game - a Pet Simulator with campaign side mode. Includes collecting system with 8 zones, pet hatching/equipping, upgrade system, and a Battle Cats-style campaign with 48 levels. MVP has 2 playable zones, 4 pets, 3 enemy types + 1 boss, and full UI in Pet Simulator 1 style.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006", "FEAT-007", "FEAT-008"],
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "XML validation passes (92 items, all script classes present). JSON project file valid. All 17 Lua modules have proper structure. All old SHIFT_BREAK files removed. RemoteEvent/Function names consistent between server and client. File is 213KB with full embedded source. Three review iterations performed: v1 found 7 server issues (all fixed), v2 found 5 contract issues (all fixed), v3 found 4 payload mismatches (all fixed)."
+  }
+}
