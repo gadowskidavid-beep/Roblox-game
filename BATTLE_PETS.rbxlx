@@ -3418,15 +3418,15 @@ return MasteryService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX00000027">
+	<Item class="StarterPlayer" referent="RBX00000028">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000026">
+		<Item class="StarterPlayerScripts" referent="RBX00000027">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000025">
+				<Item class="LocalScript" referent="RBX00000026">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -3466,12 +3466,14 @@ local UIController = require(script.Parent:WaitForChild("UIController"))
 local PetController = require(script.Parent:WaitForChild("PetController"))
 local CampaignController = require(script.Parent:WaitForChild("CampaignController"))
 local EffectsController = require(script.Parent:WaitForChild("EffectsController"))
+local MusicController = require(script.Parent:WaitForChild("MusicController"))
 
 -- Create controller instances
 local uiController = UIController.new()
 local petController = PetController.new()
 local campaignController = CampaignController.new()
 local effectsController = EffectsController.new()
+local musicController = MusicController.new()
 
 -- Player reference
 local player = Players.LocalPlayer
@@ -3572,6 +3574,7 @@ effectsController:init()
 petController:init(Remotes)
 campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
+musicController:init()
 
 -- Initialize equipped pets visuals from initial data (called ONCE)
 if playerData and playerData.equippedPets then
@@ -3890,7 +3893,7 @@ local function onCharacterAdded(character)
 	end
 
 	-- ProximityPrompt interaction for egg stations (E-key)
-	-- This is the primary egg interaction method
+	-- This is the primary egg interaction method: directly invokes HatchEgg on server
 	local function connectEggPrompts()
 		local stationsFolder = workspace:FindFirstChild("EggStations")
 		if not stationsFolder then return end
@@ -3901,8 +3904,9 @@ local function onCharacterAdded(character)
 				if prompt and promptTag then
 					prompt.Triggered:Connect(function(triggerPlayer)
 						if triggerPlayer == player then
-							-- Show the egg station prompt UI to confirm hatching
-							uiController:showEggStationPrompt(promptTag.Value)
+							-- Directly invoke HatchEgg on server (validates cost server-side)
+							local eggType = promptTag.Value
+							HatchEgg:InvokeServer(eggType)
 						end
 					end)
 				end
@@ -6243,22 +6247,33 @@ end
 -- Send pet to attack a destructible (visual animation)
 -- destructibleId: string ID of the destructible
 -- destructiblePart: optional Part reference for tween target position
--- Moves the entire pet model (all parts) to the destructible and back.
+-- The pet moves SLOWLY to the destructible and STAYS THERE bouncing until the
+-- destructible is destroyed or the player moves >60 studs away.
+-- Pet hovers ~1 stud beside the destructible (offset so it is not inside it).
 --------------------------------------------------------------------------------
 function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePart)
 	if not self._initialized then return end
 	local petInfo = self._equippedPets[uniqueId]
 	if not petInfo or not petInfo.model then return end
-	if self._attackingPets[uniqueId] then return end
+	-- If already stationed at THIS destructible, do not restart the movement
+	if self._attackingPets[uniqueId] and self._attackingPets[uniqueId] == destructibleId then
+		return
+	end
 
-	self._attackingPets[uniqueId] = true
+	-- Mark as attacking this specific destructible
+	self._attackingPets[uniqueId] = destructibleId
 
 	local model = petInfo.model
 
-	-- If we have the Part, use its position for the tween target
+	-- Determine target position: 1 stud offset beside the destructible
 	local targetPos
 	if destructiblePart and typeof(destructiblePart) == "Instance" and destructiblePart:IsA("BasePart") then
-		targetPos = destructiblePart.Position
+		-- Offset to the side (use a per-pet angle to distribute around the destructible)
+		local petIndex = petInfo.followIndex or 1
+		local angle = (petIndex - 1) * (math.pi * 2 / 6) -- distribute evenly around
+		local offsetX = math.cos(angle) * 2.5
+		local offsetZ = math.sin(angle) * 2.5
+		targetPos = destructiblePart.Position + Vector3.new(offsetX, 1.5, offsetZ)
 	else
 		local character = self._player.Character
 		if character and character:FindFirstChild("HumanoidRootPart") then
@@ -6269,27 +6284,107 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Move entire model to the destructible using a coroutine-based animation
+	-- Slow approach using per-frame lerp at speed 2.5 (very slow and natural)
 	if model.PrimaryPart and model.PrimaryPart.Parent then
-		local startPos = model.PrimaryPart.Position
-		local attackPos = targetPos + Vector3.new(0, 1.5, -2)
-		local attackDuration = 0.45 -- slightly slower for natural feel
-		local returnDuration = 0.5
-
 		task.spawn(function()
-			local startTime = tick()
-			while true do
-				local elapsed = tick() - startTime
-				local alpha = math.min(elapsed / attackDuration, 1)
-				local easedAlpha = 1 - (1 - alpha) * (1 - alpha)
+			local APPROACH_SPEED = 2.5 -- slow lerp speed
+			local BOUNCE_SPEED = 3.0 -- oscillation speed when stationed
+			local BOUNCE_HEIGHT = 0.3 -- how much it bobs up and down
+			local MAX_PLAYER_DIST = 60 -- return threshold
 
+			-- Phase 1: Slow approach to the destructible
+			while self._attackingPets[uniqueId] == destructibleId do
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
 					self._attackingPets[uniqueId] = nil
 					return
 				end
 
+				-- Check if destructible still exists
+				if destructiblePart and typeof(destructiblePart) == "Instance" then
+					if not destructiblePart.Parent then
+						-- Destructible was destroyed, return to follow
+						self._attackingPets[uniqueId] = nil
+						return
+					end
+				end
+
+				-- Check player distance
+				local character = self._player.Character
+				if character then
+					local rootPart = character:FindFirstChild("HumanoidRootPart")
+					if rootPart then
+						local playerDist = (rootPart.Position - model.PrimaryPart.Position).Magnitude
+						if playerDist > MAX_PLAYER_DIST then
+							-- Too far from player, return
+							self._attackingPets[uniqueId] = nil
+							return
+						end
+					end
+				end
+
 				local currentPos = model.PrimaryPart.Position
-				local desiredPos = startPos:Lerp(attackPos, easedAlpha)
+				local dist = (currentPos - targetPos).Magnitude
+				if dist < 0.5 then
+					break -- close enough, transition to bounce phase
+				end
+
+				-- Slow lerp toward target
+				local dt = task.wait()
+				local alpha = math.min(1, dt * APPROACH_SPEED)
+				local newPos = currentPos:Lerp(targetPos, alpha)
+				local offset = newPos - currentPos
+
+				for _, part in ipairs(model:GetDescendants()) do
+					if part:IsA("BasePart") and part.Name ~= "Shadow" then
+						part.Position = part.Position + offset
+					end
+				end
+
+				-- Update shadow
+				local shadowPart = model:FindFirstChild("Shadow")
+				if shadowPart then
+					local groundY = newPos.Y - self._followHeight + 0.05
+					shadowPart.CFrame = CFrame.new(newPos.X, groundY, newPos.Z) * CFrame.Angles(0, 0, math.rad(90))
+				end
+			end
+
+			-- Phase 2: Stay at destructible with bounce animation (attack wobble)
+			local bounceTime = 0
+			while self._attackingPets[uniqueId] == destructibleId do
+				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
+					self._attackingPets[uniqueId] = nil
+					return
+				end
+
+				-- Check if destructible still exists
+				if destructiblePart and typeof(destructiblePart) == "Instance" then
+					if not destructiblePart.Parent then
+						-- Destructible destroyed, return to follow
+						self._attackingPets[uniqueId] = nil
+						return
+					end
+				end
+
+				-- Check player distance
+				local character = self._player.Character
+				if character then
+					local rootPart = character:FindFirstChild("HumanoidRootPart")
+					if rootPart then
+						local playerDist = (rootPart.Position - model.PrimaryPart.Position).Magnitude
+						if playerDist > MAX_PLAYER_DIST then
+							self._attackingPets[uniqueId] = nil
+							return
+						end
+					end
+				end
+
+				local dt = task.wait()
+				bounceTime = bounceTime + dt
+
+				-- Gentle bounce (bob up and down)
+				local bounceOffset = math.sin(bounceTime * BOUNCE_SPEED) * BOUNCE_HEIGHT
+				local desiredPos = targetPos + Vector3.new(0, bounceOffset, 0)
+				local currentPos = model.PrimaryPart.Position
 				local offset = desiredPos - currentPos
 
 				for _, part in ipairs(model:GetDescendants()) do
@@ -6298,21 +6393,13 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 					end
 				end
 
+				-- Update shadow
 				local shadowPart = model:FindFirstChild("Shadow")
 				if shadowPart then
 					local groundY = desiredPos.Y - self._followHeight + 0.05
 					shadowPart.CFrame = CFrame.new(desiredPos.X, groundY, desiredPos.Z) * CFrame.Angles(0, 0, math.rad(90))
 				end
-
-				if alpha >= 1 then break end
-				task.wait()
 			end
-
-			-- Brief pause at destructible (impact moment)
-			task.wait(0.25)
-
-			-- Return to follow position (let the update loop take over)
-			self._attackingPets[uniqueId] = nil
 		end)
 	else
 		self._attackingPets[uniqueId] = nil
@@ -6439,7 +6526,9 @@ end
 
 --------------------------------------------------------------------------------
 -- DISTRIBUTED AUTO-ATTACK: Each pet picks its own unique target
--- Pets spread out to different destructibles instead of all attacking the same one
+-- Pets spread out to different destructibles instead of all attacking the same one.
+-- Pets STAY at their target (sendPetToAttack handles stationing) and the remote
+-- is fired periodically for damage while the pet is stationed there.
 --------------------------------------------------------------------------------
 function PetController:_startAutoAttack()
 	if self._autoAttackConnection then return end
@@ -6462,7 +6551,13 @@ function PetController:_startAutoAttack()
 		local destructibles = self:getAllDestructiblesInRange(self._autoAttackRange)
 		if #destructibles == 0 then
 			-- Clear all targets if nothing in range
-			self._petTargets = {}
+			for petId, _ in pairs(self._petTargets) do
+				self._petTargets[petId] = nil
+				-- Release the pet from stationed state
+				if self._attackingPets[petId] then
+					self._attackingPets[petId] = nil
+				end
+			end
 			return
 		end
 
@@ -6494,6 +6589,10 @@ function PetController:_startAutoAttack()
 			-- If target is invalid/missing, assign a new one
 			if not targetStillValid then
 				self._petTargets[uniqueId] = nil
+				-- Release stationing
+				if self._attackingPets[uniqueId] then
+					self._attackingPets[uniqueId] = nil
+				end
 				-- Remove from targeted set
 				if currentTarget then
 					targetedIds[currentTarget.destructibleId] = nil
@@ -6510,6 +6609,8 @@ function PetController:_startAutoAttack()
 						}
 						targetedIds[d.id] = true
 						assigned = true
+						-- Send pet to the new target (it will station there)
+						self:sendPetToAttack(uniqueId, d.id, d.part)
 						break
 					end
 				end
@@ -6522,18 +6623,19 @@ function PetController:_startAutoAttack()
 						part = nearest.part,
 						lastAttackTime = 0,
 					}
+					self:sendPetToAttack(uniqueId, nearest.id, nearest.part)
+				end
+			else
+				-- Target is still valid; ensure the pet is sent there (idempotent)
+				if currentTarget and not self._attackingPets[uniqueId] then
+					self:sendPetToAttack(uniqueId, currentTarget.destructibleId, currentTarget.part)
 				end
 			end
 
-			-- Attack the assigned target if enough time has passed
+			-- Fire attack remote periodically for damage while stationed
 			local targetInfo = self._petTargets[uniqueId]
 			if targetInfo and (now - targetInfo.lastAttackTime >= self._autoAttackInterval) then
 				targetInfo.lastAttackTime = now
-
-				-- Send pet to visually attack its own target
-				self:sendPetToAttack(uniqueId, targetInfo.destructibleId, targetInfo.part)
-
-				-- Fire attack remote for this specific destructible
 				self:fireAttackRemote(targetInfo.destructibleId)
 			end
 		end
@@ -6554,7 +6656,7 @@ end
 function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
 	if not self._initialized then return end
 
-	-- Find the first pet that is not currently in an attack animation
+	-- Find the first pet that is not currently stationed at a target
 	local sentPetId = nil
 	for uniqueId, _ in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
@@ -6563,7 +6665,7 @@ function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
 		end
 	end
 
-	-- If all pets are busy, pick the first one anyway
+	-- If all pets are busy, pick the first one (will re-assign it)
 	if not sentPetId then
 		for uniqueId, _ in pairs(self._equippedPets) do
 			sentPetId = uniqueId
@@ -6573,6 +6675,9 @@ function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
 
 	if not sentPetId then return end
 
+	-- Release from previous station if any
+	self._attackingPets[sentPetId] = nil
+
 	-- Assign this pet's target manually
 	self._petTargets[sentPetId] = {
 		destructibleId = destructibleId,
@@ -6580,7 +6685,7 @@ function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
 		lastAttackTime = tick(),
 	}
 
-	-- Send the pet visually
+	-- Send the pet visually (it will station there)
 	self:sendPetToAttack(sentPetId, destructibleId, destructiblePart)
 
 	-- Fire ONE attack remote (server calculates damage for 1 pet)
@@ -6599,6 +6704,9 @@ function PetController:sendAllPetsToTarget(destructibleId, destructiblePart)
 
 	-- Assign all pets to the same target
 	for uniqueId, _ in pairs(self._equippedPets) do
+		-- Release from previous station
+		self._attackingPets[uniqueId] = nil
+
 		self._petTargets[uniqueId] = {
 			destructibleId = destructibleId,
 			part = destructiblePart,
@@ -6620,8 +6728,9 @@ end
 --------------------------------------------------------------------------------
 function PetController:clearManualTarget()
 	self._manualTargetMode = false
-	-- Clear all pet targets so they re-distribute on next frame
+	-- Clear all pet targets and release stationing so they re-distribute on next frame
 	self._petTargets = {}
+	self._attackingPets = {}
 end
 
 --------------------------------------------------------------------------------
@@ -8104,6 +8213,188 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
+				<Item class="ModuleScript" referent="RBX00000025">
+					<Properties>
+						<string name="Name">MusicController</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	MusicController.lua - Per-zone background music with crossfade
+	Creates Sound instances in SoundService. Detects which zone the player is in
+	based on their X position and crossfades to the appropriate track.
+	Music loops and plays at low volume (0.3-0.5).
+]]
+
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local MusicController = {}
+MusicController.__index = MusicController
+
+-- Zone boundaries: zones are 250 studs apart, each 200 studs wide
+local ZONE_SPACING = 250
+
+-- Crossfade duration in seconds
+local CROSSFADE_DURATION = 1.5
+
+function MusicController.new()
+	local self = setmetatable({}, MusicController)
+	self._currentZone = nil
+	self._currentSound = nil
+	self._nextSound = nil
+	self._sounds = {} -- [zoneId] = Sound instance
+	self._initialized = false
+	self._zoneMusic = nil
+	self._checkConnection = nil
+	return self
+end
+
+function MusicController:init()
+	self._player = Players.LocalPlayer
+
+	-- Load zone music data
+	local Shared = ReplicatedStorage:WaitForChild("Shared")
+	local ZoneData = require(Shared:WaitForChild("ZoneData"))
+	self._zoneMusic = ZoneData.ZoneMusic
+
+	if not self._zoneMusic then
+		return
+	end
+
+	-- Pre-create Sound instances in SoundService for each zone
+	for zoneId, musicDef in pairs(self._zoneMusic) do
+		local sound = Instance.new("Sound")
+		sound.Name = "ZoneMusic_" .. tostring(zoneId)
+		sound.SoundId = musicDef.assetId
+		sound.Volume = 0
+		sound.Looped = true
+		sound.Parent = SoundService
+		self._sounds[zoneId] = sound
+	end
+
+	self._initialized = true
+
+	-- Start zone detection loop
+	self:_startZoneDetection()
+end
+
+--------------------------------------------------------------------------------
+-- Determine which zone the player is in based on X position
+-- Zone centers: zone 1 at X=0, zone 2 at X=250, etc.
+-- Zone boundaries are halfway between centers (at X=125, X=375, etc.)
+--------------------------------------------------------------------------------
+function MusicController:_getPlayerZone()
+	local character = self._player.Character
+	if not character then return nil end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return nil end
+
+	local playerX = rootPart.Position.X
+
+	-- Each zone center is at (zoneId - 1) * ZONE_SPACING
+	-- Find which zone center is closest
+	local bestZone = 1
+	local bestDist = math.huge
+
+	for zoneId, _ in pairs(self._zoneMusic) do
+		local zoneCenter = (zoneId - 1) * ZONE_SPACING
+		local dist = math.abs(playerX - zoneCenter)
+		if dist < bestDist then
+			bestDist = dist
+			bestZone = zoneId
+		end
+	end
+
+	return bestZone
+end
+
+--------------------------------------------------------------------------------
+-- Crossfade from the current zone track to a new one
+--------------------------------------------------------------------------------
+function MusicController:_crossfadeTo(newZoneId)
+	if not self._zoneMusic[newZoneId] then return end
+
+	local targetVolume = self._zoneMusic[newZoneId].volume or 0.4
+	local newSound = self._sounds[newZoneId]
+	if not newSound then return end
+
+	-- Fade out old sound
+	if self._currentSound and self._currentSound ~= newSound then
+		local oldSound = self._currentSound
+		local fadeOutInfo = TweenInfo.new(CROSSFADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local fadeOut = TweenService:Create(oldSound, fadeOutInfo, { Volume = 0 })
+		fadeOut:Play()
+		fadeOut.Completed:Connect(function()
+			oldSound:Stop()
+		end)
+	end
+
+	-- Fade in new sound
+	if not newSound.IsPlaying then
+		newSound.Volume = 0
+		newSound:Play()
+	end
+
+	local fadeInInfo = TweenInfo.new(CROSSFADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	local fadeIn = TweenService:Create(newSound, fadeInInfo, { Volume = targetVolume })
+	fadeIn:Play()
+
+	self._currentSound = newSound
+	self._currentZone = newZoneId
+end
+
+--------------------------------------------------------------------------------
+-- Zone detection: check every 0.5s which zone the player is in
+--------------------------------------------------------------------------------
+function MusicController:_startZoneDetection()
+	if self._checkConnection then return end
+
+	-- Initial check
+	task.delay(1, function()
+		local zone = self:_getPlayerZone()
+		if zone then
+			self:_crossfadeTo(zone)
+		end
+	end)
+
+	-- Periodic check
+	self._checkConnection = RunService.Heartbeat:Connect(function()
+		-- Only check every ~0.5 seconds (throttle)
+		if not self._lastCheck then
+			self._lastCheck = 0
+		end
+		self._lastCheck = self._lastCheck + 1
+		if self._lastCheck < 30 then return end -- ~0.5s at 60fps
+		self._lastCheck = 0
+
+		local zone = self:_getPlayerZone()
+		if zone and zone ~= self._currentZone then
+			self:_crossfadeTo(zone)
+		end
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- Cleanup
+--------------------------------------------------------------------------------
+function MusicController:cleanup()
+	if self._checkConnection then
+		self._checkConnection:Disconnect()
+		self._checkConnection = nil
+	end
+	for _, sound in pairs(self._sounds) do
+		sound:Stop()
+		sound:Destroy()
+	end
+	self._sounds = {}
+end
+
+return MusicController
+]]></ProtectedString>
+					</Properties>
+				</Item>
 		</Item>
 	</Item>
 	<Item class="ReplicatedStorage" referent="RBX00000014">
@@ -8278,6 +8569,18 @@ return PetData
 ]]
 
 local ZoneData = {}
+
+-- Background music asset IDs per zone (Roblox built-in/public sounds)
+ZoneData.ZoneMusic = {
+	[1] = { assetId = "rbxassetid://1837849285", volume = 0.4 }, -- calm meadow
+	[2] = { assetId = "rbxassetid://1845756489", volume = 0.35 }, -- urban/city vibe
+	[3] = { assetId = "rbxassetid://1839345857", volume = 0.4 }, -- beach waves
+	[4] = { assetId = "rbxassetid://1836677287", volume = 0.35 }, -- desert wind
+	[5] = { assetId = "rbxassetid://1838857745", volume = 0.3 }, -- icy ambiance
+	[6] = { assetId = "rbxassetid://1838497253", volume = 0.4 }, -- volcanic rumble
+	[7] = { assetId = "rbxassetid://1837017665", volume = 0.35 }, -- heavenly chime
+	[8] = { assetId = "rbxassetid://1836150807", volume = 0.3 }, -- space ambient
+}
 
 ZoneData.Zones = {
 	[1] = {
@@ -9024,7 +9327,7 @@ return MasteryData
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX00000028">
+	<Item class="StarterGui" referent="RBX00000029">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -9059,7 +9362,7 @@ return MasteryData
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX00000029">
+	<Item class="SoundService" referent="RBX0000002A">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

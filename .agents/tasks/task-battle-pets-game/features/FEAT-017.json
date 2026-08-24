@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-017",
+  "type": "feat",
+  "title": "Background music per zone, egg flow polish, pet stay-at-destructible behavior",
+  "description": "1. Add per-zone background music with crossfade on zone change. 2. Polish egg hatching E-key flow (direct hatch on ProximityPrompt). 3. Fix pet behavior: slow approach to destructibles, stay there bouncing, only return when destroyed or player >60 studs away.",
+  "status": "in_progress",
+  "steps": [
+    "Add zone music data to ZoneData.lua with Roblox asset IDs per zone",
+    "Create MusicController on client that manages a Sound in SoundService, crossfades between zone tracks",
+    "Wire MusicController into Main.client.lua with zone detection based on player position",
+    "Fix ProximityPrompt E-key to directly invoke HatchEgg without intermediate UI confirmation",
+    "Rewrite PetController attack behavior: slow lerp to destructible (speed 2-3), stay at target with bounce animation, only return when destructible destroyed or player >60 studs away",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "Each zone plays a different background track using known Roblox asset IDs",
+    "Music loops at volume 0.3-0.5",
+    "Zone transitions crossfade music smoothly",
+    "E-key on ProximityPrompt triggers egg hatch directly (server validates cost)",
+    "Pets approach destructibles at slow speed (lerp 2-3)",
+    "Pets stay at destructibles bouncing (not returning between attacks)",
+    "Pets only return when destructible is destroyed or player is >60 studs away",
+    "Pets hover ~1 stud beside the destructible (not inside it)"
+  ]
+}

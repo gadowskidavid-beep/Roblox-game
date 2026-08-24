@@ -393,7 +393,7 @@ def build_server_script_service():
 def build_starter_player():
     """Build StarterPlayer with StarterPlayerScripts (flattened structure - no Client/ subfolder)."""
     # Controller ModuleScripts
-    controller_names = ["UIController", "PetController", "CampaignController", "EffectsController"]
+    controller_names = ["UIController", "PetController", "CampaignController", "EffectsController", "MusicController"]
     controller_scripts = []
     for ctrl_name in controller_names:
         filepath = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", f"{ctrl_name}.lua")

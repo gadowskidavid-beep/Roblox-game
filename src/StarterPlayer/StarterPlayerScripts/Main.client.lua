@@ -33,12 +33,14 @@ local UIController = require(script.Parent:WaitForChild("UIController"))
 local PetController = require(script.Parent:WaitForChild("PetController"))
 local CampaignController = require(script.Parent:WaitForChild("CampaignController"))
 local EffectsController = require(script.Parent:WaitForChild("EffectsController"))
+local MusicController = require(script.Parent:WaitForChild("MusicController"))
 
 -- Create controller instances
 local uiController = UIController.new()
 local petController = PetController.new()
 local campaignController = CampaignController.new()
 local effectsController = EffectsController.new()
+local musicController = MusicController.new()
 
 -- Player reference
 local player = Players.LocalPlayer
@@ -139,6 +141,7 @@ effectsController:init()
 petController:init(Remotes)
 campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
+musicController:init()
 
 -- Initialize equipped pets visuals from initial data (called ONCE)
 if playerData and playerData.equippedPets then
@@ -457,7 +460,7 @@ local function onCharacterAdded(character)
 	end
 
 	-- ProximityPrompt interaction for egg stations (E-key)
-	-- This is the primary egg interaction method
+	-- This is the primary egg interaction method: directly invokes HatchEgg on server
 	local function connectEggPrompts()
 		local stationsFolder = workspace:FindFirstChild("EggStations")
 		if not stationsFolder then return end
@@ -468,8 +471,9 @@ local function onCharacterAdded(character)
 				if prompt and promptTag then
 					prompt.Triggered:Connect(function(triggerPlayer)
 						if triggerPlayer == player then
-							-- Show the egg station prompt UI to confirm hatching
-							uiController:showEggStationPrompt(promptTag.Value)
+							-- Directly invoke HatchEgg on server (validates cost server-side)
+							local eggType = promptTag.Value
+							HatchEgg:InvokeServer(eggType)
 						end
 					end)
 				end

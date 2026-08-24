@@ -6,6 +6,18 @@
 
 local ZoneData = {}
 
+-- Background music asset IDs per zone (Roblox built-in/public sounds)
+ZoneData.ZoneMusic = {
+	[1] = { assetId = "rbxassetid://1837849285", volume = 0.4 }, -- calm meadow
+	[2] = { assetId = "rbxassetid://1845756489", volume = 0.35 }, -- urban/city vibe
+	[3] = { assetId = "rbxassetid://1839345857", volume = 0.4 }, -- beach waves
+	[4] = { assetId = "rbxassetid://1836677287", volume = 0.35 }, -- desert wind
+	[5] = { assetId = "rbxassetid://1838857745", volume = 0.3 }, -- icy ambiance
+	[6] = { assetId = "rbxassetid://1838497253", volume = 0.4 }, -- volcanic rumble
+	[7] = { assetId = "rbxassetid://1837017665", volume = 0.35 }, -- heavenly chime
+	[8] = { assetId = "rbxassetid://1836150807", volume = 0.3 }, -- space ambient
+}
+
 ZoneData.Zones = {
 	[1] = {
 		name = "Gruene Wiesen",
