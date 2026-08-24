@@ -73,15 +73,54 @@ local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 -- Get initial player data from server
 local playerData = GetPlayerData:InvokeServer()
 
+-- Local list of currently equipped pet data tables (maintained incrementally)
+local localEquippedPets = {}
+
+-- Helper: resolve the initial equippedPets (array of string IDs) to full pet data
+local function buildEquippedListFromData(data)
+	local list = {}
+	if not data or not data.equippedPets or not data.pets then
+		return list
+	end
+	-- equippedPets is an array of string IDs; look up full pet data from pets array
+	local petById = {}
+	for _, pet in ipairs(data.pets) do
+		petById[pet.id] = pet
+	end
+	for _, petId in ipairs(data.equippedPets) do
+		local petData = petById[petId]
+		if petData then
+			table.insert(list, petData)
+		end
+	end
+	return list
+end
+
+-- Helper: find a Part in workspace.Zones that has a DestructibleId StringValue matching the given ID
+local function resolveDestructiblePart(destructibleId)
+	local zonesFolder = workspace:FindFirstChild("Zones")
+	if not zonesFolder then return nil end
+	for _, obj in ipairs(zonesFolder:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local idValue = obj:FindFirstChild("DestructibleId")
+			if idValue and idValue.Value == destructibleId then
+				return obj
+			end
+		end
+	end
+	return nil
+end
+
 -- Initialize all controllers
 effectsController:init()
 petController:init(Remotes)
 campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
 
--- Initialize equipped pets visuals
+-- Initialize equipped pets visuals from initial data
 if playerData and playerData.equippedPets then
-	petController:updateEquippedPets(playerData.equippedPets)
+	localEquippedPets = buildEquippedListFromData(playerData)
+	petController:updateEquippedPets(localEquippedPets)
 end
 
 --------------------------------------------------------------------------------
@@ -98,16 +137,39 @@ PetInventoryUpdated.OnClientEvent:Connect(function(pets)
 	uiController:updatePetInventory(pets)
 end)
 
--- Pet equipped
-PetEquipped.OnClientEvent:Connect(function(equippedPets)
-	uiController:updateEquippedPets(equippedPets)
-	petController:updateEquippedPets(equippedPets)
+-- Pet equipped (server sends a single pet table with .id field)
+PetEquipped.OnClientEvent:Connect(function(petData)
+	-- Add the newly equipped pet to our local list
+	if petData and type(petData) == "table" and petData.id then
+		-- Avoid duplicates
+		local found = false
+		for _, existing in ipairs(localEquippedPets) do
+			if existing.id == petData.id then
+				found = true
+				break
+			end
+		end
+		if not found then
+			table.insert(localEquippedPets, petData)
+		end
+	end
+	uiController:updateEquippedPets(localEquippedPets)
+	petController:updateEquippedPets(localEquippedPets)
 end)
 
--- Pet unequipped
-PetUnequipped.OnClientEvent:Connect(function(equippedPets)
-	uiController:updateEquippedPets(equippedPets)
-	petController:updateEquippedPets(equippedPets)
+-- Pet unequipped (server sends a single string petInstanceId)
+PetUnequipped.OnClientEvent:Connect(function(petInstanceId)
+	-- Remove the unequipped pet from our local list
+	if petInstanceId and type(petInstanceId) == "string" then
+		for i, pet in ipairs(localEquippedPets) do
+			if pet.id == petInstanceId then
+				table.remove(localEquippedPets, i)
+				break
+			end
+		end
+	end
+	uiController:updateEquippedPets(localEquippedPets)
+	petController:updateEquippedPets(localEquippedPets)
 end)
 
 -- Zone unlocked
@@ -117,20 +179,26 @@ ZoneUnlocked.OnClientEvent:Connect(function(zoneId, gatePosition)
 	end
 end)
 
--- Destructible damaged
-DestructibleDamaged.OnClientEvent:Connect(function(destructible, currentHP, maxHP, damage)
-	effectsController:updateProgressBar(destructible, currentHP, maxHP)
-	if destructible and destructible:IsA("BasePart") then
-		petController:showDamageText(destructible.Position, damage)
+-- Destructible damaged (server sends string destructibleId, currentHP, maxHP, damage)
+DestructibleDamaged.OnClientEvent:Connect(function(destructibleId, currentHP, maxHP, damage)
+	-- Resolve string ID to a Part in workspace.Zones
+	local destructiblePart = resolveDestructiblePart(destructibleId)
+	if destructiblePart then
+		effectsController:updateProgressBar(destructiblePart, currentHP, maxHP)
+		if damage and damage > 0 then
+			petController:showDamageText(destructiblePart.Position, damage)
+		end
 	end
 end)
 
--- Destructible destroyed
-DestructibleDestroyed.OnClientEvent:Connect(function(destructible, drops)
-	effectsController:removeProgressBar(destructible)
-	-- Show currency popup at destructible position
-	if destructible and destructible:IsA("BasePart") then
-		local pos = destructible.Position
+-- Destructible destroyed (server sends string destructibleId, drops table)
+DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
+	-- Resolve string ID to a Part in workspace.Zones
+	local destructiblePart = resolveDestructiblePart(destructibleId)
+	if destructiblePart then
+		effectsController:removeProgressBar(destructiblePart)
+		-- Show currency popup at destructible position
+		local pos = destructiblePart.Position
 		if drops then
 			if drops.Coins and drops.Coins > 0 then
 				effectsController:showCurrencyPopup(pos, drops.Coins, "Coins")
@@ -139,6 +207,9 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructible, drops)
 				effectsController:showCurrencyPopup(pos + Vector3.new(0, 1, 0), drops.Diamonds, "Diamonds")
 			end
 		end
+	else
+		-- Part may already be destroyed on server; just clean up by ID
+		effectsController:removeProgressBar(destructibleId)
 	end
 end)
 
@@ -226,12 +297,18 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			local zonesFolder = workspace:FindFirstChild("Zones")
 			if zonesFolder and hit:IsDescendantOf(zonesFolder) then
 				-- Verify this is a destructible (has DestructibleId value)
-				local destructibleId = hit:FindFirstChild("DestructibleId")
-				if destructibleId then
-					-- Send all equipped pets to attack this destructible
+				local destructibleIdValue = hit:FindFirstChild("DestructibleId")
+				if destructibleIdValue then
+					-- Extract the string ID to send to the server
+					local destructibleId = destructibleIdValue.Value
+
+					-- Send all equipped pets to visually attack (animation only)
 					for uniqueId, _ in pairs(petController._equippedPets) do
-						petController:sendPetToAttack(uniqueId, hit)
+						petController:sendPetToAttack(uniqueId, destructibleId, hit)
 					end
+
+					-- Fire ONE attack remote call (server sums all equipped pet damage)
+					petController:fireAttackRemote(destructibleId)
 				end
 			end
 		end

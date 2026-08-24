@@ -131,16 +131,18 @@ end
 
 --------------------------------------------------------------------------------
 -- Update equipped pets: create/remove pet models as needed
+-- equippedList is an array of pet data tables, each with .id field
 --------------------------------------------------------------------------------
 function PetController:updateEquippedPets(equippedList)
 	if not self._initialized then return end
 
-	-- Remove old models that are no longer equipped
+	-- Build set of currently equipped IDs from the new list
 	local newIds = {}
 	for _, petData in ipairs(equippedList) do
-		newIds[petData.uniqueId] = true
+		newIds[petData.id] = true
 	end
 
+	-- Remove old models that are no longer equipped
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not newIds[uniqueId] then
 			if petInfo.model then
@@ -152,11 +154,11 @@ function PetController:updateEquippedPets(equippedList)
 
 	-- Create new models for newly equipped pets
 	for i, petData in ipairs(equippedList) do
-		if not self._equippedPets[petData.uniqueId] then
+		if not self._equippedPets[petData.id] then
 			local model = self:createPetModel(petData)
 			model.Parent = self._petsFolder
 
-			self._equippedPets[petData.uniqueId] = {
+			self._equippedPets[petData.id] = {
 				model = model,
 				data = petData,
 				orbitAngle = (i / #equippedList) * math.pi * 2,
@@ -208,9 +210,11 @@ function PetController:update(deltaTime)
 end
 
 --------------------------------------------------------------------------------
--- Send pet to attack a destructible
+-- Send pet to attack a destructible (visual animation + remote call)
+-- destructibleId: string ID of the destructible
+-- destructiblePart: optional Part reference for tween target position
 --------------------------------------------------------------------------------
-function PetController:sendPetToAttack(uniqueId, destructible)
+function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePart)
 	if not self._initialized then return end
 	local petInfo = self._equippedPets[uniqueId]
 	if not petInfo or not petInfo.model then return end
@@ -219,7 +223,21 @@ function PetController:sendPetToAttack(uniqueId, destructible)
 	self._attackingPets[uniqueId] = true
 
 	local model = petInfo.model
-	local targetPos = destructible.Position
+
+	-- If we have the Part, use its position for the tween target
+	local targetPos
+	if destructiblePart and typeof(destructiblePart) == "Instance" and destructiblePart:IsA("BasePart") then
+		targetPos = destructiblePart.Position
+	else
+		-- Fallback: attack in front of player
+		local character = self._player.Character
+		if character and character:FindFirstChild("HumanoidRootPart") then
+			targetPos = character.HumanoidRootPart.Position + character.HumanoidRootPart.CFrame.LookVector * 5
+		else
+			self._attackingPets[uniqueId] = nil
+			return
+		end
+	end
 
 	-- Tween pet toward destructible
 	if model.PrimaryPart then
@@ -231,19 +249,26 @@ function PetController:sendPetToAttack(uniqueId, destructible)
 		tween:Play()
 
 		tween.Completed:Connect(function()
-			-- Fire attack remote
-			if self._remotes then
-				local attackRemote = self._remotes:FindFirstChild("AttackDestructible")
-				if attackRemote then
-					attackRemote:InvokeServer(destructible)
-				end
-			end
-
 			-- Return to orbit after a short delay
 			task.delay(0.3, function()
 				self._attackingPets[uniqueId] = nil
 			end)
 		end)
+	else
+		self._attackingPets[uniqueId] = nil
+	end
+end
+
+--------------------------------------------------------------------------------
+-- Fire attack remote once with string destructibleId (called from Main.client)
+--------------------------------------------------------------------------------
+function PetController:fireAttackRemote(destructibleId)
+	if not self._initialized then return end
+	if not self._remotes then return end
+
+	local attackRemote = self._remotes:FindFirstChild("AttackDestructible")
+	if attackRemote then
+		attackRemote:InvokeServer(destructibleId)
 	end
 end
 
@@ -304,6 +329,7 @@ end
 
 --------------------------------------------------------------------------------
 -- Get nearest destructible to player within a radius
+-- Searches workspace.Zones recursively for Parts with a DestructibleId child
 --------------------------------------------------------------------------------
 function PetController:getNearestDestructible(maxDistance)
 	if not self._initialized then return nil end
@@ -317,12 +343,12 @@ function PetController:getNearestDestructible(maxDistance)
 	local nearest = nil
 	local nearestDist = maxDistance or 30
 
-	-- Look for destructibles in workspace
-	local destructiblesFolder = workspace:FindFirstChild("Destructibles")
-	if not destructiblesFolder then return nil end
+	-- Look for destructibles recursively under workspace.Zones
+	local zonesFolder = workspace:FindFirstChild("Zones")
+	if not zonesFolder then return nil end
 
-	for _, obj in ipairs(destructiblesFolder:GetChildren()) do
-		if obj:IsA("BasePart") then
+	for _, obj in ipairs(zonesFolder:GetDescendants()) do
+		if obj:IsA("BasePart") and obj:FindFirstChild("DestructibleId") then
 			local dist = (obj.Position - playerPos).Magnitude
 			if dist < nearestDist then
 				nearestDist = dist

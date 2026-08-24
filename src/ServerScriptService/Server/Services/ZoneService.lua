@@ -323,7 +323,7 @@ function ZoneService.attackDestructible(player, destructibleId)
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDamaged")
 			if event then
-				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp)
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, totalDamage)
 			end
 		end
 	end
