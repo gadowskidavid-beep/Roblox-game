@@ -104,22 +104,35 @@ function ArenaService:_createRuntime()
 	rim.Orientation = Vector3.new(0, 0, 90)
 	rim.CanCollide = false
 
-	local spawnPlatform = makePart(
-		lobby,
-		"SpawnPlatform",
-		Vector3.new(30, 2, 30),
-		CFrame.new(0, 17, 8),
-		Color3.fromRGB(72, 82, 112),
-		Enum.Material.SmoothPlastic
-	)
+	local spawnPlatform = Workspace:FindFirstChild("SpawnPlatform")
+	if spawnPlatform and not spawnPlatform:IsA("BasePart") then
+		spawnPlatform = nil
+	end
+	if not spawnPlatform then
+		spawnPlatform = makePart(
+			lobby,
+			"SpawnPlatform",
+			Vector3.new(30, 2, 30),
+			CFrame.new(0, 17, 8),
+			Color3.fromRGB(72, 82, 112),
+			Enum.Material.SmoothPlastic
+		)
+	end
 	spawnPlatform.Anchored = true
 	spawnPlatform.CanCollide = true
 	spawnPlatform.CanTouch = true
 	spawnPlatform.CanQuery = true
 	spawnPlatform:SetAttribute("PermanentSpawnPlatform", true)
 
-	local spawn = Instance.new("SpawnLocation")
-	spawn.Name = "LobbySpawn"
+	local spawn = Workspace:FindFirstChild("LobbySpawn")
+	if spawn and not spawn:IsA("SpawnLocation") then
+		spawn = nil
+	end
+	if not spawn then
+		spawn = Instance.new("SpawnLocation")
+		spawn.Name = "LobbySpawn"
+		spawn.Parent = lobby
+	end
 	spawn.Size = Vector3.new(10, 1, 10)
 	spawn.CFrame = spawnPlatform.CFrame + Vector3.new(0, 1.5, 0)
 	spawn.Color = Config.Colors.Stable
@@ -132,7 +145,6 @@ function ArenaService:_createRuntime()
 	spawn.Neutral = true
 	spawn.AllowTeamChangeOnTouch = false
 	spawn.Duration = 0
-	spawn.Parent = lobby
 	self._lobbySpawn = spawn
 end
 
