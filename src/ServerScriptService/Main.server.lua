@@ -83,6 +83,7 @@ local remoteFunctions = {
 	"DeployPetInCampaign",
 	"AttackDestructible",
 	"ClickAttackDestructible",
+	"CritAttackDestructible",
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
@@ -361,6 +362,20 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.clickAttackDestructible(player, destructibleId)
+end
+
+-- CritAttackDestructible (player clicked a crit circle - deals 2 damage if crit window active)
+getRemoteFunction("CritAttackDestructible").OnServerInvoke = function(player, destructibleId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "CritAttackDestructible", 0.2) then
+		return false, "Please wait before crit attacking again"
+	end
+	if type(destructibleId) ~= "string" then
+		return false, "Invalid destructible ID parameter"
+	end
+	return ZoneService.critAttackDestructible(player, destructibleId)
 end
 
 -- AssignPetTarget (client tells server which pet targets which destructible)

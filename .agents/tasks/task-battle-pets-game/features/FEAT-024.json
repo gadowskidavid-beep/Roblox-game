@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-024",
+  "type": "feature",
+  "title": "Remove all-pets fallback and add crit circles around destructibles",
+  "description": "1. Remove the all-pets fallback in ZoneService.attackDestructible so only assigned pets deal damage. 2. Add crit circle mechanic: clicking a destructible spawns 3-5 glowing circles that orbit it; clicking a circle triggers a crit (2x damage) validated server-side.",
+  "status": "in_progress",
+  "dependencies": ["FEAT-023"],
+  "steps": [
+    "Remove all-pets fallback in ZoneService.attackDestructible (0 damage if no pets assigned)",
+    "Add crit window tracking to ZoneService (_critWindows per player/destructible)",
+    "Add CritAttackDestructible remote function to Main.server.lua with rate limit",
+    "Add critAttackDestructible method to ZoneService (validates crit window, deals 2 damage)",
+    "Add crit circle spawning in Main.client.lua (on destructible click, spawn circles via EffectsController)",
+    "Add crit circle click detection in Main.client.lua (raycast for crit circles, fire CritAttackDestructible)",
+    "Add spawnCritCircles and related methods to EffectsController (orbit movement, neon material, lifetime)",
+    "Add crit hit visual feedback to EffectsController (flash, gold CRIT popup, sound)",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "No fallback to all equipped pets in attackDestructible - 0 damage if no pets assigned",
+    "Clicking a destructible spawns 3-5 glowing circles around it (client-side)",
+    "Circles orbit randomly around the destructible for 2-3 seconds then disappear",
+    "Circles are 2-3 studs, Neon material, yellow/orange/white colors",
+    "Clicking a crit circle removes it with a flash effect and deals 2 damage (server-validated)",
+    "Server tracks crit windows (2-3 seconds after click attack) per player per destructible",
+    "CritAttackDestructible remote has rate limiting (0.2s cooldown)",
+    "Gold/orange CRIT! 2 text popup on crit hit",
+    "Sound feedback on crit hit",
+    "New circles spawn on each destructible click (not on circle click)",
+    "BATTLE_PETS.rbxlx regenerated and valid XML"
+  ],
+  "findings": []
+}

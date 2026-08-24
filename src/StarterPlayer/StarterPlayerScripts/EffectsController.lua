@@ -718,6 +718,216 @@ function EffectsController:showLevelUpCelebration(newLevel)
 end
 
 --------------------------------------------------------------------------------
+-- Crit Circles: glowing rings that orbit a destructible after clicking it.
+-- Clicking a circle triggers a crit (2x damage). Circles are client-side only.
+-- Each circle has a random orbit speed, direction, and color (yellow/orange/white).
+-- Circles disappear after 2-3 seconds. Tagged with CritCircle + CritDestructibleId.
+--------------------------------------------------------------------------------
+function EffectsController:spawnCritCircles(destructiblePart, destructibleId)
+	if not self._initialized then return end
+	if not destructiblePart or not destructiblePart:IsA("BasePart") then return end
+
+	local center = destructiblePart.Position
+	local numCircles = math.random(3, 5)
+
+	-- Crit circle colors (yellow, orange, white variants)
+	local critColors = {
+		Color3.fromRGB(255, 220, 0),   -- bright yellow
+		Color3.fromRGB(255, 160, 0),   -- orange
+		Color3.fromRGB(255, 255, 220), -- warm white
+		Color3.fromRGB(255, 200, 50),  -- golden
+		Color3.fromRGB(255, 140, 30),  -- deep orange
+	}
+
+	for i = 1, numCircles do
+		local circleSize = 2 + math.random() * 1 -- 2-3 studs
+		local lifetime = 2 + math.random() * 1 -- 2-3 seconds
+
+		-- Random starting angle and orbit parameters
+		local startAngle = math.random() * math.pi * 2
+		local orbitRadius = 4 + math.random() * 3 -- 4-7 studs from center
+		local orbitSpeed = (0.5 + math.random() * 1.5) * (math.random() > 0.5 and 1 or -1) -- random direction
+		local verticalOffset = 1 + math.random() * 3 -- height variation
+		local color = critColors[math.random(1, #critColors)]
+
+		-- Create the crit circle (torus-like ring using a cylinder)
+		local circle = Instance.new("Part")
+		circle.Name = "CritCircle_" .. i
+		circle.Shape = Enum.PartType.Cylinder
+		circle.Size = Vector3.new(0.3, circleSize, circleSize)
+		circle.Color = color
+		circle.Material = Enum.Material.Neon
+		circle.Anchored = true
+		circle.CanCollide = true -- must be collidable for raycast detection
+		circle.Transparency = 0.1
+		circle.Parent = self._effectsFolder
+
+		-- Position at starting orbit point
+		local startX = center.X + math.cos(startAngle) * orbitRadius
+		local startZ = center.Z + math.sin(startAngle) * orbitRadius
+		local startY = center.Y + verticalOffset
+		circle.CFrame = CFrame.new(startX, startY, startZ) * CFrame.Angles(0, 0, math.rad(90))
+
+		-- Tag as crit circle for raycast detection
+		local critTag = Instance.new("BoolValue")
+		critTag.Name = "CritCircle"
+		critTag.Value = true
+		critTag.Parent = circle
+
+		local critDestId = Instance.new("StringValue")
+		critDestId.Name = "CritDestructibleId"
+		critDestId.Value = destructibleId
+		critDestId.Parent = circle
+
+		-- Add a small PointLight for glow effect
+		local glow = Instance.new("PointLight")
+		glow.Color = color
+		glow.Brightness = 2
+		glow.Range = 4
+		glow.Parent = circle
+
+		-- Animate orbit movement using a coroutine-style heartbeat connection
+		local startTime = tick()
+		local currentAngle = startAngle
+		local orbitConnection
+		orbitConnection = RunService.Heartbeat:Connect(function(dt)
+			if not circle or not circle.Parent then
+				if orbitConnection then
+					orbitConnection:Disconnect()
+				end
+				return
+			end
+
+			-- Check if destructible still exists
+			if not destructiblePart or not destructiblePart.Parent then
+				-- Destructible was destroyed, remove circle
+				if orbitConnection then
+					orbitConnection:Disconnect()
+				end
+				circle:Destroy()
+				return
+			end
+
+			local elapsed = tick() - startTime
+
+			-- Check lifetime expiry
+			if elapsed >= lifetime then
+				if orbitConnection then
+					orbitConnection:Disconnect()
+				end
+				-- Fade out quickly before destroying
+				local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				TweenService:Create(circle, fadeInfo, { Transparency = 1 }):Play()
+				TweenService:Create(glow, fadeInfo, { Brightness = 0 }):Play()
+				task.delay(0.35, function()
+					if circle and circle.Parent then
+						circle:Destroy()
+					end
+				end)
+				return
+			end
+
+			-- Update orbit position
+			currentAngle = currentAngle + orbitSpeed * dt
+			local orbCenter = destructiblePart.Position
+			local ox = orbCenter.X + math.cos(currentAngle) * orbitRadius
+			local oz = orbCenter.Z + math.sin(currentAngle) * orbitRadius
+			local oy = orbCenter.Y + verticalOffset + math.sin(elapsed * 2) * 0.5 -- gentle bobbing
+
+			circle.CFrame = CFrame.new(ox, oy, oz) * CFrame.Angles(0, 0, math.rad(90))
+		end)
+	end
+end
+
+--------------------------------------------------------------------------------
+-- Crit Hit Effect: flash + expand on the crit circle when clicked, then destroy
+--------------------------------------------------------------------------------
+function EffectsController:showCritHitEffect(critCirclePart)
+	if not self._initialized then return end
+	if not critCirclePart or not critCirclePart:IsA("BasePart") then return end
+
+	local position = critCirclePart.Position
+	local color = critCirclePart.Color
+
+	-- Create expanding flash at the circle's position
+	local flash = Instance.new("Part")
+	flash.Name = "CritFlash"
+	flash.Shape = Enum.PartType.Ball
+	flash.Size = Vector3.new(1, 1, 1)
+	flash.Position = position
+	flash.Anchored = true
+	flash.CanCollide = false
+	flash.Color = Color3.fromRGB(255, 220, 0)
+	flash.Material = Enum.Material.Neon
+	flash.Transparency = 0.2
+	flash.Parent = self._effectsFolder
+
+	local flashLight = Instance.new("PointLight")
+	flashLight.Color = Color3.fromRGB(255, 200, 0)
+	flashLight.Brightness = 8
+	flashLight.Range = 12
+	flashLight.Parent = flash
+
+	-- Expand and fade
+	local flashInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(flash, flashInfo, {
+		Size = Vector3.new(6, 6, 6),
+		Transparency = 1,
+	}):Play()
+	TweenService:Create(flashLight, flashInfo, {
+		Brightness = 0,
+	}):Play()
+
+	task.delay(0.35, function()
+		if flash and flash.Parent then
+			flash:Destroy()
+		end
+	end)
+
+	-- Destroy the original crit circle immediately
+	critCirclePart:Destroy()
+end
+
+--------------------------------------------------------------------------------
+-- Crit Sound: play a satisfying high-pitched "zing" sound for crit hits
+--------------------------------------------------------------------------------
+function EffectsController:playCritSound(position)
+	if not self._initialized then return end
+
+	local soundAnchor = Instance.new("Part")
+	soundAnchor.Name = "CritSoundAnchor"
+	soundAnchor.Size = Vector3.new(0.1, 0.1, 0.1)
+	soundAnchor.Position = position
+	soundAnchor.Anchored = true
+	soundAnchor.CanCollide = false
+	soundAnchor.Transparency = 1
+	soundAnchor.Parent = self._effectsFolder
+
+	local sound = Instance.new("Sound")
+	sound.Name = "CritHitSound"
+	-- Use a higher pitched version of the click sound for crit feedback
+	sound.SoundId = "rbxassetid://6042053626"
+	sound.Volume = 0.7
+	sound.PlaybackSpeed = 1.8 + math.random() * 0.3 -- high pitch for crit
+	sound.RollOffMaxDistance = 50
+	sound.Parent = soundAnchor
+
+	sound:Play()
+
+	-- Cleanup after sound finishes
+	sound.Ended:Connect(function()
+		soundAnchor:Destroy()
+	end)
+
+	-- Safety cleanup
+	task.delay(2, function()
+		if soundAnchor and soundAnchor.Parent then
+			soundAnchor:Destroy()
+		end
+	end)
+end
+
+--------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------
 function EffectsController:cleanup()

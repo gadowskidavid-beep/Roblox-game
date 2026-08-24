@@ -603,12 +603,12 @@ end
 --------------------------------------------------------------------------------
 -- Show floating damage text above a destructible
 --------------------------------------------------------------------------------
-function PetController:showDamageText(position, damage)
+function PetController:showDamageText(position, damage, isCrit)
 	if not self._initialized then return end
 
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "DamagePopup"
-	billboardGui.Size = UDim2.fromOffset(80, 30)
+	billboardGui.Size = UDim2.fromOffset(isCrit and 120 or 80, isCrit and 45 or 30)
 	billboardGui.StudsOffset = Vector3.new(math.random(-1, 1), 2, 0)
 	billboardGui.AlwaysOnTop = true
 
@@ -628,13 +628,28 @@ function PetController:showDamageText(position, damage)
 	label.Name = "DmgText"
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundTransparency = 1
-	label.Text = "-" .. tostring(damage)
-	label.TextColor3 = Color3.fromRGB(255, 80, 80)
-	label.TextStrokeColor3 = Color3.fromRGB(50, 0, 0)
+	if isCrit then
+		label.Text = "CRIT! -" .. tostring(damage)
+		label.TextColor3 = Color3.fromRGB(255, 180, 0)
+		label.TextStrokeColor3 = Color3.fromRGB(180, 80, 0)
+	else
+		label.Text = "-" .. tostring(damage)
+		label.TextColor3 = Color3.fromRGB(255, 80, 80)
+		label.TextStrokeColor3 = Color3.fromRGB(50, 0, 0)
+	end
 	label.TextStrokeTransparency = 0.3
 	label.Font = Enum.Font.GothamBold
 	label.TextScaled = true
 	label.Parent = billboardGui
+
+	-- Crit popups scale in with bounce for extra emphasis
+	if isCrit then
+		billboardGui.Size = UDim2.fromOffset(30, 12)
+		local scaleIn = TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		TweenService:Create(billboardGui, scaleIn, {
+			Size = UDim2.fromOffset(120, 45),
+		}):Play()
+	end
 
 	local tweenInfo = TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	local moveTween = TweenService:Create(anchor, tweenInfo, {

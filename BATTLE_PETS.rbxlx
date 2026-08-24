@@ -199,6 +199,7 @@ local remoteFunctions = {
 	"DeployPetInCampaign",
 	"AttackDestructible",
 	"ClickAttackDestructible",
+	"CritAttackDestructible",
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
@@ -477,6 +478,20 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.clickAttackDestructible(player, destructibleId)
+end
+
+-- CritAttackDestructible (player clicked a crit circle - deals 2 damage if crit window active)
+getRemoteFunction("CritAttackDestructible").OnServerInvoke = function(player, destructibleId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "CritAttackDestructible", 0.2) then
+		return false, "Please wait before crit attacking again"
+	end
+	if type(destructibleId) ~= "string" then
+		return false, "Invalid destructible ID parameter"
+	end
+	return ZoneService.critAttackDestructible(player, destructibleId)
 end
 
 -- AssignPetTarget (client tells server which pet targets which destructible)
@@ -1747,6 +1762,10 @@ ZoneService._zonesFolder = nil
 -- Rate limiting for attacks (per player)
 ZoneService._attackCooldowns = {} -- [userId] = last attack time (os.clock)
 ZoneService._clickCooldowns = {} -- [userId] = last click attack time (os.clock)
+ZoneService._critCooldowns = {} -- [userId] = last crit attack time (os.clock)
+
+-- Crit window tracking: [userId] = { [destructibleId] = expiry time (os.clock) }
+ZoneService._critWindows = {}
 
 -- Pet target assignments: [userId] = { [petInstanceId] = destructibleId }
 ZoneService._petTargets = {}
@@ -1754,6 +1773,8 @@ ZoneService._petTargets = {}
 -- Constants for security
 local ATTACK_COOLDOWN = 0.5 -- seconds between pet attacks per player
 local CLICK_ATTACK_COOLDOWN = 0.2 -- seconds between click attacks per player
+local CRIT_ATTACK_COOLDOWN = 0.2 -- seconds between crit attacks per player
+local CRIT_WINDOW_DURATION = 3 -- seconds a crit window stays active after click attack
 local MAX_ATTACK_DISTANCE = 50 -- maximum studs between player and destructible
 
 -- Zone position offsets (each zone is spaced apart)
@@ -2521,6 +2542,8 @@ function ZoneService.onPlayerRemoving(player)
 		local userId = player.UserId
 		ZoneService._attackCooldowns[userId] = nil
 		ZoneService._clickCooldowns[userId] = nil
+		ZoneService._critCooldowns[userId] = nil
+		ZoneService._critWindows[userId] = nil
 		ZoneService._petTargets[userId] = nil
 	end
 end
@@ -2590,18 +2613,8 @@ function ZoneService.attackDestructible(player, destructibleId)
 		end
 	end
 
-	-- If no pets are assigned to this target, fall back to all equipped pets
-	-- (backwards compatibility for clients that haven't sent AssignPetTarget yet)
 	if #attackingPets == 0 then
-		for _, pet in ipairs(data.pets) do
-			if pet.equipped then
-				table.insert(attackingPets, pet)
-			end
-		end
-	end
-
-	if #attackingPets == 0 then
-		return false, "No equipped pets"
+		return false, "No pets assigned to this target"
 	end
 
 	-- Calculate total damage from pets attacking this target
@@ -2760,6 +2773,12 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 	-- Player click always deals exactly 1 damage
 	local clickDamage = 1
 
+	-- Open a crit window for this player on this destructible (lasts CRIT_WINDOW_DURATION seconds)
+	if not ZoneService._critWindows[userId] then
+		ZoneService._critWindows[userId] = {}
+	end
+	ZoneService._critWindows[userId][destructibleId] = os.clock() + CRIT_WINDOW_DURATION
+
 	-- Apply damage
 	destructible.hp = destructible.hp - clickDamage
 
@@ -2841,6 +2860,170 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 			local event = remotes:FindFirstChild("DestructibleDamaged")
 			if event then
 				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, clickDamage)
+			end
+		end
+	end
+
+	return true, nil
+end
+
+-- Crit-attack a destructible (player clicked a crit circle, deals 2 damage if crit window active)
+function ZoneService.critAttackDestructible(player, destructibleId)
+	if not player or type(destructibleId) ~= "string" then
+		return false, "Invalid parameters"
+	end
+
+	local destructible = ZoneService._destructibles[destructibleId]
+	if not destructible then
+		return false, "Destructible not found"
+	end
+
+	-- Rate limiting: 0.2 second cooldown between crit attacks per player
+	local userId = player.UserId
+	local now = os.clock()
+	local lastCrit = ZoneService._critCooldowns[userId] or 0
+	if now - lastCrit < CRIT_ATTACK_COOLDOWN then
+		return false, "Crit attack on cooldown"
+	end
+	ZoneService._critCooldowns[userId] = now
+
+	-- Distance check: player must be within 50 studs of the destructible
+	local character = player.Character
+	if not character then
+		return false, "No character"
+	end
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then
+		return false, "No HumanoidRootPart"
+	end
+	local playerPos = humanoidRootPart.Position
+	local destructiblePos = destructible.position
+	local distance = (playerPos - destructiblePos).Magnitude
+	if distance > MAX_ATTACK_DISTANCE then
+		return false, "Too far from destructible"
+	end
+
+	-- Validate crit window is active for this player and destructible
+	local playerCritWindows = ZoneService._critWindows[userId]
+	if not playerCritWindows then
+		return false, "No crit window active"
+	end
+	local critExpiry = playerCritWindows[destructibleId]
+	if not critExpiry or now > critExpiry then
+		-- Crit window expired or never existed
+		playerCritWindows[destructibleId] = nil
+		return false, "Crit window expired"
+	end
+
+	-- Consume the crit window (one crit per window per circle click is fine,
+	-- but we keep the window open so multiple circles can crit within the window)
+
+	local data = ZoneService._dataService.getPlayerData(player)
+	if not data then
+		return false, "No player data"
+	end
+
+	-- Validate player has unlocked the zone
+	local zoneUnlocked = false
+	for _, unlockedId in ipairs(data.unlockedZones) do
+		if unlockedId == destructible.zoneId then
+			zoneUnlocked = true
+			break
+		end
+	end
+	if not zoneUnlocked then
+		return false, "Zone not unlocked"
+	end
+
+	-- Crit deals 2 damage
+	local critDamage = 2
+
+	-- Apply damage
+	destructible.hp = destructible.hp - critDamage
+
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+
+	if destructible.hp <= 0 then
+		-- Destructible destroyed
+		destructible.hp = 0
+
+		-- Resolve drops
+		local resolvedDrops = {}
+		for currencyType, dropValue in pairs(destructible.drops) do
+			if type(dropValue) == "table" and dropValue.min and dropValue.max then
+				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
+			else
+				resolvedDrops[currencyType] = dropValue
+			end
+		end
+
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
+		end
+
+		-- Award XP
+		local xpReward = destructible.zoneId * 5
+		ZoneService._awardXP(player, xpReward)
+
+		-- Track quest progress
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
+		end
+
+		-- Fire destroyed event
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDestroyed")
+			if event then
+				event:FireAllClients(destructibleId, resolvedDrops)
+			end
+		end
+
+		-- Remove model from workspace
+		if destructible.model and destructible.model.Parent then
+			destructible.model:Destroy()
+		elseif destructible.part and destructible.part.Parent then
+			destructible.part:Destroy()
+		end
+
+		-- Clean up crit window for this destructible
+		if playerCritWindows then
+			playerCritWindows[destructibleId] = nil
+		end
+
+		-- Schedule respawn
+		local zoneId = destructible.zoneId
+		local dtype = destructible.dtype
+		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
+
+		ZoneService._destructibles[destructibleId] = nil
+
+		task.delay(10, function()
+			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
+			if zoneFolder then
+				local origin = getZoneOrigin(zoneId)
+				local existingPositions = {}
+				for _, d in pairs(ZoneService._destructibles) do
+					if d.position then
+						table.insert(existingPositions, d.position)
+					end
+				end
+				local newPosition = getRandomPositionInZone(origin, existingPositions)
+				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
+			end
+		end)
+	else
+		-- Fire damaged event with crit damage
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDamaged")
+			if event then
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, critDamage)
 			end
 		end
 	end
@@ -4355,6 +4538,7 @@ local StartCampaignLevel = Remotes:WaitForChild("StartCampaignLevel")
 local DeployPetInCampaign = Remotes:WaitForChild("DeployPetInCampaign")
 local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
 local ClickAttackDestructible = Remotes:WaitForChild("ClickAttackDestructible")
+local CritAttackDestructible = Remotes:WaitForChild("CritAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
@@ -4699,6 +4883,11 @@ local function fireClickDamage(target)
 	-- Fire click attack to server (always 1 damage)
 	ClickAttackDestructible:InvokeServer(target.destructibleId)
 
+	-- Spawn crit circles around the destructible
+	if target.part and target.part.Parent then
+		effectsController:spawnCritCircles(target.part, target.destructibleId)
+	end
+
 	-- Show visual effects for the click
 	if target.part and target.part.Parent then
 		-- Show "1" damage popup at the destructible position
@@ -4717,12 +4906,64 @@ local function fireClickDamage(target)
 	end
 end
 
+-- Helper: Raycast from screen position to find a crit circle
+local function raycastForCritCircle(screenPosition)
+	local camera = workspace.CurrentCamera
+	if not camera then return nil end
+
+	local ray = camera:ViewportPointToRay(screenPosition.X, screenPosition.Y)
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = { player.Character }
+
+	local result = workspace:Raycast(ray.Origin, ray.Direction * 200, raycastParams)
+	if not result or not result.Instance then return nil end
+
+	local hit = result.Instance
+	-- Check if this part is a crit circle (tagged with CritCircle and CritDestructibleId)
+	local critTag = hit:FindFirstChild("CritCircle")
+	local critDestructibleId = hit:FindFirstChild("CritDestructibleId")
+	if critTag and critDestructibleId then
+		return {
+			part = hit,
+			destructibleId = critDestructibleId.Value,
+		}
+	end
+
+	return nil
+end
+
+-- Helper: handle crit circle click (flash, remove circle, fire CritAttack)
+local function fireCritDamage(critTarget)
+	if not critTarget or not critTarget.destructibleId then return end
+
+	-- Fire crit attack to server (2 damage if crit window is valid)
+	CritAttackDestructible:InvokeServer(critTarget.destructibleId)
+
+	-- Show crit visual feedback
+	if critTarget.part and critTarget.part.Parent then
+		local critPos = critTarget.part.Position
+		effectsController:showCritHitEffect(critTarget.part)
+		effectsController:playCritSound(critPos)
+
+		-- Show gold "CRIT! 2" popup
+		petController:showDamageText(critPos + Vector3.new(0, 1, 0), 2, true)
+	end
+end
+
 -- Mouse/Touch down: start tracking for click vs hold + immediate click damage
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
+
+		-- First check if clicking a crit circle (priority over destructible clicks)
+		local critTarget = raycastForCritCircle(input.Position)
+		if critTarget then
+			fireCritDamage(critTarget)
+			return -- Crit circle click does NOT spawn new circles or trigger normal click
+		end
 
 		local target = raycastForDestructible(input.Position)
 		if target then
@@ -7345,12 +7586,12 @@ end
 --------------------------------------------------------------------------------
 -- Show floating damage text above a destructible
 --------------------------------------------------------------------------------
-function PetController:showDamageText(position, damage)
+function PetController:showDamageText(position, damage, isCrit)
 	if not self._initialized then return end
 
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "DamagePopup"
-	billboardGui.Size = UDim2.fromOffset(80, 30)
+	billboardGui.Size = UDim2.fromOffset(isCrit and 120 or 80, isCrit and 45 or 30)
 	billboardGui.StudsOffset = Vector3.new(math.random(-1, 1), 2, 0)
 	billboardGui.AlwaysOnTop = true
 
@@ -7370,13 +7611,28 @@ function PetController:showDamageText(position, damage)
 	label.Name = "DmgText"
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundTransparency = 1
-	label.Text = "-" .. tostring(damage)
-	label.TextColor3 = Color3.fromRGB(255, 80, 80)
-	label.TextStrokeColor3 = Color3.fromRGB(50, 0, 0)
+	if isCrit then
+		label.Text = "CRIT! -" .. tostring(damage)
+		label.TextColor3 = Color3.fromRGB(255, 180, 0)
+		label.TextStrokeColor3 = Color3.fromRGB(180, 80, 0)
+	else
+		label.Text = "-" .. tostring(damage)
+		label.TextColor3 = Color3.fromRGB(255, 80, 80)
+		label.TextStrokeColor3 = Color3.fromRGB(50, 0, 0)
+	end
 	label.TextStrokeTransparency = 0.3
 	label.Font = Enum.Font.GothamBold
 	label.TextScaled = true
 	label.Parent = billboardGui
+
+	-- Crit popups scale in with bounce for extra emphasis
+	if isCrit then
+		billboardGui.Size = UDim2.fromOffset(30, 12)
+		local scaleIn = TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		TweenService:Create(billboardGui, scaleIn, {
+			Size = UDim2.fromOffset(120, 45),
+		}):Play()
+	end
 
 	local tweenInfo = TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	local moveTween = TweenService:Create(anchor, tweenInfo, {
@@ -9321,6 +9577,216 @@ function EffectsController:showLevelUpCelebration(newLevel)
 				overlay:Destroy()
 			end
 		end)
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- Crit Circles: glowing rings that orbit a destructible after clicking it.
+-- Clicking a circle triggers a crit (2x damage). Circles are client-side only.
+-- Each circle has a random orbit speed, direction, and color (yellow/orange/white).
+-- Circles disappear after 2-3 seconds. Tagged with CritCircle + CritDestructibleId.
+--------------------------------------------------------------------------------
+function EffectsController:spawnCritCircles(destructiblePart, destructibleId)
+	if not self._initialized then return end
+	if not destructiblePart or not destructiblePart:IsA("BasePart") then return end
+
+	local center = destructiblePart.Position
+	local numCircles = math.random(3, 5)
+
+	-- Crit circle colors (yellow, orange, white variants)
+	local critColors = {
+		Color3.fromRGB(255, 220, 0),   -- bright yellow
+		Color3.fromRGB(255, 160, 0),   -- orange
+		Color3.fromRGB(255, 255, 220), -- warm white
+		Color3.fromRGB(255, 200, 50),  -- golden
+		Color3.fromRGB(255, 140, 30),  -- deep orange
+	}
+
+	for i = 1, numCircles do
+		local circleSize = 2 + math.random() * 1 -- 2-3 studs
+		local lifetime = 2 + math.random() * 1 -- 2-3 seconds
+
+		-- Random starting angle and orbit parameters
+		local startAngle = math.random() * math.pi * 2
+		local orbitRadius = 4 + math.random() * 3 -- 4-7 studs from center
+		local orbitSpeed = (0.5 + math.random() * 1.5) * (math.random() > 0.5 and 1 or -1) -- random direction
+		local verticalOffset = 1 + math.random() * 3 -- height variation
+		local color = critColors[math.random(1, #critColors)]
+
+		-- Create the crit circle (torus-like ring using a cylinder)
+		local circle = Instance.new("Part")
+		circle.Name = "CritCircle_" .. i
+		circle.Shape = Enum.PartType.Cylinder
+		circle.Size = Vector3.new(0.3, circleSize, circleSize)
+		circle.Color = color
+		circle.Material = Enum.Material.Neon
+		circle.Anchored = true
+		circle.CanCollide = true -- must be collidable for raycast detection
+		circle.Transparency = 0.1
+		circle.Parent = self._effectsFolder
+
+		-- Position at starting orbit point
+		local startX = center.X + math.cos(startAngle) * orbitRadius
+		local startZ = center.Z + math.sin(startAngle) * orbitRadius
+		local startY = center.Y + verticalOffset
+		circle.CFrame = CFrame.new(startX, startY, startZ) * CFrame.Angles(0, 0, math.rad(90))
+
+		-- Tag as crit circle for raycast detection
+		local critTag = Instance.new("BoolValue")
+		critTag.Name = "CritCircle"
+		critTag.Value = true
+		critTag.Parent = circle
+
+		local critDestId = Instance.new("StringValue")
+		critDestId.Name = "CritDestructibleId"
+		critDestId.Value = destructibleId
+		critDestId.Parent = circle
+
+		-- Add a small PointLight for glow effect
+		local glow = Instance.new("PointLight")
+		glow.Color = color
+		glow.Brightness = 2
+		glow.Range = 4
+		glow.Parent = circle
+
+		-- Animate orbit movement using a coroutine-style heartbeat connection
+		local startTime = tick()
+		local currentAngle = startAngle
+		local orbitConnection
+		orbitConnection = RunService.Heartbeat:Connect(function(dt)
+			if not circle or not circle.Parent then
+				if orbitConnection then
+					orbitConnection:Disconnect()
+				end
+				return
+			end
+
+			-- Check if destructible still exists
+			if not destructiblePart or not destructiblePart.Parent then
+				-- Destructible was destroyed, remove circle
+				if orbitConnection then
+					orbitConnection:Disconnect()
+				end
+				circle:Destroy()
+				return
+			end
+
+			local elapsed = tick() - startTime
+
+			-- Check lifetime expiry
+			if elapsed >= lifetime then
+				if orbitConnection then
+					orbitConnection:Disconnect()
+				end
+				-- Fade out quickly before destroying
+				local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				TweenService:Create(circle, fadeInfo, { Transparency = 1 }):Play()
+				TweenService:Create(glow, fadeInfo, { Brightness = 0 }):Play()
+				task.delay(0.35, function()
+					if circle and circle.Parent then
+						circle:Destroy()
+					end
+				end)
+				return
+			end
+
+			-- Update orbit position
+			currentAngle = currentAngle + orbitSpeed * dt
+			local orbCenter = destructiblePart.Position
+			local ox = orbCenter.X + math.cos(currentAngle) * orbitRadius
+			local oz = orbCenter.Z + math.sin(currentAngle) * orbitRadius
+			local oy = orbCenter.Y + verticalOffset + math.sin(elapsed * 2) * 0.5 -- gentle bobbing
+
+			circle.CFrame = CFrame.new(ox, oy, oz) * CFrame.Angles(0, 0, math.rad(90))
+		end)
+	end
+end
+
+--------------------------------------------------------------------------------
+-- Crit Hit Effect: flash + expand on the crit circle when clicked, then destroy
+--------------------------------------------------------------------------------
+function EffectsController:showCritHitEffect(critCirclePart)
+	if not self._initialized then return end
+	if not critCirclePart or not critCirclePart:IsA("BasePart") then return end
+
+	local position = critCirclePart.Position
+	local color = critCirclePart.Color
+
+	-- Create expanding flash at the circle's position
+	local flash = Instance.new("Part")
+	flash.Name = "CritFlash"
+	flash.Shape = Enum.PartType.Ball
+	flash.Size = Vector3.new(1, 1, 1)
+	flash.Position = position
+	flash.Anchored = true
+	flash.CanCollide = false
+	flash.Color = Color3.fromRGB(255, 220, 0)
+	flash.Material = Enum.Material.Neon
+	flash.Transparency = 0.2
+	flash.Parent = self._effectsFolder
+
+	local flashLight = Instance.new("PointLight")
+	flashLight.Color = Color3.fromRGB(255, 200, 0)
+	flashLight.Brightness = 8
+	flashLight.Range = 12
+	flashLight.Parent = flash
+
+	-- Expand and fade
+	local flashInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(flash, flashInfo, {
+		Size = Vector3.new(6, 6, 6),
+		Transparency = 1,
+	}):Play()
+	TweenService:Create(flashLight, flashInfo, {
+		Brightness = 0,
+	}):Play()
+
+	task.delay(0.35, function()
+		if flash and flash.Parent then
+			flash:Destroy()
+		end
+	end)
+
+	-- Destroy the original crit circle immediately
+	critCirclePart:Destroy()
+end
+
+--------------------------------------------------------------------------------
+-- Crit Sound: play a satisfying high-pitched "zing" sound for crit hits
+--------------------------------------------------------------------------------
+function EffectsController:playCritSound(position)
+	if not self._initialized then return end
+
+	local soundAnchor = Instance.new("Part")
+	soundAnchor.Name = "CritSoundAnchor"
+	soundAnchor.Size = Vector3.new(0.1, 0.1, 0.1)
+	soundAnchor.Position = position
+	soundAnchor.Anchored = true
+	soundAnchor.CanCollide = false
+	soundAnchor.Transparency = 1
+	soundAnchor.Parent = self._effectsFolder
+
+	local sound = Instance.new("Sound")
+	sound.Name = "CritHitSound"
+	-- Use a higher pitched version of the click sound for crit feedback
+	sound.SoundId = "rbxassetid://6042053626"
+	sound.Volume = 0.7
+	sound.PlaybackSpeed = 1.8 + math.random() * 0.3 -- high pitch for crit
+	sound.RollOffMaxDistance = 50
+	sound.Parent = soundAnchor
+
+	sound:Play()
+
+	-- Cleanup after sound finishes
+	sound.Ended:Connect(function()
+		soundAnchor:Destroy()
+	end)
+
+	-- Safety cleanup
+	task.delay(2, function()
+		if soundAnchor and soundAnchor.Parent then
+			soundAnchor:Destroy()
+		end
 	end)
 end
 
