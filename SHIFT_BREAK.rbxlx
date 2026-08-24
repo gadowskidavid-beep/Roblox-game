@@ -1,0 +1,2750 @@
+<roblox version="4">
+  <Item class="ReplicatedStorage" referent="0">
+    <Properties>
+      <string name="Name">ReplicatedStorage</string>
+    </Properties>
+    <Item class="Folder" referent="1">
+      <Properties>
+        <string name="Name">Shared</string>
+      </Properties>
+      <Item class="ModuleScript" referent="2">
+        <Properties>
+          <string name="Name">Config</string>
+          <string name="Source"><![CDATA[local Config = {
+	GameName = "SHIFT//BREAK",
+	DataStoreName = "ShiftBreakProfiles_v1",
+	MinimumPlayers = 1,
+
+	Round = {
+		IntermissionDuration = 15,
+		WaveDuration = 70,
+		WaveClearDuration = 6,
+		ResultDuration = 8,
+		Waves = 3,
+		ShiftInterval = 22,
+		BaseQuota = 12,
+		QuotaPerPlayer = 7,
+		QuotaGrowthPerWave = 8,
+	},
+
+	Player = {
+		StartingCapacity = 5,
+		BaseWalkSpeed = 16,
+		SprintWalkSpeed = 25,
+		MaxStamina = 100,
+		StaminaDrainPerSecond = 30,
+		StaminaRegenPerSecond = 22,
+		PulseRadius = 24,
+		PulseCooldown = 9,
+		PulseStunDuration = 4,
+	},
+
+	Echo = {
+		MaximumBase = 24,
+		MaximumPerPlayer = 4,
+		SpawnInterval = 1.2,
+		Lifetime = 40,
+	},
+
+	Enemy = {
+		BaseMaximum = 4,
+		MaximumPerWave = 3,
+		SpawnInterval = 3.5,
+		BaseSpeed = 8,
+		SpeedPerWave = 1.4,
+		Damage = 16,
+		DamageRadius = 4.5,
+		DamageCooldown = 1.25,
+	},
+
+	Rewards = {
+		EchoFlux = 1,
+		WaveFlux = 8,
+		VictoryFlux = 45,
+		ParticipationFlux = 6,
+	},
+
+	Upgrades = {
+		Order = { "Capacity", "Speed", "Pulse" },
+		Definitions = {
+			Capacity = {
+				DisplayName = "ECHO-TASCHE",
+				Description = "+2 Tragfähigkeit pro Stufe",
+				Costs = { 35, 80, 150 },
+				Bonuses = { 2, 4, 6 },
+			},
+			Speed = {
+				DisplayName = "PHASEN-SCHUHE",
+				Description = "+1.5 Lauftempo pro Stufe",
+				Costs = { 40, 90, 165 },
+				Bonuses = { 1.5, 3, 4.5 },
+			},
+			Pulse = {
+				DisplayName = "PULS-KERN",
+				Description = "−1 Sekunde Puls-Cooldown pro Stufe",
+				Costs = { 45, 100, 180 },
+				Bonuses = { 1, 2, 3 },
+			},
+		},
+	},
+
+	Tags = {
+		LobbySpawn = "SB_LobbySpawn",
+		PlayerSpawn = "SB_PlayerSpawn",
+		EchoSpawn = "SB_EchoSpawn",
+		EnemySpawn = "SB_EnemySpawn",
+		DepositAnchor = "SB_DepositAnchor",
+		StableOnly = "SB_StableOnly",
+		FracturedOnly = "SB_FracturedOnly",
+	},
+
+	Colors = {
+		Background = Color3.fromRGB(7, 9, 18),
+		Panel = Color3.fromRGB(16, 20, 38),
+		Stable = Color3.fromRGB(67, 231, 255),
+		Fractured = Color3.fromRGB(255, 55, 183),
+		Echo = Color3.fromRGB(255, 232, 102),
+		Danger = Color3.fromRGB(255, 73, 91),
+		Success = Color3.fromRGB(101, 255, 157),
+		Text = Color3.fromRGB(240, 245, 255),
+		MutedText = Color3.fromRGB(151, 162, 196),
+	},
+}
+
+return Config
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="3">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Folder" referent="4">
+      <Properties>
+        <string name="Name">Server</string>
+      </Properties>
+      <Item class="Script" referent="5">
+        <Properties>
+          <string name="Name">Main</string>
+          <token name="RunContext">0</token>
+          <string name="Source"><![CDATA[local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local Services = script.Parent:WaitForChild("Services")
+local DataService = require(Services:WaitForChild("DataService"))
+local ArenaService = require(Services:WaitForChild("ArenaService"))
+local EnemyService = require(Services:WaitForChild("EnemyService"))
+local GameService = require(Services:WaitForChild("GameService"))
+
+local dataService = DataService.new()
+local arenaService = ArenaService.new()
+local enemyService = EnemyService.new(arenaService)
+local gameService = GameService.new(dataService, arenaService, enemyService)
+
+dataService:Start()
+arenaService:Start()
+enemyService:Start()
+gameService:Start()
+
+print(string.format("[%s] Server bereit.", Config.GameName))
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="Folder" referent="6">
+        <Properties>
+          <string name="Name">Services</string>
+        </Properties>
+        <Item class="ModuleScript" referent="7">
+          <Properties>
+            <string name="Name">ArenaService</string>
+            <string name="Source"><![CDATA[local CollectionService = game:GetService("CollectionService")
+local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+
+local ArenaService = {}
+ArenaService.__index = ArenaService
+
+local ARENA_CENTER = Vector3.new(0, 30, 220)
+
+local function makePart(parent, name, size, cframe, color, material)
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Size = size
+	part.CFrame = cframe
+	part.Color = color
+	part.Material = material or Enum.Material.SmoothPlastic
+	part.Anchored = true
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Parent = parent
+	return part
+end
+
+local function addMarker(parent, name, position, tag)
+	local marker = makePart(parent, name, Vector3.new(2, 1, 2), CFrame.new(position), Color3.new(1, 1, 1), Enum.Material.SmoothPlastic)
+	marker.Transparency = 1
+	marker.CanCollide = false
+	marker.CanTouch = false
+	marker.CanQuery = false
+	CollectionService:AddTag(marker, tag)
+	return marker
+end
+
+function ArenaService.new()
+	local self = setmetatable({}, ArenaService)
+	self._runtime = nil
+	self._arena = nil
+	self._lobbySpawn = nil
+	self._playerSpawns = {}
+	self._echoSpawns = {}
+	self._enemySpawns = {}
+	self._stableParts = {}
+	self._fracturedParts = {}
+	self._anchor = nil
+	self._prompt = nil
+	self._orbFolder = nil
+	self._enemyFolder = nil
+	return self
+end
+
+function ArenaService:_tryCustomLobby(runtime)
+	local template = ServerStorage:FindFirstChild("CustomLobby")
+	if not template then
+		return false
+	end
+
+	local clone = template:Clone()
+	if not clone then
+		warn("[SHIFT//BREAK] CustomLobby ist nicht klonbar. Aktiviere Archivable; die prozedurale Lobby wird verwendet.")
+		return false
+	end
+	clone.Name = "Lobby"
+	clone.Parent = runtime
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("BasePart") and CollectionService:HasTag(descendant, Config.Tags.LobbySpawn) then
+			self._lobbySpawn = descendant
+			print("[SHIFT//BREAK] CustomLobby geladen.")
+			return true
+		end
+	end
+
+	warn("[SHIFT//BREAK] CustomLobby fehlt der Tag SB_LobbySpawn; die prozedurale Lobby wird verwendet.")
+	clone:Destroy()
+	return false
+end
+
+function ArenaService:_createRuntime()
+	local previous = Workspace:FindFirstChild("ShiftBreakRuntime")
+	if previous then
+		previous:Destroy()
+	end
+
+	local runtime = Instance.new("Folder")
+	runtime.Name = "ShiftBreakRuntime"
+	runtime.Parent = Workspace
+	self._runtime = runtime
+
+	if self:_tryCustomLobby(runtime) then
+		return
+	end
+
+	local lobby = Instance.new("Folder")
+	lobby.Name = "Lobby"
+	lobby.Parent = runtime
+
+	local floor = makePart(lobby, "LobbyFloor", Vector3.new(90, 2, 90), CFrame.new(0, 15, 0), Config.Colors.Panel, Enum.Material.Slate)
+	floor:SetAttribute("ReplaceWithYourLobbyModel", true)
+
+	local rim = makePart(lobby, "PortalRing", Vector3.new(18, 1, 18), CFrame.new(0, 16.2, -22), Config.Colors.Stable, Enum.Material.Neon)
+	rim.Shape = Enum.PartType.Cylinder
+	rim.Orientation = Vector3.new(0, 0, 90)
+	rim.CanCollide = false
+
+	local spawnPlatform = Workspace:FindFirstChild("SpawnPlatform")
+	if spawnPlatform and not spawnPlatform:IsA("BasePart") then
+		spawnPlatform = nil
+	end
+	if not spawnPlatform then
+		spawnPlatform = makePart(
+			lobby,
+			"SpawnPlatform",
+			Vector3.new(30, 2, 30),
+			CFrame.new(0, 17, 8),
+			Color3.fromRGB(72, 82, 112),
+			Enum.Material.SmoothPlastic
+		)
+	end
+	spawnPlatform.Anchored = true
+	spawnPlatform.CanCollide = true
+	spawnPlatform.CanTouch = true
+	spawnPlatform.CanQuery = true
+	spawnPlatform:SetAttribute("PermanentSpawnPlatform", true)
+
+	local spawn = Workspace:FindFirstChild("LobbySpawn")
+	if spawn and not spawn:IsA("SpawnLocation") then
+		spawn = nil
+	end
+	if not spawn then
+		spawn = Instance.new("SpawnLocation")
+		spawn.Name = "LobbySpawn"
+		spawn.Parent = lobby
+	end
+	spawn.Size = Vector3.new(10, 1, 10)
+	spawn.CFrame = spawnPlatform.CFrame + Vector3.new(0, 1.5, 0)
+	spawn.Color = Config.Colors.Stable
+	spawn.Material = Enum.Material.Neon
+	spawn.Transparency = 0.2
+	spawn.Anchored = true
+	spawn.CanCollide = true
+	spawn.CanTouch = true
+	spawn.CanQuery = true
+	spawn.Neutral = true
+	spawn.AllowTeamChangeOnTouch = false
+	spawn.Duration = 0
+	self._lobbySpawn = spawn
+end
+
+function ArenaService:_resetArenaReferences()
+	self._playerSpawns = {}
+	self._echoSpawns = {}
+	self._enemySpawns = {}
+	self._stableParts = {}
+	self._fracturedParts = {}
+	self._anchor = nil
+	self._prompt = nil
+end
+
+function ArenaService:_rememberPhasePart(part, phase)
+	if part:GetAttribute("SBOriginalTransparency") == nil then
+		part:SetAttribute("SBOriginalTransparency", part.Transparency)
+		part:SetAttribute("SBOriginalCanCollide", part.CanCollide)
+		part:SetAttribute("SBOriginalCanTouch", part.CanTouch)
+	end
+
+	if phase == "STABLE" then
+		table.insert(self._stableParts, part)
+	else
+		table.insert(self._fracturedParts, part)
+	end
+end
+
+function ArenaService:_indexTaggedArena(arena)
+	for _, descendant in arena:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			if CollectionService:HasTag(descendant, Config.Tags.PlayerSpawn) then
+				table.insert(self._playerSpawns, descendant)
+			end
+			if CollectionService:HasTag(descendant, Config.Tags.EchoSpawn) then
+				table.insert(self._echoSpawns, descendant)
+			end
+			if CollectionService:HasTag(descendant, Config.Tags.EnemySpawn) then
+				table.insert(self._enemySpawns, descendant)
+			end
+			if CollectionService:HasTag(descendant, Config.Tags.DepositAnchor) then
+				self._anchor = descendant
+			end
+			if CollectionService:HasTag(descendant, Config.Tags.StableOnly) then
+				self:_rememberPhasePart(descendant, "STABLE")
+			end
+			if CollectionService:HasTag(descendant, Config.Tags.FracturedOnly) then
+				self:_rememberPhasePart(descendant, "FRACTURED")
+			end
+		end
+	end
+
+	return #self._playerSpawns > 0 and #self._echoSpawns > 0 and #self._enemySpawns > 0 and self._anchor ~= nil
+end
+
+function ArenaService:_makeBridge(parent, destination, phase)
+	local origin = ARENA_CENTER + Vector3.new(0, 1, 0)
+	local target = destination + Vector3.new(0, 1, 0)
+	local distance = (target - origin).Magnitude
+	local midpoint = origin:Lerp(target, 0.5)
+	local color = phase == "STABLE" and Config.Colors.Stable or Config.Colors.Fractured
+	local bridge = makePart(parent, phase .. "Bridge", Vector3.new(10, 1.5, math.max(8, distance - 25)), CFrame.lookAt(midpoint, target), color, Enum.Material.Neon)
+	bridge.Transparency = 0.12
+	CollectionService:AddTag(bridge, phase == "STABLE" and Config.Tags.StableOnly or Config.Tags.FracturedOnly)
+end
+
+function ArenaService:_buildProceduralArena()
+	local arena = Instance.new("Model")
+	arena.Name = "Arena"
+	arena.Parent = self._runtime
+	self._arena = arena
+
+	local geometry = Instance.new("Folder")
+	geometry.Name = "Geometry"
+	geometry.Parent = arena
+
+	local centerPlatform = makePart(geometry, "AnchorIsland", Vector3.new(34, 2, 34), CFrame.new(ARENA_CENTER), Color3.fromRGB(28, 33, 54), Enum.Material.Slate)
+	centerPlatform:SetAttribute("ReplaceWithYourModel", true)
+
+	local positions = {
+		ARENA_CENTER + Vector3.new(0, 0, -54),
+		ARENA_CENTER + Vector3.new(54, 0, 0),
+		ARENA_CENTER + Vector3.new(0, 0, 54),
+		ARENA_CENTER + Vector3.new(-54, 0, 0),
+		ARENA_CENTER + Vector3.new(45, 0, -45),
+		ARENA_CENTER + Vector3.new(45, 0, 45),
+		ARENA_CENTER + Vector3.new(-45, 0, 45),
+		ARENA_CENTER + Vector3.new(-45, 0, -45),
+	}
+
+	for index, position in positions do
+		local island = makePart(geometry, "EchoIsland" .. index, Vector3.new(28, 2, 28), CFrame.new(position), Color3.fromRGB(22, 27, 47), Enum.Material.Slate)
+		island:SetAttribute("ReplaceWithYourModel", true)
+
+		local phase = index <= 4 and "STABLE" or "FRACTURED"
+		self:_makeBridge(geometry, position, phase)
+
+		addMarker(arena, "PlayerSpawn" .. index, position + Vector3.new(0, 4, 0), Config.Tags.PlayerSpawn)
+		addMarker(arena, "EnemySpawn" .. index, position + Vector3.new(0, 4, 0), Config.Tags.EnemySpawn)
+		for echoIndex = 1, 4 do
+			local angle = (math.pi * 2 / 4) * echoIndex + index * 0.31
+			local offset = Vector3.new(math.cos(angle) * 8, 3, math.sin(angle) * 8)
+			addMarker(arena, string.format("EchoSpawn%d_%d", index, echoIndex), position + offset, Config.Tags.EchoSpawn)
+		end
+	end
+
+	addMarker(arena, "CenterPlayerSpawn", ARENA_CENTER + Vector3.new(0, 4, 10), Config.Tags.PlayerSpawn)
+	for index = 1, 6 do
+		local angle = math.pi * 2 * index / 6
+		addMarker(arena, "CenterEchoSpawn" .. index, ARENA_CENTER + Vector3.new(math.cos(angle) * 10, 3, math.sin(angle) * 10), Config.Tags.EchoSpawn)
+	end
+
+	local anchor = makePart(arena, "DepositAnchor", Vector3.new(9, 9, 9), CFrame.new(ARENA_CENTER + Vector3.new(0, 5.5, 0)), Config.Colors.Echo, Enum.Material.Neon)
+	anchor.Shape = Enum.PartType.Ball
+	anchor.CanCollide = false
+	CollectionService:AddTag(anchor, Config.Tags.DepositAnchor)
+	self._anchor = anchor
+
+	local light = Instance.new("PointLight")
+	light.Name = "AnchorGlow"
+	light.Color = Config.Colors.Echo
+	light.Brightness = 3
+	light.Range = 28
+	light.Parent = anchor
+end
+
+function ArenaService:_tryCustomArena()
+	local template = ServerStorage:FindFirstChild("CustomArena")
+	if not template then
+		return false
+	end
+
+	local clone = template:Clone()
+	if not clone then
+		warn("[SHIFT//BREAK] CustomArena ist nicht klonbar. Aktiviere Archivable; die prozedurale Arena wird verwendet.")
+		return false
+	end
+	clone.Name = "Arena"
+	clone.Parent = self._runtime
+	self._arena = clone
+
+	if self:_indexTaggedArena(clone) then
+		print("[SHIFT//BREAK] CustomArena geladen.")
+		return true
+	end
+
+	warn("[SHIFT//BREAK] CustomArena fehlen notwendige Tags; die prozedurale Arena wird verwendet.")
+	clone:Destroy()
+	self._arena = nil
+	self:_resetArenaReferences()
+	return false
+end
+
+function ArenaService:_createRuntimeFolders()
+	self._orbFolder = Instance.new("Folder")
+	self._orbFolder.Name = "Echoes"
+	self._orbFolder.Parent = self._arena
+
+	self._enemyFolder = Instance.new("Folder")
+	self._enemyFolder.Name = "Shades"
+	self._enemyFolder.Parent = self._arena
+end
+
+function ArenaService:_createPrompt()
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "DepositPrompt"
+	prompt.ActionText = "Echos übertragen"
+	prompt.ObjectText = "RISS-ANKER"
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+	prompt.HoldDuration = 0.35
+	prompt.MaxActivationDistance = 13
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = self._anchor
+	self._prompt = prompt
+end
+
+function ArenaService:BuildArena()
+	if self._arena then
+		self._arena:Destroy()
+	end
+	self:_resetArenaReferences()
+
+	if not self:_tryCustomArena() then
+		self:_buildProceduralArena()
+	end
+
+	if #self._playerSpawns == 0 then
+		self:_indexTaggedArena(self._arena)
+	end
+	self:_createRuntimeFolders()
+	self:_createPrompt()
+	self:SetPhase("STABLE")
+end
+
+function ArenaService:Start()
+	self:_createRuntime()
+	self:BuildArena()
+end
+
+function ArenaService:SetPhase(phase)
+	local function apply(parts, active)
+		for _, part in parts do
+			if part.Parent then
+				local originalTransparency = part:GetAttribute("SBOriginalTransparency") or 0
+				part.Transparency = active and originalTransparency or math.max(originalTransparency, 0.86)
+				part.CanCollide = active and (part:GetAttribute("SBOriginalCanCollide") ~= false) or false
+				part.CanTouch = active and (part:GetAttribute("SBOriginalCanTouch") ~= false) or false
+			end
+		end
+	end
+
+	apply(self._stableParts, phase == "STABLE")
+	apply(self._fracturedParts, phase == "FRACTURED")
+	if self._anchor then
+		self._anchor.Color = phase == "STABLE" and Config.Colors.Echo or Config.Colors.Fractured
+	end
+end
+
+function ArenaService:SetDepositEnabled(enabled)
+	if self._prompt then
+		self._prompt.Enabled = enabled
+	end
+end
+
+function ArenaService:GetDepositPrompt()
+	return self._prompt
+end
+
+function ArenaService:GetAnchor()
+	return self._anchor
+end
+
+function ArenaService:GetOrbFolder()
+	return self._orbFolder
+end
+
+function ArenaService:GetEnemyFolder()
+	return self._enemyFolder
+end
+
+function ArenaService:GetRandomEchoPosition()
+	if #self._echoSpawns == 0 then
+		return ARENA_CENTER + Vector3.new(0, 4, 0)
+	end
+	return self._echoSpawns[math.random(1, #self._echoSpawns)].Position
+end
+
+function ArenaService:GetRandomEnemyPosition()
+	if #self._enemySpawns == 0 then
+		return ARENA_CENTER + Vector3.new(30, 4, 0)
+	end
+	return self._enemySpawns[math.random(1, #self._enemySpawns)].Position
+end
+
+function ArenaService:TeleportToArena(character, index)
+	if not character or not character.Parent then
+		return
+	end
+	local spawnPart = self._playerSpawns[((index or 1) - 1) % math.max(1, #self._playerSpawns) + 1]
+	local position = spawnPart and spawnPart.Position or ARENA_CENTER + Vector3.new(0, 5, 0)
+	character:PivotTo(CFrame.new(position + Vector3.new(0, 3, 0)))
+end
+
+function ArenaService:TeleportToLobby(character)
+	if character and character.Parent and self._lobbySpawn then
+		character:PivotTo(self._lobbySpawn.CFrame + Vector3.new(0, 4, 0))
+	end
+end
+
+function ArenaService:GetKillHeight()
+	if self._anchor then
+		return self._anchor.Position.Y - 60
+	end
+	return -30
+end
+
+return ArenaService
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="8">
+          <Properties>
+            <string name="Name">DataService</string>
+            <string name="Source"><![CDATA[local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+
+local DataService = {}
+DataService.__index = DataService
+
+local DEFAULT_PROFILE = {
+	Flux = 0,
+	Wins = 0,
+	Upgrades = {
+		Capacity = 0,
+		Speed = 0,
+		Pulse = 0,
+	},
+}
+
+local function copyProfile(source)
+	if typeof(source) ~= "table" then
+		source = nil
+	end
+	local sourceUpgrades = source and typeof(source.Upgrades) == "table" and source.Upgrades or nil
+	local profile = {
+		Flux = tonumber(source and source.Flux) or DEFAULT_PROFILE.Flux,
+		Wins = tonumber(source and source.Wins) or DEFAULT_PROFILE.Wins,
+		Upgrades = {},
+	}
+
+	for _, upgradeName in Config.Upgrades.Order do
+		local value = sourceUpgrades and tonumber(sourceUpgrades[upgradeName]) or 0
+		local definition = Config.Upgrades.Definitions[upgradeName]
+		profile.Upgrades[upgradeName] = math.clamp(math.floor(value), 0, #definition.Costs)
+	end
+
+	return profile
+end
+
+function DataService.new()
+	local self = setmetatable({}, DataService)
+	self._store = DataStoreService:GetDataStore(Config.DataStoreName)
+	self._profiles = {}
+	self._canSave = {}
+	self._started = false
+	return self
+end
+
+function DataService:_load(player)
+	local storedProfile = nil
+	local loadedPersistently = false
+	local lastError = nil
+
+	for attempt = 1, 3 do
+		local success, result = pcall(function()
+			return self._store:GetAsync(tostring(player.UserId))
+		end)
+		if success then
+			if result == nil or typeof(result) == "table" then
+				storedProfile = result
+				loadedPersistently = true
+			else
+				lastError = "Gespeichertes Profil hat ein ungültiges Format."
+			end
+			break
+		end
+		lastError = result
+		if attempt < 3 then
+			task.wait(attempt)
+		end
+	end
+
+	if not loadedPersistently then
+		warn(string.format("[SHIFT//BREAK] Profildaten für %s konnten nicht geladen werden; diese Sitzung wird NICHT gespeichert, um vorhandene Daten zu schützen: %s", player.Name, tostring(lastError)))
+	end
+
+	if not player.Parent then
+		return
+	end
+
+	self._profiles[player] = copyProfile(storedProfile)
+	self._canSave[player] = loadedPersistently
+	self:_createLeaderstats(player)
+	self:SyncAttributes(player)
+	player:SetAttribute("DataPersistent", loadedPersistently)
+end
+
+function DataService:_createLeaderstats(player)
+	local oldLeaderstats = player:FindFirstChild("leaderstats")
+	if oldLeaderstats then
+		oldLeaderstats:Destroy()
+	end
+
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local flux = Instance.new("IntValue")
+	flux.Name = "Flux"
+	flux.Parent = leaderstats
+
+	local wins = Instance.new("IntValue")
+	wins.Name = "Wins"
+	wins.Parent = leaderstats
+end
+
+function DataService:GetProfile(player)
+	return self._profiles[player]
+end
+
+function DataService:IsLoaded(player)
+	return self._profiles[player] ~= nil
+end
+
+function DataService:GetUpgradeBonus(player, upgradeName)
+	local profile = self._profiles[player]
+	local definition = Config.Upgrades.Definitions[upgradeName]
+	if not profile or not definition then
+		return 0
+	end
+
+	local level = profile.Upgrades[upgradeName] or 0
+	return definition.Bonuses[level] or 0
+end
+
+function DataService:SyncAttributes(player)
+	local profile = self._profiles[player]
+	if not profile or not player.Parent then
+		return
+	end
+
+	player:SetAttribute("DataLoaded", true)
+	player:SetAttribute("Flux", profile.Flux)
+	player:SetAttribute("Wins", profile.Wins)
+	player:SetAttribute("UpgradeCapacity", profile.Upgrades.Capacity)
+	player:SetAttribute("UpgradeSpeed", profile.Upgrades.Speed)
+	player:SetAttribute("UpgradePulse", profile.Upgrades.Pulse)
+	player:SetAttribute("MaxCapacity", Config.Player.StartingCapacity + self:GetUpgradeBonus(player, "Capacity"))
+	player:SetAttribute("Stamina", player:GetAttribute("Stamina") or Config.Player.MaxStamina)
+	player:SetAttribute("HeldEchoes", player:GetAttribute("HeldEchoes") or 0)
+	player:SetAttribute("PulseCooldownEnd", player:GetAttribute("PulseCooldownEnd") or 0)
+
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if leaderstats then
+		leaderstats.Flux.Value = profile.Flux
+		leaderstats.Wins.Value = profile.Wins
+	end
+end
+
+function DataService:AddFlux(player, amount)
+	local profile = self._profiles[player]
+	if not profile then
+		return
+	end
+
+	profile.Flux = math.max(0, profile.Flux + math.floor(amount))
+	self:SyncAttributes(player)
+end
+
+function DataService:AddWin(player)
+	local profile = self._profiles[player]
+	if not profile then
+		return
+	end
+
+	profile.Wins += 1
+	self:SyncAttributes(player)
+end
+
+function DataService:PurchaseUpgrade(player, upgradeName)
+	local profile = self._profiles[player]
+	local definition = Config.Upgrades.Definitions[upgradeName]
+	if not profile then
+		return false, "Dein Profil wird noch geladen."
+	end
+	if not definition then
+		return false, "Unbekanntes Upgrade."
+	end
+
+	local currentLevel = profile.Upgrades[upgradeName] or 0
+	if currentLevel >= #definition.Costs then
+		return false, "Dieses Upgrade ist bereits maximal."
+	end
+
+	local cost = definition.Costs[currentLevel + 1]
+	if profile.Flux < cost then
+		return false, string.format("Dir fehlen %d Flux.", cost - profile.Flux)
+	end
+
+	profile.Flux -= cost
+	profile.Upgrades[upgradeName] = currentLevel + 1
+	self:SyncAttributes(player)
+	return true, string.format("%s ist jetzt Stufe %d.", definition.DisplayName, currentLevel + 1)
+end
+
+function DataService:Save(player)
+	local profile = self._profiles[player]
+	if not profile then
+		return true
+	end
+	if not self._canSave[player] then
+		warn(string.format("[SHIFT//BREAK] Sitzung von %s wird nicht gespeichert, weil der ursprüngliche Datensatz nicht sicher geladen wurde.", player.Name))
+		return false
+	end
+
+	local payload = copyProfile(profile)
+	local success, result = pcall(function()
+		self._store:SetAsync(tostring(player.UserId), payload)
+	end)
+
+	if not success then
+		warn(string.format("[SHIFT//BREAK] Profildaten für %s konnten nicht gespeichert werden: %s", player.Name, tostring(result)))
+	end
+	return success
+end
+
+function DataService:Start()
+	if self._started then
+		return
+	end
+	self._started = true
+
+	Players.PlayerAdded:Connect(function(player)
+		self:_load(player)
+	end)
+	Players.PlayerRemoving:Connect(function(player)
+		self:Save(player)
+		self._profiles[player] = nil
+		self._canSave[player] = nil
+	end)
+
+	for _, player in Players:GetPlayers() do
+		task.spawn(function()
+			self:_load(player)
+		end)
+	end
+
+	game:BindToClose(function()
+		for _, player in Players:GetPlayers() do
+			self:Save(player)
+		end
+	end)
+end
+
+return DataService
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="9">
+          <Properties>
+            <string name="Name">EnemyService</string>
+            <string name="Source"><![CDATA[local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ServerStorage = game:GetService("ServerStorage")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+
+local EnemyService = {}
+EnemyService.__index = EnemyService
+
+function EnemyService.new(arenaService)
+	local self = setmetatable({}, EnemyService)
+	self._arena = arenaService
+	self._entries = {}
+	self._active = false
+	self._wave = 1
+	self._connection = nil
+	return self
+end
+
+local function makeVisual(parent, name, size, color, transparency)
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Shape = Enum.PartType.Ball
+	part.Size = size
+	part.Color = color
+	part.Material = Enum.Material.Neon
+	part.Transparency = transparency or 0
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.Parent = parent
+	return part
+end
+
+function EnemyService:Spawn(position)
+	local folder = self._arena:GetEnemyFolder()
+	if not folder then
+		return
+	end
+
+	local model = nil
+	local core = nil
+	local assets = ServerStorage:FindFirstChild("ShiftBreakAssets")
+	local template = assets and assets:FindFirstChild("Shade")
+	if template then
+		if template:IsA("Model") then
+			model = template:Clone()
+			if model then
+				local namedCore = model:FindFirstChild("Core", true)
+				core = model.PrimaryPart or (namedCore and namedCore:IsA("BasePart") and namedCore) or model:FindFirstChildWhichIsA("BasePart", true)
+			end
+		elseif template:IsA("BasePart") then
+			local clonedPart = template:Clone()
+			if clonedPart then
+				model = Instance.new("Model")
+				core = clonedPart
+				core.Parent = model
+			end
+		end
+
+		if model and core and core:IsA("BasePart") then
+			for _, descendant in model:GetDescendants() do
+				if descendant:IsA("BasePart") then
+					descendant.Anchored = true
+					descendant.CanCollide = false
+					descendant.CanTouch = false
+					descendant.CanQuery = false
+				end
+			end
+			model.PrimaryPart = core
+		else
+			warn("[SHIFT//BREAK] ShiftBreakAssets/Shade ist nicht klonbar oder benötigt ein Model mit PrimaryPart/Core bzw. einen BasePart; Platzhalter wird verwendet.")
+			if model then
+				model:Destroy()
+			end
+			model = nil
+			core = nil
+		end
+	end
+
+	if not model then
+		model = Instance.new("Model")
+		core = makeVisual(model, "Core", Vector3.new(4.5, 4.5, 4.5), Config.Colors.Fractured, 0.05)
+		local aura = makeVisual(model, "Aura", Vector3.new(6.5, 6.5, 6.5), Config.Colors.Fractured, 0.68)
+		aura.CFrame = core.CFrame
+		local eye = makeVisual(model, "Eye", Vector3.new(1.1, 1.1, 1.1), Config.Colors.Text, 0)
+		eye.CFrame = core.CFrame * CFrame.new(0, 0.3, -2.1)
+
+		local light = Instance.new("PointLight")
+		light.Name = "FractureGlow"
+		light.Color = Config.Colors.Fractured
+		light.Brightness = 2
+		light.Range = 14
+		light.Parent = core
+		model.PrimaryPart = core
+	end
+
+	model.Name = "Shade"
+	model:SetAttribute("StunnedUntil", 0)
+	model.Parent = folder
+	model:PivotTo(CFrame.new(position + Vector3.new(0, 3, 0)))
+	self._entries[model] = {
+		lastHits = {},
+		seed = math.random() * 10,
+		normalColor = core.Color,
+	}
+end
+
+function EnemyService:Count()
+	local count = 0
+	for model in self._entries do
+		if model.Parent then
+			count += 1
+		end
+	end
+	return count
+end
+
+function EnemyService:SetWave(wave)
+	self._wave = wave
+end
+
+function EnemyService:SetActive(active)
+	self._active = active
+end
+
+function EnemyService:Clear()
+	for model in self._entries do
+		model:Destroy()
+	end
+	table.clear(self._entries)
+end
+
+function EnemyService:Pulse(origin, radius, stunDuration)
+	local now = workspace:GetServerTimeNow()
+	local hitCount = 0
+	for model in self._entries do
+		if model.Parent and model.PrimaryPart then
+			local offset = model.PrimaryPart.Position - origin
+			local distance = offset.Magnitude
+			if distance <= radius then
+				model:SetAttribute("StunnedUntil", now + stunDuration)
+				local direction = distance > 0.01 and offset.Unit or Vector3.new(1, 0, 0)
+				local pushedPosition = model.PrimaryPart.Position + Vector3.new(direction.X, 0, direction.Z) * 9
+				model:PivotTo(CFrame.new(pushedPosition))
+				hitCount += 1
+			end
+		end
+	end
+	return hitCount
+end
+
+function EnemyService:_nearestTarget(position)
+	local nearestPlayer = nil
+	local nearestRoot = nil
+	local nearestDistance = math.huge
+
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if humanoid and root and humanoid.Health > 0 then
+			local distance = (root.Position - position).Magnitude
+			if distance < nearestDistance then
+				nearestPlayer = player
+				nearestRoot = root
+				nearestDistance = distance
+			end
+		end
+	end
+
+	return nearestPlayer, nearestRoot, nearestDistance
+end
+
+function EnemyService:_step(deltaTime)
+	if not self._active then
+		return
+	end
+
+	local now = workspace:GetServerTimeNow()
+	local speed = Config.Enemy.BaseSpeed + (self._wave - 1) * Config.Enemy.SpeedPerWave
+
+	for model, entry in self._entries do
+		if not model.Parent or not model.PrimaryPart then
+			self._entries[model] = nil
+			continue
+		end
+
+		local core = model.PrimaryPart
+		local stunned = (model:GetAttribute("StunnedUntil") or 0) > now
+		core.Color = stunned and Config.Colors.Stable or entry.normalColor
+
+		if stunned then
+			continue
+		end
+
+		local player, targetRoot, distance = self:_nearestTarget(core.Position)
+		if not player or not targetRoot then
+			continue
+		end
+
+		local flatOffset = Vector3.new(targetRoot.Position.X - core.Position.X, 0, targetRoot.Position.Z - core.Position.Z)
+		if flatOffset.Magnitude > 0.1 then
+			local step = math.min(flatOffset.Magnitude, speed * deltaTime)
+			local nextPosition = core.Position + flatOffset.Unit * step
+			nextPosition = Vector3.new(nextPosition.X, targetRoot.Position.Y + 2 + math.sin(now * 3 + entry.seed), nextPosition.Z)
+			model:PivotTo(CFrame.lookAt(nextPosition, Vector3.new(targetRoot.Position.X, nextPosition.Y, targetRoot.Position.Z)))
+		end
+
+		if distance <= Config.Enemy.DamageRadius then
+			local lastHit = entry.lastHits[player] or 0
+			if now - lastHit >= Config.Enemy.DamageCooldown then
+				entry.lastHits[player] = now
+				local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+				if humanoid then
+					humanoid:TakeDamage(Config.Enemy.Damage)
+				end
+			end
+		end
+	end
+end
+
+function EnemyService:Start()
+	if self._connection then
+		return
+	end
+	self._connection = RunService.Heartbeat:Connect(function(deltaTime)
+		self:_step(deltaTime)
+	end)
+end
+
+return EnemyService
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="10">
+          <Properties>
+            <string name="Name">GameService</string>
+            <string name="Source"><![CDATA[local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local ServerStorage = game:GetService("ServerStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+
+local GameService = {}
+GameService.__index = GameService
+
+local function makeRemote(parent, className, name)
+	local remote = Instance.new(className)
+	remote.Name = name
+	remote.Parent = parent
+	return remote
+end
+
+function GameService.new(dataService, arenaService, enemyService)
+	local self = setmetatable({}, GameService)
+	self._data = dataService
+	self._arena = arenaService
+	self._enemies = enemyService
+	self._status = "Waiting"
+	self._phase = "STABLE"
+	self._timeRemaining = 0
+	self._shiftRemaining = 0
+	self._wave = 0
+	self._banked = 0
+	self._target = 0
+	self._orbCount = 0
+	self._sprinting = {}
+	self._fullMessageAt = {}
+	self._promptConnection = nil
+	self._heartbeatConnection = nil
+	self._started = false
+	self:_createRemotes()
+	return self
+end
+
+function GameService:_createRemotes()
+	local previous = ReplicatedStorage:FindFirstChild("ShiftBreakRemotes")
+	if previous then
+		previous:Destroy()
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = "ShiftBreakRemotes"
+	folder.Parent = ReplicatedStorage
+
+	self._stateRemote = makeRemote(folder, "RemoteEvent", "GameState")
+	self._messageRemote = makeRemote(folder, "RemoteEvent", "PlayerMessage")
+	self._actionRemote = makeRemote(folder, "RemoteEvent", "Action")
+	self._purchaseRemote = makeRemote(folder, "RemoteFunction", "PurchaseUpgrade")
+end
+
+function GameService:_activePlayerCount()
+	local count = 0
+	for _, player in Players:GetPlayers() do
+		if self._data:IsLoaded(player) then
+			count += 1
+		end
+	end
+	return count
+end
+
+function GameService:_allPlayersReady()
+	for _, player in Players:GetPlayers() do
+		if not self._data:IsLoaded(player) then
+			return false
+		end
+	end
+	return true
+end
+
+function GameService:_snapshot()
+	return {
+		gameName = Config.GameName,
+		status = self._status,
+		phase = self._phase,
+		timeRemaining = math.max(0, math.ceil(self._timeRemaining)),
+		shiftRemaining = math.max(0, math.ceil(self._shiftRemaining)),
+		wave = self._wave,
+		maxWaves = Config.Round.Waves,
+		banked = self._banked,
+		target = self._target,
+		playerCount = #Players:GetPlayers(),
+		minimumPlayers = Config.MinimumPlayers,
+	}
+end
+
+function GameService:_broadcast(targetPlayer)
+	local snapshot = self:_snapshot()
+	if targetPlayer then
+		self._stateRemote:FireClient(targetPlayer, snapshot)
+	else
+		self._stateRemote:FireAllClients(snapshot)
+	end
+end
+
+function GameService:_message(player, text, tone)
+	self._messageRemote:FireClient(player, text, tone or "Info")
+end
+
+function GameService:_messageAll(text, tone)
+	self._messageRemote:FireAllClients(text, tone or "Info")
+end
+
+function GameService:_setStatus(status)
+	self._status = status
+	self:_broadcast()
+end
+
+function GameService:_walkSpeed(player)
+	return Config.Player.BaseWalkSpeed + self._data:GetUpgradeBonus(player, "Speed")
+end
+
+function GameService:_pulseCooldown(player)
+	return math.max(2, Config.Player.PulseCooldown - self._data:GetUpgradeBonus(player, "Pulse"))
+end
+
+function GameService:_setupCharacter(player, character)
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	local root = character:WaitForChild("HumanoidRootPart", 10)
+	if not humanoid or not root then
+		return
+	end
+
+	humanoid.WalkSpeed = self:_walkSpeed(player)
+	player:SetAttribute("HeldEchoes", 0)
+	player:SetAttribute("Stamina", Config.Player.MaxStamina)
+	self._sprinting[player] = false
+
+	humanoid.Died:Connect(function()
+		player:SetAttribute("HeldEchoes", 0)
+		self._sprinting[player] = false
+		self:_message(player, "Deine getragenen Echos sind im Riss verloren gegangen.", "Danger")
+	end)
+
+	task.defer(function()
+		if (self._status == "Running" or self._status == "WaveClear") and self._data:IsLoaded(player) then
+			self._arena:TeleportToArena(character, player.UserId)
+		else
+			self._arena:TeleportToLobby(character)
+		end
+	end)
+end
+
+function GameService:_connectPlayer(player)
+	player:GetAttributeChangedSignal("DataLoaded"):Connect(function()
+		if player:GetAttribute("DataLoaded") and (self._status == "Running" or self._status == "WaveClear") and player.Character then
+			self._arena:TeleportToArena(player.Character, player.UserId)
+		end
+	end)
+
+	player.CharacterAdded:Connect(function(character)
+		self:_setupCharacter(player, character)
+	end)
+
+	if player.Character then
+		task.spawn(function()
+			self:_setupCharacter(player, player.Character)
+		end)
+	end
+
+	task.delay(1, function()
+		if player.Parent then
+			self:_broadcast(player)
+		end
+	end)
+end
+
+function GameService:_attachDepositPrompt()
+	if self._promptConnection then
+		self._promptConnection:Disconnect()
+		self._promptConnection = nil
+	end
+
+	local prompt = self._arena:GetDepositPrompt()
+	if not prompt then
+		return
+	end
+
+	self._promptConnection = prompt.Triggered:Connect(function(player)
+		if self._status ~= "Running" or not self._data:IsLoaded(player) then
+			return
+		end
+		if self._phase ~= "STABLE" then
+			self:_message(player, "Der Anker ist in dieser Dimension desynchronisiert.", "Danger")
+			return
+		end
+
+		local held = player:GetAttribute("HeldEchoes") or 0
+		if held <= 0 then
+			self:_message(player, "Du trägst noch keine Echos.", "Info")
+			return
+		end
+
+		player:SetAttribute("HeldEchoes", 0)
+		self._banked += held
+		self._data:AddFlux(player, held * Config.Rewards.EchoFlux)
+		self:_message(player, string.format("%d Echos synchronisiert · +%d Flux", held, held * Config.Rewards.EchoFlux), "Success")
+		self:_broadcast()
+	end)
+end
+
+function GameService:_spawnEcho()
+	if self._status ~= "Running" then
+		return
+	end
+	local folder = self._arena:GetOrbFolder()
+	if not folder then
+		return
+	end
+
+	local orb = nil
+	local touchPart = nil
+	local assets = ServerStorage:FindFirstChild("ShiftBreakAssets")
+	local template = assets and assets:FindFirstChild("Echo")
+	if template and (template:IsA("Model") or template:IsA("BasePart")) then
+		orb = template:Clone()
+		if not orb then
+			warn("[SHIFT//BREAK] ShiftBreakAssets/Echo ist nicht klonbar. Aktiviere Archivable; Platzhalter wird verwendet.")
+		elseif orb:IsA("Model") then
+			local namedHitbox = orb:FindFirstChild("Hitbox", true)
+			touchPart = namedHitbox and namedHitbox:IsA("BasePart") and namedHitbox or orb.PrimaryPart or orb:FindFirstChildWhichIsA("BasePart", true)
+		else
+			touchPart = orb
+		end
+		if orb and (not touchPart or not touchPart:IsA("BasePart")) then
+			warn("[SHIFT//BREAK] ShiftBreakAssets/Echo benötigt einen BasePart namens Hitbox oder eine Model-PrimaryPart; Platzhalter wird verwendet.")
+			orb:Destroy()
+			orb = nil
+			touchPart = nil
+		end
+	end
+
+	if not orb then
+		orb = Instance.new("Part")
+		orb.Shape = Enum.PartType.Ball
+		orb.Size = Vector3.new(2.4, 2.4, 2.4)
+		orb.Color = Config.Colors.Echo
+		orb.Material = Enum.Material.Neon
+		touchPart = orb
+	end
+
+	orb.Name = "Echo"
+	orb.Parent = folder
+	local spawnCFrame = CFrame.new(self._arena:GetRandomEchoPosition())
+	if orb:IsA("Model") then
+		for _, descendant in orb:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				descendant.Anchored = true
+				descendant.CanCollide = false
+				descendant.CanTouch = descendant == touchPart
+				descendant.CanQuery = false
+			end
+		end
+		orb:PivotTo(spawnCFrame)
+	else
+		orb.Anchored = true
+		orb.CanCollide = false
+		orb.CanTouch = true
+		orb.CanQuery = false
+		orb.CFrame = spawnCFrame
+	end
+	self._orbCount += 1
+
+	if not touchPart:FindFirstChildOfClass("PointLight") then
+		local light = Instance.new("PointLight")
+		light.Color = Config.Colors.Echo
+		light.Brightness = 2
+		light.Range = 11
+		light.Parent = touchPart
+	end
+
+	if not orb:FindFirstChildOfClass("Highlight") then
+		local highlight = Instance.new("Highlight")
+		highlight.Name = "EchoOutline"
+		highlight.Adornee = orb
+		highlight.FillTransparency = 0.72
+		highlight.OutlineColor = Config.Colors.Text
+		highlight.OutlineTransparency = 0.15
+		highlight.Parent = orb
+	end
+
+	local released = false
+	orb.Destroying:Connect(function()
+		if not released then
+			released = true
+			self._orbCount = math.max(0, self._orbCount - 1)
+		end
+	end)
+
+	local consumed = false
+	touchPart.Touched:Connect(function(hit)
+		if consumed or self._status ~= "Running" then
+			return
+		end
+
+		local character = hit:FindFirstAncestorOfClass("Model")
+		local player = character and Players:GetPlayerFromCharacter(character)
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if not player or not humanoid or humanoid.Health <= 0 or not self._data:IsLoaded(player) then
+			return
+		end
+
+		local held = player:GetAttribute("HeldEchoes") or 0
+		local capacity = player:GetAttribute("MaxCapacity") or Config.Player.StartingCapacity
+		if held >= capacity then
+			local now = workspace:GetServerTimeNow()
+			if now - (self._fullMessageAt[player] or 0) > 2 then
+				self._fullMessageAt[player] = now
+				self:_message(player, "Echo-Tasche voll — zurück zum Anker!", "Danger")
+			end
+			return
+		end
+
+		consumed = true
+		player:SetAttribute("HeldEchoes", held + 1)
+		orb:Destroy()
+	end)
+
+	task.delay(Config.Echo.Lifetime, function()
+		if orb.Parent then
+			orb:Destroy()
+		end
+	end)
+end
+
+function GameService:_clearEchoes()
+	local folder = self._arena:GetOrbFolder()
+	if folder then
+		for _, child in folder:GetChildren() do
+			child:Destroy()
+		end
+	end
+	self._orbCount = 0
+end
+
+function GameService:_setPhase(phase)
+	self._phase = phase
+	self._arena:SetPhase(phase)
+	self._arena:SetDepositEnabled(self._status == "Running" and phase == "STABLE")
+	self._enemies:SetActive(phase == "FRACTURED" and self._status == "Running")
+
+	if phase == "STABLE" then
+		self._enemies:Clear()
+		self:_messageAll("STABILE DIMENSION — sammelt und synchronisiert Echos!", "Stable")
+	else
+		self:_messageAll("DIMENSIONSBRUCH — der Anker ist offline. Überlebt!", "Fractured")
+	end
+	self:_broadcast()
+end
+
+function GameService:_resetPlayersForWave()
+	for index, player in Players:GetPlayers() do
+		player:SetAttribute("HeldEchoes", 0)
+		player:SetAttribute("Stamina", Config.Player.MaxStamina)
+		self._sprinting[player] = false
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			humanoid.Health = humanoid.MaxHealth
+			self._arena:TeleportToArena(character, index)
+		end
+	end
+end
+
+function GameService:_quotaForWave(wave)
+	return Config.Round.BaseQuota
+		+ (self:_activePlayerCount() * Config.Round.QuotaPerPlayer)
+		+ ((wave - 1) * Config.Round.QuotaGrowthPerWave)
+end
+
+function GameService:_runWave(wave)
+	self._wave = wave
+	self._banked = 0
+	self._target = self:_quotaForWave(wave)
+	self._enemies:Clear()
+	self._enemies:SetWave(wave)
+	self:_clearEchoes()
+	self:_resetPlayersForWave()
+	self:_setStatus("Running")
+	self:_setPhase("STABLE")
+
+	for _ = 1, math.min(12, self._target) do
+		self:_spawnEcho()
+	end
+
+	local waveEndsAt = workspace:GetServerTimeNow() + Config.Round.WaveDuration
+	local nextShiftAt = workspace:GetServerTimeNow() + Config.Round.ShiftInterval
+	local nextEchoAt = 0
+	local nextEnemyAt = 0
+	local lastSecond = -1
+
+	while self:_activePlayerCount() >= Config.MinimumPlayers do
+		local now = workspace:GetServerTimeNow()
+		self._target = self:_quotaForWave(wave)
+		if self._banked >= self._target then
+			break
+		end
+		self._timeRemaining = waveEndsAt - now
+		self._shiftRemaining = nextShiftAt - now
+		if self._timeRemaining <= 0 then
+			break
+		end
+
+		if now >= nextShiftAt then
+			nextShiftAt = now + Config.Round.ShiftInterval
+			self._shiftRemaining = Config.Round.ShiftInterval
+			self:_setPhase(self._phase == "STABLE" and "FRACTURED" or "STABLE")
+		end
+
+		local maximumEchoes = Config.Echo.MaximumBase + (#Players:GetPlayers() * Config.Echo.MaximumPerPlayer)
+		if now >= nextEchoAt and self._orbCount < maximumEchoes then
+			self:_spawnEcho()
+			nextEchoAt = now + Config.Echo.SpawnInterval
+		end
+
+		local maximumEnemies = Config.Enemy.BaseMaximum + (wave * Config.Enemy.MaximumPerWave)
+		if self._phase == "FRACTURED" and now >= nextEnemyAt and self._enemies:Count() < maximumEnemies then
+			self._enemies:Spawn(self._arena:GetRandomEnemyPosition())
+			nextEnemyAt = now + Config.Enemy.SpawnInterval
+		end
+
+		local currentSecond = math.ceil(self._timeRemaining)
+		if currentSecond ~= lastSecond then
+			lastSecond = currentSecond
+			self:_broadcast()
+		end
+
+		task.wait(0.1)
+	end
+
+	local succeeded = self._banked >= self._target
+	self._timeRemaining = 0
+	self._shiftRemaining = 0
+	self._arena:SetDepositEnabled(false)
+	self._enemies:SetActive(false)
+	self._enemies:Clear()
+	self:_clearEchoes()
+
+	if succeeded then
+		for _, player in Players:GetPlayers() do
+			self._data:AddFlux(player, Config.Rewards.WaveFlux)
+		end
+	end
+	return succeeded
+end
+
+function GameService:_countdown(status, duration)
+	self:_setStatus(status)
+	for remaining = duration, 1, -1 do
+		if #Players:GetPlayers() < Config.MinimumPlayers or not self:_allPlayersReady() then
+			self._timeRemaining = 0
+			self:_broadcast()
+			return false
+		end
+		self._timeRemaining = remaining
+		self:_broadcast()
+		task.wait(1)
+	end
+	self._timeRemaining = 0
+	return true
+end
+
+function GameService:_prepareRound()
+	self._arena:BuildArena()
+	self:_attachDepositPrompt()
+	for index, player in Players:GetPlayers() do
+		player:SetAttribute("HeldEchoes", 0)
+		if player.Character then
+			self._arena:TeleportToArena(player.Character, index)
+		end
+	end
+end
+
+function GameService:_finishRound(victory)
+	self._enemies:SetActive(false)
+	self._enemies:Clear()
+	self:_clearEchoes()
+	self._arena:SetDepositEnabled(false)
+	self._phase = "STABLE"
+	self._arena:SetPhase("STABLE")
+
+	if victory then
+		self._status = "Victory"
+		self:_messageAll("RISS VERSIEGELT — die Realität hält. Vorerst.", "Success")
+		for _, player in Players:GetPlayers() do
+			self._data:AddFlux(player, Config.Rewards.VictoryFlux)
+			self._data:AddWin(player)
+		end
+	else
+		self._status = "Defeat"
+		self:_messageAll("DER RISS HAT EUCH ZURÜCKGEWORFEN — Upgrades bleiben erhalten.", "Danger")
+		for _, player in Players:GetPlayers() do
+			self._data:AddFlux(player, Config.Rewards.ParticipationFlux)
+		end
+	end
+
+	self._timeRemaining = Config.Round.ResultDuration
+	self:_broadcast()
+	for remaining = Config.Round.ResultDuration, 1, -1 do
+		self._timeRemaining = remaining
+		self:_broadcast()
+		task.wait(1)
+	end
+
+	for _, player in Players:GetPlayers() do
+		player:SetAttribute("HeldEchoes", 0)
+		if player.Character then
+			self._arena:TeleportToLobby(player.Character)
+		end
+	end
+end
+
+function GameService:_runGameLoop()
+	while true do
+		while #Players:GetPlayers() < Config.MinimumPlayers or not self:_allPlayersReady() do
+			self._status = "Waiting"
+			self._wave = 0
+			self._banked = 0
+			self._target = 0
+			self._timeRemaining = 0
+			self._shiftRemaining = 0
+			self:_broadcast()
+			task.wait(1)
+		end
+
+		for _, player in Players:GetPlayers() do
+			if player.Character then
+				self._arena:TeleportToLobby(player.Character)
+			end
+		end
+
+		local canStart = self:_countdown("Intermission", Config.Round.IntermissionDuration)
+		if not canStart then
+			continue
+		end
+
+		self:_prepareRound()
+		local victory = true
+		for wave = 1, Config.Round.Waves do
+			if not self:_runWave(wave) then
+				victory = false
+				break
+			end
+
+			if wave < Config.Round.Waves then
+				self._status = "WaveClear"
+				self._timeRemaining = Config.Round.WaveClearDuration
+				self:_messageAll(string.format("WELLE %d STABILISIERT · +%d Flux", wave, Config.Rewards.WaveFlux), "Success")
+				for remaining = Config.Round.WaveClearDuration, 1, -1 do
+					self._timeRemaining = remaining
+					self:_broadcast()
+					task.wait(1)
+				end
+			end
+		end
+
+		self:_finishRound(victory)
+	end
+end
+
+function GameService:_handleAction(player, actionName, active)
+	if actionName == "Sprint" then
+		self._sprinting[player] = active == true
+		return
+	end
+
+	if actionName ~= "Pulse" or self._status ~= "Running" then
+		return
+	end
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or humanoid.Health <= 0 or not root then
+		return
+	end
+
+	local now = workspace:GetServerTimeNow()
+	local cooldownEnd = player:GetAttribute("PulseCooldownEnd") or 0
+	if now < cooldownEnd then
+		return
+	end
+
+	player:SetAttribute("PulseCooldownEnd", now + self:_pulseCooldown(player))
+	local hitCount = self._enemies:Pulse(root.Position, Config.Player.PulseRadius, Config.Player.PulseStunDuration)
+	if hitCount > 0 then
+		self:_message(player, string.format("PULS: %d Schatten destabilisiert.", hitCount), "Stable")
+	else
+		self:_message(player, "PULS: kein Schatten in Reichweite.", "Info")
+	end
+end
+
+function GameService:_stepPlayers(deltaTime)
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if not humanoid or not root or humanoid.Health <= 0 then
+			continue
+		end
+
+		local stamina = player:GetAttribute("Stamina") or Config.Player.MaxStamina
+		local isMoving = humanoid.MoveDirection.Magnitude > 0.05
+		local isSprinting = self._sprinting[player] and stamina > 0 and isMoving
+		if isSprinting then
+			stamina = math.max(0, stamina - Config.Player.StaminaDrainPerSecond * deltaTime)
+		else
+			stamina = math.min(Config.Player.MaxStamina, stamina + Config.Player.StaminaRegenPerSecond * deltaTime)
+		end
+		if stamina <= 0 then
+			self._sprinting[player] = false
+		end
+
+		player:SetAttribute("Stamina", stamina)
+		humanoid.WalkSpeed = isSprinting and (Config.Player.SprintWalkSpeed + self._data:GetUpgradeBonus(player, "Speed")) or self:_walkSpeed(player)
+
+		if self._status == "Running" and root.Position.Y < self._arena:GetKillHeight() then
+			humanoid.Health = 0
+		end
+	end
+end
+
+function GameService:_handlePurchase(player, upgradeName)
+	if self._status == "Running" or self._status == "WaveClear" then
+		return false, "Upgrades können nur zwischen Runden gekauft werden."
+	end
+	if typeof(upgradeName) ~= "string" then
+		return false, "Ungültige Anfrage."
+	end
+
+	local success, message = self._data:PurchaseUpgrade(player, upgradeName)
+	if success then
+		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.WalkSpeed = self:_walkSpeed(player)
+		end
+	end
+	return success, message
+end
+
+function GameService:Start()
+	if self._started then
+		return
+	end
+	self._started = true
+	Players.RespawnTime = 3
+
+	Players.PlayerAdded:Connect(function(player)
+		self:_connectPlayer(player)
+	end)
+	Players.PlayerRemoving:Connect(function(player)
+		self._sprinting[player] = nil
+		self._fullMessageAt[player] = nil
+	end)
+	for _, player in Players:GetPlayers() do
+		self:_connectPlayer(player)
+	end
+
+	self._actionRemote.OnServerEvent:Connect(function(player, actionName, active)
+		if typeof(actionName) == "string" then
+			self:_handleAction(player, actionName, active)
+		end
+	end)
+	self._purchaseRemote.OnServerInvoke = function(player, upgradeName)
+		return self:_handlePurchase(player, upgradeName)
+	end
+
+	local accumulator = 0
+	self._heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
+		accumulator += deltaTime
+		if accumulator >= 0.1 then
+			self:_stepPlayers(accumulator)
+			accumulator = 0
+		end
+	end)
+
+	self:_attachDepositPrompt()
+	task.spawn(function()
+		self:_runGameLoop()
+	end)
+end
+
+return GameService
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="StarterPlayer" referent="11">
+    <Properties>
+      <string name="Name">StarterPlayer</string>
+    </Properties>
+    <Item class="StarterPlayerScripts" referent="12">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+      <Item class="Folder" referent="13">
+        <Properties>
+          <string name="Name">Client</string>
+        </Properties>
+        <Item class="ModuleScript" referent="14">
+          <Properties>
+            <string name="Name">EffectsController</string>
+            <string name="Source"><![CDATA[local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local EffectsController = {}
+EffectsController.__index = EffectsController
+
+function EffectsController.new(config)
+	local self = setmetatable({}, EffectsController)
+	self._config = config
+	self._phase = nil
+	self._sprinting = false
+	self:_createLighting()
+	return self
+end
+
+function EffectsController:_createLighting()
+	for _, effectName in { "ShiftBreakPhaseColor", "ShiftBreakPhaseBloom", "ShiftBreakRiftAtmosphere" } do
+		local previous = Lighting:FindFirstChild(effectName)
+		if previous then
+			previous:Destroy()
+		end
+	end
+
+	local color = Instance.new("ColorCorrectionEffect")
+	color.Name = "ShiftBreakPhaseColor"
+	color.Brightness = -0.02
+	color.Contrast = 0.08
+	color.Saturation = -0.08
+	color.TintColor = Color3.fromRGB(218, 247, 255)
+	color.Parent = Lighting
+	self._color = color
+
+	local bloom = Instance.new("BloomEffect")
+	bloom.Name = "ShiftBreakPhaseBloom"
+	bloom.Intensity = 0.55
+	bloom.Size = 30
+	bloom.Threshold = 1.1
+	bloom.Parent = Lighting
+	self._bloom = bloom
+
+	local atmosphere = Instance.new("Atmosphere")
+	atmosphere.Name = "ShiftBreakRiftAtmosphere"
+	atmosphere.Density = 0.24
+	atmosphere.Offset = 0.15
+	atmosphere.Color = Color3.fromRGB(177, 226, 255)
+	atmosphere.Decay = Color3.fromRGB(45, 69, 112)
+	atmosphere.Glare = 0.12
+	atmosphere.Haze = 1.4
+	atmosphere.Parent = Lighting
+	self._atmosphere = atmosphere
+
+	Lighting.ClockTime = 1.4
+	Lighting.Brightness = 1.8
+	Lighting.Ambient = Color3.fromRGB(34, 40, 67)
+	Lighting.OutdoorAmbient = Color3.fromRGB(18, 23, 42)
+end
+
+function EffectsController:SetPhase(phase, instant)
+	if self._phase == phase then
+		return false
+	end
+	self._phase = phase
+
+	local fractured = phase == "FRACTURED"
+	local duration = instant and 0 or 0.65
+	TweenService:Create(self._color, TweenInfo.new(duration), {
+		TintColor = fractured and Color3.fromRGB(255, 177, 229) or Color3.fromRGB(218, 247, 255),
+		Contrast = fractured and 0.24 or 0.08,
+		Saturation = fractured and -0.18 or -0.08,
+		Brightness = fractured and -0.09 or -0.02,
+	}):Play()
+	TweenService:Create(self._bloom, TweenInfo.new(duration), {
+		Intensity = fractured and 1.25 or 0.55,
+		Size = fractured and 46 or 30,
+	}):Play()
+	TweenService:Create(self._atmosphere, TweenInfo.new(duration), {
+		Color = fractured and Color3.fromRGB(215, 91, 180) or Color3.fromRGB(177, 226, 255),
+		Decay = fractured and Color3.fromRGB(61, 12, 77) or Color3.fromRGB(45, 69, 112),
+		Density = fractured and 0.34 or 0.24,
+		Haze = fractured and 2.4 or 1.4,
+	}):Play()
+	return true
+end
+
+function EffectsController:SetSprinting(active)
+	if self._sprinting == active then
+		return
+	end
+	self._sprinting = active
+	local camera = Workspace.CurrentCamera
+	if camera then
+		TweenService:Create(camera, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+			FieldOfView = active and 78 or 70,
+		}):Play()
+	end
+end
+
+function EffectsController:Pulse(character)
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+
+	local sphere = Instance.new("Part")
+	sphere.Name = "LocalRiftPulse"
+	sphere.Shape = Enum.PartType.Ball
+	sphere.Size = Vector3.new(2, 2, 2)
+	sphere.CFrame = root.CFrame
+	sphere.Color = self._config.Colors.Stable
+	sphere.Material = Enum.Material.ForceField
+	sphere.Transparency = 0.18
+	sphere.Anchored = true
+	sphere.CanCollide = false
+	sphere.CanTouch = false
+	sphere.CanQuery = false
+	sphere.Parent = Workspace
+
+	local tween = TweenService:Create(sphere, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = Vector3.new(self._config.Player.PulseRadius * 2, self._config.Player.PulseRadius * 2, self._config.Player.PulseRadius * 2),
+		Transparency = 1,
+	})
+	tween:Play()
+	tween.Completed:Once(function()
+		sphere:Destroy()
+	end)
+end
+
+return EffectsController
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="LocalScript" referent="15">
+          <Properties>
+            <string name="Name">Main</string>
+            <string name="Source"><![CDATA[local ContextActionService = game:GetService("ContextActionService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local UIController = require(script.Parent:WaitForChild("UIController"))
+local EffectsController = require(script.Parent:WaitForChild("EffectsController"))
+
+local remotes = ReplicatedStorage:WaitForChild("ShiftBreakRemotes")
+local stateRemote = remotes:WaitForChild("GameState")
+local messageRemote = remotes:WaitForChild("PlayerMessage")
+local actionRemote = remotes:WaitForChild("Action")
+local purchaseRemote = remotes:WaitForChild("PurchaseUpgrade")
+
+local ui = UIController.new(Config)
+local effects = EffectsController.new(Config)
+local currentState = nil
+local sprintHeld = false
+local purchasePending = false
+
+local function refreshPlayerUI()
+	ui:UpdatePlayer()
+end
+
+for _, attributeName in {
+	"HeldEchoes",
+	"MaxCapacity",
+	"Flux",
+	"Stamina",
+	"UpgradeCapacity",
+	"UpgradeSpeed",
+	"UpgradePulse",
+} do
+	player:GetAttributeChangedSignal(attributeName):Connect(refreshPlayerUI)
+end
+
+ui:SetPurchaseCallback(function(upgradeName)
+	if purchasePending then
+		return
+	end
+	purchasePending = true
+	task.spawn(function()
+		local callSucceeded, success, message = pcall(function()
+			return purchaseRemote:InvokeServer(upgradeName)
+		end)
+		purchasePending = false
+		if not callSucceeded then
+			ui:ShowMessage("Werkstatt nicht erreichbar. Versuch es erneut.", "Danger")
+			return
+		end
+		ui:ShowMessage(message or "Werkstattantwort erhalten.", success and "Success" or "Danger")
+		refreshPlayerUI()
+	end)
+end)
+
+local function sprintAction(_, inputState)
+	if inputState == Enum.UserInputState.Begin then
+		sprintHeld = true
+		actionRemote:FireServer("Sprint", true)
+		ui:SetSprinting(true)
+		effects:SetSprinting(true)
+	elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
+		sprintHeld = false
+		actionRemote:FireServer("Sprint", false)
+		ui:SetSprinting(false)
+		effects:SetSprinting(false)
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+local function pulseAction(_, inputState)
+	if inputState ~= Enum.UserInputState.Begin then
+		return Enum.ContextActionResult.Pass
+	end
+	if not currentState or currentState.status ~= "Running" then
+		return Enum.ContextActionResult.Sink
+	end
+
+	local now = Workspace:GetServerTimeNow()
+	local cooldownEnd = player:GetAttribute("PulseCooldownEnd") or 0
+	if now >= cooldownEnd then
+		actionRemote:FireServer("Pulse")
+		effects:Pulse(player.Character)
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+ContextActionService:BindAction("ShiftBreakSprint", sprintAction, true, Enum.KeyCode.LeftShift, Enum.KeyCode.ButtonL3)
+ContextActionService:SetTitle("ShiftBreakSprint", "SPRINT")
+ContextActionService:SetPosition("ShiftBreakSprint", UDim2.new(1, -190, 1, -170))
+
+ContextActionService:BindAction("ShiftBreakPulse", pulseAction, true, Enum.KeyCode.Q, Enum.KeyCode.ButtonR2)
+ContextActionService:SetTitle("ShiftBreakPulse", "PULS")
+ContextActionService:SetPosition("ShiftBreakPulse", UDim2.new(1, -90, 1, -235))
+
+stateRemote.OnClientEvent:Connect(function(state)
+	local previousPhase = currentState and currentState.phase
+	currentState = state
+	ui:SetState(state)
+	local changed = effects:SetPhase(state.phase, previousPhase == nil)
+	if changed and previousPhase ~= nil then
+		ui:FlashPhase(state.phase)
+	end
+end)
+
+messageRemote.OnClientEvent:Connect(function(text, tone)
+	if typeof(text) == "string" then
+		ui:ShowMessage(text, tone)
+	end
+end)
+
+player.CharacterAdded:Connect(function()
+	sprintHeld = false
+	ui:SetSprinting(false)
+	effects:SetSprinting(false)
+end)
+
+RunService.RenderStepped:Connect(function()
+	local now = Workspace:GetServerTimeNow()
+	local cooldownEnd = player:GetAttribute("PulseCooldownEnd") or 0
+	ui:SetPulseCooldown(cooldownEnd - now)
+
+	local stamina = player:GetAttribute("Stamina") or Config.Player.MaxStamina
+	if sprintHeld and stamina <= 0.1 then
+		sprintHeld = false
+		actionRemote:FireServer("Sprint", false)
+		ui:SetSprinting(false)
+		effects:SetSprinting(false)
+	end
+end)
+
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	if Workspace.CurrentCamera then
+		Workspace.CurrentCamera.FieldOfView = sprintHeld and 78 or 70
+	end
+end)
+
+print(string.format("[%s] Client bereit.", Config.GameName))
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="16">
+          <Properties>
+            <string name="Name">UIController</string>
+            <string name="Source"><![CDATA[local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local UIController = {}
+UIController.__index = UIController
+
+local function create(className, properties, parent)
+	local instance = Instance.new(className)
+	for key, value in properties do
+		instance[key] = value
+	end
+	instance.Parent = parent
+	return instance
+end
+
+local function addCorner(parent, radius)
+	return create("UICorner", { CornerRadius = UDim.new(0, radius or 10) }, parent)
+end
+
+local function addStroke(parent, color, transparency, thickness)
+	return create("UIStroke", {
+		Color = color,
+		Transparency = transparency or 0.65,
+		Thickness = thickness or 1,
+	}, parent)
+end
+
+local function formatTime(seconds)
+	seconds = math.max(0, math.ceil(seconds or 0))
+	return string.format("%02d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+function UIController.new(config)
+	local self = setmetatable({}, UIController)
+	self._config = config
+	self._player = Players.LocalPlayer
+	self._purchaseCallback = nil
+	self._toastToken = 0
+	self._state = {}
+	self._upgradeButtons = {}
+	if UserInputService.TouchEnabled then
+		self._controls = {
+			Sprint = "SPRINT",
+			Pulse = "RISS-PULS",
+			Deposit = "Am Anker die Interaktion antippen",
+			Intro = "Touch: SPRINT · PULS · Anker-Interaktion",
+		}
+	elseif UserInputService.GamepadEnabled then
+		self._controls = {
+			Sprint = "[L3]  SPRINT",
+			Pulse = "[R2]  RISS-PULS",
+			Deposit = "Am Anker [X] übertragen",
+			Intro = "[L3] Sprint     [R2] Riss-Puls     [X] Übertragen",
+		}
+	else
+		self._controls = {
+			Sprint = "[SHIFT]  SPRINT",
+			Pulse = "[Q]  RISS-PULS",
+			Deposit = "Sammeln → am Kern [E] übertragen",
+			Intro = "[SHIFT] Sprint     [Q] Riss-Puls     [E] Übertragen",
+		}
+	end
+	self:_build()
+	self:UpdatePlayer()
+	return self
+end
+
+function UIController:_label(parent, properties)
+	properties.BackgroundTransparency = properties.BackgroundTransparency == nil and 1 or properties.BackgroundTransparency
+	properties.TextColor3 = properties.TextColor3 or self._config.Colors.Text
+	properties.Font = properties.Font or Enum.Font.Gotham
+	properties.TextSize = properties.TextSize or 16
+	return create("TextLabel", properties, parent)
+end
+
+function UIController:_panel(parent, name, position, size)
+	local panel = create("Frame", {
+		Name = name,
+		Position = position,
+		Size = size,
+		BackgroundColor3 = self._config.Colors.Panel,
+		BackgroundTransparency = 0.1,
+		BorderSizePixel = 0,
+	}, parent)
+	addCorner(panel, 12)
+	addStroke(panel, self._config.Colors.Stable, 0.72, 1)
+	return panel
+end
+
+function UIController:_build()
+	local gui = create("ScreenGui", {
+		Name = "ShiftBreakHUD",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = 10,
+	}, self._player:WaitForChild("PlayerGui"))
+	self.Gui = gui
+
+	local root = create("Frame", {
+		Name = "Root",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+	}, gui)
+	self.Root = root
+
+	self:_label(root, {
+		Name = "Brand",
+		Position = UDim2.fromOffset(24, 16),
+		Size = UDim2.fromOffset(260, 44),
+		Text = "SHIFT//BREAK",
+		TextColor3 = self._config.Colors.Stable,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 25,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	self:_label(root, {
+		Position = UDim2.fromOffset(25, 48),
+		Size = UDim2.fromOffset(250, 20),
+		Text = "RISSBERGUNGSPROTOKOLL",
+		TextColor3 = self._config.Colors.MutedText,
+		Font = Enum.Font.GothamBold,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	local statusPanel = self:_panel(root, "StatusPanel", UDim2.new(0.5, 0, 0, 62), UDim2.new(0.9, 0, 0, 88))
+	statusPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+	create("UISizeConstraint", {
+		MinSize = Vector2.new(300, 88),
+		MaxSize = Vector2.new(410, 88),
+	}, statusPanel)
+	self.PhaseStrip = create("Frame", {
+		Size = UDim2.new(1, 0, 0, 5),
+		BackgroundColor3 = self._config.Colors.Stable,
+		BorderSizePixel = 0,
+	}, statusPanel)
+	addCorner(self.PhaseStrip, 12)
+	self.StatusLabel = self:_label(statusPanel, {
+		Position = UDim2.fromOffset(18, 14),
+		Size = UDim2.new(1, -130, 0, 32),
+		Text = "SYSTEMSTART",
+		Font = Enum.Font.GothamBlack,
+		TextSize = 20,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	self.TimerLabel = self:_label(statusPanel, {
+		Position = UDim2.new(1, -120, 0, 13),
+		Size = UDim2.fromOffset(102, 34),
+		Text = "00:00",
+		TextColor3 = self._config.Colors.Echo,
+		Font = Enum.Font.RobotoMono,
+		TextSize = 25,
+		TextXAlignment = Enum.TextXAlignment.Right,
+	})
+	self.DetailLabel = self:_label(statusPanel, {
+		Position = UDim2.fromOffset(18, 50),
+		Size = UDim2.new(1, -36, 0, 24),
+		Text = "Verbindung wird hergestellt …",
+		TextColor3 = self._config.Colors.MutedText,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	local objectivePanel = self:_panel(root, "ObjectivePanel", UDim2.fromOffset(24, 88), UDim2.fromOffset(305, 110))
+	self:_label(objectivePanel, {
+		Position = UDim2.fromOffset(15, 11),
+		Size = UDim2.new(1, -30, 0, 20),
+		Text = "RISS-ANKER",
+		TextColor3 = self._config.Colors.MutedText,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	self.ObjectiveLabel = self:_label(objectivePanel, {
+		Position = UDim2.fromOffset(15, 34),
+		Size = UDim2.new(1, -30, 0, 28),
+		Text = "0 / 0 ECHOS",
+		Font = Enum.Font.GothamBlack,
+		TextSize = 20,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local progressBack = create("Frame", {
+		Position = UDim2.fromOffset(15, 76),
+		Size = UDim2.new(1, -30, 0, 12),
+		BackgroundColor3 = self._config.Colors.Background,
+		BorderSizePixel = 0,
+	}, objectivePanel)
+	addCorner(progressBack, 6)
+	self.ProgressFill = create("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = self._config.Colors.Stable,
+		BorderSizePixel = 0,
+	}, progressBack)
+	addCorner(self.ProgressFill, 6)
+	self.ObjectiveHint = self:_label(objectivePanel, {
+		Position = UDim2.fromOffset(15, 91),
+		Size = UDim2.new(1, -30, 0, 15),
+		Text = self._controls.Deposit,
+		TextColor3 = self._config.Colors.MutedText,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	local playerPanel = self:_panel(root, "PlayerPanel", UDim2.new(0, 24, 1, -164), UDim2.fromOffset(305, 136))
+	self.HeldLabel = self:_label(playerPanel, {
+		Position = UDim2.fromOffset(15, 12),
+		Size = UDim2.new(0.64, 0, 0, 29),
+		Text = "ECHOS  0 / 5",
+		Font = Enum.Font.GothamBlack,
+		TextSize = 17,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	self.FluxLabel = self:_label(playerPanel, {
+		Position = UDim2.new(0.62, 0, 0, 12),
+		Size = UDim2.new(0.32, 0, 0, 29),
+		Text = "◇ 0",
+		TextColor3 = self._config.Colors.Echo,
+		Font = Enum.Font.RobotoMono,
+		TextSize = 18,
+		TextXAlignment = Enum.TextXAlignment.Right,
+	})
+	self:_label(playerPanel, {
+		Position = UDim2.fromOffset(15, 54),
+		Size = UDim2.new(1, -30, 0, 17),
+		Text = "AUSDAUER",
+		TextColor3 = self._config.Colors.MutedText,
+		Font = Enum.Font.GothamBold,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local staminaBack = create("Frame", {
+		Position = UDim2.fromOffset(15, 76),
+		Size = UDim2.new(1, -30, 0, 12),
+		BackgroundColor3 = self._config.Colors.Background,
+		BorderSizePixel = 0,
+	}, playerPanel)
+	addCorner(staminaBack, 6)
+	self.StaminaFill = create("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = self._config.Colors.Success,
+		BorderSizePixel = 0,
+	}, staminaBack)
+	addCorner(self.StaminaFill, 6)
+	self.UpgradeSummary = self:_label(playerPanel, {
+		Position = UDim2.fromOffset(15, 100),
+		Size = UDim2.new(1, -30, 0, 20),
+		Text = "TASCHE 0  ·  TEMPO 0  ·  PULS 0",
+		TextColor3 = self._config.Colors.MutedText,
+		Font = Enum.Font.RobotoMono,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	local abilities = self:_panel(root, "Abilities", UDim2.new(0.5, 0, 1, -60), UDim2.new(0.9, 0, 0, 64))
+	abilities.AnchorPoint = Vector2.new(0.5, 0.5)
+	create("UISizeConstraint", {
+		MinSize = Vector2.new(310, 64),
+		MaxSize = Vector2.new(360, 64),
+	}, abilities)
+	self.SprintLabel = self:_label(abilities, {
+		Position = UDim2.fromOffset(12, 9),
+		Size = UDim2.new(0.5, -18, 0, 45),
+		BackgroundColor3 = self._config.Colors.Background,
+		BackgroundTransparency = 0.15,
+		Text = self._controls.Sprint,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+	})
+	addCorner(self.SprintLabel, 8)
+	self.PulseLabel = self:_label(abilities, {
+		Position = UDim2.new(0.5, 10, 0, 9),
+		Size = UDim2.new(0.5, -18, 0, 45),
+		BackgroundColor3 = self._config.Colors.Background,
+		BackgroundTransparency = 0.15,
+		Text = self._controls.Pulse,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+	})
+	addCorner(self.PulseLabel, 8)
+
+	self.ShopPanel = self:_panel(root, "ShopPanel", UDim2.new(1, -18, 0, 128), UDim2.new(0.9, 0, 0, 354))
+	self.ShopPanel.AnchorPoint = Vector2.new(1, 0)
+	create("UISizeConstraint", {
+		MinSize = Vector2.new(300, 354),
+		MaxSize = Vector2.new(330, 354),
+	}, self.ShopPanel)
+	self:_label(self.ShopPanel, {
+		Position = UDim2.fromOffset(17, 14),
+		Size = UDim2.new(1, -34, 0, 26),
+		Text = "RISS-WERKSTATT",
+		TextColor3 = self._config.Colors.Echo,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 19,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	self:_label(self.ShopPanel, {
+		Position = UDim2.fromOffset(17, 41),
+		Size = UDim2.new(1, -34, 0, 34),
+		Text = "Permanente Upgrades · nur zwischen Runden",
+		TextColor3 = self._config.Colors.MutedText,
+		TextSize = 11,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	for index, upgradeName in self._config.Upgrades.Order do
+		local button = create("TextButton", {
+			Name = upgradeName,
+			Position = UDim2.fromOffset(17, 80 + (index - 1) * 82),
+			Size = UDim2.new(1, -34, 0, 70),
+			BackgroundColor3 = self._config.Colors.Background,
+			BackgroundTransparency = 0.08,
+			BorderSizePixel = 0,
+			AutoButtonColor = false,
+			Text = "",
+		}, self.ShopPanel)
+		addCorner(button, 9)
+		addStroke(button, self._config.Colors.Echo, 0.74, 1)
+
+		local title = self:_label(button, {
+			Position = UDim2.fromOffset(12, 8),
+			Size = UDim2.new(1, -110, 0, 24),
+			Text = upgradeName,
+			Font = Enum.Font.GothamBold,
+			TextSize = 13,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		local description = self:_label(button, {
+			Position = UDim2.fromOffset(12, 33),
+			Size = UDim2.new(1, -24, 0, 25),
+			Text = "",
+			TextColor3 = self._config.Colors.MutedText,
+			TextSize = 10,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		local price = self:_label(button, {
+			Position = UDim2.new(1, -102, 0, 8),
+			Size = UDim2.fromOffset(90, 25),
+			Text = "◇ 0",
+			TextColor3 = self._config.Colors.Echo,
+			Font = Enum.Font.RobotoMono,
+			TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Right,
+		})
+
+		self._upgradeButtons[upgradeName] = {
+			button = button,
+			title = title,
+			description = description,
+			price = price,
+		}
+		button.MouseButton1Click:Connect(function()
+			if self._purchaseCallback then
+				self._purchaseCallback(upgradeName)
+			end
+		end)
+	end
+
+	self.Toast = self:_label(root, {
+		Name = "Toast",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.68),
+		Size = UDim2.new(0.8, 0, 0, 54),
+		BackgroundColor3 = self._config.Colors.Panel,
+		BackgroundTransparency = 1,
+		Text = "",
+		TextTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		TextSize = 15,
+		TextWrapped = true,
+		ZIndex = 30,
+	})
+	addCorner(self.Toast, 10)
+	create("UISizeConstraint", {
+		MinSize = Vector2.new(280, 54),
+		MaxSize = Vector2.new(540, 54),
+	}, self.Toast)
+	addStroke(self.Toast, self._config.Colors.Stable, 0.5, 1)
+
+	self.PhaseFlash = create("Frame", {
+		Name = "PhaseFlash",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = self._config.Colors.Stable,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 40,
+	}, root)
+
+	self.Intro = create("Frame", {
+		Name = "Intro",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = self._config.Colors.Background,
+		BackgroundTransparency = 0.06,
+		BorderSizePixel = 0,
+		ZIndex = 50,
+	}, root)
+	local introCard = self:_panel(self.Intro, "IntroCard", UDim2.fromScale(0.5, 0.5), UDim2.new(0.9, 0, 0, 340))
+	introCard.AnchorPoint = Vector2.new(0.5, 0.5)
+	create("UISizeConstraint", {
+		MinSize = Vector2.new(310, 340),
+		MaxSize = Vector2.new(580, 340),
+	}, introCard)
+	introCard.ZIndex = 51
+	self:_label(introCard, {
+		Position = UDim2.fromOffset(30, 30),
+		Size = UDim2.new(1, -60, 0, 55),
+		Text = "SHIFT//BREAK",
+		TextColor3 = self._config.Colors.Stable,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 37,
+		ZIndex = 52,
+	})
+	self:_label(introCard, {
+		Position = UDim2.fromOffset(35, 94),
+		Size = UDim2.new(1, -70, 0, 150),
+		Text = string.format("Die Realität kippt alle %d Sekunden.\n\nSammle Echos · bringe sie in der STABILEN Phase zum Anker · überlebe Schatten in der GEBROCHENEN Phase.\n\n%s", self._config.Round.ShiftInterval, self._controls.Intro),
+		TextColor3 = self._config.Colors.Text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 16,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		ZIndex = 52,
+	})
+	local enterButton = create("TextButton", {
+		Position = UDim2.new(0.5, -125, 1, -74),
+		Size = UDim2.fromOffset(250, 46),
+		BackgroundColor3 = self._config.Colors.Stable,
+		BorderSizePixel = 0,
+		Text = "PROTOKOLL STARTEN",
+		TextColor3 = self._config.Colors.Background,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 14,
+		ZIndex = 52,
+	}, introCard)
+	addCorner(enterButton, 8)
+	enterButton.MouseButton1Click:Connect(function()
+		self:DismissIntro()
+	end)
+
+	if UserInputService.TouchEnabled then
+		abilities.Position = UDim2.new(0.5, 0, 1, -138)
+		playerPanel.Position = UDim2.new(0, 8, 1, -240)
+		objectivePanel.Position = UDim2.fromOffset(8, 88)
+	end
+end
+
+function UIController:SetPurchaseCallback(callback)
+	self._purchaseCallback = callback
+end
+
+function UIController:DismissIntro()
+	if not self.Intro.Visible then
+		return
+	end
+	local tween = TweenService:Create(self.Intro, TweenInfo.new(0.35), { BackgroundTransparency = 1 })
+	tween:Play()
+	tween.Completed:Once(function()
+		self.Intro.Visible = false
+	end)
+end
+
+function UIController:UpdatePlayer()
+	local held = self._player:GetAttribute("HeldEchoes") or 0
+	local capacity = self._player:GetAttribute("MaxCapacity") or self._config.Player.StartingCapacity
+	local flux = self._player:GetAttribute("Flux") or 0
+	local stamina = self._player:GetAttribute("Stamina") or self._config.Player.MaxStamina
+	local capacityLevel = self._player:GetAttribute("UpgradeCapacity") or 0
+	local speedLevel = self._player:GetAttribute("UpgradeSpeed") or 0
+	local pulseLevel = self._player:GetAttribute("UpgradePulse") or 0
+
+	self.HeldLabel.Text = string.format("ECHOS  %d / %d", held, capacity)
+	self.HeldLabel.TextColor3 = held >= capacity and self._config.Colors.Echo or self._config.Colors.Text
+	self.FluxLabel.Text = string.format("◇ %d", flux)
+	self.UpgradeSummary.Text = string.format("TASCHE %d  ·  TEMPO %d  ·  PULS %d", capacityLevel, speedLevel, pulseLevel)
+
+	local staminaRatio = math.clamp(stamina / self._config.Player.MaxStamina, 0, 1)
+	self.StaminaFill.Size = UDim2.fromScale(staminaRatio, 1)
+	self.StaminaFill.BackgroundColor3 = staminaRatio < 0.25 and self._config.Colors.Danger or self._config.Colors.Success
+
+	local levels = {
+		Capacity = capacityLevel,
+		Speed = speedLevel,
+		Pulse = pulseLevel,
+	}
+	for upgradeName, widgets in self._upgradeButtons do
+		local definition = self._config.Upgrades.Definitions[upgradeName]
+		local level = levels[upgradeName]
+		local isMax = level >= #definition.Costs
+		widgets.title.Text = string.format("%s  ·  STUFE %d/%d", definition.DisplayName, level, #definition.Costs)
+		widgets.description.Text = definition.Description
+		widgets.price.Text = isMax and "MAX" or string.format("◇ %d", definition.Costs[level + 1])
+		widgets.price.TextColor3 = isMax and self._config.Colors.Success or self._config.Colors.Echo
+		widgets.button.BackgroundTransparency = isMax and 0.35 or 0.08
+	end
+end
+
+function UIController:SetState(state)
+	self._state = state
+	local statusText = {
+		Waiting = "WARTE AUF SPIELER",
+		Intermission = "NÄCHSTER RISS ÖFFNET",
+		Running = state.phase == "FRACTURED" and "DIMENSIONSBRUCH" or "STABILE BERGUNG",
+		WaveClear = "WELLE STABILISIERT",
+		Victory = "RISS VERSIEGELT",
+		Defeat = "SYNCHRONISIERUNG GESCHEITERT",
+	}
+	self.StatusLabel.Text = statusText[state.status] or "SYSTEM BEREIT"
+	self.TimerLabel.Text = formatTime(state.timeRemaining)
+
+	local phaseColor = state.phase == "FRACTURED" and self._config.Colors.Fractured or self._config.Colors.Stable
+	self.PhaseStrip.BackgroundColor3 = phaseColor
+	self.ProgressFill.BackgroundColor3 = phaseColor
+	if state.status == "Running" then
+		self.DetailLabel.Text = string.format("WELLE %d/%d  ·  PHASENWECHSEL IN %s", state.wave or 0, state.maxWaves or 0, formatTime(state.shiftRemaining))
+	else
+		self.DetailLabel.Text = string.format("SPIELER %d/%d  ·  WELLE %d/%d", state.playerCount or 0, state.minimumPlayers or 1, state.wave or 0, state.maxWaves or 0)
+	end
+
+	local target = state.target or 0
+	local banked = state.banked or 0
+	self.ObjectiveLabel.Text = string.format("%d / %d ECHOS", banked, target)
+	local ratio = target > 0 and math.clamp(banked / target, 0, 1) or 0
+	TweenService:Create(self.ProgressFill, TweenInfo.new(0.22, Enum.EasingStyle.Quad), { Size = UDim2.fromScale(ratio, 1) }):Play()
+	self.ObjectiveHint.Text = state.phase == "FRACTURED" and ("ANKER OFFLINE · " .. self._controls.Pulse .. " einsetzen") or self._controls.Deposit
+	self.ShopPanel.Visible = state.status ~= "Running" and state.status ~= "WaveClear"
+end
+
+function UIController:SetPulseCooldown(seconds)
+	seconds = math.max(0, seconds or 0)
+	if seconds > 0.05 then
+		self.PulseLabel.Text = string.format("%s  %.1fs", self._controls.Pulse, seconds)
+		self.PulseLabel.TextColor3 = self._config.Colors.MutedText
+	else
+		self.PulseLabel.Text = self._controls.Pulse
+		self.PulseLabel.TextColor3 = self._config.Colors.Stable
+	end
+end
+
+function UIController:SetSprinting(active)
+	self.SprintLabel.TextColor3 = active and self._config.Colors.Success or self._config.Colors.Text
+end
+
+function UIController:ShowMessage(text, tone)
+	self._toastToken += 1
+	local token = self._toastToken
+	local colors = {
+		Info = self._config.Colors.Text,
+		Success = self._config.Colors.Success,
+		Danger = self._config.Colors.Danger,
+		Stable = self._config.Colors.Stable,
+		Fractured = self._config.Colors.Fractured,
+	}
+	self.Toast.Text = text
+	self.Toast.TextColor3 = colors[tone] or self._config.Colors.Text
+	self.Toast.Visible = true
+	TweenService:Create(self.Toast, TweenInfo.new(0.18), { TextTransparency = 0, BackgroundTransparency = 0.08 }):Play()
+
+	task.delay(3.2, function()
+		if token ~= self._toastToken then
+			return
+		end
+		local tween = TweenService:Create(self.Toast, TweenInfo.new(0.35), { TextTransparency = 1, BackgroundTransparency = 1 })
+		tween:Play()
+		tween.Completed:Once(function()
+			if token == self._toastToken then
+				self.Toast.Visible = false
+			end
+		end)
+	end)
+end
+
+function UIController:FlashPhase(phase)
+	local color = phase == "FRACTURED" and self._config.Colors.Fractured or self._config.Colors.Stable
+	self.PhaseFlash.BackgroundColor3 = color
+	self.PhaseFlash.BackgroundTransparency = 0.72
+	local tween = TweenService:Create(self.PhaseFlash, TweenInfo.new(0.65, Enum.EasingStyle.Quad), { BackgroundTransparency = 1 })
+	tween:Play()
+end
+
+return UIController
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="Workspace" referent="17">
+    <Properties>
+      <string name="Name">Workspace</string>
+      <bool name="NeedsPivotMigration">false</bool>
+    </Properties>
+    <Item class="Camera" referent="18">
+      <Properties>
+        <string name="Name">Camera</string>
+        <CoordinateFrame name="CFrame">
+          <X>0</X>
+          <Y>40</Y>
+          <Z>60</Z>
+          <R00>1</R00>
+          <R01>0</R01>
+          <R02>0</R02>
+          <R10>0</R10>
+          <R11>0.914917</R11>
+          <R12>0.403642</R12>
+          <R20>0</R20>
+          <R21>-0.403642</R21>
+          <R22>0.914917</R22>
+        </CoordinateFrame>
+        <token name="CameraType">5</token>
+        <float name="FieldOfView">70</float>
+        <CoordinateFrame name="Focus">
+          <X>0</X>
+          <Y>17</Y>
+          <Z>8</Z>
+          <R00>1</R00>
+          <R01>0</R01>
+          <R02>0</R02>
+          <R10>0</R10>
+          <R11>1</R11>
+          <R12>0</R12>
+          <R20>0</R20>
+          <R21>0</R21>
+          <R22>1</R22>
+        </CoordinateFrame>
+      </Properties>
+    </Item>
+    <Item class="SpawnLocation" referent="19">
+      <Properties>
+        <string name="Name">LobbySpawn</string>
+        <bool name="AllowTeamChangeOnTouch">false</bool>
+        <bool name="Anchored">true</bool>
+        <bool name="CanCollide">true</bool>
+        <bool name="CanQuery">true</bool>
+        <bool name="CanTouch">true</bool>
+        <Color3uint8 name="Color3uint8">2683076</Color3uint8>
+        <int name="Duration">0</int>
+        <bool name="Enabled">true</bool>
+        <token name="Material">288</token>
+        <bool name="Neutral">true</bool>
+        <Vector3 name="Position">
+          <X>0</X>
+          <Y>18.5</Y>
+          <Z>8</Z>
+        </Vector3>
+        <Vector3 name="size">
+          <X>10</X>
+          <Y>1</Y>
+          <Z>10</Z>
+        </Vector3>
+        <float name="Transparency">0.2</float>
+      </Properties>
+    </Item>
+    <Item class="Part" referent="20">
+      <Properties>
+        <string name="Name">SpawnPlatform</string>
+        <bool name="Anchored">true</bool>
+        <bool name="CanCollide">true</bool>
+        <bool name="CanQuery">true</bool>
+        <bool name="CanTouch">true</bool>
+        <Color3uint8 name="Color3uint8">4739696</Color3uint8>
+        <token name="Material">272</token>
+        <Vector3 name="Position">
+          <X>0</X>
+          <Y>17</Y>
+          <Z>8</Z>
+        </Vector3>
+        <Vector3 name="size">
+          <X>30</X>
+          <Y>2</Y>
+          <Z>30</Z>
+        </Vector3>
+      </Properties>
+    </Item>
+  </Item>
+</roblox>

@@ -1,0 +1,66 @@
+{
+  "name": "SHIFT_BREAK",
+  "tree": {
+    "$className": "DataModel",
+    "Workspace": {
+      "$className": "Workspace",
+      "Camera": {
+        "$className": "Camera",
+        "$properties": {
+          "CameraType": "Custom",
+          "CFrame": [0, 40, 60, 1, 0, 0, 0, 0.914917, 0.403642, 0, -0.403642, 0.914917],
+          "Focus": [0, 17, 8, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+          "FieldOfView": 70
+        }
+      },
+      "SpawnPlatform": {
+        "$className": "Part",
+        "$properties": {
+          "Anchored": true,
+          "CanCollide": true,
+          "CanQuery": true,
+          "CanTouch": true,
+          "Color": [0.282353, 0.321569, 0.439216],
+          "Material": "SmoothPlastic",
+          "Position": [0, 17, 8],
+          "Size": [30, 2, 30]
+        }
+      },
+      "LobbySpawn": {
+        "$className": "SpawnLocation",
+        "$properties": {
+          "AllowTeamChangeOnTouch": false,
+          "Anchored": true,
+          "CanCollide": true,
+          "CanQuery": true,
+          "CanTouch": true,
+          "Color": [0.156863, 0.941176, 0.768627],
+          "Duration": 0,
+          "Enabled": true,
+          "Material": "Neon",
+          "Neutral": true,
+          "Position": [0, 18.5, 8],
+          "Size": [10, 1, 10],
+          "Transparency": 0.2
+        }
+      }
+    },
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/ReplicatedStorage/Shared"
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/ServerScriptService/Server"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "Client": {
+          "$path": "src/StarterPlayer/StarterPlayerScripts/Client"
+        }
+      }
+    }
+  }
+}
