@@ -3,7 +3,7 @@
   "type": "feature",
   "title": "Remove all-pets fallback and add crit circles around destructibles",
   "description": "1. Remove the all-pets fallback in ZoneService.attackDestructible so only assigned pets deal damage. 2. Add crit circle mechanic: clicking a destructible spawns 3-5 glowing circles that orbit it; clicking a circle triggers a crit (2x damage) validated server-side.",
-  "status": "in_progress",
+  "status": "completed",
   "dependencies": ["FEAT-023"],
   "steps": [
     "Remove all-pets fallback in ZoneService.attackDestructible (0 damage if no pets assigned)",
@@ -29,5 +29,11 @@
     "New circles spawn on each destructible click (not on circle click)",
     "BATTLE_PETS.rbxlx regenerated and valid XML"
   ],
-  "findings": []
+  "findings": [
+    "Network mode is INTEGRATIONS_ONLY - pure Luau project, no external dependencies needed",
+    "Crit circles use CanCollide=true so workspace:Raycast detects them for click handling",
+    "Crit window duration is 3 seconds matching the circle lifetime (2-3s) to ensure valid server validation",
+    "showDamageText in PetController extended with optional isCrit parameter for gold popup styling",
+    "CritAttackDestructible rate limited at 0.2s via central rate limiter in Main.server.lua"
+  ]
 }
