@@ -194,6 +194,13 @@ function CampaignService.deployPet(player, petInstanceId)
 		return false, "Not enough energy"
 	end
 
+	-- Check for duplicate pet deployment (prevent deploying same pet twice)
+	for _, deployed in ipairs(battle.deployedPets) do
+		if deployed.id == petInstanceId then
+			return false, "Pet already deployed"
+		end
+	end
+
 	-- Deduct energy
 	battle.energy = battle.energy - deployCost
 

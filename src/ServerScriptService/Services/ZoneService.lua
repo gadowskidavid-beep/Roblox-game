@@ -21,6 +21,18 @@ ZoneService._destructibles = {}
 -- Workspace references
 ZoneService._zonesFolder = nil
 
+-- Rate limiting for attacks (per player)
+ZoneService._attackCooldowns = {} -- [userId] = last attack time (os.clock)
+ZoneService._clickCooldowns = {} -- [userId] = last click attack time (os.clock)
+
+-- Pet target assignments: [userId] = { [petInstanceId] = destructibleId }
+ZoneService._petTargets = {}
+
+-- Constants for security
+local ATTACK_COOLDOWN = 0.5 -- seconds between pet attacks per player
+local CLICK_ATTACK_COOLDOWN = 0.2 -- seconds between click attacks per player
+local MAX_ATTACK_DISTANCE = 50 -- maximum studs between player and destructible
+
 -- Zone position offsets (each zone is spaced apart)
 local ZONE_SIZE = Vector3.new(200, 0, 200)
 local ZONE_SPACING = 250
@@ -730,6 +742,66 @@ function ZoneService.unlockZone(player, zoneId)
 	return true, nil
 end
 
+-- Assign a pet to target a specific destructible (called by client)
+function ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
+	if not player or type(petInstanceId) ~= "string" then
+		return false, "Invalid parameters"
+	end
+
+	local userId = player.UserId
+
+	-- Initialize target table for this player if needed
+	if not ZoneService._petTargets[userId] then
+		ZoneService._petTargets[userId] = {}
+	end
+
+	-- Allow clearing a target (nil destructibleId)
+	if destructibleId == nil or destructibleId == "" then
+		ZoneService._petTargets[userId][petInstanceId] = nil
+		return true, nil
+	end
+
+	if type(destructibleId) ~= "string" then
+		return false, "Invalid destructible ID"
+	end
+
+	-- Validate the destructible exists
+	if not ZoneService._destructibles[destructibleId] then
+		return false, "Destructible not found"
+	end
+
+	-- Validate the pet belongs to this player and is equipped
+	local data = ZoneService._dataService.getPlayerData(player)
+	if not data then
+		return false, "No player data"
+	end
+
+	local petFound = false
+	for _, pet in ipairs(data.pets) do
+		if pet.id == petInstanceId and pet.equipped then
+			petFound = true
+			break
+		end
+	end
+
+	if not petFound then
+		return false, "Pet not found or not equipped"
+	end
+
+	ZoneService._petTargets[userId][petInstanceId] = destructibleId
+	return true, nil
+end
+
+-- Cleanup player rate limits and pet targets (call on player removing)
+function ZoneService.onPlayerRemoving(player)
+	if player then
+		local userId = player.UserId
+		ZoneService._attackCooldowns[userId] = nil
+		ZoneService._clickCooldowns[userId] = nil
+		ZoneService._petTargets[userId] = nil
+	end
+end
+
 -- Attack a destructible (called when a player's pets attack)
 function ZoneService.attackDestructible(player, destructibleId)
 	if not player or type(destructibleId) ~= "string" then
@@ -739,6 +811,31 @@ function ZoneService.attackDestructible(player, destructibleId)
 	local destructible = ZoneService._destructibles[destructibleId]
 	if not destructible then
 		return false, "Destructible not found"
+	end
+
+	-- Rate limiting: 0.5 second cooldown between attacks per player
+	local userId = player.UserId
+	local now = os.clock()
+	local lastAttack = ZoneService._attackCooldowns[userId] or 0
+	if now - lastAttack < ATTACK_COOLDOWN then
+		return false, "Attack on cooldown"
+	end
+	ZoneService._attackCooldowns[userId] = now
+
+	-- Distance check: player must be within 50 studs of the destructible
+	local character = player.Character
+	if not character then
+		return false, "No character"
+	end
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then
+		return false, "No HumanoidRootPart"
+	end
+	local playerPos = humanoidRootPart.Position
+	local destructiblePos = destructible.position
+	local distance = (playerPos - destructiblePos).Magnitude
+	if distance > MAX_ATTACK_DISTANCE then
+		return false, "Too far from destructible"
 	end
 
 	local data = ZoneService._dataService.getPlayerData(player)
@@ -758,20 +855,35 @@ function ZoneService.attackDestructible(player, destructibleId)
 		return false, "Zone not unlocked"
 	end
 
-	-- Validate player has equipped pets
-	local equippedPets = {}
+	-- Only count pets that are assigned to THIS target
+	local playerTargets = ZoneService._petTargets[userId] or {}
+	local attackingPets = {}
 	for _, pet in ipairs(data.pets) do
 		if pet.equipped then
-			table.insert(equippedPets, pet)
+			local assignedTarget = playerTargets[pet.id]
+			if assignedTarget == destructibleId then
+				table.insert(attackingPets, pet)
+			end
 		end
 	end
-	if #equippedPets == 0 then
+
+	-- If no pets are assigned to this target, fall back to all equipped pets
+	-- (backwards compatibility for clients that haven't sent AssignPetTarget yet)
+	if #attackingPets == 0 then
+		for _, pet in ipairs(data.pets) do
+			if pet.equipped then
+				table.insert(attackingPets, pet)
+			end
+		end
+	end
+
+	if #attackingPets == 0 then
 		return false, "No equipped pets"
 	end
 
-	-- Calculate total damage from all equipped pets
+	-- Calculate total damage from pets attacking this target
 	local totalDamage = 0
-	for _, pet in ipairs(equippedPets) do
+	for _, pet in ipairs(attackingPets) do
 		totalDamage = totalDamage + ZoneService._petService.getPetDamage(pet, player)
 	end
 
@@ -878,6 +990,31 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 	local destructible = ZoneService._destructibles[destructibleId]
 	if not destructible then
 		return false, "Destructible not found"
+	end
+
+	-- Rate limiting: 0.2 second cooldown between click attacks per player
+	local userId = player.UserId
+	local now = os.clock()
+	local lastClick = ZoneService._clickCooldowns[userId] or 0
+	if now - lastClick < CLICK_ATTACK_COOLDOWN then
+		return false, "Click attack on cooldown"
+	end
+	ZoneService._clickCooldowns[userId] = now
+
+	-- Distance check: player must be within 50 studs of the destructible
+	local character = player.Character
+	if not character then
+		return false, "No character"
+	end
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then
+		return false, "No HumanoidRootPart"
+	end
+	local playerPos = humanoidRootPart.Position
+	local destructiblePos = destructible.position
+	local distance = (playerPos - destructiblePos).Magnitude
+	if distance > MAX_ATTACK_DISTANCE then
+		return false, "Too far from destructible"
 	end
 
 	local data = ZoneService._dataService.getPlayerData(player)

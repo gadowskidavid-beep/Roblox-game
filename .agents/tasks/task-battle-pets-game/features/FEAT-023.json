@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-023",
+  "type": "feature",
+  "title": "Security hardening: rate limiting, distance checks, data copy, bulk limits",
+  "description": "Comprehensive server-side security hardening including attack rate limiting with distance checks, central rate limiter for all remotes, campaign duplicate deploy prevention, client data copy function, and bulk delete size limits.",
+  "status": "in_progress",
+  "dependencies": ["FEAT-022"],
+  "steps": [
+    "Add attack rate limiting and distance check to ZoneService.attackDestructible",
+    "Add per-pet damage tracking (AssignPetTarget) to ZoneService",
+    "Add click attack rate limiting and distance check to ZoneService.clickAttackDestructible",
+    "Add central rate limiter to Main.server.lua with per-action cooldowns",
+    "Add duplicate pet deploy prevention to CampaignService.deployPet",
+    "Add getClientData function to DataService that returns a sanitized copy",
+    "Update GetPlayerData handler to use getClientData",
+    "Add bulk delete size limit (100) to DeletePets handler",
+    "Clean up rateLimits on PlayerRemoving",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "AttackDestructible has 0.5s cooldown per player",
+    "AttackDestructible enforces 50 stud distance check",
+    "AttackDestructible only counts pets assigned to the target",
+    "ClickAttackDestructible has 0.2s cooldown per player",
+    "ClickAttackDestructible enforces 50 stud distance check",
+    "Central rate limiter applied to all specified remotes",
+    "Campaign deployPet rejects duplicate pet instance IDs",
+    "GetPlayerData returns a sanitized copy not the cache reference",
+    "DeletePets rejects more than 100 pet IDs",
+    "Rate limit entries cleaned up on player removal",
+    "BATTLE_PETS.rbxlx regenerated and valid XML"
+  ]
+}

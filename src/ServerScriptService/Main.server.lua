@@ -19,6 +19,22 @@ local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 
 ----------------------------------------------
+-- Central Rate Limiter
+----------------------------------------------
+
+local rateLimits = {}
+local function canCall(player, action, cooldown)
+	rateLimits[player.UserId] = rateLimits[player.UserId] or {}
+	local now = os.clock()
+	local last = rateLimits[player.UserId][action] or 0
+	if now - last < cooldown then
+		return false
+	end
+	rateLimits[player.UserId][action] = now
+	return true
+end
+
+----------------------------------------------
 -- Create Remotes Folder in ReplicatedStorage
 ----------------------------------------------
 
@@ -71,6 +87,7 @@ local remoteFunctions = {
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
 	"ConvertToGoldenPet",
+	"AssignPetTarget",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -121,18 +138,21 @@ local function getRemoteFunction(name)
 	return remotesFolder:FindFirstChild(name)
 end
 
--- GetPlayerData
+-- GetPlayerData (returns sanitized copy, not the cache reference)
 getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
-	return DataService.getPlayerData(player)
+	return DataService.getClientData(player)
 end
 
--- HatchEgg
+-- HatchEgg (3 second cooldown)
 getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
+	end
+	if not canCall(player, "HatchEgg", 3) then
+		return nil, "Please wait before hatching again"
 	end
 	if type(eggType) ~= "string" then
 		return nil, "Invalid egg type parameter"
@@ -140,10 +160,13 @@ getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType)
 	return EggService.purchaseAndHatch(player, eggType)
 end
 
--- EquipPet
+-- EquipPet (0.5 second cooldown)
 getRemoteFunction("EquipPet").OnServerInvoke = function(player, petInstanceId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "EquipPet", 0.5) then
+		return false, "Please wait before equipping again"
 	end
 	if type(petInstanceId) ~= "string" then
 		return false, "Invalid pet ID parameter"
@@ -151,10 +174,13 @@ getRemoteFunction("EquipPet").OnServerInvoke = function(player, petInstanceId)
 	return PetService.equipPet(player, petInstanceId)
 end
 
--- UnequipPet
+-- UnequipPet (0.5 second cooldown)
 getRemoteFunction("UnequipPet").OnServerInvoke = function(player, petInstanceId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "UnequipPet", 0.5) then
+		return false, "Please wait before unequipping again"
 	end
 	if type(petInstanceId) ~= "string" then
 		return false, "Invalid pet ID parameter"
@@ -162,10 +188,13 @@ getRemoteFunction("UnequipPet").OnServerInvoke = function(player, petInstanceId)
 	return PetService.unequipPet(player, petInstanceId)
 end
 
--- DeletePet
+-- DeletePet (1 second cooldown)
 getRemoteFunction("DeletePet").OnServerInvoke = function(player, petInstanceId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "DeletePet", 1) then
+		return false, "Please wait before deleting again"
 	end
 	if type(petInstanceId) ~= "string" then
 		return false, "Invalid pet ID parameter"
@@ -173,13 +202,20 @@ getRemoteFunction("DeletePet").OnServerInvoke = function(player, petInstanceId)
 	return PetService.deletePet(player, petInstanceId)
 end
 
--- DeletePets (bulk delete)
+-- DeletePets (bulk delete, 1 second cooldown, max 100 pets)
 getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
+	if not canCall(player, "DeletePets", 1) then
+		return false, "Please wait before deleting again"
+	end
 	if type(petInstanceIds) ~= "table" then
 		return false, "Invalid pet IDs parameter"
+	end
+	-- Bulk delete size limit
+	if #petInstanceIds > 100 then
+		return false, "Too many pets"
 	end
 	-- Validate each ID is a string
 	for _, id in ipairs(petInstanceIds) do
@@ -190,10 +226,13 @@ getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds
 	return PetService.deletePets(player, petInstanceIds)
 end
 
--- UnlockZone
+-- UnlockZone (2 second cooldown)
 getRemoteFunction("UnlockZone").OnServerInvoke = function(player, zoneId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "UnlockZone", 2) then
+		return false, "Please wait before unlocking again"
 	end
 	if type(zoneId) ~= "number" then
 		return false, "Invalid zone ID parameter"
@@ -201,10 +240,13 @@ getRemoteFunction("UnlockZone").OnServerInvoke = function(player, zoneId)
 	return ZoneService.unlockZone(player, math.floor(zoneId))
 end
 
--- PurchaseUpgrade (now returns info that upgrades are quest-based)
+-- PurchaseUpgrade (1 second cooldown)
 getRemoteFunction("PurchaseUpgrade").OnServerInvoke = function(player, upgradeId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "PurchaseUpgrade", 1) then
+		return false, "Please wait before purchasing again"
 	end
 	if type(upgradeId) ~= "string" then
 		return false, "Invalid upgrade ID parameter"
@@ -220,10 +262,13 @@ getRemoteFunction("GetQuestProgress").OnServerInvoke = function(player)
 	return QuestService.getQuestProgress(player)
 end
 
--- PurchaseMasteryBuff
+-- PurchaseMasteryBuff (1 second cooldown)
 getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "PurchaseMasteryBuff", 1) then
+		return false, "Please wait before purchasing again"
 	end
 	if type(buffId) ~= "string" then
 		return false, "Invalid buff ID parameter"
@@ -239,10 +284,13 @@ getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
 	return MasteryService.getMasteryState(player)
 end
 
--- ConvertToGoldenPet
+-- ConvertToGoldenPet (2 second cooldown)
 getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
+	end
+	if not canCall(player, "ConvertToGoldenPet", 2) then
+		return nil, "Please wait before converting again"
 	end
 	if type(petInstanceIds) ~= "table" then
 		return nil, "Invalid pet IDs parameter (expected list)"
@@ -265,10 +313,13 @@ getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petIns
 	return result, err
 end
 
--- StartCampaignLevel
+-- StartCampaignLevel (2 second cooldown)
 getRemoteFunction("StartCampaignLevel").OnServerInvoke = function(player, levelNum)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "StartCampaignLevel", 2) then
+		return false, "Please wait before starting again"
 	end
 	if type(levelNum) ~= "number" then
 		return false, "Invalid level number parameter"
@@ -276,10 +327,13 @@ getRemoteFunction("StartCampaignLevel").OnServerInvoke = function(player, levelN
 	return CampaignService.startLevel(player, math.floor(levelNum))
 end
 
--- DeployPetInCampaign
+-- DeployPetInCampaign (0.5 second cooldown)
 getRemoteFunction("DeployPetInCampaign").OnServerInvoke = function(player, petInstanceId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "DeployPetInCampaign", 0.5) then
+		return false, "Please wait before deploying again"
 	end
 	if type(petInstanceId) ~= "string" then
 		return false, "Invalid pet ID parameter"
@@ -307,6 +361,21 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.clickAttackDestructible(player, destructibleId)
+end
+
+-- AssignPetTarget (client tells server which pet targets which destructible)
+getRemoteFunction("AssignPetTarget").OnServerInvoke = function(player, petInstanceId, destructibleId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if type(petInstanceId) ~= "string" then
+		return false, "Invalid pet ID parameter"
+	end
+	-- destructibleId can be nil (clearing target) or string
+	if destructibleId ~= nil and type(destructibleId) ~= "string" then
+		return false, "Invalid destructible ID parameter"
+	end
+	return ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
 end
 
 ----------------------------------------------
@@ -356,6 +425,12 @@ Players.PlayerRemoving:Connect(function(player)
 		end
 		_sessionJoinTimes[player.UserId] = nil
 	end
+
+	-- Cleanup rate limits
+	rateLimits[player.UserId] = nil
+
+	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
+	ZoneService.onPlayerRemoving(player)
 
 	-- Cleanup campaign battle if any
 	CampaignService.onPlayerRemoving(player)

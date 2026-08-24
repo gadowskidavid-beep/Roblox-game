@@ -188,6 +188,37 @@ function DataService.getPlayerData(player)
 	return data
 end
 
+-- Get a sanitized COPY of player data for client consumption
+-- Returns only client-relevant fields; never exposes the cache reference directly
+function DataService.getClientData(player)
+	if not player or not player:IsA("Player") then
+		return nil
+	end
+	local data = DataService._cache[player.UserId]
+	if not data then
+		return nil
+	end
+
+	-- Build a clean copy with only client-relevant fields
+	local clientData = {
+		coins = data.coins,
+		diamonds = data.diamonds,
+		pets = deepCopy(data.pets),
+		level = data.level,
+		xp = data.xp,
+		xpNeeded = (data.level or 1) * 100,
+		equippedPets = deepCopy(data.equippedPets),
+		unlockedZones = deepCopy(data.unlockedZones),
+		upgrades = deepCopy(data.upgrades),
+		questStats = deepCopy(data.questStats),
+		campaignProgress = deepCopy(data.campaignProgress),
+		masteryPoints = data.masteryPoints,
+		masteryBuffs = deepCopy(data.masteryBuffs),
+	}
+
+	return clientData
+end
+
 -- Called when player leaves - save and cleanup
 function DataService.onPlayerRemoving(player)
 	DataService.savePlayerData(player)
