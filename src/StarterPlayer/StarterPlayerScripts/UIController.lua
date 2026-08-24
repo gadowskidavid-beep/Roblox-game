@@ -663,8 +663,9 @@ function UIController:_refreshPetGrid()
 		dmgLabel.Parent = card
 
 		-- Equip/Unequip button (or selection checkbox in multi-select)
+		local petUniqueId = petData.uniqueId or petData.id
 		if self._multiSelectMode then
-			local isSelected = self._selectedPets[petData.uniqueId] ~= nil
+			local isSelected = self._selectedPets[petUniqueId] ~= nil
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
@@ -680,7 +681,7 @@ function UIController:_refreshPetGrid()
 			selectCorner.CornerRadius = UDim.new(0, 6)
 			selectCorner.Parent = selectBox
 
-			local petId = petData.uniqueId
+			local petId = petUniqueId
 			selectBox.MouseButton1Click:Connect(function()
 				if self._selectedPets[petId] then
 					self._selectedPets[petId] = nil
@@ -690,7 +691,7 @@ function UIController:_refreshPetGrid()
 				self:_refreshPetGrid()
 			end)
 		else
-			local isEquipped = self:_isPetEquipped(petData.uniqueId)
+			local isEquipped = self:_isPetEquipped(petUniqueId)
 			local equipBtn = Instance.new("TextButton")
 			equipBtn.Name = "EquipBtn"
 			equipBtn.Size = UDim2.fromScale(0.8, 0.16)
@@ -706,7 +707,7 @@ function UIController:_refreshPetGrid()
 			equipCorner.CornerRadius = UDim.new(0, 6)
 			equipCorner.Parent = equipBtn
 
-			local petId = petData.uniqueId
+			local petId = petUniqueId
 			equipBtn.MouseButton1Click:Connect(function()
 				if isEquipped then
 					self:_unequipPet(petId)
@@ -732,7 +733,8 @@ end
 
 function UIController:_isPetEquipped(uniqueId)
 	for _, pet in ipairs(self._equippedPets) do
-		if pet.uniqueId == uniqueId then
+		local petId = pet.uniqueId or pet.id
+		if petId == uniqueId then
 			return true
 		end
 	end
