@@ -1,8 +1,8 @@
 --[[
 	PetController.lua - Pet visual management for Battle Pets
-	Creates procedural pet models (Part-based), handles following/orbiting the player,
-	animates pets toward destructibles to attack, and shows floating damage numbers.
-	All visuals are procedural with no external assets.
+	Creates procedural pet models (Part-based), handles pets following behind the
+	player in a trailing formation, animates pets toward destructibles to attack,
+	and shows floating damage numbers. All visuals are procedural with no external assets.
 ]]
 
 local TweenService = game:GetService("TweenService")
@@ -24,11 +24,14 @@ local RARITY_COLORS = {
 function PetController.new()
 	local self = setmetatable({}, PetController)
 	self._remotes = nil
-	self._equippedPets = {} -- { uniqueId = { model = Model, data = petData, orbitAngle = number } }
+	self._equippedPets = {} -- { uniqueId = { model = Model, data = petData, followIndex = number } }
 	self._petsFolder = nil
-	self._orbitRadius = 4
-	self._orbitSpeed = 1.5
-	self._orbitHeightBase = 2
+	-- Follow-behind settings
+	self._followDistance = 3 -- distance behind the player per pet slot
+	self._followSpread = 2.5 -- lateral spread for multiple pets in same row
+	self._followHeight = 1.5 -- height offset above ground
+	self._followLerpSpeed = 6 -- smoothing speed for following
+	self._petsPerRow = 3 -- max pets per row behind the player
 	self._initialized = false
 	self._attackingPets = {} -- pets currently attacking a destructible
 	-- Auto-attack state
@@ -170,15 +173,21 @@ function PetController:updateEquippedPets(equippedList)
 			self._equippedPets[petData.id] = {
 				model = model,
 				data = petData,
-				orbitAngle = (i / #equippedList) * math.pi * 2,
-				orbitHeight = self._orbitHeightBase + (i - 1) * 0.5,
+				followIndex = i,
 			}
 		end
+	end
+
+	-- Reassign follow indices to ensure proper formation
+	local idx = 1
+	for _, petInfo in pairs(self._equippedPets) do
+		petInfo.followIndex = idx
+		idx = idx + 1
 	end
 end
 
 --------------------------------------------------------------------------------
--- Per-frame update: pets orbit around the player character
+-- Per-frame update: pets follow behind the player in a trailing formation
 --------------------------------------------------------------------------------
 function PetController:update(deltaTime)
 	if not self._initialized then return end
@@ -189,22 +198,45 @@ function PetController:update(deltaTime)
 	if not rootPart then return end
 
 	local playerPos = rootPart.Position
+	-- Get the direction the player is facing (look vector)
+	local lookVector = rootPart.CFrame.LookVector
+	-- The "behind" direction is opposite to look
+	local behindVector = -lookVector
+	-- Right vector for lateral offset
+	local rightVector = rootPart.CFrame.RightVector
 
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
-			-- Update orbit angle
-			petInfo.orbitAngle = petInfo.orbitAngle + self._orbitSpeed * deltaTime
+			local index = petInfo.followIndex or 1
+			-- Calculate row and column in the formation
+			local row = math.ceil(index / self._petsPerRow) -- which row (1, 2, 3...)
+			local col = ((index - 1) % self._petsPerRow) + 1 -- position in the row
+			local petsInRow = math.min(self._petsPerRow, index) -- how many in this row
 
-			-- Calculate orbit position
-			local orbitX = math.cos(petInfo.orbitAngle) * self._orbitRadius
-			local orbitZ = math.sin(petInfo.orbitAngle) * self._orbitRadius
-			local targetPos = playerPos + Vector3.new(orbitX, petInfo.orbitHeight, orbitZ)
+			-- Calculate total pets to determine this row's actual count
+			local totalPets = 0
+			for _ in pairs(self._equippedPets) do
+				totalPets = totalPets + 1
+			end
+			local actualPetsInRow = math.min(self._petsPerRow, totalPets - (row - 1) * self._petsPerRow)
 
-			-- Move pet model
+			-- Lateral offset: center the pets in the row
+			local lateralOffset = (col - (actualPetsInRow + 1) / 2) * self._followSpread
+
+			-- Distance behind: each row is further back
+			local distanceBehind = row * self._followDistance
+
+			-- Calculate target position behind the player
+			local targetPos = playerPos
+				+ behindVector * distanceBehind
+				+ rightVector * lateralOffset
+				+ Vector3.new(0, self._followHeight, 0)
+
+			-- Move pet model smoothly toward target
 			local model = petInfo.model
 			if model and model.PrimaryPart then
 				local currentPos = model.PrimaryPart.Position
-				local newPos = currentPos:Lerp(targetPos, math.min(1, deltaTime * 5))
+				local newPos = currentPos:Lerp(targetPos, math.min(1, deltaTime * self._followLerpSpeed))
 				local offset = newPos - model.PrimaryPart.Position
 
 				-- Move all parts in model
