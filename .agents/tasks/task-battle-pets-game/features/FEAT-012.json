@@ -3,7 +3,7 @@
   "type": "fix",
   "title": "Gameplay improvements: rewards, upgrades, pet attack animation, zone gates, UI fixes",
   "description": "1. Increase Zone 1 destructible rewards (CoinPile: 5-15, DiamondPile: 1-3, Crate: 10-30+1-2). 2. Fix upgrade grid to use actual costs from Config. 3. Fix pet attack animation to move all parts to destructible and return. 4. Add zone gate visualization and interaction. 5. UI improvements: currency popups show correct amounts, level display next to XP bar.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Update ZoneData.lua Zone 1 destructible rewards to match requirements",
     "Fix UIController upgrade grid to read actual costs from Config module",
