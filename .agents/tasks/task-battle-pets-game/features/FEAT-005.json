@@ -2,7 +2,7 @@
   "id": "FEAT-005",
   "type": "fix",
   "description": "Fix 5 client-server contract issues: attack remote type mismatch, PetEquipped/Unequipped payload mismatch, getNearestDestructible wrong folder, N-times damage amplification, DestructibleDamaged/Destroyed expect Part but receive string",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Fix Main.client.lua click handler to extract DestructibleId.Value string and fire ONE AttackDestructible call (not per-pet)",
     "Fix Main.client.lua PetEquipped/PetUnequipped handlers to handle single-pet-table and single-string payloads, maintaining a local equippedPets list",
@@ -29,5 +29,5 @@
     "Verify click handler fires one AttackDestructible call, not one per pet"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "All 5 client-server contract issues from v2 review resolved. Also added totalDamage as 4th parameter to DestructibleDamaged FireAllClients call so clients can display actual damage dealt. PetController.updateEquippedPets now uses .id field. sendPetToAttack decoupled from remote invocation - new fireAttackRemote method handles single remote call. Initial equip load resolves string ID array to pet data objects via lookup table. BATTLE_PETS.rbxlx regenerated (212,334 bytes, 92 items, valid XML)."
 }
