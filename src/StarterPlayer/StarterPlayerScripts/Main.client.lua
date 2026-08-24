@@ -292,7 +292,8 @@ end)
 --------------------------------------------------------------------------------
 -- INPUT HANDLING
 --------------------------------------------------------------------------------
--- Auto-attack: when player clicks/taps on a destructible
+-- Manual click/tap on a destructible is optional - pets auto-attack nearby targets.
+-- Clicking a specific destructible will immediately direct pets to attack it.
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 
@@ -308,7 +309,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 		raycastParams.FilterDescendantsInstances = { player.Character }
 
-		local result = workspace:Raycast(ray.Origin, ray.Direction * 100, raycastParams)
+		local result = workspace:Raycast(ray.Origin, ray.Direction * 200, raycastParams)
 		if result and result.Instance then
 			local hit = result.Instance
 			-- Check if the hit object is in the Zones folder (where destructibles live)

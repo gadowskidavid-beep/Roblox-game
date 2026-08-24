@@ -31,6 +31,12 @@ function PetController.new()
 	self._orbitHeightBase = 2
 	self._initialized = false
 	self._attackingPets = {} -- pets currently attacking a destructible
+	-- Auto-attack state
+	self._autoAttackEnabled = true
+	self._autoAttackInterval = 1.5 -- seconds between auto-attacks
+	self._autoAttackRange = 40 -- studs detection range
+	self._lastAutoAttackTime = 0
+	self._autoAttackConnection = nil
 	return self
 end
 
@@ -44,6 +50,9 @@ function PetController:init(remotes)
 	self._petsFolder.Parent = workspace
 
 	self._initialized = true
+
+	-- Start auto-attack loop
+	self:_startAutoAttack()
 end
 
 --------------------------------------------------------------------------------
@@ -361,9 +370,63 @@ function PetController:getNearestDestructible(maxDistance)
 end
 
 --------------------------------------------------------------------------------
+-- Auto-attack system: pets automatically find and attack nearby destructibles
+--------------------------------------------------------------------------------
+function PetController:_startAutoAttack()
+	if self._autoAttackConnection then return end
+
+	self._autoAttackConnection = RunService.Heartbeat:Connect(function()
+		if not self._autoAttackEnabled then return end
+		if not self._initialized then return end
+
+		-- Check if enough time has passed since last attack
+		local now = tick()
+		if now - self._lastAutoAttackTime < self._autoAttackInterval then
+			return
+		end
+
+		-- Check if we have any equipped pets
+		local hasPets = false
+		for _ in pairs(self._equippedPets) do
+			hasPets = true
+			break
+		end
+		if not hasPets then return end
+
+		-- Find nearest destructible within range
+		local nearest = self:getNearestDestructible(self._autoAttackRange)
+		if not nearest then return end
+
+		-- Get the destructible ID
+		local idValue = nearest:FindFirstChild("DestructibleId")
+		if not idValue then return end
+		local destructibleId = idValue.Value
+
+		-- Update last attack time
+		self._lastAutoAttackTime = now
+
+		-- Send all equipped pets to visually attack
+		for uniqueId, _ in pairs(self._equippedPets) do
+			self:sendPetToAttack(uniqueId, destructibleId, nearest)
+		end
+
+		-- Fire the attack remote to server
+		self:fireAttackRemote(destructibleId)
+	end)
+end
+
+function PetController:_stopAutoAttack()
+	if self._autoAttackConnection then
+		self._autoAttackConnection:Disconnect()
+		self._autoAttackConnection = nil
+	end
+end
+
+--------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------
 function PetController:cleanup()
+	self:_stopAutoAttack()
 	for _, petInfo in pairs(self._equippedPets) do
 		if petInfo.model then
 			petInfo.model:Destroy()

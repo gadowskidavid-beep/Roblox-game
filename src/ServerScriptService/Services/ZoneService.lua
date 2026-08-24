@@ -21,8 +21,13 @@ ZoneService._destructibles = {}
 ZoneService._zonesFolder = nil
 
 -- Zone position offsets (each zone is spaced apart)
-local ZONE_SIZE = Vector3.new(100, 0, 100)
-local ZONE_SPACING = 120
+local ZONE_SIZE = Vector3.new(200, 0, 200)
+local ZONE_SPACING = 250
+
+-- How many destructibles to spawn per zone (distributed randomly)
+local DESTRUCTIBLES_PER_ZONE = 20
+-- Minimum distance between spawned destructibles (studs)
+local MIN_SPAWN_DISTANCE = 12
 
 function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._dataService = dataService
@@ -44,9 +49,14 @@ function ZoneService.init(dataService, currencyService, petService)
 	ZoneService.spawnZone(2)
 end
 
--- Get zone origin position
+-- Get zone origin position (bottom-left corner of the zone floor)
+-- The zone floor parts in the .rbxlx are centered at (zoneId-1)*ZONE_SPACING, 0, -100
+-- with size 200x2x200, so the floor spans from origin-100 to origin+100 on X and Z
 local function getZoneOrigin(zoneId)
-	return Vector3.new((zoneId - 1) * ZONE_SPACING, 0, 0)
+	local centerX = (zoneId - 1) * ZONE_SPACING
+	local centerZ = -100
+	-- Return the bottom-left corner of the zone
+	return Vector3.new(centerX - ZONE_SIZE.X / 2, 0, centerZ - ZONE_SIZE.Z / 2)
 end
 
 -- Spawn a full zone with ground and destructibles
@@ -77,6 +87,37 @@ function ZoneService.spawnZone(zoneId)
 	ZoneService.spawnDestructibles(zoneId, zoneFolder, origin)
 end
 
+-- Generate a random position within the zone floor, ensuring minimum distance from existing positions
+local function getRandomPositionInZone(origin, existingPositions)
+	local maxAttempts = 50
+	for _ = 1, maxAttempts do
+		-- Random X and Z within the zone floor area with some padding from edges
+		local padding = 10
+		local rx = origin.X + padding + math.random() * (ZONE_SIZE.X - padding * 2)
+		local rz = origin.Z + padding + math.random() * (ZONE_SIZE.Z - padding * 2)
+		local candidate = Vector3.new(rx, origin.Y, rz)
+
+		-- Check minimum distance from all existing positions
+		local tooClose = false
+		for _, pos in ipairs(existingPositions) do
+			local dist = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(candidate.X, 0, candidate.Z)).Magnitude
+			if dist < MIN_SPAWN_DISTANCE then
+				tooClose = true
+				break
+			end
+		end
+
+		if not tooClose then
+			return candidate
+		end
+	end
+
+	-- Fallback: return a random position even if spacing constraint fails
+	local rx = origin.X + 10 + math.random() * (ZONE_SIZE.X - 20)
+	local rz = origin.Z + 10 + math.random() * (ZONE_SIZE.Z - 20)
+	return Vector3.new(rx, origin.Y, rz)
+end
+
 -- Spawn destructibles within a zone
 function ZoneService.spawnDestructibles(zoneId, zoneFolder, origin)
 	local zoneDef = ZoneData.Zones[zoneId]
@@ -95,25 +136,24 @@ function ZoneService.spawnDestructibles(zoneId, zoneFolder, origin)
 		origin = getZoneOrigin(zoneId)
 	end
 
-	-- Configuration for destructible layout
+	-- Distribute destructibles randomly across the zone floor
 	local destructibleTypes = { "CoinPile", "DiamondPile", "Crate" }
-	local gridSpacing = 12
-	local startOffset = Vector3.new(10, 0, 10)
+	-- Weight distribution: more CoinPiles, fewer DiamondPiles, some Crates
+	local typeWeights = { "CoinPile", "CoinPile", "CoinPile", "CoinPile", "CoinPile",
+		"CoinPile", "CoinPile", "DiamondPile", "DiamondPile", "DiamondPile",
+		"DiamondPile", "Crate", "Crate", "Crate", "Crate",
+		"Crate", "CoinPile", "CoinPile", "DiamondPile", "Crate" }
 
-	local index = 0
-	for _, dtype in ipairs(destructibleTypes) do
+	local existingPositions = {}
+
+	for i = 1, DESTRUCTIBLES_PER_ZONE do
+		-- Pick a type from the weighted list
+		local dtype = typeWeights[((i - 1) % #typeWeights) + 1]
 		local dDef = zoneDef.destructibles[dtype]
 		if dDef then
-			-- Place 4 of each type in a grid pattern
-			for i = 1, 4 do
-				index = index + 1
-				local row = math.floor((index - 1) / 4)
-				local col = (index - 1) % 4
-
-				local position = origin + startOffset + Vector3.new(col * gridSpacing, 0, row * gridSpacing)
-
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, zoneFolder)
-			end
+			local position = getRandomPositionInZone(origin, existingPositions)
+			table.insert(existingPositions, position)
+			ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, zoneFolder)
 		end
 	end
 end
@@ -124,23 +164,23 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	local uniqueId = game:GetService("HttpService"):GenerateGUID(false)
 
 	if dtype == "CoinPile" then
-		-- Yellow cylinder
+		-- Yellow cylinder (larger for better visibility and targeting)
 		part = Instance.new("Part")
 		part.Shape = Enum.PartType.Cylinder
-		part.Size = Vector3.new(2, 3, 3)
+		part.Size = Vector3.new(3, 4, 4)
 		part.Color = Color3.fromRGB(255, 215, 0)
 		part.Material = Enum.Material.SmoothPlastic
 	elseif dtype == "DiamondPile" then
-		-- Blue wedge
+		-- Blue wedge (larger for better visibility and targeting)
 		part = Instance.new("WedgePart")
-		part.Size = Vector3.new(2, 3, 3)
+		part.Size = Vector3.new(3, 4, 4)
 		part.Color = Color3.fromRGB(0, 150, 255)
 		part.Material = Enum.Material.Neon
 	elseif dtype == "Crate" then
-		-- Brown cube
+		-- Brown cube (larger for better visibility and targeting)
 		part = Instance.new("Part")
 		part.Shape = Enum.PartType.Block
-		part.Size = Vector3.new(3, 3, 3)
+		part.Size = Vector3.new(4, 4, 4)
 		part.Color = Color3.fromRGB(139, 90, 43)
 		part.Material = Enum.Material.Wood
 	end
@@ -305,17 +345,18 @@ function ZoneService.attackDestructible(player, destructibleId)
 		-- Schedule respawn after 10 seconds
 		local zoneId = destructible.zoneId
 		local dtype = destructible.dtype
-		local position = destructible.position
 		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
 
 		-- Remove from tracking
 		ZoneService._destructibles[destructibleId] = nil
 
-		-- Respawn after delay
+		-- Respawn after delay at a new random position within the zone
 		task.delay(10, function()
 			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
 			if zoneFolder then
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position - Vector3.new(0, 2, 0), zoneFolder)
+				local origin = getZoneOrigin(zoneId)
+				local newPosition = getRandomPositionInZone(origin, {})
+				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder)
 			end
 		end)
 	else
