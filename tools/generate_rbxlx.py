@@ -2,15 +2,20 @@
 """
 Generate BATTLE_PETS.rbxlx place file from the src/ tree.
 
-Reads all .lua source files and embeds them into a valid Roblox place XML file
-(version 4) with procedural world geometry for zones, portals, gates, and
-destructible objects.
+Produces a valid Roblox Studio place file (version 4) with the correct XML
+structure so that scripts execute and GUI appears. Follows the exact format
+that Roblox Studio requires:
+- Proper xmlns attributes on root element
+- Meta ExplicitAutoJoints
+- External null/nil declarations
+- Scripts with Disabled=false and LinkedSource null
+- CFrame for positions (not Vector3 Position)
+- Lowercase "size" property name
+- Color3uint8 format for colors
 """
 
 import os
 import sys
-import xml.etree.ElementTree as ET
-from xml.etree.ElementTree import Element, SubElement
 
 # Project root is parent of tools/
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,415 +38,502 @@ def read_source(filepath):
         return f.read()
 
 
-def add_property(properties_elem, tag, name, value=None, children=None):
-    """Add a property element to a Properties container."""
-    prop = SubElement(properties_elem, tag)
-    prop.set("name", name)
-    if value is not None:
-        prop.text = value
-    if children:
-        for child_tag, child_text in children:
-            child = SubElement(prop, child_tag)
-            child.text = child_text
-    return prop
+def rgb_to_uint8(r, g, b):
+    """Convert RGB (0-255) to Color3uint8 integer format."""
+    # Color3uint8 is stored as: (255 << 24) | (R << 16) | (G << 8) | B
+    # Actually it's just a packed ARGB with A=255
+    return str((255 << 24) | (r << 16) | (g << 8) | b)
 
 
-def add_vector3(properties_elem, name, x, y, z):
-    """Add a Vector3 property."""
-    add_property(properties_elem, "Vector3", name, children=[
-        ("X", str(x)), ("Y", str(y)), ("Z", str(z))
-    ])
+def indent(level):
+    """Return indentation string."""
+    return "\t" * level
 
 
-def add_color3(properties_elem, name, r, g, b):
-    """Add a Color3 property (values 0-1)."""
-    add_property(properties_elem, "Color3", name, children=[
-        ("R", str(r)), ("G", str(g)), ("B", str(b))
-    ])
+def xml_escape(text):
+    """Escape special XML characters in text content."""
+    text = text.replace("&", "&amp;")
+    text = text.replace("<", "&lt;")
+    text = text.replace(">", "&gt;")
+    return text
 
 
-def add_string(properties_elem, name, value):
-    """Add a string property."""
-    add_property(properties_elem, "string", name, value)
+def make_cframe_props(x, y, z):
+    """Generate CFrame property XML lines (identity rotation)."""
+    return (
+        f"<CoordinateFrame name=\"CFrame\">\n"
+        f"\t\t\t\t\t<X>{x}</X><Y>{y}</Y><Z>{z}</Z>\n"
+        f"\t\t\t\t\t<R00>1</R00><R01>0</R01><R02>0</R02>\n"
+        f"\t\t\t\t\t<R10>0</R10><R11>1</R11><R12>0</R12>\n"
+        f"\t\t\t\t\t<R20>0</R20><R21>0</R21><R22>1</R22>\n"
+        f"\t\t\t\t</CoordinateFrame>"
+    )
 
 
-def add_bool(properties_elem, name, value):
-    """Add a bool property."""
-    add_property(properties_elem, "bool", name, "true" if value else "false")
+def make_vector3_size(x, y, z):
+    """Generate size property XML."""
+    return f'<Vector3 name="size">\n\t\t\t\t\t<X>{x}</X><Y>{y}</Y><Z>{z}</Z>\n\t\t\t\t</Vector3>'
 
 
-def add_float(properties_elem, name, value):
-    """Add a float property."""
-    add_property(properties_elem, "float", name, str(value))
+def make_part_xml(name, class_name, x, y, z, sx, sy, sz, r, g, b, material=256,
+                  transparency=0, shape_token=None, extra_props="", children="",
+                  lvl=2):
+    """Generate a complete Part/WedgePart/SpawnLocation Item XML block."""
+    ref = next_ref()
+    ind = indent(lvl)
+    ind1 = indent(lvl + 1)
+    ind2 = indent(lvl + 2)
 
-
-def add_token(properties_elem, name, value):
-    """Add a token property (enum)."""
-    add_property(properties_elem, "token", name, str(value))
-
-
-def add_source(properties_elem, source_code):
-    """Add a ProtectedString Source property.
-    
-    The source code is stored as element text. During final serialization,
-    we post-process to wrap it in CDATA for proper .rbxlx format.
-    """
-    prop = SubElement(properties_elem, "ProtectedString")
-    prop.set("name", "Source")
-    # Store source in text; we'll convert to CDATA during serialization
-    prop.text = source_code
-
-
-def create_item(parent, class_name, name, extra_props=None):
-    """Create an Item element with Name property."""
-    item = SubElement(parent, "Item")
-    item.set("class", class_name)
-    item.set("referent", next_ref())
-    props = SubElement(item, "Properties")
-    add_string(props, "Name", name)
-    if extra_props:
-        extra_props(props)
-    return item
-
-
-def create_part(parent, name, position, size, color_rgb, material=256,
-                transparency=0, shape=None):
-    """Create a Part Item with standard properties.
-    
-    color_rgb: tuple of (R, G, B) in 0-1 range
-    material: SmoothPlastic=256, Neon=288, Grass=1024, Wood=512, Slate=768
-    """
-    item = SubElement(parent, "Item")
-    item.set("class", "Part" if shape != "Wedge" else "WedgePart")
-    item.set("referent", next_ref())
-    props = SubElement(item, "Properties")
-    add_string(props, "Name", name)
-    add_bool(props, "Anchored", True)
-    add_vector3(props, "Position", *position)
-    add_vector3(props, "Size", *size)
-    add_color3(props, "Color", *color_rgb)
-    add_token(props, "Material", material)
+    # Build properties
+    props_lines = []
+    props_lines.append(f'{ind2}<string name="Name">{xml_escape(name)}</string>')
+    props_lines.append(f'{ind2}<bool name="Anchored">true</bool>')
+    props_lines.append(f'{ind2}{make_cframe_props(x, y, z)}')
+    props_lines.append(f'{ind2}{make_vector3_size(sx, sy, sz)}')
+    props_lines.append(f'{ind2}<Color3uint8 name="Color3uint8">{rgb_to_uint8(r, g, b)}</Color3uint8>')
+    props_lines.append(f'{ind2}<token name="Material">{material}</token>')
     if transparency > 0:
-        add_float(props, "Transparency", transparency)
-    if shape == "Cylinder":
-        add_token(props, "shape", 1)  # Cylinder shape enum
-    return item
+        props_lines.append(f'{ind2}<float name="Transparency">{transparency}</float>')
+    if shape_token is not None:
+        props_lines.append(f'{ind2}<token name="shape">{shape_token}</token>')
+    if extra_props:
+        props_lines.append(extra_props)
+
+    props_str = "\n".join(props_lines)
+
+    children_str = ""
+    if children:
+        children_str = f"\n{children}"
+
+    return (
+        f'{ind}<Item class="{class_name}" referent="{ref}">\n'
+        f'{ind1}<Properties>\n'
+        f'{props_str}\n'
+        f'{ind1}</Properties>{children_str}\n'
+        f'{ind}</Item>'
+    )
 
 
-def create_script_item(parent, class_name, name, source_code):
-    """Create a Script/LocalScript/ModuleScript with embedded source."""
-    item = SubElement(parent, "Item")
-    item.set("class", class_name)
-    item.set("referent", next_ref())
-    props = SubElement(item, "Properties")
-    add_string(props, "Name", name)
-    add_source(props, source_code)
-    if class_name == "Script":
-        add_token(props, "RunContext", 0)
-    return item
+def make_script_xml(class_name, name, source_code, lvl=2):
+    """Generate a Script/LocalScript/ModuleScript Item XML block."""
+    ref = next_ref()
+    ind = indent(lvl)
+    ind1 = indent(lvl + 1)
+    ind2 = indent(lvl + 2)
+
+    props_lines = []
+    props_lines.append(f'{ind2}<string name="Name">{xml_escape(name)}</string>')
+
+    # Scripts and LocalScripts need Disabled=false
+    if class_name in ("Script", "LocalScript"):
+        props_lines.append(f'{ind2}<bool name="Disabled">false</bool>')
+
+    # All script types need LinkedSource
+    props_lines.append(f'{ind2}<Content name="LinkedSource"><null></null></Content>')
+
+    # Source code in CDATA
+    props_lines.append(f'{ind2}<ProtectedString name="Source"><![CDATA[{source_code}]]></ProtectedString>')
+
+    props_str = "\n".join(props_lines)
+
+    return (
+        f'{ind}<Item class="{class_name}" referent="{ref}">\n'
+        f'{ind1}<Properties>\n'
+        f'{props_str}\n'
+        f'{ind1}</Properties>\n'
+        f'{ind}</Item>'
+    )
 
 
-def create_folder(parent, name):
-    """Create a Folder item."""
-    return create_item(parent, "Folder", name)
+def make_folder_xml(name, children_str, lvl=2):
+    """Generate a Folder Item XML block."""
+    ref = next_ref()
+    ind = indent(lvl)
+    ind1 = indent(lvl + 1)
+    ind2 = indent(lvl + 2)
+
+    return (
+        f'{ind}<Item class="Folder" referent="{ref}">\n'
+        f'{ind1}<Properties>\n'
+        f'{ind2}<string name="Name">{xml_escape(name)}</string>\n'
+        f'{ind1}</Properties>\n'
+        f'{children_str}\n'
+        f'{ind}</Item>'
+    )
 
 
-def build_workspace(root):
+def make_service_xml(class_name, name, children_str, extra_props="", lvl=1):
+    """Generate a top-level service Item (Workspace, Lighting, etc.)."""
+    ref = next_ref()
+    ind = indent(lvl)
+    ind1 = indent(lvl + 1)
+    ind2 = indent(lvl + 2)
+
+    props_lines = [f'{ind2}<string name="Name">{xml_escape(name)}</string>']
+    if extra_props:
+        props_lines.append(extra_props)
+    props_str = "\n".join(props_lines)
+
+    return (
+        f'{ind}<Item class="{class_name}" referent="{ref}">\n'
+        f'{ind1}<Properties>\n'
+        f'{props_str}\n'
+        f'{ind1}</Properties>\n'
+        f'{children_str}\n'
+        f'{ind}</Item>'
+    )
+
+
+def make_remote_event_xml(name, lvl=4):
+    """Generate a RemoteEvent Item."""
+    ref = next_ref()
+    ind = indent(lvl)
+    ind1 = indent(lvl + 1)
+    ind2 = indent(lvl + 2)
+    return (
+        f'{ind}<Item class="RemoteEvent" referent="{ref}">\n'
+        f'{ind1}<Properties>\n'
+        f'{ind2}<string name="Name">{xml_escape(name)}</string>\n'
+        f'{ind1}</Properties>\n'
+        f'{ind}</Item>'
+    )
+
+
+def make_remote_function_xml(name, lvl=4):
+    """Generate a RemoteFunction Item."""
+    ref = next_ref()
+    ind = indent(lvl)
+    ind1 = indent(lvl + 1)
+    ind2 = indent(lvl + 2)
+    return (
+        f'{ind}<Item class="RemoteFunction" referent="{ref}">\n'
+        f'{ind1}<Properties>\n'
+        f'{ind2}<string name="Name">{xml_escape(name)}</string>\n'
+        f'{ind1}</Properties>\n'
+        f'{ind}</Item>'
+    )
+
+
+def build_workspace():
     """Build the Workspace hierarchy with procedural geometry."""
-    workspace = create_item(root, "Workspace", "Workspace")
-
-    # Camera
-    camera = SubElement(workspace, "Item")
-    camera.set("class", "Camera")
-    camera.set("referent", next_ref())
-    cam_props = SubElement(camera, "Properties")
-    add_string(cam_props, "Name", "Camera")
-    add_token(cam_props, "CameraType", 0)
+    parts = []
 
     # SpawnLocation
-    create_part(workspace, "SpawnLocation", (0, 2, 0), (12, 1, 12),
-                (1, 1, 1), material=256)
-    # Override class to SpawnLocation
-    spawn_item = workspace[-1]
-    spawn_item.set("class", "SpawnLocation")
+    parts.append(make_part_xml(
+        "SpawnLocation", "SpawnLocation",
+        0, 2, 0, 12, 1, 12,
+        255, 255, 255, material=256
+    ))
 
     # Zone 1: Gruene Wiesen - large green baseplate
-    create_part(workspace, "Zone1_GrueneWiesen", (0, 0, -100), (200, 2, 200),
-                (0.3, 0.8, 0.2), material=1024)
+    parts.append(make_part_xml(
+        "Zone1_GrueneWiesen", "Part",
+        0, 0, -100, 200, 2, 200,
+        76, 204, 51, material=1024
+    ))
 
-    # Zone 1 Destructibles - Coin Piles (yellow cylinders)
+    # Zone 1 Coin Piles (yellow cylinders)
     coin_positions = [
         (-30, 3, -80), (-50, 3, -120), (20, 3, -60),
         (40, 3, -140), (-10, 3, -160), (60, 3, -90),
         (-70, 3, -50), (30, 3, -180)
     ]
-    for i, pos in enumerate(coin_positions):
-        create_part(workspace, f"CoinPile_{i+1}", pos, (3, 4, 3),
-                    (1, 0.85, 0.1), material=256, shape="Cylinder")
+    for i, pos in enumerate(coin_positions, 1):
+        parts.append(make_part_xml(
+            f"CoinPile_{i}", "Part",
+            pos[0], pos[1], pos[2], 3, 4, 3,
+            255, 217, 25, material=256, shape_token=1
+        ))
 
-    # Zone 1 Destructibles - Diamond Piles (blue wedges)
+    # Zone 1 Diamond Piles (blue wedges)
     diamond_positions = [
         (-20, 3, -110), (50, 3, -70), (-60, 3, -150),
         (10, 3, -190), (70, 3, -130)
     ]
-    for i, pos in enumerate(diamond_positions):
-        create_part(workspace, f"DiamondPile_{i+1}", pos, (3, 5, 3),
-                    (0.2, 0.5, 1.0), material=256, shape="Wedge")
+    for i, pos in enumerate(diamond_positions, 1):
+        parts.append(make_part_xml(
+            f"DiamondPile_{i}", "WedgePart",
+            pos[0], pos[1], pos[2], 3, 5, 3,
+            51, 128, 255, material=256
+        ))
 
-    # Zone 1 Destructibles - Crates (brown cubes)
+    # Zone 1 Crates (brown cubes)
     crate_positions = [
         (-40, 3, -90), (25, 3, -100), (-15, 3, -140),
         (55, 3, -50), (-65, 3, -170), (35, 3, -160)
     ]
-    for i, pos in enumerate(crate_positions):
-        create_part(workspace, f"Crate_{i+1}", pos, (4, 4, 4),
-                    (0.55, 0.35, 0.15), material=512)
+    for i, pos in enumerate(crate_positions, 1):
+        parts.append(make_part_xml(
+            f"Crate_{i}", "Part",
+            pos[0], pos[1], pos[2], 4, 4, 4,
+            140, 89, 38, material=512
+        ))
 
-    # Zone 2: Stadt - gray baseplate offset
-    create_part(workspace, "Zone2_Stadt", (250, 0, -100), (200, 2, 200),
-                (0.5, 0.5, 0.55), material=768)
+    # Zone 2: Stadt - gray baseplate
+    parts.append(make_part_xml(
+        "Zone2_Stadt", "Part",
+        250, 0, -100, 200, 2, 200,
+        128, 128, 140, material=768
+    ))
 
-    # Zone 2 Destructibles - urban themed
+    # Zone 2 Urban Crates
     urban_crate_positions = [
         (220, 3, -80), (260, 3, -120), (240, 3, -60),
         (280, 3, -140), (230, 3, -160), (270, 3, -90)
     ]
-    for i, pos in enumerate(urban_crate_positions):
-        create_part(workspace, f"UrbanCrate_{i+1}", pos, (5, 5, 5),
-                    (0.4, 0.4, 0.45), material=256)
+    for i, pos in enumerate(urban_crate_positions, 1):
+        parts.append(make_part_xml(
+            f"UrbanCrate_{i}", "Part",
+            pos[0], pos[1], pos[2], 5, 5, 5,
+            102, 102, 115, material=256
+        ))
 
+    # Zone 2 Urban Coin Piles
     urban_coin_positions = [
         (210, 3, -110), (290, 3, -70), (245, 3, -150),
         (265, 3, -190), (235, 3, -40)
     ]
-    for i, pos in enumerate(urban_coin_positions):
-        create_part(workspace, f"UrbanCoinPile_{i+1}", pos, (3, 4, 3),
-                    (1, 0.85, 0.1), material=256, shape="Cylinder")
+    for i, pos in enumerate(urban_coin_positions, 1):
+        parts.append(make_part_xml(
+            f"UrbanCoinPile_{i}", "Part",
+            pos[0], pos[1], pos[2], 3, 4, 3,
+            255, 217, 25, material=256, shape_token=1
+        ))
 
     # Campaign Portal - purple Neon archway
-    create_part(workspace, "CampaignPortal", (50, 10, -100), (2, 16, 12),
-                (0.6, 0.1, 0.9), material=288, transparency=0.2)
+    parts.append(make_part_xml(
+        "CampaignPortal", "Part",
+        50, 10, -100, 2, 16, 12,
+        153, 25, 230, material=288, transparency=0.2
+    ))
 
     # Zone Gate between Zone 1 and Zone 2
-    create_part(workspace, "ZoneGate_1_2", (125, 8, -100), (4, 16, 16),
-                (0.9, 0.7, 0.1), material=288, transparency=0.3)
+    parts.append(make_part_xml(
+        "ZoneGate_1_2", "Part",
+        125, 8, -100, 4, 16, 16,
+        230, 179, 25, material=288, transparency=0.3
+    ))
 
-    # Terrain (empty placeholder)
-    terrain = SubElement(workspace, "Item")
-    terrain.set("class", "Terrain")
-    terrain.set("referent", next_ref())
-    t_props = SubElement(terrain, "Properties")
-    add_string(t_props, "Name", "Terrain")
+    # Terrain (placeholder)
+    terrain_ref = next_ref()
+    parts.append(
+        f'\t\t<Item class="Terrain" referent="{terrain_ref}">\n'
+        f'\t\t\t<Properties>\n'
+        f'\t\t\t\t<string name="Name">Terrain</string>\n'
+        f'\t\t\t</Properties>\n'
+        f'\t\t</Item>'
+    )
 
-    return workspace
+    # Camera
+    camera_ref = next_ref()
+    parts.append(
+        f'\t\t<Item class="Camera" referent="{camera_ref}">\n'
+        f'\t\t\t<Properties>\n'
+        f'\t\t\t\t<string name="Name">Camera</string>\n'
+        f'\t\t\t\t<token name="CameraType">0</token>\n'
+        f'\t\t\t</Properties>\n'
+        f'\t\t</Item>'
+    )
+
+    children_str = "\n".join(parts)
+    return make_service_xml("Workspace", "Workspace", children_str)
 
 
-def build_lighting(root):
-    """Build Lighting with ColorCorrection and Atmosphere."""
-    lighting = create_item(root, "Lighting", "Lighting")
-    props = lighting.find("Properties")
-    add_color3(props, "Ambient", 0.5, 0.5, 0.6)
-    add_color3(props, "OutdoorAmbient", 0.7, 0.7, 0.75)
-    add_float(props, "Brightness", 2)
-    add_float(props, "ClockTime", 14)
+def build_lighting():
+    """Build Lighting with ColorCorrection, Atmosphere, and Bloom."""
+    children = []
 
     # ColorCorrectionEffect
-    cc = SubElement(lighting, "Item")
-    cc.set("class", "ColorCorrectionEffect")
-    cc.set("referent", next_ref())
-    cc_props = SubElement(cc, "Properties")
-    add_string(cc_props, "Name", "ColorCorrection")
-    add_float(cc_props, "Brightness", 0.05)
-    add_float(cc_props, "Contrast", 0.1)
-    add_float(cc_props, "Saturation", 0.2)
+    cc_ref = next_ref()
+    children.append(
+        f'\t\t<Item class="ColorCorrectionEffect" referent="{cc_ref}">\n'
+        f'\t\t\t<Properties>\n'
+        f'\t\t\t\t<string name="Name">ColorCorrection</string>\n'
+        f'\t\t\t\t<float name="Brightness">0.05</float>\n'
+        f'\t\t\t\t<float name="Contrast">0.1</float>\n'
+        f'\t\t\t\t<float name="Saturation">0.2</float>\n'
+        f'\t\t\t</Properties>\n'
+        f'\t\t</Item>'
+    )
 
     # Atmosphere
-    atmo = SubElement(lighting, "Item")
-    atmo.set("class", "Atmosphere")
-    atmo.set("referent", next_ref())
-    atmo_props = SubElement(atmo, "Properties")
-    add_string(atmo_props, "Name", "Atmosphere")
-    add_float(atmo_props, "Density", 0.3)
-    add_float(atmo_props, "Offset", 0.25)
+    atmo_ref = next_ref()
+    children.append(
+        f'\t\t<Item class="Atmosphere" referent="{atmo_ref}">\n'
+        f'\t\t\t<Properties>\n'
+        f'\t\t\t\t<string name="Name">Atmosphere</string>\n'
+        f'\t\t\t\t<float name="Density">0.3</float>\n'
+        f'\t\t\t\t<float name="Offset">0.25</float>\n'
+        f'\t\t\t</Properties>\n'
+        f'\t\t</Item>'
+    )
 
-    # BloomEffect for cartoon glow
-    bloom = SubElement(lighting, "Item")
-    bloom.set("class", "BloomEffect")
-    bloom.set("referent", next_ref())
-    bloom_props = SubElement(bloom, "Properties")
-    add_string(bloom_props, "Name", "Bloom")
-    add_float(bloom_props, "Intensity", 0.4)
-    add_float(bloom_props, "Size", 24)
-    add_float(bloom_props, "Threshold", 0.9)
+    # BloomEffect
+    bloom_ref = next_ref()
+    children.append(
+        f'\t\t<Item class="BloomEffect" referent="{bloom_ref}">\n'
+        f'\t\t\t<Properties>\n'
+        f'\t\t\t\t<string name="Name">Bloom</string>\n'
+        f'\t\t\t\t<float name="Intensity">0.4</float>\n'
+        f'\t\t\t\t<float name="Size">24</float>\n'
+        f'\t\t\t\t<float name="Threshold">0.9</float>\n'
+        f'\t\t\t</Properties>\n'
+        f'\t\t</Item>'
+    )
 
-    return lighting
+    children_str = "\n".join(children)
+
+    # Extra lighting properties
+    extra_props = (
+        f'\t\t\t<float name="Brightness">2</float>\n'
+        f'\t\t\t<float name="ClockTime">14</float>'
+    )
+
+    return make_service_xml("Lighting", "Lighting", children_str, extra_props=extra_props)
 
 
-def build_replicated_storage(root):
-    """Build ReplicatedStorage with shared modules and remotes."""
-    rs = create_item(root, "ReplicatedStorage", "ReplicatedStorage")
-
-    # Shared folder
-    shared = create_folder(rs, "Shared")
-    shared_modules = ["Config", "PetData", "ZoneData", "CampaignData"]
-    for mod_name in shared_modules:
-        filepath = os.path.join(SRC_DIR, "ReplicatedStorage", "Shared",
-                                f"{mod_name}.lua")
+def build_replicated_storage():
+    """Build ReplicatedStorage with Shared modules and Remotes."""
+    # Shared folder with ModuleScripts
+    shared_modules = []
+    module_names = ["Config", "PetData", "ZoneData", "CampaignData"]
+    for mod_name in module_names:
+        filepath = os.path.join(SRC_DIR, "ReplicatedStorage", "Shared", f"{mod_name}.lua")
         source = read_source(filepath)
-        create_script_item(shared, "ModuleScript", mod_name, source)
+        shared_modules.append(make_script_xml("ModuleScript", mod_name, source, lvl=4))
 
-    # Remotes folder with RemoteEvents and RemoteFunctions
-    remotes = create_folder(rs, "Remotes")
+    shared_children = "\n".join(shared_modules)
+    shared_folder = make_folder_xml("Shared", shared_children, lvl=3)
 
-    # RemoteEvents used by the game
+    # Remotes folder - extracted from Main.server.lua
     remote_events = [
-        "CurrencyUpdate", "PetUpdate", "ZoneUpdate",
-        "SpawnPet", "DespawnPet", "DestroyObject",
-        "UnlockZone", "EquipPet", "UnequipPet",
-        "StartCampaign", "CampaignUpdate", "CampaignEnd",
-        "UpgradePet", "OpenEgg", "EggResult",
-        "PlayEffect", "UINotification"
+        "CurrencyUpdated",
+        "PetInventoryUpdated",
+        "PetEquipped",
+        "PetUnequipped",
+        "ZoneUnlocked",
+        "DestructibleDamaged",
+        "DestructibleDestroyed",
+        "EggHatchStart",
+        "EggHatchResult",
+        "CampaignBattleUpdate",
+        "CampaignVictory",
+        "CampaignDefeat",
+        "UpgradeUpdated",
+        "CollectCurrency",
     ]
-    for event_name in remote_events:
-        create_item(remotes, "RemoteEvent", event_name)
 
-    # RemoteFunctions
     remote_functions = [
-        "GetPlayerData", "GetPets", "GetZones",
-        "PurchaseEgg", "GetCampaignStatus"
+        "HatchEgg",
+        "EquipPet",
+        "UnequipPet",
+        "DeletePet",
+        "DeletePets",
+        "UnlockZone",
+        "PurchaseUpgrade",
+        "GetPlayerData",
+        "StartCampaignLevel",
+        "DeployPetInCampaign",
+        "AttackDestructible",
     ]
-    for func_name in remote_functions:
-        create_item(remotes, "RemoteFunction", func_name)
 
-    return rs
+    remotes_items = []
+    for ev_name in remote_events:
+        remotes_items.append(make_remote_event_xml(ev_name, lvl=4))
+    for fn_name in remote_functions:
+        remotes_items.append(make_remote_function_xml(fn_name, lvl=4))
+
+    remotes_children = "\n".join(remotes_items)
+    remotes_folder = make_folder_xml("Remotes", remotes_children, lvl=3)
+
+    # Combine into ReplicatedStorage
+    rs_children = f"{shared_folder}\n{remotes_folder}"
+    return make_service_xml("ReplicatedStorage", "ReplicatedStorage", rs_children)
 
 
-def build_server_script_service(root):
-    """Build ServerScriptService with server scripts."""
-    sss = create_item(root, "ServerScriptService", "ServerScriptService")
-
-    # Server folder
-    server = create_folder(sss, "Server")
-
-    # Main.server.lua -> Script class
-    main_path = os.path.join(SRC_DIR, "ServerScriptService", "Server",
-                             "Main.server.lua")
-    main_source = read_source(main_path)
-    create_script_item(server, "Script", "Main", main_source)
-
-    # Services folder
-    services = create_folder(server, "Services")
-    service_files = [
+def build_server_script_service():
+    """Build ServerScriptService with Server scripts."""
+    # Services folder with ModuleScripts
+    service_names = [
         "DataService", "CurrencyService", "PetService",
         "UpgradeService", "ZoneService", "CampaignService", "EggService"
     ]
-    for svc_name in service_files:
-        filepath = os.path.join(SRC_DIR, "ServerScriptService", "Server",
-                                "Services", f"{svc_name}.lua")
+    service_scripts = []
+    for svc_name in service_names:
+        filepath = os.path.join(SRC_DIR, "ServerScriptService", "Server", "Services", f"{svc_name}.lua")
         source = read_source(filepath)
-        create_script_item(services, "ModuleScript", svc_name, source)
+        service_scripts.append(make_script_xml("ModuleScript", svc_name, source, lvl=5))
 
-    return sss
+    services_children = "\n".join(service_scripts)
+    services_folder = make_folder_xml("Services", services_children, lvl=4)
+
+    # Main.server.lua -> Script
+    main_path = os.path.join(SRC_DIR, "ServerScriptService", "Server", "Main.server.lua")
+    main_source = read_source(main_path)
+    main_script = make_script_xml("Script", "Main", main_source, lvl=4)
+
+    # Server folder containing Main script and Services subfolder
+    server_children = f"{main_script}\n{services_folder}"
+    server_folder = make_folder_xml("Server", server_children, lvl=3)
+
+    return make_service_xml("ServerScriptService", "ServerScriptService", server_folder)
 
 
-def build_starter_player(root):
-    """Build StarterPlayer with client scripts."""
-    sp = create_item(root, "StarterPlayer", "StarterPlayer")
+def build_starter_player():
+    """Build StarterPlayer with StarterPlayerScripts."""
+    # Controller ModuleScripts
+    controller_names = ["UIController", "PetController", "CampaignController", "EffectsController"]
+    controller_scripts = []
+    for ctrl_name in controller_names:
+        filepath = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", "Client", f"{ctrl_name}.lua")
+        source = read_source(filepath)
+        controller_scripts.append(make_script_xml("ModuleScript", ctrl_name, source, lvl=5))
 
-    # StarterPlayerScripts
-    sps = create_item(sp, "StarterPlayerScripts", "StarterPlayerScripts")
+    # Main.client.lua -> LocalScript
+    main_path = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", "Client", "Main.client.lua")
+    main_source = read_source(main_path)
+    main_script = make_script_xml("LocalScript", "Main", main_source, lvl=5)
 
     # Client folder
-    client = create_folder(sps, "Client")
+    client_children = f"{main_script}\n" + "\n".join(controller_scripts)
+    client_folder = make_folder_xml("Client", client_children, lvl=4)
 
-    # Main.client.lua -> LocalScript class
-    main_path = os.path.join(SRC_DIR, "StarterPlayer",
-                             "StarterPlayerScripts", "Client",
-                             "Main.client.lua")
-    main_source = read_source(main_path)
-    create_script_item(client, "LocalScript", "Main", main_source)
+    # StarterPlayerScripts
+    sps_ref = next_ref()
+    sps_xml = (
+        f'\t\t<Item class="StarterPlayerScripts" referent="{sps_ref}">\n'
+        f'\t\t\t<Properties>\n'
+        f'\t\t\t\t<string name="Name">StarterPlayerScripts</string>\n'
+        f'\t\t\t</Properties>\n'
+        f'{client_folder}\n'
+        f'\t\t</Item>'
+    )
 
-    # Controller ModuleScripts
-    controller_files = [
-        "UIController", "PetController",
-        "CampaignController", "EffectsController"
-    ]
-    for ctrl_name in controller_files:
-        filepath = os.path.join(SRC_DIR, "StarterPlayer",
-                                "StarterPlayerScripts", "Client",
-                                f"{ctrl_name}.lua")
-        source = read_source(filepath)
-        create_script_item(client, "ModuleScript", ctrl_name, source)
-
-    return sp
+    return make_service_xml("StarterPlayer", "StarterPlayer", sps_xml)
 
 
-def build_starter_gui(root):
-    """Build StarterGui placeholder."""
-    return create_item(root, "StarterGui", "StarterGui")
+def build_starter_gui():
+    """Build empty StarterGui."""
+    ref = next_ref()
+    return (
+        f'\t<Item class="StarterGui" referent="{ref}">\n'
+        f'\t\t<Properties>\n'
+        f'\t\t\t<string name="Name">StarterGui</string>\n'
+        f'\t\t</Properties>\n'
+        f'\t</Item>'
+    )
 
 
-def build_sound_service(root):
+def build_sound_service():
     """Build SoundService placeholder."""
-    return create_item(root, "SoundService", "SoundService")
-
-
-def serialize_with_cdata(root):
-    """Serialize the XML tree, wrapping ProtectedString content in CDATA.
-    
-    ElementTree doesn't support CDATA natively, so we use a custom serializer
-    that properly handles ProtectedString elements with CDATA sections.
-    """
-    lines = []
-    lines.append("<?xml version='1.0' encoding='utf-8'?>")
-    _serialize_element(root, lines, 0)
-    return "\n".join(lines)
-
-
-def _serialize_element(elem, lines, level):
-    """Recursively serialize an element, using CDATA for ProtectedString."""
-    indent = "  " * level
-    tag = elem.tag
-    attrs = "".join(f' {k}="{_xml_escape_attr(v)}"' for k, v in elem.attrib.items())
-
-    is_protected_string = (tag == "ProtectedString")
-
-    if len(elem) == 0 and elem.text is None:
-        # Self-closing tag
-        lines.append(f"{indent}<{tag}{attrs} />")
-    elif len(elem) == 0:
-        # Leaf element with text
-        if is_protected_string and elem.text:
-            # Use CDATA for source code
-            lines.append(f"{indent}<{tag}{attrs}><![CDATA[{elem.text}]]></{tag}>")
-        else:
-            escaped_text = _xml_escape(elem.text) if elem.text else ""
-            lines.append(f"{indent}<{tag}{attrs}>{escaped_text}</{tag}>")
-    else:
-        # Element with children
-        lines.append(f"{indent}<{tag}{attrs}>")
-        for child in elem:
-            _serialize_element(child, lines, level + 1)
-        lines.append(f"{indent}</{tag}>")
-
-
-def _xml_escape(text):
-    """Escape text for XML content."""
-    if text is None:
-        return ""
-    text = text.replace("&", "&amp;")
-    text = text.replace("<", "&lt;")
-    text = text.replace(">", "&gt;")
-    return text
-
-
-def _xml_escape_attr(text):
-    """Escape text for XML attributes."""
-    text = text.replace("&", "&amp;")
-    text = text.replace("<", "&lt;")
-    text = text.replace(">", "&gt;")
-    text = text.replace('"', "&quot;")
-    return text
+    ref = next_ref()
+    return (
+        f'\t<Item class="SoundService" referent="{ref}">\n'
+        f'\t\t<Properties>\n'
+        f'\t\t\t<string name="Name">SoundService</string>\n'
+        f'\t\t</Properties>\n'
+        f'\t</Item>'
+    )
 
 
 def main():
@@ -453,33 +545,56 @@ def main():
         print(f"ERROR: Source directory not found: {SRC_DIR}", file=sys.stderr)
         sys.exit(1)
 
-    # Build XML tree
-    root = Element("roblox")
-    root.set("version", "4")
+    # Build all sections
+    workspace_xml = build_workspace()
+    lighting_xml = build_lighting()
+    replicated_storage_xml = build_replicated_storage()
+    server_script_service_xml = build_server_script_service()
+    starter_player_xml = build_starter_player()
+    starter_gui_xml = build_starter_gui()
+    sound_service_xml = build_sound_service()
 
-    # Build all top-level services
-    build_workspace(root)
-    build_lighting(root)
-    build_replicated_storage(root)
-    build_server_script_service(root)
-    build_starter_player(root)
-    build_starter_gui(root)
-    build_sound_service(root)
-
-    # Serialize with CDATA support
-    xml_content = serialize_with_cdata(root)
+    # Assemble complete file with correct Roblox XML header
+    xml_content = (
+        '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" '
+        'version="4">\n'
+        '\t<Meta name="ExplicitAutoJoints">true</Meta>\n'
+        '\t<External>null</External>\n'
+        '\t<External>nil</External>\n'
+        f'{workspace_xml}\n'
+        f'{server_script_service_xml}\n'
+        f'{starter_player_xml}\n'
+        f'{replicated_storage_xml}\n'
+        f'{starter_gui_xml}\n'
+        f'{lighting_xml}\n'
+        f'{sound_service_xml}\n'
+        '</roblox>\n'
+    )
 
     # Write output
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(xml_content)
-        f.write("\n")
 
     # Report stats
     file_size = os.path.getsize(OUTPUT_FILE)
-    item_count = len(root.findall(".//Item"))
+    # Count items
+    item_count = xml_content.count('<Item class=')
+    script_count = xml_content.count('class="Script"')
+    local_script_count = xml_content.count('class="LocalScript"')
+    module_script_count = xml_content.count('class="ModuleScript"')
+    remote_event_count = xml_content.count('class="RemoteEvent"')
+    remote_function_count = xml_content.count('class="RemoteFunction"')
+
     print(f"Generated: {OUTPUT_FILE}")
     print(f"  File size: {file_size:,} bytes")
-    print(f"  Total items: {item_count}")
+    print(f"  Total Items: {item_count}")
+    print(f"  Scripts: {script_count}")
+    print(f"  LocalScripts: {local_script_count}")
+    print(f"  ModuleScripts: {module_script_count}")
+    print(f"  RemoteEvents: {remote_event_count}")
+    print(f"  RemoteFunctions: {remote_function_count}")
     print("Done!")
 
 

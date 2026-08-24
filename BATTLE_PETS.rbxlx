@@ -1,1595 +1,647 @@
-<?xml version='1.0' encoding='utf-8'?>
-<roblox version="4">
-  <Item class="Workspace" referent="RBX00000001">
-    <Properties>
-      <string name="Name">Workspace</string>
-    </Properties>
-    <Item class="Camera" referent="RBX00000002">
-      <Properties>
-        <string name="Name">Camera</string>
-        <token name="CameraType">0</token>
-      </Properties>
-    </Item>
-    <Item class="SpawnLocation" referent="RBX00000003">
-      <Properties>
-        <string name="Name">SpawnLocation</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>0</X>
-          <Y>2</Y>
-          <Z>0</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>12</X>
-          <Y>1</Y>
-          <Z>12</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>1</G>
-          <B>1</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000004">
-      <Properties>
-        <string name="Name">Zone1_GrueneWiesen</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>0</X>
-          <Y>0</Y>
-          <Z>-100</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>200</X>
-          <Y>2</Y>
-          <Z>200</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.3</R>
-          <G>0.8</G>
-          <B>0.2</B>
-        </Color3>
-        <token name="Material">1024</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000005">
-      <Properties>
-        <string name="Name">CoinPile_1</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-30</X>
-          <Y>3</Y>
-          <Z>-80</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000006">
-      <Properties>
-        <string name="Name">CoinPile_2</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-50</X>
-          <Y>3</Y>
-          <Z>-120</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000007">
-      <Properties>
-        <string name="Name">CoinPile_3</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>20</X>
-          <Y>3</Y>
-          <Z>-60</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000008">
-      <Properties>
-        <string name="Name">CoinPile_4</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>40</X>
-          <Y>3</Y>
-          <Z>-140</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000009">
-      <Properties>
-        <string name="Name">CoinPile_5</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-10</X>
-          <Y>3</Y>
-          <Z>-160</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000000A">
-      <Properties>
-        <string name="Name">CoinPile_6</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>60</X>
-          <Y>3</Y>
-          <Z>-90</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000000B">
-      <Properties>
-        <string name="Name">CoinPile_7</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-70</X>
-          <Y>3</Y>
-          <Z>-50</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000000C">
-      <Properties>
-        <string name="Name">CoinPile_8</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>30</X>
-          <Y>3</Y>
-          <Z>-180</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="WedgePart" referent="RBX0000000D">
-      <Properties>
-        <string name="Name">DiamondPile_1</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-20</X>
-          <Y>3</Y>
-          <Z>-110</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>5</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.2</R>
-          <G>0.5</G>
-          <B>1.0</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="WedgePart" referent="RBX0000000E">
-      <Properties>
-        <string name="Name">DiamondPile_2</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>50</X>
-          <Y>3</Y>
-          <Z>-70</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>5</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.2</R>
-          <G>0.5</G>
-          <B>1.0</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="WedgePart" referent="RBX0000000F">
-      <Properties>
-        <string name="Name">DiamondPile_3</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-60</X>
-          <Y>3</Y>
-          <Z>-150</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>5</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.2</R>
-          <G>0.5</G>
-          <B>1.0</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="WedgePart" referent="RBX00000010">
-      <Properties>
-        <string name="Name">DiamondPile_4</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>10</X>
-          <Y>3</Y>
-          <Z>-190</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>5</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.2</R>
-          <G>0.5</G>
-          <B>1.0</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="WedgePart" referent="RBX00000011">
-      <Properties>
-        <string name="Name">DiamondPile_5</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>70</X>
-          <Y>3</Y>
-          <Z>-130</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>5</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.2</R>
-          <G>0.5</G>
-          <B>1.0</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000012">
-      <Properties>
-        <string name="Name">Crate_1</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-40</X>
-          <Y>3</Y>
-          <Z>-90</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>4</X>
-          <Y>4</Y>
-          <Z>4</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.55</R>
-          <G>0.35</G>
-          <B>0.15</B>
-        </Color3>
-        <token name="Material">512</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000013">
-      <Properties>
-        <string name="Name">Crate_2</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>25</X>
-          <Y>3</Y>
-          <Z>-100</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>4</X>
-          <Y>4</Y>
-          <Z>4</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.55</R>
-          <G>0.35</G>
-          <B>0.15</B>
-        </Color3>
-        <token name="Material">512</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000014">
-      <Properties>
-        <string name="Name">Crate_3</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-15</X>
-          <Y>3</Y>
-          <Z>-140</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>4</X>
-          <Y>4</Y>
-          <Z>4</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.55</R>
-          <G>0.35</G>
-          <B>0.15</B>
-        </Color3>
-        <token name="Material">512</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000015">
-      <Properties>
-        <string name="Name">Crate_4</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>55</X>
-          <Y>3</Y>
-          <Z>-50</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>4</X>
-          <Y>4</Y>
-          <Z>4</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.55</R>
-          <G>0.35</G>
-          <B>0.15</B>
-        </Color3>
-        <token name="Material">512</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000016">
-      <Properties>
-        <string name="Name">Crate_5</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>-65</X>
-          <Y>3</Y>
-          <Z>-170</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>4</X>
-          <Y>4</Y>
-          <Z>4</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.55</R>
-          <G>0.35</G>
-          <B>0.15</B>
-        </Color3>
-        <token name="Material">512</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000017">
-      <Properties>
-        <string name="Name">Crate_6</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>35</X>
-          <Y>3</Y>
-          <Z>-160</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>4</X>
-          <Y>4</Y>
-          <Z>4</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.55</R>
-          <G>0.35</G>
-          <B>0.15</B>
-        </Color3>
-        <token name="Material">512</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000018">
-      <Properties>
-        <string name="Name">Zone2_Stadt</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>250</X>
-          <Y>0</Y>
-          <Z>-100</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>200</X>
-          <Y>2</Y>
-          <Z>200</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.5</R>
-          <G>0.5</G>
-          <B>0.55</B>
-        </Color3>
-        <token name="Material">768</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000019">
-      <Properties>
-        <string name="Name">UrbanCrate_1</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>220</X>
-          <Y>3</Y>
-          <Z>-80</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>5</X>
-          <Y>5</Y>
-          <Z>5</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.4</R>
-          <G>0.4</G>
-          <B>0.45</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000001A">
-      <Properties>
-        <string name="Name">UrbanCrate_2</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>260</X>
-          <Y>3</Y>
-          <Z>-120</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>5</X>
-          <Y>5</Y>
-          <Z>5</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.4</R>
-          <G>0.4</G>
-          <B>0.45</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000001B">
-      <Properties>
-        <string name="Name">UrbanCrate_3</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>240</X>
-          <Y>3</Y>
-          <Z>-60</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>5</X>
-          <Y>5</Y>
-          <Z>5</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.4</R>
-          <G>0.4</G>
-          <B>0.45</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000001C">
-      <Properties>
-        <string name="Name">UrbanCrate_4</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>280</X>
-          <Y>3</Y>
-          <Z>-140</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>5</X>
-          <Y>5</Y>
-          <Z>5</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.4</R>
-          <G>0.4</G>
-          <B>0.45</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000001D">
-      <Properties>
-        <string name="Name">UrbanCrate_5</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>230</X>
-          <Y>3</Y>
-          <Z>-160</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>5</X>
-          <Y>5</Y>
-          <Z>5</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.4</R>
-          <G>0.4</G>
-          <B>0.45</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000001E">
-      <Properties>
-        <string name="Name">UrbanCrate_6</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>270</X>
-          <Y>3</Y>
-          <Z>-90</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>5</X>
-          <Y>5</Y>
-          <Z>5</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.4</R>
-          <G>0.4</G>
-          <B>0.45</B>
-        </Color3>
-        <token name="Material">256</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX0000001F">
-      <Properties>
-        <string name="Name">UrbanCoinPile_1</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>210</X>
-          <Y>3</Y>
-          <Z>-110</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000020">
-      <Properties>
-        <string name="Name">UrbanCoinPile_2</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>290</X>
-          <Y>3</Y>
-          <Z>-70</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000021">
-      <Properties>
-        <string name="Name">UrbanCoinPile_3</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>245</X>
-          <Y>3</Y>
-          <Z>-150</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000022">
-      <Properties>
-        <string name="Name">UrbanCoinPile_4</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>265</X>
-          <Y>3</Y>
-          <Z>-190</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000023">
-      <Properties>
-        <string name="Name">UrbanCoinPile_5</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>235</X>
-          <Y>3</Y>
-          <Z>-40</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>3</X>
-          <Y>4</Y>
-          <Z>3</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>1</R>
-          <G>0.85</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">256</token>
-        <token name="shape">1</token>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000024">
-      <Properties>
-        <string name="Name">CampaignPortal</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>50</X>
-          <Y>10</Y>
-          <Z>-100</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>2</X>
-          <Y>16</Y>
-          <Z>12</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.6</R>
-          <G>0.1</G>
-          <B>0.9</B>
-        </Color3>
-        <token name="Material">288</token>
-        <float name="Transparency">0.2</float>
-      </Properties>
-    </Item>
-    <Item class="Part" referent="RBX00000025">
-      <Properties>
-        <string name="Name">ZoneGate_1_2</string>
-        <bool name="Anchored">true</bool>
-        <Vector3 name="Position">
-          <X>125</X>
-          <Y>8</Y>
-          <Z>-100</Z>
-        </Vector3>
-        <Vector3 name="Size">
-          <X>4</X>
-          <Y>16</Y>
-          <Z>16</Z>
-        </Vector3>
-        <Color3 name="Color">
-          <R>0.9</R>
-          <G>0.7</G>
-          <B>0.1</B>
-        </Color3>
-        <token name="Material">288</token>
-        <float name="Transparency">0.3</float>
-      </Properties>
-    </Item>
-    <Item class="Terrain" referent="RBX00000026">
-      <Properties>
-        <string name="Name">Terrain</string>
-      </Properties>
-    </Item>
-  </Item>
-  <Item class="Lighting" referent="RBX00000027">
-    <Properties>
-      <string name="Name">Lighting</string>
-      <Color3 name="Ambient">
-        <R>0.5</R>
-        <G>0.5</G>
-        <B>0.6</B>
-      </Color3>
-      <Color3 name="OutdoorAmbient">
-        <R>0.7</R>
-        <G>0.7</G>
-        <B>0.75</B>
-      </Color3>
-      <float name="Brightness">2</float>
-      <float name="ClockTime">14</float>
-    </Properties>
-    <Item class="ColorCorrectionEffect" referent="RBX00000028">
-      <Properties>
-        <string name="Name">ColorCorrection</string>
-        <float name="Brightness">0.05</float>
-        <float name="Contrast">0.1</float>
-        <float name="Saturation">0.2</float>
-      </Properties>
-    </Item>
-    <Item class="Atmosphere" referent="RBX00000029">
-      <Properties>
-        <string name="Name">Atmosphere</string>
-        <float name="Density">0.3</float>
-        <float name="Offset">0.25</float>
-      </Properties>
-    </Item>
-    <Item class="BloomEffect" referent="RBX0000002A">
-      <Properties>
-        <string name="Name">Bloom</string>
-        <float name="Intensity">0.4</float>
-        <float name="Size">24</float>
-        <float name="Threshold">0.9</float>
-      </Properties>
-    </Item>
-  </Item>
-  <Item class="ReplicatedStorage" referent="RBX0000002B">
-    <Properties>
-      <string name="Name">ReplicatedStorage</string>
-    </Properties>
-    <Item class="Folder" referent="RBX0000002C">
-      <Properties>
-        <string name="Name">Shared</string>
-      </Properties>
-      <Item class="ModuleScript" referent="RBX0000002D">
-        <Properties>
-          <string name="Name">Config</string>
-          <ProtectedString name="Source"><![CDATA[--[[
-	Config.lua - Main game configuration for Battle Pets
-	Contains all game constants, upgrade definitions, zone costs, and campaign parameters.
-]]
-
-local Config = {}
-
--- General
-Config.GameName = "Battle Pets"
-Config.DataStoreName = "BattlePets_v1"
-
--- Currency types
-Config.Currencies = {
-	Coins = "Coins",
-	Diamonds = "Diamonds",
-}
-
--- Pet rarity weights (must sum to 100)
-Config.RarityWeights = {
-	Common = 60,
-	Uncommon = 25,
-	Rare = 10,
-	Epic = 4,
-	Legendary = 1,
-}
-
--- Egg costs per zone
-Config.EggCosts = {
-	[1] = { Coins = 100 },
-	[2] = { Coins = 500 },
-	[3] = { Coins = 2000 },
-	[4] = { Coins = 5000 },
-	[5] = { Coins = 15000 },
-	[6] = { Coins = 40000 },
-	[7] = { Coins = 100000 },
-	[8] = { Coins = 300000 },
-}
-
--- Max equipped pets (base value before upgrades)
-Config.MaxEquippedPetsBase = 3
-
--- Upgrade definitions
-Config.Upgrades = {
-	Friendship = {
-		displayName = "Friendship",
-		description = "Equip more pets at once",
-		levels = {
-			{ cost = 500, bonus = 1 },
-			{ cost = 2000, bonus = 2 },
-			{ cost = 10000, bonus = 3 },
-		},
-	},
-	Diamonds = {
-		displayName = "Diamonds",
-		description = "More diamonds per drop",
-		levels = {
-			{ cost = 1000, bonus = 1.5 },
-			{ cost = 5000, bonus = 2.0 },
-			{ cost = 20000, bonus = 3.0 },
-		},
-	},
-	ExtraSlots = {
-		displayName = "Extra Slots",
-		description = "More pet inventory slots",
-		levels = {
-			{ cost = 750, bonus = 5 },
-			{ cost = 3000, bonus = 10 },
-			{ cost = 12000, bonus = 20 },
-		},
-	},
-	FasterPets = {
-		displayName = "Faster Pets",
-		description = "Pets move faster",
-		levels = {
-			{ cost = 600, bonus = 1.2 },
-			{ cost = 2500, bonus = 1.5 },
-			{ cost = 10000, bonus = 2.0 },
-		},
-	},
-	StrongPets = {
-		displayName = "Strong Pets",
-		description = "Pets deal more damage",
-		levels = {
-			{ cost = 800, bonus = 1.3 },
-			{ cost = 3500, bonus = 1.7 },
-			{ cost = 15000, bonus = 2.5 },
-		},
-	},
-	LuckyEggs = {
-		displayName = "Lucky Eggs",
-		description = "Better chances from eggs",
-		levels = {
-			{ cost = 1200, bonus = 1.2 },
-			{ cost = 5000, bonus = 1.5 },
-			{ cost = 25000, bonus = 2.0 },
-		},
-	},
-	GoldenPetsChance = {
-		displayName = "Golden Pets Chance",
-		description = "Chance to hatch golden variants",
-		levels = {
-			{ cost = 2000, bonus = 0.05 },
-			{ cost = 8000, bonus = 0.10 },
-			{ cost = 30000, bonus = 0.20 },
-		},
-	},
-	Sprinting = {
-		displayName = "Sprinting",
-		description = "Player moves faster",
-		levels = {
-			{ cost = 400, bonus = 1.2 },
-			{ cost = 1500, bonus = 1.5 },
-			{ cost = 6000, bonus = 2.0 },
-		},
-	},
-	DropCloner = {
-		displayName = "Drop Cloner",
-		description = "Chance to double drops",
-		levels = {
-			{ cost = 1500, bonus = 0.10 },
-			{ cost = 6000, bonus = 0.20 },
-			{ cost = 25000, bonus = 0.35 },
-		},
-	},
-	LuckyDrops = {
-		displayName = "Lucky Drops",
-		description = "More coins per drop",
-		levels = {
-			{ cost = 500, bonus = 1.3 },
-			{ cost = 2000, bonus = 1.7 },
-			{ cost = 8000, bonus = 2.5 },
-		},
-	},
-}
-
--- Zone gate costs (coins required to unlock each zone)
-Config.ZoneGateCosts = {
-	[1] = 0,         -- Gruene Wiesen (free/starter)
-	[2] = 500,       -- Stadt
-	[3] = 2000,      -- Strand
-	[4] = 5000,      -- Wueste
-	[5] = 15000,     -- Eiswelt
-	[6] = 40000,     -- Vulkan
-	[7] = 100000,    -- Himmel
-	[8] = 300000,    -- Weltraum
-}
-
--- Campaign parameters
-Config.Campaign = {
-	EnergyRegenRate = 1,   -- energy per second
-	MaxEnergy = 100,
-	BaseHealth = 500,      -- base HP for player's base
-	EnemyBaseHealth = 500, -- base HP for enemy base (scales with level)
-	PetDeployCosts = {
-		Common = 10,
-		Uncommon = 20,
-		Rare = 35,
-		Epic = 45,
-		Legendary = 50,
-	},
-}
-
-return Config
-]]></ProtectedString>
-        </Properties>
-      </Item>
-      <Item class="ModuleScript" referent="RBX0000002E">
-        <Properties>
-          <string name="Name">PetData</string>
-          <ProtectedString name="Source"><![CDATA[--[[
-	PetData.lua - Pet and Egg definitions for Battle Pets
-	Defines all pets with their stats and egg types with weighted pet pools.
-]]
-
-local PetData = {}
-
--- Pet definitions
-PetData.Pets = {
-	Buddy = {
-		name = "Buddy",
-		species = "Dog",
-		rarity = "Common",
-		baseDamage = 5,
-		baseSpeed = 10,
-		modelDescription = "A friendly brown dog with floppy ears and a wagging tail",
-	},
-	Whiskers = {
-		name = "Whiskers",
-		species = "Cat",
-		rarity = "Uncommon",
-		baseDamage = 8,
-		baseSpeed = 12,
-		modelDescription = "A sleek gray cat with bright green eyes and a long tail",
-	},
-	Blaze = {
-		name = "Blaze",
-		species = "Dragon",
-		rarity = "Rare",
-		baseDamage = 15,
-		baseSpeed = 8,
-		modelDescription = "A small red dragon with tiny wings and glowing orange scales",
-	},
-	Inferno = {
-		name = "Inferno",
-		species = "Phoenix",
-		rarity = "Legendary",
-		baseDamage = 30,
-		baseSpeed = 14,
-		modelDescription = "A majestic golden phoenix wreathed in bright flames",
-	},
-}
-
--- Egg type definitions
-PetData.Eggs = {
-	BasicEgg = {
-		name = "Basic Egg",
-		zone = 1,
-		petPool = {
-			{ petId = "Buddy", weight = 70 },
-			{ petId = "Whiskers", weight = 30 },
-		},
-	},
-	PremiumEgg = {
-		name = "Premium Egg",
-		zone = 2,
-		petPool = {
-			{ petId = "Buddy", weight = 40 },
-			{ petId = "Whiskers", weight = 30 },
-			{ petId = "Blaze", weight = 20 },
-			{ petId = "Inferno", weight = 10 },
-		},
-	},
-}
-
-return PetData
-]]></ProtectedString>
-        </Properties>
-      </Item>
-      <Item class="ModuleScript" referent="RBX0000002F">
-        <Properties>
-          <string name="Name">ZoneData</string>
-          <ProtectedString name="Source"><![CDATA[--[[
-	ZoneData.lua - Zone definitions for Battle Pets
-	Defines all 8 zones with their properties, colors, and destructible types.
-	Only zones 1-2 are fully playable in the MVP, but all 8 are defined for progression.
-]]
-
-local ZoneData = {}
-
-ZoneData.Zones = {
-	[1] = {
-		name = "Gruene Wiesen",
-		unlockCost = 0,
-		groundColor = Color3.fromRGB(76, 153, 0),
-		skyColor = Color3.fromRGB(135, 206, 235),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 10,
-				drops = { Coins = 5 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 20,
-				drops = { Diamonds = 2 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 15,
-				drops = { Coins = 10, Diamonds = 1 },
-			},
-		},
-	},
-	[2] = {
-		name = "Stadt",
-		unlockCost = 500,
-		groundColor = Color3.fromRGB(128, 128, 128),
-		skyColor = Color3.fromRGB(170, 200, 220),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 25,
-				drops = { Coins = 12 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 50,
-				drops = { Diamonds = 5 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 35,
-				drops = { Coins = 25, Diamonds = 3 },
-			},
-		},
-	},
-	[3] = {
-		name = "Strand",
-		unlockCost = 2000,
-		groundColor = Color3.fromRGB(237, 201, 136),
-		skyColor = Color3.fromRGB(100, 180, 255),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 50,
-				drops = { Coins = 25 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 100,
-				drops = { Diamonds = 10 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 70,
-				drops = { Coins = 50, Diamonds = 5 },
-			},
-		},
-	},
-	[4] = {
-		name = "Wueste",
-		unlockCost = 5000,
-		groundColor = Color3.fromRGB(210, 180, 100),
-		skyColor = Color3.fromRGB(255, 200, 100),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 100,
-				drops = { Coins = 50 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 200,
-				drops = { Diamonds = 20 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 150,
-				drops = { Coins = 100, Diamonds = 10 },
-			},
-		},
-	},
-	[5] = {
-		name = "Eiswelt",
-		unlockCost = 15000,
-		groundColor = Color3.fromRGB(200, 230, 255),
-		skyColor = Color3.fromRGB(180, 210, 240),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 200,
-				drops = { Coins = 100 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 400,
-				drops = { Diamonds = 40 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 300,
-				drops = { Coins = 200, Diamonds = 20 },
-			},
-		},
-	},
-	[6] = {
-		name = "Vulkan",
-		unlockCost = 40000,
-		groundColor = Color3.fromRGB(80, 30, 10),
-		skyColor = Color3.fromRGB(200, 80, 30),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 400,
-				drops = { Coins = 200 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 800,
-				drops = { Diamonds = 80 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 600,
-				drops = { Coins = 400, Diamonds = 40 },
-			},
-		},
-	},
-	[7] = {
-		name = "Himmel",
-		unlockCost = 100000,
-		groundColor = Color3.fromRGB(255, 255, 220),
-		skyColor = Color3.fromRGB(200, 220, 255),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 800,
-				drops = { Coins = 400 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 1600,
-				drops = { Diamonds = 160 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 1200,
-				drops = { Coins = 800, Diamonds = 80 },
-			},
-		},
-	},
-	[8] = {
-		name = "Weltraum",
-		unlockCost = 300000,
-		groundColor = Color3.fromRGB(20, 10, 40),
-		skyColor = Color3.fromRGB(10, 5, 30),
-		destructibles = {
-			CoinPile = {
-				displayName = "Coin Pile",
-				hp = 1600,
-				drops = { Coins = 800 },
-			},
-			DiamondPile = {
-				displayName = "Diamond Pile",
-				hp = 3200,
-				drops = { Diamonds = 320 },
-			},
-			Crate = {
-				displayName = "Crate",
-				hp = 2400,
-				drops = { Coins = 1600, Diamonds = 160 },
-			},
-		},
-	},
-}
-
-return ZoneData
-]]></ProtectedString>
-        </Properties>
-      </Item>
-      <Item class="ModuleScript" referent="RBX00000030">
-        <Properties>
-          <string name="Name">CampaignData</string>
-          <ProtectedString name="Source"><![CDATA[--[[
-	CampaignData.lua - Campaign level and enemy definitions for Battle Pets
-	Defines 48 levels across 8 regions, enemy types, wave compositions, and rewards.
-]]
-
-local CampaignData = {}
-
--- Enemy type definitions
-CampaignData.Enemies = {
-	Slime = {
-		name = "Slime",
-		hp = 20,
-		damage = 3,
-		speed = 4,
-		modelDescription = "A bouncy green blob with googly eyes",
-	},
-	Goblin = {
-		name = "Goblin",
-		hp = 35,
-		damage = 5,
-		speed = 6,
-		modelDescription = "A small purple goblin with pointy ears and a wooden club",
-	},
-	Golem = {
-		name = "Golem",
-		hp = 60,
-		damage = 8,
-		speed = 3,
-		modelDescription = "A large stone creature with glowing blue runes",
-	},
-	DragonKing = {
-		name = "Dragon King",
-		isBoss = true,
-		hp = 200,
-		damage = 15,
-		speed = 5,
-		modelDescription = "A massive dark dragon with golden horns and fiery breath",
-	},
-}
-
--- Energy costs to deploy pets (based on rarity)
-CampaignData.DeployCosts = {
-	Common = 10,
-	Uncommon = 20,
-	Rare = 35,
-	Epic = 45,
-	Legendary = 50,
-}
-
--- Region names (one per 6 levels)
-CampaignData.Regions = {
-	[1] = "Verdant Fields",
-	[2] = "Urban Ruins",
-	[3] = "Coastal Shore",
-	[4] = "Desert Sands",
-	[5] = "Frozen Tundra",
-	[6] = "Volcanic Depths",
-	[7] = "Sky Citadel",
-	[8] = "Cosmic Void",
-}
-
--- Helper to compute the scale factor for a given level
-local function getScaleFactor(level)
-	return 1 + (level - 1) * 0.15
-end
-
--- Generate all 48 levels
-CampaignData.Levels = {}
-
-for region = 1, 8 do
-	for stage = 1, 6 do
-		local levelNum = (region - 1) * 6 + stage
-		local isBoss = (stage == 6)
-		local scale = getScaleFactor(levelNum)
-
-		-- Determine wave composition
-		local waves = {}
-		if isBoss then
-			-- Boss levels: 3 waves of regular enemies + boss wave
-			waves[1] = {
-				{ enemy = "Slime", count = math.ceil(3 * scale) },
-				{ enemy = "Goblin", count = math.ceil(2 * scale) },
-			}
-			waves[2] = {
-				{ enemy = "Goblin", count = math.ceil(3 * scale) },
-				{ enemy = "Golem", count = math.ceil(1 * scale) },
-			}
-			waves[3] = {
-				{ enemy = "Golem", count = math.ceil(2 * scale) },
-				{ enemy = "Goblin", count = math.ceil(2 * scale) },
-			}
-			waves[4] = {
-				{ enemy = "DragonKing", count = 1 },
-			}
-		elseif stage <= 2 then
-			-- Early levels: mostly slimes
-			waves[1] = {
-				{ enemy = "Slime", count = math.ceil(3 * scale) },
-			}
-			waves[2] = {
-				{ enemy = "Slime", count = math.ceil(4 * scale) },
-			}
-		elseif stage <= 4 then
-			-- Mid levels: mixed enemies
-			waves[1] = {
-				{ enemy = "Slime", count = math.ceil(3 * scale) },
-				{ enemy = "Goblin", count = math.ceil(1 * scale) },
-			}
-			waves[2] = {
-				{ enemy = "Goblin", count = math.ceil(2 * scale) },
-				{ enemy = "Slime", count = math.ceil(2 * scale) },
-			}
-			waves[3] = {
-				{ enemy = "Golem", count = math.ceil(1 * scale) },
-				{ enemy = "Goblin", count = math.ceil(2 * scale) },
-			}
-		else
-			-- Stage 5: harder mix before boss
-			waves[1] = {
-				{ enemy = "Goblin", count = math.ceil(3 * scale) },
-				{ enemy = "Golem", count = math.ceil(1 * scale) },
-			}
-			waves[2] = {
-				{ enemy = "Golem", count = math.ceil(2 * scale) },
-				{ enemy = "Goblin", count = math.ceil(3 * scale) },
-			}
-			waves[3] = {
-				{ enemy = "Golem", count = math.ceil(2 * scale) },
-				{ enemy = "Slime", count = math.ceil(4 * scale) },
-			}
-		end
-
-		-- Determine rewards
-		local rewards = {
-			Coins = math.floor(50 * scale * region),
-			Diamonds = math.floor(5 * scale * region),
-		}
-
-		-- Boss levels give special egg rewards
-		if isBoss then
-			rewards.SpecialEgg = true
-			rewards.Coins = rewards.Coins * 3
-			rewards.Diamonds = rewards.Diamonds * 3
-		end
-
-		-- Enemy base health scales with level
-		local enemyBaseHP = math.floor(500 * scale)
-
-		CampaignData.Levels[levelNum] = {
-			levelNum = levelNum,
-			region = region,
-			regionName = CampaignData.Regions[region],
-			stage = stage,
-			isBoss = isBoss,
-			waves = waves,
-			rewards = rewards,
-			enemyBaseHP = enemyBaseHP,
-			energyCost = 5 + math.floor(levelNum / 6),
-		}
-	end
-end
-
-return CampaignData
-]]></ProtectedString>
-        </Properties>
-      </Item>
-    </Item>
-    <Item class="Folder" referent="RBX00000031">
-      <Properties>
-        <string name="Name">Remotes</string>
-      </Properties>
-      <Item class="RemoteEvent" referent="RBX00000032">
-        <Properties>
-          <string name="Name">CurrencyUpdate</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000033">
-        <Properties>
-          <string name="Name">PetUpdate</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000034">
-        <Properties>
-          <string name="Name">ZoneUpdate</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000035">
-        <Properties>
-          <string name="Name">SpawnPet</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000036">
-        <Properties>
-          <string name="Name">DespawnPet</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000037">
-        <Properties>
-          <string name="Name">DestroyObject</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000038">
-        <Properties>
-          <string name="Name">UnlockZone</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000039">
-        <Properties>
-          <string name="Name">EquipPet</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX0000003A">
-        <Properties>
-          <string name="Name">UnequipPet</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX0000003B">
-        <Properties>
-          <string name="Name">StartCampaign</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX0000003C">
-        <Properties>
-          <string name="Name">CampaignUpdate</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX0000003D">
-        <Properties>
-          <string name="Name">CampaignEnd</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX0000003E">
-        <Properties>
-          <string name="Name">UpgradePet</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX0000003F">
-        <Properties>
-          <string name="Name">OpenEgg</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000040">
-        <Properties>
-          <string name="Name">EggResult</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000041">
-        <Properties>
-          <string name="Name">PlayEffect</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteEvent" referent="RBX00000042">
-        <Properties>
-          <string name="Name">UINotification</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteFunction" referent="RBX00000043">
-        <Properties>
-          <string name="Name">GetPlayerData</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteFunction" referent="RBX00000044">
-        <Properties>
-          <string name="Name">GetPets</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteFunction" referent="RBX00000045">
-        <Properties>
-          <string name="Name">GetZones</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteFunction" referent="RBX00000046">
-        <Properties>
-          <string name="Name">PurchaseEgg</string>
-        </Properties>
-      </Item>
-      <Item class="RemoteFunction" referent="RBX00000047">
-        <Properties>
-          <string name="Name">GetCampaignStatus</string>
-        </Properties>
-      </Item>
-    </Item>
-  </Item>
-  <Item class="ServerScriptService" referent="RBX00000048">
-    <Properties>
-      <string name="Name">ServerScriptService</string>
-    </Properties>
-    <Item class="Folder" referent="RBX00000049">
-      <Properties>
-        <string name="Name">Server</string>
-      </Properties>
-      <Item class="Script" referent="RBX0000004A">
-        <Properties>
-          <string name="Name">Main</string>
-          <ProtectedString name="Source"><![CDATA[--[[
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<External>null</External>
+	<External>nil</External>
+	<Item class="Workspace" referent="RBX00000026">
+		<Properties>
+			<string name="Name">Workspace</string>
+		</Properties>
+		<Item class="SpawnLocation" referent="RBX00000001">
+			<Properties>
+				<string name="Name">SpawnLocation</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>0</X><Y>2</Y><Z>0</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>12</X><Y>1</Y><Z>12</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294967295</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000002">
+			<Properties>
+				<string name="Name">Zone1_GrueneWiesen</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>0</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4283223091</Color3uint8>
+				<token name="Material">1024</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000003">
+			<Properties>
+				<string name="Name">CoinPile_1</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-30</X><Y>3</Y><Z>-80</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000004">
+			<Properties>
+				<string name="Name">CoinPile_2</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-50</X><Y>3</Y><Z>-120</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000005">
+			<Properties>
+				<string name="Name">CoinPile_3</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>20</X><Y>3</Y><Z>-60</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000006">
+			<Properties>
+				<string name="Name">CoinPile_4</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>40</X><Y>3</Y><Z>-140</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000007">
+			<Properties>
+				<string name="Name">CoinPile_5</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-10</X><Y>3</Y><Z>-160</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000008">
+			<Properties>
+				<string name="Name">CoinPile_6</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>60</X><Y>3</Y><Z>-90</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000009">
+			<Properties>
+				<string name="Name">CoinPile_7</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-70</X><Y>3</Y><Z>-50</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000000A">
+			<Properties>
+				<string name="Name">CoinPile_8</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>30</X><Y>3</Y><Z>-180</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="WedgePart" referent="RBX0000000B">
+			<Properties>
+				<string name="Name">DiamondPile_1</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-20</X><Y>3</Y><Z>-110</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>5</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4281565439</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="WedgePart" referent="RBX0000000C">
+			<Properties>
+				<string name="Name">DiamondPile_2</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>50</X><Y>3</Y><Z>-70</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>5</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4281565439</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="WedgePart" referent="RBX0000000D">
+			<Properties>
+				<string name="Name">DiamondPile_3</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-60</X><Y>3</Y><Z>-150</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>5</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4281565439</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="WedgePart" referent="RBX0000000E">
+			<Properties>
+				<string name="Name">DiamondPile_4</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>10</X><Y>3</Y><Z>-190</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>5</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4281565439</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="WedgePart" referent="RBX0000000F">
+			<Properties>
+				<string name="Name">DiamondPile_5</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>70</X><Y>3</Y><Z>-130</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>5</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4281565439</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000010">
+			<Properties>
+				<string name="Name">Crate_1</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-40</X><Y>3</Y><Z>-90</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287387942</Color3uint8>
+				<token name="Material">512</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000011">
+			<Properties>
+				<string name="Name">Crate_2</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>25</X><Y>3</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287387942</Color3uint8>
+				<token name="Material">512</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000012">
+			<Properties>
+				<string name="Name">Crate_3</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-15</X><Y>3</Y><Z>-140</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287387942</Color3uint8>
+				<token name="Material">512</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000013">
+			<Properties>
+				<string name="Name">Crate_4</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>55</X><Y>3</Y><Z>-50</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287387942</Color3uint8>
+				<token name="Material">512</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000014">
+			<Properties>
+				<string name="Name">Crate_5</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>-65</X><Y>3</Y><Z>-170</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287387942</Color3uint8>
+				<token name="Material">512</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000015">
+			<Properties>
+				<string name="Name">Crate_6</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>35</X><Y>3</Y><Z>-160</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287387942</Color3uint8>
+				<token name="Material">512</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000016">
+			<Properties>
+				<string name="Name">Zone2_Stadt</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>250</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4286611596</Color3uint8>
+				<token name="Material">768</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000017">
+			<Properties>
+				<string name="Name">UrbanCrate_1</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>220</X><Y>3</Y><Z>-80</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>5</X><Y>5</Y><Z>5</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4284900979</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000018">
+			<Properties>
+				<string name="Name">UrbanCrate_2</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>260</X><Y>3</Y><Z>-120</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>5</X><Y>5</Y><Z>5</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4284900979</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000019">
+			<Properties>
+				<string name="Name">UrbanCrate_3</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>240</X><Y>3</Y><Z>-60</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>5</X><Y>5</Y><Z>5</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4284900979</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001A">
+			<Properties>
+				<string name="Name">UrbanCrate_4</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>280</X><Y>3</Y><Z>-140</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>5</X><Y>5</Y><Z>5</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4284900979</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001B">
+			<Properties>
+				<string name="Name">UrbanCrate_5</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>230</X><Y>3</Y><Z>-160</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>5</X><Y>5</Y><Z>5</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4284900979</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001C">
+			<Properties>
+				<string name="Name">UrbanCrate_6</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>270</X><Y>3</Y><Z>-90</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>5</X><Y>5</Y><Z>5</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4284900979</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001D">
+			<Properties>
+				<string name="Name">UrbanCoinPile_1</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>210</X><Y>3</Y><Z>-110</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001E">
+			<Properties>
+				<string name="Name">UrbanCoinPile_2</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>290</X><Y>3</Y><Z>-70</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001F">
+			<Properties>
+				<string name="Name">UrbanCoinPile_3</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>245</X><Y>3</Y><Z>-150</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000020">
+			<Properties>
+				<string name="Name">UrbanCoinPile_4</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>265</X><Y>3</Y><Z>-190</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000021">
+			<Properties>
+				<string name="Name">UrbanCoinPile_5</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>235</X><Y>3</Y><Z>-40</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>3</X><Y>4</Y><Z>3</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294957337</Color3uint8>
+				<token name="Material">256</token>
+				<token name="shape">1</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000022">
+			<Properties>
+				<string name="Name">CampaignPortal</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>50</X><Y>10</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>2</X><Y>16</Y><Z>12</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4288223718</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.2</float>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000023">
+			<Properties>
+				<string name="Name">ZoneGate_1_2</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>125</X><Y>8</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>16</Y><Z>16</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4293309209</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.3</float>
+			</Properties>
+		</Item>
+		<Item class="Terrain" referent="RBX00000024">
+			<Properties>
+				<string name="Name">Terrain</string>
+			</Properties>
+		</Item>
+		<Item class="Camera" referent="RBX00000025">
+			<Properties>
+				<string name="Name">Camera</string>
+				<token name="CameraType">0</token>
+			</Properties>
+		</Item>
+	</Item>
+	<Item class="ServerScriptService" referent="RBX00000055">
+		<Properties>
+			<string name="Name">ServerScriptService</string>
+		</Properties>
+			<Item class="Folder" referent="RBX00000054">
+				<Properties>
+					<string name="Name">Server</string>
+				</Properties>
+				<Item class="Script" referent="RBX00000053">
+					<Properties>
+						<string name="Name">Main</string>
+						<bool name="Disabled">false</bool>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
 	Main.server.lua - Server entry point for Battle Pets
 	Initializes all services, creates RemoteEvents/RemoteFunctions,
 	and connects player lifecycle events.
@@ -1845,17 +897,17 @@ end
 
 print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
-          <token name="RunContext">0</token>
-        </Properties>
-      </Item>
-      <Item class="Folder" referent="RBX0000004B">
-        <Properties>
-          <string name="Name">Services</string>
-        </Properties>
-        <Item class="ModuleScript" referent="RBX0000004C">
-          <Properties>
-            <string name="Name">DataService</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+					</Properties>
+				</Item>
+				<Item class="Folder" referent="RBX00000052">
+					<Properties>
+						<string name="Name">Services</string>
+					</Properties>
+					<Item class="ModuleScript" referent="RBX0000004B">
+						<Properties>
+							<string name="Name">DataService</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	DataService.lua - Player data persistence service
 	Handles save/load with DataStoreService, caching, and auto-save.
 ]]
@@ -2022,12 +1074,13 @@ end
 
 return DataService
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX0000004D">
-          <Properties>
-            <string name="Name">CurrencyService</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX0000004C">
+						<Properties>
+							<string name="Name">CurrencyService</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	CurrencyService.lua - Manages coin and diamond transactions
 	Server-authoritative: validates all transactions and prevents negative balances.
 ]]
@@ -2209,12 +1262,13 @@ end
 
 return CurrencyService
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX0000004E">
-          <Properties>
-            <string name="Name">PetService</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX0000004D">
+						<Properties>
+							<string name="Name">PetService</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	PetService.lua - Pet inventory management
 	Handles hatching, equipping, unequipping, and deleting pets.
 	Server-authoritative with unique IDs and validation.
@@ -2563,12 +1617,13 @@ end
 
 return PetService
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX0000004F">
-          <Properties>
-            <string name="Name">UpgradeService</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX0000004E">
+						<Properties>
+							<string name="Name">UpgradeService</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	UpgradeService.lua - Manages purchasing and querying upgrades
 	Validates costs, deducts currency, and increments upgrade levels.
 ]]
@@ -2679,12 +1734,13 @@ end
 
 return UpgradeService
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX00000050">
-          <Properties>
-            <string name="Name">ZoneService</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX0000004F">
+						<Properties>
+							<string name="Name">ZoneService</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	ZoneService.lua - Zone unlocking and destructible management
 	Spawns procedural Part-based destructibles, handles damage and drops.
 ]]
@@ -3019,12 +2075,13 @@ end
 
 return ZoneService
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX00000051">
-          <Properties>
-            <string name="Name">CampaignService</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX00000050">
+						<Properties>
+							<string name="Name">CampaignService</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	CampaignService.lua - Campaign battle logic (Battle Cats style)
 	Manages battle state per player: deploying pets, enemy waves, combat, and victory/defeat.
 ]]
@@ -3501,12 +2558,13 @@ end
 
 return CampaignService
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX00000052">
-          <Properties>
-            <string name="Name">EggService</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX00000051">
+						<Properties>
+							<string name="Name">EggService</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	EggService.lua - Egg hatching orchestration
 	Validates purchase, triggers animation events, and delegates to PetService for hatching.
 ]]
@@ -3648,27 +2706,29 @@ end
 
 return EggService
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-      </Item>
-    </Item>
-  </Item>
-  <Item class="StarterPlayer" referent="RBX00000053">
-    <Properties>
-      <string name="Name">StarterPlayer</string>
-    </Properties>
-    <Item class="StarterPlayerScripts" referent="RBX00000054">
-      <Properties>
-        <string name="Name">StarterPlayerScripts</string>
-      </Properties>
-      <Item class="Folder" referent="RBX00000055">
-        <Properties>
-          <string name="Name">Client</string>
-        </Properties>
-        <Item class="LocalScript" referent="RBX00000056">
-          <Properties>
-            <string name="Name">Main</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+				</Item>
+			</Item>
+	</Item>
+	<Item class="StarterPlayer" referent="RBX0000005D">
+		<Properties>
+			<string name="Name">StarterPlayer</string>
+		</Properties>
+		<Item class="StarterPlayerScripts" referent="RBX0000005C">
+			<Properties>
+				<string name="Name">StarterPlayerScripts</string>
+			</Properties>
+				<Item class="Folder" referent="RBX0000005B">
+					<Properties>
+						<string name="Name">Client</string>
+					</Properties>
+					<Item class="LocalScript" referent="RBX0000005A">
+						<Properties>
+							<string name="Name">Main</string>
+							<bool name="Disabled">false</bool>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	Main.client.lua - Client entry point for Battle Pets
 	Initializes all client controllers, connects to RemoteEvents/RemoteFunctions,
 	sets up per-frame updates (pet following, effects), and handles input.
@@ -4020,12 +3080,13 @@ player.CharacterAdded:Connect(onCharacterAdded)
 --------------------------------------------------------------------------------
 print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX00000057">
-          <Properties>
-            <string name="Name">UIController</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX00000056">
+						<Properties>
+							<string name="Name">UIController</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	UIController.lua - Complete Pet Simulator 1 style UI for Battle Pets
 	Creates all UI elements procedurally via code (no external assets).
 	Responsive layout using UDim2 scale values for PC, tablet, and phone.
@@ -5482,12 +4543,13 @@ end
 
 return UIController
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX00000058">
-          <Properties>
-            <string name="Name">PetController</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX00000057">
+						<Properties>
+							<string name="Name">PetController</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	PetController.lua - Pet visual management for Battle Pets
 	Creates procedural pet models (Part-based), handles following/orbiting the player,
 	animates pets toward destructibles to attack, and shows floating damage numbers.
@@ -5867,12 +4929,13 @@ end
 
 return PetController
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX00000059">
-          <Properties>
-            <string name="Name">CampaignController</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX00000058">
+						<Properties>
+							<string name="Name">CampaignController</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	CampaignController.lua - Campaign battle client for Battle Pets
 	Manages the lane-based battle UI: player base (left), enemy base (right),
 	energy system, pet deployment cards, entity movement visualization,
@@ -6773,12 +5836,13 @@ end
 
 return CampaignController
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="RBX0000005A">
-          <Properties>
-            <string name="Name">EffectsController</string>
-            <ProtectedString name="Source"><![CDATA[--[[
+						</Properties>
+					</Item>
+					<Item class="ModuleScript" referent="RBX00000059">
+						<Properties>
+							<string name="Name">EffectsController</string>
+							<Content name="LinkedSource"><null></null></Content>
+							<ProtectedString name="Source"><![CDATA[--[[
 	EffectsController.lua - Visual effects system for Battle Pets
 	Handles floating number popups, egg hatching animations, zone unlock effects,
 	and progress bars above destructibles. All visuals are procedural (no external assets).
@@ -7214,19 +6278,805 @@ end
 
 return EffectsController
 ]]></ProtectedString>
-          </Properties>
-        </Item>
-      </Item>
-    </Item>
-  </Item>
-  <Item class="StarterGui" referent="RBX0000005B">
-    <Properties>
-      <string name="Name">StarterGui</string>
-    </Properties>
-  </Item>
-  <Item class="SoundService" referent="RBX0000005C">
-    <Properties>
-      <string name="Name">SoundService</string>
-    </Properties>
-  </Item>
+						</Properties>
+					</Item>
+				</Item>
+		</Item>
+	</Item>
+	<Item class="ReplicatedStorage" referent="RBX0000004A">
+		<Properties>
+			<string name="Name">ReplicatedStorage</string>
+		</Properties>
+			<Item class="Folder" referent="RBX0000002F">
+				<Properties>
+					<string name="Name">Shared</string>
+				</Properties>
+				<Item class="ModuleScript" referent="RBX0000002B">
+					<Properties>
+						<string name="Name">Config</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	Config.lua - Main game configuration for Battle Pets
+	Contains all game constants, upgrade definitions, zone costs, and campaign parameters.
+]]
+
+local Config = {}
+
+-- General
+Config.GameName = "Battle Pets"
+Config.DataStoreName = "BattlePets_v1"
+
+-- Currency types
+Config.Currencies = {
+	Coins = "Coins",
+	Diamonds = "Diamonds",
+}
+
+-- Pet rarity weights (must sum to 100)
+Config.RarityWeights = {
+	Common = 60,
+	Uncommon = 25,
+	Rare = 10,
+	Epic = 4,
+	Legendary = 1,
+}
+
+-- Egg costs per zone
+Config.EggCosts = {
+	[1] = { Coins = 100 },
+	[2] = { Coins = 500 },
+	[3] = { Coins = 2000 },
+	[4] = { Coins = 5000 },
+	[5] = { Coins = 15000 },
+	[6] = { Coins = 40000 },
+	[7] = { Coins = 100000 },
+	[8] = { Coins = 300000 },
+}
+
+-- Max equipped pets (base value before upgrades)
+Config.MaxEquippedPetsBase = 3
+
+-- Upgrade definitions
+Config.Upgrades = {
+	Friendship = {
+		displayName = "Friendship",
+		description = "Equip more pets at once",
+		levels = {
+			{ cost = 500, bonus = 1 },
+			{ cost = 2000, bonus = 2 },
+			{ cost = 10000, bonus = 3 },
+		},
+	},
+	Diamonds = {
+		displayName = "Diamonds",
+		description = "More diamonds per drop",
+		levels = {
+			{ cost = 1000, bonus = 1.5 },
+			{ cost = 5000, bonus = 2.0 },
+			{ cost = 20000, bonus = 3.0 },
+		},
+	},
+	ExtraSlots = {
+		displayName = "Extra Slots",
+		description = "More pet inventory slots",
+		levels = {
+			{ cost = 750, bonus = 5 },
+			{ cost = 3000, bonus = 10 },
+			{ cost = 12000, bonus = 20 },
+		},
+	},
+	FasterPets = {
+		displayName = "Faster Pets",
+		description = "Pets move faster",
+		levels = {
+			{ cost = 600, bonus = 1.2 },
+			{ cost = 2500, bonus = 1.5 },
+			{ cost = 10000, bonus = 2.0 },
+		},
+	},
+	StrongPets = {
+		displayName = "Strong Pets",
+		description = "Pets deal more damage",
+		levels = {
+			{ cost = 800, bonus = 1.3 },
+			{ cost = 3500, bonus = 1.7 },
+			{ cost = 15000, bonus = 2.5 },
+		},
+	},
+	LuckyEggs = {
+		displayName = "Lucky Eggs",
+		description = "Better chances from eggs",
+		levels = {
+			{ cost = 1200, bonus = 1.2 },
+			{ cost = 5000, bonus = 1.5 },
+			{ cost = 25000, bonus = 2.0 },
+		},
+	},
+	GoldenPetsChance = {
+		displayName = "Golden Pets Chance",
+		description = "Chance to hatch golden variants",
+		levels = {
+			{ cost = 2000, bonus = 0.05 },
+			{ cost = 8000, bonus = 0.10 },
+			{ cost = 30000, bonus = 0.20 },
+		},
+	},
+	Sprinting = {
+		displayName = "Sprinting",
+		description = "Player moves faster",
+		levels = {
+			{ cost = 400, bonus = 1.2 },
+			{ cost = 1500, bonus = 1.5 },
+			{ cost = 6000, bonus = 2.0 },
+		},
+	},
+	DropCloner = {
+		displayName = "Drop Cloner",
+		description = "Chance to double drops",
+		levels = {
+			{ cost = 1500, bonus = 0.10 },
+			{ cost = 6000, bonus = 0.20 },
+			{ cost = 25000, bonus = 0.35 },
+		},
+	},
+	LuckyDrops = {
+		displayName = "Lucky Drops",
+		description = "More coins per drop",
+		levels = {
+			{ cost = 500, bonus = 1.3 },
+			{ cost = 2000, bonus = 1.7 },
+			{ cost = 8000, bonus = 2.5 },
+		},
+	},
+}
+
+-- Zone gate costs (coins required to unlock each zone)
+Config.ZoneGateCosts = {
+	[1] = 0,         -- Gruene Wiesen (free/starter)
+	[2] = 500,       -- Stadt
+	[3] = 2000,      -- Strand
+	[4] = 5000,      -- Wueste
+	[5] = 15000,     -- Eiswelt
+	[6] = 40000,     -- Vulkan
+	[7] = 100000,    -- Himmel
+	[8] = 300000,    -- Weltraum
+}
+
+-- Campaign parameters
+Config.Campaign = {
+	EnergyRegenRate = 1,   -- energy per second
+	MaxEnergy = 100,
+	BaseHealth = 500,      -- base HP for player's base
+	EnemyBaseHealth = 500, -- base HP for enemy base (scales with level)
+	PetDeployCosts = {
+		Common = 10,
+		Uncommon = 20,
+		Rare = 35,
+		Epic = 45,
+		Legendary = 50,
+	},
+}
+
+return Config
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX0000002C">
+					<Properties>
+						<string name="Name">PetData</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	PetData.lua - Pet and Egg definitions for Battle Pets
+	Defines all pets with their stats and egg types with weighted pet pools.
+]]
+
+local PetData = {}
+
+-- Pet definitions
+PetData.Pets = {
+	Buddy = {
+		name = "Buddy",
+		species = "Dog",
+		rarity = "Common",
+		baseDamage = 5,
+		baseSpeed = 10,
+		modelDescription = "A friendly brown dog with floppy ears and a wagging tail",
+	},
+	Whiskers = {
+		name = "Whiskers",
+		species = "Cat",
+		rarity = "Uncommon",
+		baseDamage = 8,
+		baseSpeed = 12,
+		modelDescription = "A sleek gray cat with bright green eyes and a long tail",
+	},
+	Blaze = {
+		name = "Blaze",
+		species = "Dragon",
+		rarity = "Rare",
+		baseDamage = 15,
+		baseSpeed = 8,
+		modelDescription = "A small red dragon with tiny wings and glowing orange scales",
+	},
+	Inferno = {
+		name = "Inferno",
+		species = "Phoenix",
+		rarity = "Legendary",
+		baseDamage = 30,
+		baseSpeed = 14,
+		modelDescription = "A majestic golden phoenix wreathed in bright flames",
+	},
+}
+
+-- Egg type definitions
+PetData.Eggs = {
+	BasicEgg = {
+		name = "Basic Egg",
+		zone = 1,
+		petPool = {
+			{ petId = "Buddy", weight = 70 },
+			{ petId = "Whiskers", weight = 30 },
+		},
+	},
+	PremiumEgg = {
+		name = "Premium Egg",
+		zone = 2,
+		petPool = {
+			{ petId = "Buddy", weight = 40 },
+			{ petId = "Whiskers", weight = 30 },
+			{ petId = "Blaze", weight = 20 },
+			{ petId = "Inferno", weight = 10 },
+		},
+	},
+}
+
+return PetData
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX0000002D">
+					<Properties>
+						<string name="Name">ZoneData</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	ZoneData.lua - Zone definitions for Battle Pets
+	Defines all 8 zones with their properties, colors, and destructible types.
+	Only zones 1-2 are fully playable in the MVP, but all 8 are defined for progression.
+]]
+
+local ZoneData = {}
+
+ZoneData.Zones = {
+	[1] = {
+		name = "Gruene Wiesen",
+		unlockCost = 0,
+		groundColor = Color3.fromRGB(76, 153, 0),
+		skyColor = Color3.fromRGB(135, 206, 235),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 10,
+				drops = { Coins = 5 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 20,
+				drops = { Diamonds = 2 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 15,
+				drops = { Coins = 10, Diamonds = 1 },
+			},
+		},
+	},
+	[2] = {
+		name = "Stadt",
+		unlockCost = 500,
+		groundColor = Color3.fromRGB(128, 128, 128),
+		skyColor = Color3.fromRGB(170, 200, 220),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 25,
+				drops = { Coins = 12 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 50,
+				drops = { Diamonds = 5 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 35,
+				drops = { Coins = 25, Diamonds = 3 },
+			},
+		},
+	},
+	[3] = {
+		name = "Strand",
+		unlockCost = 2000,
+		groundColor = Color3.fromRGB(237, 201, 136),
+		skyColor = Color3.fromRGB(100, 180, 255),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 50,
+				drops = { Coins = 25 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 100,
+				drops = { Diamonds = 10 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 70,
+				drops = { Coins = 50, Diamonds = 5 },
+			},
+		},
+	},
+	[4] = {
+		name = "Wueste",
+		unlockCost = 5000,
+		groundColor = Color3.fromRGB(210, 180, 100),
+		skyColor = Color3.fromRGB(255, 200, 100),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 100,
+				drops = { Coins = 50 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 200,
+				drops = { Diamonds = 20 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 150,
+				drops = { Coins = 100, Diamonds = 10 },
+			},
+		},
+	},
+	[5] = {
+		name = "Eiswelt",
+		unlockCost = 15000,
+		groundColor = Color3.fromRGB(200, 230, 255),
+		skyColor = Color3.fromRGB(180, 210, 240),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 200,
+				drops = { Coins = 100 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 400,
+				drops = { Diamonds = 40 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 300,
+				drops = { Coins = 200, Diamonds = 20 },
+			},
+		},
+	},
+	[6] = {
+		name = "Vulkan",
+		unlockCost = 40000,
+		groundColor = Color3.fromRGB(80, 30, 10),
+		skyColor = Color3.fromRGB(200, 80, 30),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 400,
+				drops = { Coins = 200 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 800,
+				drops = { Diamonds = 80 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 600,
+				drops = { Coins = 400, Diamonds = 40 },
+			},
+		},
+	},
+	[7] = {
+		name = "Himmel",
+		unlockCost = 100000,
+		groundColor = Color3.fromRGB(255, 255, 220),
+		skyColor = Color3.fromRGB(200, 220, 255),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 800,
+				drops = { Coins = 400 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 1600,
+				drops = { Diamonds = 160 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 1200,
+				drops = { Coins = 800, Diamonds = 80 },
+			},
+		},
+	},
+	[8] = {
+		name = "Weltraum",
+		unlockCost = 300000,
+		groundColor = Color3.fromRGB(20, 10, 40),
+		skyColor = Color3.fromRGB(10, 5, 30),
+		destructibles = {
+			CoinPile = {
+				displayName = "Coin Pile",
+				hp = 1600,
+				drops = { Coins = 800 },
+			},
+			DiamondPile = {
+				displayName = "Diamond Pile",
+				hp = 3200,
+				drops = { Diamonds = 320 },
+			},
+			Crate = {
+				displayName = "Crate",
+				hp = 2400,
+				drops = { Coins = 1600, Diamonds = 160 },
+			},
+		},
+	},
+}
+
+return ZoneData
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX0000002E">
+					<Properties>
+						<string name="Name">CampaignData</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	CampaignData.lua - Campaign level and enemy definitions for Battle Pets
+	Defines 48 levels across 8 regions, enemy types, wave compositions, and rewards.
+]]
+
+local CampaignData = {}
+
+-- Enemy type definitions
+CampaignData.Enemies = {
+	Slime = {
+		name = "Slime",
+		hp = 20,
+		damage = 3,
+		speed = 4,
+		modelDescription = "A bouncy green blob with googly eyes",
+	},
+	Goblin = {
+		name = "Goblin",
+		hp = 35,
+		damage = 5,
+		speed = 6,
+		modelDescription = "A small purple goblin with pointy ears and a wooden club",
+	},
+	Golem = {
+		name = "Golem",
+		hp = 60,
+		damage = 8,
+		speed = 3,
+		modelDescription = "A large stone creature with glowing blue runes",
+	},
+	DragonKing = {
+		name = "Dragon King",
+		isBoss = true,
+		hp = 200,
+		damage = 15,
+		speed = 5,
+		modelDescription = "A massive dark dragon with golden horns and fiery breath",
+	},
+}
+
+-- Energy costs to deploy pets (based on rarity)
+CampaignData.DeployCosts = {
+	Common = 10,
+	Uncommon = 20,
+	Rare = 35,
+	Epic = 45,
+	Legendary = 50,
+}
+
+-- Region names (one per 6 levels)
+CampaignData.Regions = {
+	[1] = "Verdant Fields",
+	[2] = "Urban Ruins",
+	[3] = "Coastal Shore",
+	[4] = "Desert Sands",
+	[5] = "Frozen Tundra",
+	[6] = "Volcanic Depths",
+	[7] = "Sky Citadel",
+	[8] = "Cosmic Void",
+}
+
+-- Helper to compute the scale factor for a given level
+local function getScaleFactor(level)
+	return 1 + (level - 1) * 0.15
+end
+
+-- Generate all 48 levels
+CampaignData.Levels = {}
+
+for region = 1, 8 do
+	for stage = 1, 6 do
+		local levelNum = (region - 1) * 6 + stage
+		local isBoss = (stage == 6)
+		local scale = getScaleFactor(levelNum)
+
+		-- Determine wave composition
+		local waves = {}
+		if isBoss then
+			-- Boss levels: 3 waves of regular enemies + boss wave
+			waves[1] = {
+				{ enemy = "Slime", count = math.ceil(3 * scale) },
+				{ enemy = "Goblin", count = math.ceil(2 * scale) },
+			}
+			waves[2] = {
+				{ enemy = "Goblin", count = math.ceil(3 * scale) },
+				{ enemy = "Golem", count = math.ceil(1 * scale) },
+			}
+			waves[3] = {
+				{ enemy = "Golem", count = math.ceil(2 * scale) },
+				{ enemy = "Goblin", count = math.ceil(2 * scale) },
+			}
+			waves[4] = {
+				{ enemy = "DragonKing", count = 1 },
+			}
+		elseif stage <= 2 then
+			-- Early levels: mostly slimes
+			waves[1] = {
+				{ enemy = "Slime", count = math.ceil(3 * scale) },
+			}
+			waves[2] = {
+				{ enemy = "Slime", count = math.ceil(4 * scale) },
+			}
+		elseif stage <= 4 then
+			-- Mid levels: mixed enemies
+			waves[1] = {
+				{ enemy = "Slime", count = math.ceil(3 * scale) },
+				{ enemy = "Goblin", count = math.ceil(1 * scale) },
+			}
+			waves[2] = {
+				{ enemy = "Goblin", count = math.ceil(2 * scale) },
+				{ enemy = "Slime", count = math.ceil(2 * scale) },
+			}
+			waves[3] = {
+				{ enemy = "Golem", count = math.ceil(1 * scale) },
+				{ enemy = "Goblin", count = math.ceil(2 * scale) },
+			}
+		else
+			-- Stage 5: harder mix before boss
+			waves[1] = {
+				{ enemy = "Goblin", count = math.ceil(3 * scale) },
+				{ enemy = "Golem", count = math.ceil(1 * scale) },
+			}
+			waves[2] = {
+				{ enemy = "Golem", count = math.ceil(2 * scale) },
+				{ enemy = "Goblin", count = math.ceil(3 * scale) },
+			}
+			waves[3] = {
+				{ enemy = "Golem", count = math.ceil(2 * scale) },
+				{ enemy = "Slime", count = math.ceil(4 * scale) },
+			}
+		end
+
+		-- Determine rewards
+		local rewards = {
+			Coins = math.floor(50 * scale * region),
+			Diamonds = math.floor(5 * scale * region),
+		}
+
+		-- Boss levels give special egg rewards
+		if isBoss then
+			rewards.SpecialEgg = true
+			rewards.Coins = rewards.Coins * 3
+			rewards.Diamonds = rewards.Diamonds * 3
+		end
+
+		-- Enemy base health scales with level
+		local enemyBaseHP = math.floor(500 * scale)
+
+		CampaignData.Levels[levelNum] = {
+			levelNum = levelNum,
+			region = region,
+			regionName = CampaignData.Regions[region],
+			stage = stage,
+			isBoss = isBoss,
+			waves = waves,
+			rewards = rewards,
+			enemyBaseHP = enemyBaseHP,
+			energyCost = 5 + math.floor(levelNum / 6),
+		}
+	end
+end
+
+return CampaignData
+]]></ProtectedString>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="Folder" referent="RBX00000049">
+				<Properties>
+					<string name="Name">Remotes</string>
+				</Properties>
+				<Item class="RemoteEvent" referent="RBX00000030">
+					<Properties>
+						<string name="Name">CurrencyUpdated</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000031">
+					<Properties>
+						<string name="Name">PetInventoryUpdated</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000032">
+					<Properties>
+						<string name="Name">PetEquipped</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000033">
+					<Properties>
+						<string name="Name">PetUnequipped</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000034">
+					<Properties>
+						<string name="Name">ZoneUnlocked</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000035">
+					<Properties>
+						<string name="Name">DestructibleDamaged</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000036">
+					<Properties>
+						<string name="Name">DestructibleDestroyed</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000037">
+					<Properties>
+						<string name="Name">EggHatchStart</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000038">
+					<Properties>
+						<string name="Name">EggHatchResult</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000039">
+					<Properties>
+						<string name="Name">CampaignBattleUpdate</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX0000003A">
+					<Properties>
+						<string name="Name">CampaignVictory</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX0000003B">
+					<Properties>
+						<string name="Name">CampaignDefeat</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX0000003C">
+					<Properties>
+						<string name="Name">UpgradeUpdated</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX0000003D">
+					<Properties>
+						<string name="Name">CollectCurrency</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX0000003E">
+					<Properties>
+						<string name="Name">HatchEgg</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX0000003F">
+					<Properties>
+						<string name="Name">EquipPet</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000040">
+					<Properties>
+						<string name="Name">UnequipPet</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000041">
+					<Properties>
+						<string name="Name">DeletePet</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000042">
+					<Properties>
+						<string name="Name">DeletePets</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000043">
+					<Properties>
+						<string name="Name">UnlockZone</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000044">
+					<Properties>
+						<string name="Name">PurchaseUpgrade</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000045">
+					<Properties>
+						<string name="Name">GetPlayerData</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000046">
+					<Properties>
+						<string name="Name">StartCampaignLevel</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000047">
+					<Properties>
+						<string name="Name">DeployPetInCampaign</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteFunction" referent="RBX00000048">
+					<Properties>
+						<string name="Name">AttackDestructible</string>
+					</Properties>
+				</Item>
+			</Item>
+	</Item>
+	<Item class="StarterGui" referent="RBX0000005E">
+		<Properties>
+			<string name="Name">StarterGui</string>
+		</Properties>
+	</Item>
+	<Item class="Lighting" referent="RBX0000002A">
+		<Properties>
+			<string name="Name">Lighting</string>
+			<float name="Brightness">2</float>
+			<float name="ClockTime">14</float>
+		</Properties>
+		<Item class="ColorCorrectionEffect" referent="RBX00000027">
+			<Properties>
+				<string name="Name">ColorCorrection</string>
+				<float name="Brightness">0.05</float>
+				<float name="Contrast">0.1</float>
+				<float name="Saturation">0.2</float>
+			</Properties>
+		</Item>
+		<Item class="Atmosphere" referent="RBX00000028">
+			<Properties>
+				<string name="Name">Atmosphere</string>
+				<float name="Density">0.3</float>
+				<float name="Offset">0.25</float>
+			</Properties>
+		</Item>
+		<Item class="BloomEffect" referent="RBX00000029">
+			<Properties>
+				<string name="Name">Bloom</string>
+				<float name="Intensity">0.4</float>
+				<float name="Size">24</float>
+				<float name="Threshold">0.9</float>
+			</Properties>
+		</Item>
+	</Item>
+	<Item class="SoundService" referent="RBX0000005F">
+		<Properties>
+			<string name="Name">SoundService</string>
+		</Properties>
+	</Item>
 </roblox>
