@@ -3,7 +3,7 @@
   "type": "feat",
   "title": "Pet Simulator targeting, reduced pet speed, E-key egg hatch",
   "description": "1. Ensure E-key ProximityPrompt works for egg hatching. 2. Reduce pet movement speed for natural look. 3. Implement Pet Simulator-style targeting: single click sends 1 pet, hold sends all pets, idle auto-distributes pets to different destructibles.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Verify and fix ProximityPrompt E-key egg interaction in ZoneService and Main.client.lua",
     "Reduce pet follow/movement speed in PetController for smoother, more natural movement",
