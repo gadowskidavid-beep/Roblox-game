@@ -404,6 +404,7 @@ function ZoneService._spawnEggStations()
 		billboard.Size = UDim2.fromOffset(180, 70)
 		billboard.StudsOffset = Vector3.new(0, 4, 0)
 		billboard.AlwaysOnTop = true
+		billboard.MaxDistance = 25
 		billboard.Adornee = egg
 		billboard.Parent = egg
 
@@ -449,6 +450,7 @@ function ZoneService._spawnEggStations()
 			petsBillboard.Size = UDim2.fromOffset(200, 20 + numPets * 22)
 			petsBillboard.StudsOffset = Vector3.new(0, 7, 0)
 			petsBillboard.AlwaysOnTop = true
+			petsBillboard.MaxDistance = 12
 			petsBillboard.Adornee = egg
 			petsBillboard.Parent = egg
 
@@ -588,6 +590,7 @@ function ZoneService._spawnZoneGates()
 		billboard.Size = UDim2.fromOffset(200, 80)
 		billboard.StudsOffset = Vector3.new(0, 12, 0)
 		billboard.AlwaysOnTop = true
+		billboard.MaxDistance = 25
 		billboard.Adornee = gate
 		billboard.Parent = gate
 
@@ -983,43 +986,6 @@ function ZoneService._spawnZone1Deco(decoFolder)
 		rock.CanCollide = false
 		rock.Position = Vector3.new(rx, rock.Size.Y / 2, rz)
 		rock.Parent = zone1Folder
-	end
-
-	-- Spawn 20 flower clusters (small colorful balls near ground)
-	local flowerColors = {
-		Color3.fromRGB(255, 100, 100),
-		Color3.fromRGB(255, 200, 50),
-		Color3.fromRGB(200, 100, 255),
-		Color3.fromRGB(255, 150, 200),
-		Color3.fromRGB(100, 200, 255),
-	}
-	for i = 1, 20 do
-		local fx = origin.X + 8 + math.random() * (zoneWidth - 16)
-		local fz = origin.Z + 8 + math.random() * (zoneDepth - 16)
-
-		local flower = Instance.new("Part")
-		flower.Name = "Flower_" .. i
-		flower.Shape = Enum.PartType.Ball
-		flower.Size = Vector3.new(0.8 + math.random() * 0.6, 0.8 + math.random() * 0.4, 0.8 + math.random() * 0.6)
-		flower.Color = flowerColors[math.random(1, #flowerColors)]
-		flower.Material = Enum.Material.Neon
-		flower.Transparency = 0.2
-		flower.Anchored = true
-		flower.CanCollide = false
-		flower.Position = Vector3.new(fx, 0.4, fz)
-		flower.Parent = zone1Folder
-
-		-- Stem (thin green cylinder)
-		local stem = Instance.new("Part")
-		stem.Name = "Stem_" .. i
-		stem.Shape = Enum.PartType.Cylinder
-		stem.Size = Vector3.new(0.8, 0.15, 0.15)
-		stem.Color = Color3.fromRGB(34, 139, 34)
-		stem.Material = Enum.Material.Grass
-		stem.Anchored = true
-		stem.CanCollide = false
-		stem.CFrame = CFrame.new(fx, 0.2, fz) * CFrame.Angles(0, 0, math.rad(90))
-		stem.Parent = zone1Folder
 	end
 
 	-- Reset random seed
