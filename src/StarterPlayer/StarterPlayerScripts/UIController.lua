@@ -1930,13 +1930,44 @@ end
 function UIController:toggleScreen(screenName)
 	local screen = self._screens[screenName]
 	if screen then
-		screen.Enabled = not screen.Enabled
 		if screen.Enabled then
+			-- Slide out animation then disable
+			local mainFrame = screen:FindFirstChild("MainFrame") or screen:FindFirstChild("EggPrompt")
+			if mainFrame then
+				local slideOutInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				local originalPos = mainFrame.Position
+				TweenService:Create(mainFrame, slideOutInfo, {
+					Position = UDim2.new(originalPos.X.Scale, originalPos.X.Offset, 1.2, 0),
+				}):Play()
+				task.delay(0.25, function()
+					if screen and screen.Parent then
+						screen.Enabled = false
+						mainFrame.Position = originalPos
+					end
+				end)
+			else
+				screen.Enabled = false
+			end
+		else
+			-- Close other screens first
 			for name, otherScreen in pairs(self._screens) do
 				if name ~= screenName and name ~= "MainHUD" then
 					otherScreen.Enabled = false
 				end
 			end
+
+			-- Enable and slide in from below
+			screen.Enabled = true
+			local mainFrame = screen:FindFirstChild("MainFrame") or screen:FindFirstChild("EggPrompt")
+			if mainFrame then
+				local targetPos = mainFrame.Position
+				mainFrame.Position = UDim2.new(targetPos.X.Scale, targetPos.X.Offset, 1.2, 0)
+				local slideInInfo = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+				TweenService:Create(mainFrame, slideInInfo, {
+					Position = targetPos,
+				}):Play()
+			end
+
 			-- Refresh quest progress when opening quest window
 			if screenName == "QuestWindow" and self._remotes then
 				local remote = self._remotes:FindFirstChild("GetQuestProgress")

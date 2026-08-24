@@ -39,13 +39,14 @@ end
 
 --------------------------------------------------------------------------------
 -- Currency Popup: floating text like "+5" in yellow or "+2" in cyan
+-- Enhanced: scales in from small, flies upward, and fades out smoothly
 --------------------------------------------------------------------------------
 function EffectsController:showCurrencyPopup(position, amount, currencyType)
 	if not self._initialized then return end
 
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "CurrencyPopup"
-	billboardGui.Size = UDim2.fromOffset(120, 50)
+	billboardGui.Size = UDim2.fromOffset(160, 60)
 	billboardGui.StudsOffset = Vector3.new(0, 2, 0)
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = nil
@@ -64,39 +65,58 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 	billboardGui.Parent = self._playerGui
 
 	local color = Color3.fromRGB(255, 220, 0)  -- yellow for coins
+	local prefix = "+$"
 	if currencyType == "Diamonds" then
 		color = Color3.fromRGB(0, 220, 255)  -- cyan for diamonds
+		prefix = "+"
 	end
 
 	local label = Instance.new("TextLabel")
 	label.Name = "PopupText"
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundTransparency = 1
-	label.Text = "+" .. tostring(amount)
+	label.Text = prefix .. tostring(amount)
 	label.TextColor3 = color
 	label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	label.TextStrokeTransparency = 0.3
+	label.TextStrokeTransparency = 0.2
 	label.Font = Enum.Font.GothamBold
 	label.TextScaled = true
 	label.Parent = billboardGui
 
-	-- Animate upward and fade
-	local tweenInfo = TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	local tween = TweenService:Create(anchor, tweenInfo, {
-		Position = position + Vector3.new(0, 4, 0),
-	})
-	local fadeTween = TweenService:Create(label, tweenInfo, {
-		TextTransparency = 1,
-		TextStrokeTransparency = 1,
+	-- Start small and scale up (juice!)
+	billboardGui.Size = UDim2.fromOffset(40, 15)
+	local scaleInInfo = TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	TweenService:Create(billboardGui, scaleInInfo, {
+		Size = UDim2.fromOffset(160, 60),
+	}):Play()
+
+	-- Fly upward and fade out after a short delay
+	local flyInfo = TweenInfo.new(1.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local flyTween = TweenService:Create(anchor, flyInfo, {
+		Position = position + Vector3.new(math.random(-1, 1) * 0.5, 5, math.random(-1, 1) * 0.5),
 	})
 
-	tween:Play()
-	fadeTween:Play()
+	-- Delayed fade (stay visible for a bit, then fade)
+	task.delay(0.6, function()
+		if not label or not label.Parent then return end
+		local fadeInfo = TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		local fadeTween = TweenService:Create(label, fadeInfo, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		})
+		fadeTween:Play()
+	end)
 
-	-- Cleanup
-	fadeTween.Completed:Connect(function()
-		billboardGui:Destroy()
-		anchor:Destroy()
+	flyTween:Play()
+
+	-- Cleanup after animation
+	task.delay(2.0, function()
+		if billboardGui and billboardGui.Parent then
+			billboardGui:Destroy()
+		end
+		if anchor and anchor.Parent then
+			anchor:Destroy()
+		end
 	end)
 end
 
@@ -434,6 +454,7 @@ end
 
 --------------------------------------------------------------------------------
 -- Progress Bar: BillboardGui above destructible showing HP
+-- Enhanced: bigger (120x24), floats higher (4 studs), shows HP text, colored stroke
 --------------------------------------------------------------------------------
 function EffectsController:showProgressBar(destructible, currentHP, maxHP)
 	if not self._initialized then return end
@@ -447,37 +468,74 @@ function EffectsController:showProgressBar(destructible, currentHP, maxHP)
 
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "HPBar"
-	billboardGui.Size = UDim2.fromOffset(80, 16)
-	billboardGui.StudsOffset = Vector3.new(0, 3, 0)
+	billboardGui.Size = UDim2.fromOffset(120, 24)
+	billboardGui.StudsOffset = Vector3.new(0, 4, 0)
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = destructible
 	billboardGui.Parent = self._playerGui
 
-	-- Outer frame (dark background)
+	-- Outer frame (dark background with colored stroke)
 	local outerFrame = Instance.new("Frame")
 	outerFrame.Name = "Outer"
 	outerFrame.Size = UDim2.fromScale(1, 1)
-	outerFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	outerFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
 	outerFrame.BorderSizePixel = 0
 	outerFrame.Parent = billboardGui
 
 	local outerCorner = Instance.new("UICorner")
-	outerCorner.CornerRadius = UDim.new(0, 4)
+	outerCorner.CornerRadius = UDim.new(0, 6)
 	outerCorner.Parent = outerFrame
+
+	local outerStroke = Instance.new("UIStroke")
+	outerStroke.Name = "BarStroke"
+	outerStroke.Thickness = 2
+	outerStroke.Color = Color3.fromRGB(80, 120, 200)
+	outerStroke.Parent = outerFrame
 
 	-- Inner fill frame
 	local fillFraction = math.clamp(currentHP / math.max(maxHP, 1), 0, 1)
+	local fillColor = Color3.fromRGB(0, 220, 60) -- bright green
+
 	local fillFrame = Instance.new("Frame")
 	fillFrame.Name = "Fill"
-	fillFrame.Size = UDim2.fromScale(fillFraction * 0.98, 0.8)
-	fillFrame.Position = UDim2.fromScale(0.01, 0.1)
-	fillFrame.BackgroundColor3 = Color3.fromRGB(0, 200, 50)
+	fillFrame.Size = UDim2.fromScale(fillFraction * 0.96, 0.7)
+	fillFrame.Position = UDim2.fromScale(0.02, 0.15)
+	fillFrame.BackgroundColor3 = fillColor
 	fillFrame.BorderSizePixel = 0
 	fillFrame.Parent = outerFrame
 
 	local fillCorner = Instance.new("UICorner")
-	fillCorner.CornerRadius = UDim.new(0, 3)
+	fillCorner.CornerRadius = UDim.new(0, 4)
 	fillCorner.Parent = fillFrame
+
+	-- Gradient on the fill bar for extra juice
+	local gradient = Instance.new("UIGradient")
+	gradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(200, 200, 200)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(150, 150, 150)),
+	})
+	gradient.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.7),
+		NumberSequenceKeypoint.new(0.3, 0.85),
+		NumberSequenceKeypoint.new(1, 0.9),
+	})
+	gradient.Rotation = 90
+	gradient.Parent = fillFrame
+
+	-- HP text overlay (shows current/max)
+	local hpText = Instance.new("TextLabel")
+	hpText.Name = "HPText"
+	hpText.Size = UDim2.fromScale(1, 1)
+	hpText.BackgroundTransparency = 1
+	hpText.Text = tostring(math.ceil(currentHP)) .. "/" .. tostring(maxHP)
+	hpText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	hpText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	hpText.TextStrokeTransparency = 0.3
+	hpText.Font = Enum.Font.GothamBold
+	hpText.TextScaled = true
+	hpText.ZIndex = 3
+	hpText.Parent = outerFrame
 
 	-- Store reference
 	self._progressBars[destructible] = billboardGui
@@ -492,23 +550,37 @@ function EffectsController:updateProgressBar(destructible, currentHP, maxHP)
 	if not outerFrame then return end
 	local fillFrame = outerFrame:FindFirstChild("Fill")
 	if not fillFrame then return end
+	local hpText = outerFrame:FindFirstChild("HPText")
 
 	local fillFraction = math.clamp(currentHP / math.max(maxHP, 1), 0, 1)
 
-	-- Change color based on HP percentage
+	-- Change color based on HP percentage (green -> yellow -> orange -> red)
 	local color
-	if fillFraction > 0.5 then
-		color = Color3.fromRGB(0, 200, 50)
-	elseif fillFraction > 0.25 then
-		color = Color3.fromRGB(255, 180, 0)
+	if fillFraction > 0.6 then
+		color = Color3.fromRGB(0, 220, 60)
+	elseif fillFraction > 0.35 then
+		color = Color3.fromRGB(255, 200, 0)
+	elseif fillFraction > 0.15 then
+		color = Color3.fromRGB(255, 120, 0)
 	else
-		color = Color3.fromRGB(255, 50, 50)
+		color = Color3.fromRGB(255, 40, 40)
 	end
 
-	local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	TweenService:Create(fillFrame, tweenInfo, {
-		Size = UDim2.fromScale(fillFraction * 0.98, 0.8),
+		Size = UDim2.fromScale(fillFraction * 0.96, 0.7),
 		BackgroundColor3 = color,
+	}):Play()
+
+	-- Update HP text
+	if hpText then
+		hpText.Text = tostring(math.max(0, math.ceil(currentHP))) .. "/" .. tostring(maxHP)
+	end
+
+	-- Shake effect when hit (brief scale pulse on the billboard)
+	local shakeInfo = TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true)
+	TweenService:Create(gui, shakeInfo, {
+		Size = UDim2.fromOffset(130, 28),
 	}):Play()
 end
 
@@ -519,6 +591,150 @@ function EffectsController:removeProgressBar(destructible)
 		gui:Destroy()
 		self._progressBars[destructible] = nil
 	end
+end
+
+--------------------------------------------------------------------------------
+-- Level-Up Celebration: golden "LEVEL UP!" text + expanding particle ring
+-- Called when the player levels up for a juicy celebration moment.
+--------------------------------------------------------------------------------
+function EffectsController:showLevelUpCelebration(newLevel)
+	if not self._initialized then return end
+
+	-- Large golden "LEVEL UP!" text on screen center
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "LevelUpOverlay"
+	overlay.ResetOnSpawn = false
+	overlay.Parent = self._playerGui
+
+	local textLabel = Instance.new("TextLabel")
+	textLabel.Name = "LevelUpText"
+	textLabel.Size = UDim2.fromScale(0.5, 0.15)
+	textLabel.Position = UDim2.fromScale(0.25, 0.35)
+	textLabel.BackgroundTransparency = 1
+	textLabel.Text = "LEVEL UP!"
+	textLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+	textLabel.TextStrokeColor3 = Color3.fromRGB(180, 100, 0)
+	textLabel.TextStrokeTransparency = 0
+	textLabel.Font = Enum.Font.GothamBold
+	textLabel.TextScaled = true
+	textLabel.TextTransparency = 1
+	textLabel.Parent = overlay
+
+	local levelLabel = Instance.new("TextLabel")
+	levelLabel.Name = "NewLevelText"
+	levelLabel.Size = UDim2.fromScale(0.3, 0.08)
+	levelLabel.Position = UDim2.fromScale(0.35, 0.5)
+	levelLabel.BackgroundTransparency = 1
+	levelLabel.Text = "Level " .. tostring(newLevel)
+	levelLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	levelLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	levelLabel.TextStrokeTransparency = 0.3
+	levelLabel.Font = Enum.Font.GothamBold
+	levelLabel.TextScaled = true
+	levelLabel.TextTransparency = 1
+	levelLabel.Parent = overlay
+
+	-- Animate text appearing with bounce scale
+	local fadeInInfo = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	TweenService:Create(textLabel, fadeInInfo, {
+		TextTransparency = 0,
+		Size = UDim2.fromScale(0.6, 0.18),
+	}):Play()
+
+	task.delay(0.15, function()
+		if not levelLabel or not levelLabel.Parent then return end
+		TweenService:Create(levelLabel, fadeInInfo, {
+			TextTransparency = 0,
+		}):Play()
+	end)
+
+	-- Spawn a ring of golden particles around the player
+	local character = self._player.Character
+	if character then
+		local rootPart = character:FindFirstChild("HumanoidRootPart")
+		if rootPart then
+			local ringCenter = rootPart.Position
+
+			-- Create ring particles (expanding golden spheres)
+			for i = 1, 16 do
+				local angle = (i / 16) * math.pi * 2
+				local startRadius = 2
+				local endRadius = 10
+				local startPos = ringCenter + Vector3.new(math.cos(angle) * startRadius, 1, math.sin(angle) * startRadius)
+				local endPos = ringCenter + Vector3.new(math.cos(angle) * endRadius, 2 + math.random() * 2, math.sin(angle) * endRadius)
+
+				local particle = Instance.new("Part")
+				particle.Name = "LevelUpParticle"
+				particle.Shape = Enum.PartType.Ball
+				particle.Size = Vector3.new(0.8, 0.8, 0.8)
+				particle.Position = startPos
+				particle.Anchored = true
+				particle.CanCollide = false
+				particle.Color = Color3.fromRGB(255, 200 + math.random(0, 55), 0)
+				particle.Material = Enum.Material.Neon
+				particle.Parent = self._effectsFolder
+
+				local expandInfo = TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+				TweenService:Create(particle, expandInfo, {
+					Position = endPos,
+					Transparency = 1,
+					Size = Vector3.new(0.2, 0.2, 0.2),
+				}):Play()
+
+				task.delay(1.3, function()
+					if particle and particle.Parent then
+						particle:Destroy()
+					end
+				end)
+			end
+
+			-- Central golden flash ring (flat expanding cylinder)
+			local ring = Instance.new("Part")
+			ring.Name = "LevelUpRing"
+			ring.Shape = Enum.PartType.Cylinder
+			ring.Size = Vector3.new(0.3, 2, 2)
+			ring.Position = ringCenter + Vector3.new(0, 0.5, 0)
+			ring.Anchored = true
+			ring.CanCollide = false
+			ring.Color = Color3.fromRGB(255, 220, 0)
+			ring.Material = Enum.Material.Neon
+			ring.Transparency = 0.3
+			ring.CFrame = CFrame.new(ringCenter + Vector3.new(0, 0.5, 0)) * CFrame.Angles(0, 0, math.rad(90))
+			ring.Parent = self._effectsFolder
+
+			local ringExpand = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			TweenService:Create(ring, ringExpand, {
+				Size = Vector3.new(0.3, 20, 20),
+				Transparency = 1,
+			}):Play()
+
+			task.delay(1.0, function()
+				if ring and ring.Parent then
+					ring:Destroy()
+				end
+			end)
+		end
+	end
+
+	-- Fade out text after 2 seconds
+	task.delay(2, function()
+		if not overlay or not overlay.Parent then return end
+		local fadeOutInfo = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		TweenService:Create(textLabel, fadeOutInfo, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
+		TweenService:Create(levelLabel, fadeOutInfo, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
+
+		task.delay(1, function()
+			if overlay and overlay.Parent then
+				overlay:Destroy()
+			end
+		end)
+	end)
 end
 
 --------------------------------------------------------------------------------

@@ -314,8 +314,14 @@ CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")
+local _previousLevel = playerData and playerData.level or 1
 XPUpdated.OnClientEvent:Connect(function(level, xp, xpNeeded)
 	uiController:updateXP(level, xp, xpNeeded)
+	-- Detect level-up and show celebration effect
+	if level > _previousLevel then
+		effectsController:showLevelUpCelebration(level)
+		_previousLevel = level
+	end
 end)
 
 --------------------------------------------------------------------------------

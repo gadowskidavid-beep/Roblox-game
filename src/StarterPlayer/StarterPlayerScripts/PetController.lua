@@ -91,7 +91,7 @@ function PetController:init(remotes)
 end
 
 --------------------------------------------------------------------------------
--- Create a procedural pet model: body sphere + shadow + nametag
+-- Create a procedural pet model: body sphere + shadow + nametag + rarity glow
 --------------------------------------------------------------------------------
 function PetController:createPetModel(petData)
 	local rarity = petData.rarity or "Common"
@@ -161,13 +161,52 @@ function PetController:createPetModel(petData)
 	rarityLabel.TextScaled = true
 	rarityLabel.Parent = billboardGui
 
-	-- PointLight for glow effect (subtle)
+	-- Rarity-based glow (PointLight with brightness/range varying by rarity)
+	-- Common=white dim, Uncommon=green, Rare=blue, Epic=purple, Legendary=gold strong
+	local glowSettings = {
+		Common = { brightness = 0.3, range = 3, color = Color3.fromRGB(255, 255, 255) },
+		Uncommon = { brightness = 0.7, range = 5, color = Color3.fromRGB(0, 220, 50) },
+		Rare = { brightness = 1.2, range = 7, color = Color3.fromRGB(0, 120, 255) },
+		Epic = { brightness = 1.8, range = 9, color = Color3.fromRGB(180, 50, 255) },
+		Legendary = { brightness = 3.0, range = 12, color = Color3.fromRGB(255, 200, 0) },
+	}
+
+	local glow = glowSettings[rarity] or glowSettings.Common
 	local light = Instance.new("PointLight")
 	light.Name = "PetGlow"
-	light.Color = bodyColor
-	light.Brightness = 0.5
-	light.Range = 4
+	light.Color = glow.color
+	light.Brightness = glow.brightness
+	light.Range = glow.range
 	light.Parent = body
+
+	-- Rarity particle ring (orbiting small sphere for Rare+)
+	-- Creates 2-4 tiny orbiting particles for rarer pets
+	if rarity == "Rare" or rarity == "Epic" or rarity == "Legendary" then
+		local numParticles = rarity == "Legendary" and 4 or (rarity == "Epic" and 3 or 2)
+		for i = 1, numParticles do
+			local particle = Instance.new("Part")
+			particle.Name = "GlowParticle_" .. i
+			particle.Shape = Enum.PartType.Ball
+			particle.Size = Vector3.new(0.4, 0.4, 0.4)
+			particle.Color = glow.color
+			particle.Material = Enum.Material.Neon
+			particle.Transparency = 0.3
+			particle.Anchored = true
+			particle.CanCollide = false
+			particle.Position = body.Position + Vector3.new(1.5, 0, 0)
+			particle.Parent = model
+		end
+	end
+
+	-- Golden pets get extra sparkle effect (larger size, extra glow)
+	if petData.golden then
+		body.Size = Vector3.new(2.6, 2.6, 2.6)
+		body.Material = Enum.Material.Neon
+		body.Color = Color3.fromRGB(255, 215, 0)
+		light.Brightness = 4
+		light.Range = 14
+		light.Color = Color3.fromRGB(255, 200, 0)
+	end
 
 	model.PrimaryPart = body
 	return model
@@ -240,6 +279,7 @@ end
 --------------------------------------------------------------------------------
 -- Per-frame update: pets follow behind the player in a trailing formation
 -- Pets float 2.5 studs above the ground with a shadow beneath them
+-- Rarity glow particles orbit the pet body for Rare+ pets
 --------------------------------------------------------------------------------
 function PetController:update(deltaTime)
 	if not self._initialized then return end
@@ -264,6 +304,12 @@ function PetController:update(deltaTime)
 	if self._manualTargetMode and tick() > self._manualTargetExpiry then
 		self._manualTargetMode = false
 	end
+
+	-- Increment orbit timer for glow particles
+	if not self._orbitTimer then
+		self._orbitTimer = 0
+	end
+	self._orbitTimer = self._orbitTimer + deltaTime
 
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
@@ -293,7 +339,7 @@ function PetController:update(deltaTime)
 				local offset = newPos - model.PrimaryPart.Position
 
 				for _, part in ipairs(model:GetDescendants()) do
-					if part:IsA("BasePart") and part.Name ~= "Shadow" then
+					if part:IsA("BasePart") and part.Name ~= "Shadow" and not part.Name:find("GlowParticle") then
 						part.Position = part.Position + offset
 					end
 				end
@@ -305,7 +351,31 @@ function PetController:update(deltaTime)
 					local shadowPos = Vector3.new(newPos.X, groundY + 0.05, newPos.Z)
 					shadowPart.CFrame = CFrame.new(shadowPos) * CFrame.Angles(0, 0, math.rad(90))
 				end
+
+				-- Orbit glow particles around the pet body
+				self:_updateGlowParticles(model, newPos, index)
 			end
+		end
+	end
+end
+
+-- Animate glow particles orbiting around the pet (for Rare+ pets)
+function PetController:_updateGlowParticles(model, bodyPos, petIndex)
+	local particleIdx = 0
+	for _, part in ipairs(model:GetChildren()) do
+		if part:IsA("BasePart") and part.Name:find("GlowParticle") then
+			particleIdx = particleIdx + 1
+			local angleOffset = (particleIdx / 5) * math.pi * 2
+			local orbitRadius = 1.6
+			local orbitSpeed = 2.5
+			local bobSpeed = 3.0
+
+			local angle = self._orbitTimer * orbitSpeed + angleOffset + petIndex * 1.2
+			local orbitX = math.cos(angle) * orbitRadius
+			local orbitZ = math.sin(angle) * orbitRadius
+			local orbitY = math.sin(self._orbitTimer * bobSpeed + particleIdx) * 0.4
+
+			part.Position = bodyPos + Vector3.new(orbitX, orbitY, orbitZ)
 		end
 	end
 end

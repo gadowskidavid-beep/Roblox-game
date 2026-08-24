@@ -1,0 +1,34 @@
+{
+  "id": "FEAT-018",
+  "type": "enhancement",
+  "title": "Game polish: world deco, barriers, UI animations, effects, pet glow, bug fixes",
+  "description": "Comprehensive polish pass to make Battle Pets feel juicy like Pet Simulator 1. Adds procedural world decoration (trees/rocks/flowers for Zone 1, street lamps/benches for Zone 2), invisible barriers at zone edges, smooth UI panel tween animations, improved HP bars, level-up celebration effect, improved currency popups, rarity-based pet glow/particles, and bug fixes found during code review.",
+  "status": "in_progress",
+  "steps": [
+    "Add procedural world decoration to ZoneService: trees, rocks, flowers in Zone 1; street lamps, benches in Zone 2",
+    "Add invisible wall barriers at the edges of both zones to prevent falling off",
+    "Improve UIController toggleScreen to use Tween slide-in/slide-out animations instead of instant show/hide",
+    "Improve EffectsController HP bars: bigger, more colorful, floating higher with HP text",
+    "Add level-up celebration effect in EffectsController: golden LEVEL UP text + particle ring",
+    "Improve currency popups in EffectsController: fly upward with scale animation and fade",
+    "Add rarity-based glow/particles to pet models in PetController (Common=white dim, Uncommon=green, Rare=blue, Epic=purple, Legendary=gold strong)",
+    "Fix CurrencyUpdated event payload mismatch (server sends table, client expects two args)",
+    "Fix UpgradeUpdated event payload mismatch",
+    "Fix CampaignVictory event payload mismatch",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "Zone 1 has procedural decoration (trees, rocks, flowers) spawned by ZoneService",
+    "Zone 2 has procedural decoration (street lamps, benches) spawned by ZoneService",
+    "Invisible barriers prevent players from falling off zone edges",
+    "UI panels slide in/out with Tween animations instead of appearing instantly",
+    "HP bars are larger (120x24), have HP text overlay, and float higher (4 studs)",
+    "Level-up shows a golden LEVEL UP! text with expanding particle ring",
+    "Currency popups fly upward with scale-in animation and smooth fadeout",
+    "Pets have rarity-colored glow particles (PointLight brightness varies by rarity)",
+    "Event payload mismatches are fixed (CurrencyUpdated, UpgradeUpdated, CampaignVictory)",
+    "BATTLE_PETS.rbxlx regenerated successfully and is valid XML"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}
