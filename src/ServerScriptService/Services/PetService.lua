@@ -345,4 +345,59 @@ function PetService.getPetDamage(pet, player)
 	return baseDamage
 end
 
+-- Convert a normal pet into a golden pet (sacrifice/transform)
+-- Returns the golden pet and increments the goldenPetsConverted stat
+function PetService.convertToGoldenPet(player, petInstanceId)
+	if not player or type(petInstanceId) ~= "string" then
+		return nil, "Invalid parameters"
+	end
+
+	local data = PetService._dataService.getPlayerData(player)
+	if not data then
+		return nil, "No player data"
+	end
+
+	-- Find the pet in inventory
+	local foundPet = nil
+	local foundIndex = nil
+	for i, pet in ipairs(data.pets) do
+		if pet.id == petInstanceId then
+			foundPet = pet
+			foundIndex = i
+			break
+		end
+	end
+
+	if not foundPet then
+		return nil, "Pet not found in inventory"
+	end
+
+	-- Cannot convert an already golden pet
+	if foundPet.golden then
+		return nil, "Pet is already golden"
+	end
+
+	-- Cannot convert an equipped pet
+	if foundPet.equipped then
+		return nil, "Unequip the pet before converting"
+	end
+
+	-- Transform the pet to golden (modify in place)
+	foundPet.golden = true
+	foundPet.name = "Golden " .. foundPet.name
+	-- Golden pets get 2x base damage
+	foundPet.damage = (foundPet.damage or 5) * 2
+
+	-- Fire inventory update event
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if remotes then
+		local event = remotes:FindFirstChild("PetInventoryUpdated")
+		if event then
+			event:FireClient(player, data.pets)
+		end
+	end
+
+	return foundPet, nil
+end
+
 return PetService

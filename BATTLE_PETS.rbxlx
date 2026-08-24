@@ -185,6 +185,7 @@ local remoteFunctions = {
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
+	"ConvertToGoldenPet",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -353,6 +354,22 @@ getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
 	return MasteryService.getMasteryState(player)
 end
 
+-- ConvertToGoldenPet
+getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceId)
+	if not player or not player:IsA("Player") then
+		return nil, "Invalid player"
+	end
+	if type(petInstanceId) ~= "string" then
+		return nil, "Invalid pet ID parameter"
+	end
+	local goldenPet, err = PetService.convertToGoldenPet(player, petInstanceId)
+	if goldenPet then
+		-- Track quest progress for golden pet conversion
+		QuestService.incrementStat(player, "goldenPetsConverted", 1)
+	end
+	return goldenPet, err
+end
+
 -- StartCampaignLevel
 getRemoteFunction("StartCampaignLevel").OnServerInvoke = function(player, levelNum)
 	if not player or not player:IsA("Player") then
@@ -390,12 +407,34 @@ end
 -- Player Lifecycle
 ----------------------------------------------
 
+-- Track session join times for playtime calculation
+local _sessionJoinTimes = {}
+
 Players.PlayerAdded:Connect(function(player)
 	-- Load player data when they join
 	DataService.loadPlayerData(player)
+
+	-- Record join time for playtime tracking
+	_sessionJoinTimes[player.UserId] = os.time()
+
+	-- Check level-based quests on join (in case they already meet requirements)
+	local data = DataService.getPlayerData(player)
+	if data then
+		QuestService.setStat(player, "reachLevel", data.level or 1)
+	end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
+	-- Accumulate playtime before saving
+	local joinTime = _sessionJoinTimes[player.UserId]
+	if joinTime then
+		local sessionSeconds = os.time() - joinTime
+		if sessionSeconds > 0 then
+			QuestService.incrementStat(player, "playtime", sessionSeconds)
+		end
+		_sessionJoinTimes[player.UserId] = nil
+	end
+
 	-- Cleanup campaign battle if any
 	CampaignService.onPlayerRemoving(player)
 	-- Save and cleanup player data
@@ -406,8 +445,40 @@ end)
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(function()
 		DataService.loadPlayerData(player)
+		_sessionJoinTimes[player.UserId] = os.time()
+		local data = DataService.getPlayerData(player)
+		if data then
+			QuestService.setStat(player, "reachLevel", data.level or 1)
+		end
 	end)
 end
+
+-- Periodic playtime tracking: every 60 seconds, update playtime stats
+-- This ensures quest progress is visible even during long sessions
+task.spawn(function()
+	while true do
+		task.wait(60)
+		for _, player in ipairs(Players:GetPlayers()) do
+			local joinTime = _sessionJoinTimes[player.UserId]
+			if joinTime then
+				local sessionSeconds = os.time() - joinTime
+				if sessionSeconds > 0 then
+					-- Update the stat with total accumulated playtime
+					local data = DataService.getPlayerData(player)
+					if data and data.questStats then
+						-- Calculate new total: stored + current session
+						local storedPlaytime = data.questStats.playtime or 0
+						-- We set the stat to stored + session so far
+						-- But we must be careful not to double-count
+						-- Instead, flush the session time into the stat and reset join time
+						QuestService.incrementStat(player, "playtime", sessionSeconds)
+						_sessionJoinTimes[player.UserId] = os.time()
+					end
+				end
+			end
+		end
+	end
+end)
 
 print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
@@ -486,6 +557,9 @@ local function getDefaultData()
 			destroyDestructibles = 0,
 			hatchEggs = 0,
 			earnCoins = 0,
+			playtime = 0,
+			reachLevel = 0,
+			goldenPetsConverted = 0,
 		},
 		-- Mastery system
 		masteryPoints = 0,
@@ -1189,6 +1263,61 @@ function PetService.getPetDamage(pet, player)
 	end
 
 	return baseDamage
+end
+
+-- Convert a normal pet into a golden pet (sacrifice/transform)
+-- Returns the golden pet and increments the goldenPetsConverted stat
+function PetService.convertToGoldenPet(player, petInstanceId)
+	if not player or type(petInstanceId) ~= "string" then
+		return nil, "Invalid parameters"
+	end
+
+	local data = PetService._dataService.getPlayerData(player)
+	if not data then
+		return nil, "No player data"
+	end
+
+	-- Find the pet in inventory
+	local foundPet = nil
+	local foundIndex = nil
+	for i, pet in ipairs(data.pets) do
+		if pet.id == petInstanceId then
+			foundPet = pet
+			foundIndex = i
+			break
+		end
+	end
+
+	if not foundPet then
+		return nil, "Pet not found in inventory"
+	end
+
+	-- Cannot convert an already golden pet
+	if foundPet.golden then
+		return nil, "Pet is already golden"
+	end
+
+	-- Cannot convert an equipped pet
+	if foundPet.equipped then
+		return nil, "Unequip the pet before converting"
+	end
+
+	-- Transform the pet to golden (modify in place)
+	foundPet.golden = true
+	foundPet.name = "Golden " .. foundPet.name
+	-- Golden pets get 2x base damage
+	foundPet.damage = (foundPet.damage or 5) * 2
+
+	-- Fire inventory update event
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if remotes then
+		local event = remotes:FindFirstChild("PetInventoryUpdated")
+		if event then
+			event:FireClient(player, data.pets)
+		end
+	end
+
+	return foundPet, nil
 end
 
 return PetService
@@ -2080,14 +2209,21 @@ function ZoneService._awardXP(player, amount)
 
 	-- Check for level up
 	local xpNeeded = (data.level or 1) * 100
+	local leveledUp = false
 	while data.xp >= xpNeeded do
 		data.xp = data.xp - xpNeeded
 		data.level = (data.level or 1) + 1
 		xpNeeded = data.level * 100
+		leveledUp = true
 		-- Award mastery point on level-up
 		if ZoneService._masteryService then
 			ZoneService._masteryService.awardMasteryPoint(player)
 		end
+	end
+
+	-- Track level-based quests when player levels up
+	if leveledUp and ZoneService._questService then
+		ZoneService._questService.setStat(player, "reachLevel", data.level)
 	end
 
 	-- Fire XP update to client
@@ -2846,8 +2982,9 @@ return EggService
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
 	QuestService.lua - Quest-based upgrade system
-	Tracks quest progress (destroys, hatches, coins earned) and awards upgrades
-	when milestones are reached. Replaces the old coin-buying upgrade model.
+	Tracks quest progress (destroys, hatches, coins earned, playtime, levels,
+	golden pet conversions) and awards upgrades when milestones are reached.
+	Replaces the old coin-buying upgrade model.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -2866,7 +3003,7 @@ function QuestService.init(dataService, currencyService)
 end
 
 -- Increment a quest stat for a player and check for quest completions
--- statType: "destroyDestructibles", "hatchEggs", "earnCoins", "destroyType"
+-- statType: "destroyDestructibles", "hatchEggs", "earnCoins", "playtime", "goldenPetsConverted"
 -- amount: how much to increment (default 1)
 function QuestService.incrementStat(player, statType, amount)
 	if not player or not statType then return end
@@ -2884,22 +3021,48 @@ function QuestService.incrementStat(player, statType, amount)
 	data.questStats[statType] = (data.questStats[statType] or 0) + amount
 
 	-- Check all quests to see if any new levels have been unlocked
+	QuestService._checkQuestCompletions(player, data)
+end
+
+-- Set a quest stat to a specific value (used for level-based checks)
+-- This is for stats like "reachLevel" where the value is the current state, not cumulative
+function QuestService.setStat(player, statType, value)
+	if not player or not statType then return end
+
+	local data = QuestService._dataService.getPlayerData(player)
+	if not data then return end
+
+	-- Ensure questStats table exists
+	if not data.questStats then
+		data.questStats = {}
+	end
+
+	-- Only update if new value is higher (levels only go up)
+	local current = data.questStats[statType] or 0
+	if value > current then
+		data.questStats[statType] = value
+		QuestService._checkQuestCompletions(player, data)
+	end
+end
+
+-- Internal: check all quest completions and award upgrades
+function QuestService._checkQuestCompletions(player, data)
 	local upgradesChanged = false
+
 	for questId, questDef in pairs(QuestData.Quests) do
-		if questDef.requirement.type == statType then
-			local currentLevel = data.upgrades[questId] or 0
-			local maxLevel = #questDef.levels
+		local statType = questDef.requirement.type
+		local currentLevel = data.upgrades[questId] or 0
+		local maxLevel = #questDef.levels
 
-			-- Check if current stat meets any unachieved level requirement
-			if currentLevel < maxLevel then
-				local currentStat = data.questStats[statType] or 0
-				local requiredForNext = questDef.levelRequirements[currentLevel + 1]
+		-- Check if current stat meets any unachieved level requirement
+		if currentLevel < maxLevel then
+			local currentStat = data.questStats[statType] or 0
+			local requiredForNext = questDef.levelRequirements[currentLevel + 1]
 
-				if currentStat >= requiredForNext then
-					-- Award the upgrade level
-					data.upgrades[questId] = currentLevel + 1
-					upgradesChanged = true
-				end
+			if currentStat >= requiredForNext then
+				-- Award the upgrade level
+				data.upgrades[questId] = currentLevel + 1
+				upgradesChanged = true
 			end
 		end
 	end
@@ -7920,19 +8083,22 @@ return CampaignData
 						<ProtectedString name="Source"><![CDATA[--[[
 	QuestData.lua - Quest definitions for unlocking upgrades
 	Each quest has a requirement (action + count) and unlocks a specific upgrade.
-	Players complete quests by playing the game (destroying things, hatching eggs, etc.)
+	Players complete quests by playing the game (destroying things, hatching eggs,
+	earning coins, reaching levels, playing for time, converting golden pets, etc.)
+
+	Quest requirement types:
+	- "destroyDestructibles" - destroy X total destructibles with pets
+	- "hatchEggs" - hatch X eggs total
+	- "earnCoins" - earn X total coins (lifetime)
+	- "playtime" - play for X seconds total (cumulative across sessions)
+	- "reachLevel" - reach player level X
+	- "goldenPetsConverted" - convert X normal pets into golden pets
 ]]
 
 local QuestData = {}
 
--- Quest requirement types:
--- "destroyDestructibles" - destroy X total destructibles with pets
--- "hatchEggs" - hatch X eggs total
--- "earnCoins" - earn X total coins (lifetime)
--- "destroyType" - destroy X of a specific destructible type
--- "reachLevel" - reach mastery level X
-
 QuestData.Quests = {
+	-- === DESTRUCTIBLE QUESTS ===
 	StrongPets = {
 		id = "StrongPets",
 		displayName = "Strong Pets",
@@ -7949,7 +8115,6 @@ QuestData.Quests = {
 			{ bonus = 1.7 },
 			{ bonus = 2.5 },
 		},
-		-- Each level requires more completions of the same quest type
 		levelRequirements = { 2500, 7500, 20000 },
 	},
 	FasterPets = {
@@ -7970,6 +8135,44 @@ QuestData.Quests = {
 		},
 		levelRequirements = { 1000, 4000, 12000 },
 	},
+	DropCloner = {
+		id = "DropCloner",
+		displayName = "Drop Cloner",
+		description = "Chance to double drops",
+		icon = "x2",
+		color = { 0, 150, 255 },
+		requirement = {
+			type = "destroyDestructibles",
+			count = 5000,
+			displayText = "Destroy 5,000 destructibles with pets",
+		},
+		levels = {
+			{ bonus = 0.10 },
+			{ bonus = 0.20 },
+			{ bonus = 0.35 },
+		},
+		levelRequirements = { 5000, 15000, 40000 },
+	},
+	ExtraSlots = {
+		id = "ExtraSlots",
+		displayName = "Extra Slots",
+		description = "More pet inventory slots",
+		icon = "+",
+		color = { 100, 200, 0 },
+		requirement = {
+			type = "destroyDestructibles",
+			count = 500,
+			displayText = "Destroy 500 destructibles with pets",
+		},
+		levels = {
+			{ bonus = 5 },
+			{ bonus = 10 },
+			{ bonus = 20 },
+		},
+		levelRequirements = { 500, 2000, 8000 },
+	},
+
+	-- === HATCH QUESTS ===
 	Friendship = {
 		id = "Friendship",
 		displayName = "Friendship",
@@ -8006,6 +8209,26 @@ QuestData.Quests = {
 		},
 		levelRequirements = { 25, 60, 150 },
 	},
+	EggMaster = {
+		id = "EggMaster",
+		displayName = "Egg Master",
+		description = "Hatch many eggs to become a master",
+		icon = "🥚",
+		color = { 240, 200, 150 },
+		requirement = {
+			type = "hatchEggs",
+			count = 100,
+			displayText = "Hatch 100 eggs",
+		},
+		levels = {
+			{ bonus = 1.3 },
+			{ bonus = 1.6 },
+			{ bonus = 2.0 },
+		},
+		levelRequirements = { 100, 500, 1000 },
+	},
+
+	-- === COINS QUESTS ===
 	Sprinting = {
 		id = "Sprinting",
 		displayName = "Sprinting",
@@ -8024,66 +8247,131 @@ QuestData.Quests = {
 		},
 		levelRequirements = { 5000, 25000, 100000 },
 	},
-	DropCloner = {
-		id = "DropCloner",
-		displayName = "Drop Cloner",
-		description = "Chance to double drops",
-		icon = "x2",
-		color = { 0, 150, 255 },
+	CoinCollector = {
+		id = "CoinCollector",
+		displayName = "Coin Collector",
+		description = "Earn massive amounts of coins",
+		icon = "💰",
+		color = { 255, 200, 0 },
 		requirement = {
-			type = "destroyDestructibles",
-			count = 5000,
-			displayText = "Destroy 5,000 destructibles with pets",
+			type = "earnCoins",
+			count = 10000,
+			displayText = "Earn 10,000 total coins",
 		},
 		levels = {
-			{ bonus = 0.10 },
-			{ bonus = 0.20 },
-			{ bonus = 0.35 },
+			{ bonus = 1.2 },
+			{ bonus = 1.5 },
+			{ bonus = 2.0 },
 		},
-		levelRequirements = { 5000, 15000, 40000 },
+		levelRequirements = { 10000, 50000, 100000 },
 	},
+
+	-- === PLAYTIME QUESTS ===
+	Dedication = {
+		id = "Dedication",
+		displayName = "Dedication",
+		description = "Play the game for a long time",
+		icon = "⏰",
+		color = { 100, 180, 255 },
+		requirement = {
+			type = "playtime",
+			count = 3600,
+			displayText = "Play for 1 hour total",
+		},
+		levels = {
+			{ bonus = 1.1 },
+			{ bonus = 1.3 },
+			{ bonus = 1.5 },
+		},
+		-- 1 hour, 5 hours, 24 hours (in seconds)
+		levelRequirements = { 3600, 18000, 86400 },
+	},
+	Veteran = {
+		id = "Veteran",
+		displayName = "Veteran",
+		description = "A true veteran player with massive playtime",
+		icon = "🏆",
+		color = { 200, 150, 0 },
+		requirement = {
+			type = "playtime",
+			count = 18000,
+			displayText = "Play for 5 hours total",
+		},
+		levels = {
+			{ bonus = 1.2 },
+			{ bonus = 1.5 },
+			{ bonus = 2.0 },
+		},
+		-- 5 hours, 12 hours, 48 hours (in seconds)
+		levelRequirements = { 18000, 43200, 172800 },
+	},
+
+	-- === LEVEL QUESTS ===
+	Rising = {
+		id = "Rising",
+		displayName = "Rising Star",
+		description = "Reach higher player levels",
+		icon = "⭐",
+		color = { 255, 220, 50 },
+		requirement = {
+			type = "reachLevel",
+			count = 10,
+			displayText = "Reach Level 10",
+		},
+		levels = {
+			{ bonus = 1.2 },
+			{ bonus = 1.5 },
+			{ bonus = 2.0 },
+		},
+		levelRequirements = { 10, 20, 50 },
+	},
+	Legend = {
+		id = "Legend",
+		displayName = "Legend",
+		description = "Become a legendary player",
+		icon = "👑",
+		color = { 255, 100, 0 },
+		requirement = {
+			type = "reachLevel",
+			count = 25,
+			displayText = "Reach Level 25",
+		},
+		levels = {
+			{ bonus = 1.3 },
+			{ bonus = 1.7 },
+			{ bonus = 2.5 },
+		},
+		levelRequirements = { 25, 50, 100 },
+	},
+
+	-- === GOLDEN PET QUEST ===
 	GoldenPetsChance = {
 		id = "GoldenPetsChance",
 		displayName = "Golden Pets",
-		description = "Chance to hatch golden variants",
+		description = "Convert pets to golden - eggs can hatch golden pets (1% chance)",
 		icon = "✦",
 		color = { 255, 200, 0 },
 		requirement = {
-			type = "hatchEggs",
-			count = 50,
-			displayText = "Hatch 50 eggs",
-		},
-		levels = {
-			{ bonus = 0.05 },
-			{ bonus = 0.10 },
-			{ bonus = 0.20 },
-		},
-		levelRequirements = { 50, 120, 300 },
-	},
-	ExtraSlots = {
-		id = "ExtraSlots",
-		displayName = "Extra Slots",
-		description = "More pet inventory slots",
-		icon = "+",
-		color = { 100, 200, 0 },
-		requirement = {
-			type = "destroyDestructibles",
+			type = "goldenPetsConverted",
 			count = 500,
-			displayText = "Destroy 500 destructibles with pets",
+			displayText = "Convert 500 pets to Golden Pets",
 		},
 		levels = {
-			{ bonus = 5 },
-			{ bonus = 10 },
-			{ bonus = 20 },
+			{ bonus = 0.01 },
 		},
-		levelRequirements = { 500, 2000, 8000 },
+		-- Single level: convert 500 pets to unlock 1% golden hatch chance
+		levelRequirements = { 500 },
 	},
 }
 
 -- Ordered list for UI display
 QuestData.QuestOrder = {
-	"StrongPets", "FasterPets", "Friendship", "LuckyEggs",
-	"Sprinting", "DropCloner", "GoldenPetsChance", "ExtraSlots",
+	"StrongPets", "FasterPets", "DropCloner", "ExtraSlots",
+	"Friendship", "LuckyEggs", "EggMaster",
+	"Sprinting", "CoinCollector",
+	"Dedication", "Veteran",
+	"Rising", "Legend",
+	"GoldenPetsChance",
 }
 
 return QuestData
@@ -8098,11 +8386,14 @@ return QuestData
 	MasteryData.lua - Mastery buff definitions
 	Each level-up grants 1 mastery point. Points are spent on buffs in the Mastery tab.
 	Each buff can be upgraded multiple times, each level costing more mastery points.
+
+	ONLY player buffs here - NO pet-related improvements (those belong to quests).
 ]]
 
 local MasteryData = {}
 
 -- Mastery buffs: each can be leveled up with mastery points
+-- Player-only buffs: coins, diamonds, luck, XP, run speed
 MasteryData.Buffs = {
 	MoreCoins = {
 		id = "MoreCoins",
@@ -8115,6 +8406,16 @@ MasteryData.Buffs = {
 		-- Bonus multiplier at each level (cumulative)
 		bonusPerLevel = { 1.1, 1.2, 1.35, 1.5, 1.7, 1.9, 2.1, 2.4, 2.7, 3.0 },
 	},
+	MoreDiamonds = {
+		id = "MoreDiamonds",
+		displayName = "More Diamonds",
+		description = "Increases diamonds earned per drop",
+		icon = "◆",
+		color = { 0, 180, 255 },
+		maxLevel = 10,
+		pointsPerLevel = { 1, 1, 2, 2, 3, 3, 4, 4, 5, 5 },
+		bonusPerLevel = { 1.1, 1.2, 1.35, 1.5, 1.7, 1.9, 2.1, 2.4, 2.7, 3.0 },
+	},
 	BetterLuck = {
 		id = "BetterLuck",
 		displayName = "Better Luck",
@@ -8125,41 +8426,32 @@ MasteryData.Buffs = {
 		pointsPerLevel = { 1, 1, 2, 2, 3, 3, 4, 4, 5, 5 },
 		bonusPerLevel = { 1.1, 1.2, 1.35, 1.5, 1.7, 1.9, 2.1, 2.4, 2.7, 3.0 },
 	},
-	PetSpeed = {
-		id = "PetSpeed",
-		displayName = "Pet Speed",
-		description = "Pets follow and attack faster",
-		icon = "»",
-		color = { 0, 200, 255 },
-		maxLevel = 5,
-		pointsPerLevel = { 1, 2, 3, 4, 5 },
-		bonusPerLevel = { 1.1, 1.2, 1.35, 1.5, 1.7 },
-	},
-	MoreDiamonds = {
-		id = "MoreDiamonds",
-		displayName = "More Diamonds",
-		description = "Increases diamonds earned per drop",
-		icon = "◆",
-		color = { 0, 180, 255 },
-		maxLevel = 5,
-		pointsPerLevel = { 2, 2, 3, 4, 5 },
-		bonusPerLevel = { 1.2, 1.5, 1.8, 2.2, 3.0 },
-	},
 	XPBoost = {
 		id = "XPBoost",
 		displayName = "XP Boost",
 		description = "Earn more XP from destroying things",
 		icon = "↑",
 		color = { 0, 220, 100 },
-		maxLevel = 5,
-		pointsPerLevel = { 1, 2, 2, 3, 4 },
-		bonusPerLevel = { 1.2, 1.4, 1.7, 2.0, 2.5 },
+		maxLevel = 10,
+		pointsPerLevel = { 1, 1, 2, 2, 3, 3, 4, 4, 5, 5 },
+		bonusPerLevel = { 1.1, 1.2, 1.35, 1.5, 1.7, 1.9, 2.1, 2.4, 2.7, 3.0 },
+	},
+	FasterRunning = {
+		id = "FasterRunning",
+		displayName = "Faster Running",
+		description = "Player moves faster (walk speed boost)",
+		icon = "⚡",
+		color = { 255, 150, 0 },
+		maxLevel = 10,
+		pointsPerLevel = { 1, 1, 2, 2, 3, 3, 4, 4, 5, 5 },
+		-- Multiplier on walk speed
+		bonusPerLevel = { 1.05, 1.1, 1.15, 1.2, 1.3, 1.4, 1.5, 1.6, 1.75, 2.0 },
 	},
 }
 
 -- Ordered list for UI display
 MasteryData.BuffOrder = {
-	"MoreCoins", "BetterLuck", "PetSpeed", "MoreDiamonds", "XPBoost",
+	"MoreCoins", "MoreDiamonds", "BetterLuck", "XPBoost", "FasterRunning",
 }
 
 return MasteryData

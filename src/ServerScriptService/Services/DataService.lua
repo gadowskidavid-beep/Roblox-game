@@ -63,6 +63,9 @@ local function getDefaultData()
 			destroyDestructibles = 0,
 			hatchEggs = 0,
 			earnCoins = 0,
+			playtime = 0,
+			reachLevel = 0,
+			goldenPetsConverted = 0,
 		},
 		-- Mastery system
 		masteryPoints = 0,

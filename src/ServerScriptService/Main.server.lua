@@ -69,6 +69,7 @@ local remoteFunctions = {
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
+	"ConvertToGoldenPet",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -237,6 +238,22 @@ getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
 	return MasteryService.getMasteryState(player)
 end
 
+-- ConvertToGoldenPet
+getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceId)
+	if not player or not player:IsA("Player") then
+		return nil, "Invalid player"
+	end
+	if type(petInstanceId) ~= "string" then
+		return nil, "Invalid pet ID parameter"
+	end
+	local goldenPet, err = PetService.convertToGoldenPet(player, petInstanceId)
+	if goldenPet then
+		-- Track quest progress for golden pet conversion
+		QuestService.incrementStat(player, "goldenPetsConverted", 1)
+	end
+	return goldenPet, err
+end
+
 -- StartCampaignLevel
 getRemoteFunction("StartCampaignLevel").OnServerInvoke = function(player, levelNum)
 	if not player or not player:IsA("Player") then
@@ -274,12 +291,34 @@ end
 -- Player Lifecycle
 ----------------------------------------------
 
+-- Track session join times for playtime calculation
+local _sessionJoinTimes = {}
+
 Players.PlayerAdded:Connect(function(player)
 	-- Load player data when they join
 	DataService.loadPlayerData(player)
+
+	-- Record join time for playtime tracking
+	_sessionJoinTimes[player.UserId] = os.time()
+
+	-- Check level-based quests on join (in case they already meet requirements)
+	local data = DataService.getPlayerData(player)
+	if data then
+		QuestService.setStat(player, "reachLevel", data.level or 1)
+	end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
+	-- Accumulate playtime before saving
+	local joinTime = _sessionJoinTimes[player.UserId]
+	if joinTime then
+		local sessionSeconds = os.time() - joinTime
+		if sessionSeconds > 0 then
+			QuestService.incrementStat(player, "playtime", sessionSeconds)
+		end
+		_sessionJoinTimes[player.UserId] = nil
+	end
+
 	-- Cleanup campaign battle if any
 	CampaignService.onPlayerRemoving(player)
 	-- Save and cleanup player data
@@ -290,7 +329,39 @@ end)
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(function()
 		DataService.loadPlayerData(player)
+		_sessionJoinTimes[player.UserId] = os.time()
+		local data = DataService.getPlayerData(player)
+		if data then
+			QuestService.setStat(player, "reachLevel", data.level or 1)
+		end
 	end)
 end
+
+-- Periodic playtime tracking: every 60 seconds, update playtime stats
+-- This ensures quest progress is visible even during long sessions
+task.spawn(function()
+	while true do
+		task.wait(60)
+		for _, player in ipairs(Players:GetPlayers()) do
+			local joinTime = _sessionJoinTimes[player.UserId]
+			if joinTime then
+				local sessionSeconds = os.time() - joinTime
+				if sessionSeconds > 0 then
+					-- Update the stat with total accumulated playtime
+					local data = DataService.getPlayerData(player)
+					if data and data.questStats then
+						-- Calculate new total: stored + current session
+						local storedPlaytime = data.questStats.playtime or 0
+						-- We set the stat to stored + session so far
+						-- But we must be careful not to double-count
+						-- Instead, flush the session time into the stat and reset join time
+						QuestService.incrementStat(player, "playtime", sessionSeconds)
+						_sessionJoinTimes[player.UserId] = os.time()
+					end
+				end
+			end
+		end
+	end
+end)
 
 print("[Battle Pets] Server initialized successfully!")

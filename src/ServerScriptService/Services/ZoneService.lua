@@ -783,14 +783,21 @@ function ZoneService._awardXP(player, amount)
 
 	-- Check for level up
 	local xpNeeded = (data.level or 1) * 100
+	local leveledUp = false
 	while data.xp >= xpNeeded do
 		data.xp = data.xp - xpNeeded
 		data.level = (data.level or 1) + 1
 		xpNeeded = data.level * 100
+		leveledUp = true
 		-- Award mastery point on level-up
 		if ZoneService._masteryService then
 			ZoneService._masteryService.awardMasteryPoint(player)
 		end
+	end
+
+	-- Track level-based quests when player levels up
+	if leveledUp and ZoneService._questService then
+		ZoneService._questService.setStat(player, "reachLevel", data.level)
 	end
 
 	-- Fire XP update to client
