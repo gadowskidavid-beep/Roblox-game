@@ -419,18 +419,42 @@ end
 function UIController:_refreshEquippedBar()
 	if not self._equippedBar then return end
 
-	-- Clear existing icons
+	-- Clear existing icons (only destroy Frame children, keep UIListLayout etc.)
 	for _, child in ipairs(self._equippedBar:GetChildren()) do
-		if child:IsA("Frame") then
+		if child:IsA("Frame") or child:IsA("TextLabel") then
 			child:Destroy()
 		end
 	end
 
+	-- If no equipped pets, show a hint label
+	if #self._equippedPets == 0 then
+		local hintLabel = Instance.new("TextLabel")
+		hintLabel.Name = "HintLabel"
+		hintLabel.Size = UDim2.fromScale(0.9, 0.8)
+		hintLabel.BackgroundTransparency = 1
+		hintLabel.Text = "No pets equipped"
+		hintLabel.TextColor3 = Color3.fromRGB(150, 150, 170)
+		hintLabel.Font = Enum.Font.GothamBold
+		hintLabel.TextScaled = true
+		hintLabel.Parent = self._equippedBar
+		return
+	end
+
 	for _, petData in ipairs(self._equippedPets) do
+		-- Handle both pet data tables and string IDs gracefully
+		local petName = "?"
+		local petRarity = "Common"
+		if type(petData) == "table" then
+			petName = petData.name or "?"
+			petRarity = petData.rarity or "Common"
+		end
+
+		local rarityColor = RARITY_COLORS[petRarity] or RARITY_COLORS.Common
+
 		local slot = Instance.new("Frame")
-		slot.Name = "Slot_" .. (petData.name or "pet")
+		slot.Name = "Slot_" .. petName
 		slot.Size = UDim2.fromOffset(44, 44)
-		slot.BackgroundColor3 = RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common
+		slot.BackgroundColor3 = rarityColor
 		slot.Parent = self._equippedBar
 
 		local slotCorner = Instance.new("UICorner")
@@ -445,7 +469,7 @@ function UIController:_refreshEquippedBar()
 		local petLabel = Instance.new("TextLabel")
 		petLabel.Size = UDim2.fromScale(1, 1)
 		petLabel.BackgroundTransparency = 1
-		petLabel.Text = string.sub(petData.name or "?", 1, 2)
+		petLabel.Text = string.sub(petName, 1, 2)
 		petLabel.TextColor3 = COLORS.White
 		petLabel.Font = Enum.Font.GothamBold
 		petLabel.TextScaled = true
@@ -560,14 +584,13 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
-	-- Scrolling frame grid
+	-- Scrolling frame grid (scrollbar hidden but still scrollable via touch/mousewheel)
 	local scrollFrame = Instance.new("ScrollingFrame")
 	scrollFrame.Name = "PetGrid"
 	scrollFrame.Size = UDim2.fromScale(0.94, 0.78)
 	scrollFrame.Position = UDim2.fromScale(0.03, 0.1)
 	scrollFrame.BackgroundTransparency = 1
-	scrollFrame.ScrollBarThickness = 8
-	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 130, 200)
+	scrollFrame.ScrollBarThickness = 0
 	scrollFrame.CanvasSize = UDim2.fromScale(0, 0) -- will be auto-sized
 	scrollFrame.Parent = mainFrame
 

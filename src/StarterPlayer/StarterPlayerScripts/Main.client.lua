@@ -135,6 +135,7 @@ uiController:init(Remotes, playerData)
 if playerData and playerData.equippedPets then
 	localEquippedPets = buildEquippedListFromData(playerData)
 	petController:updateEquippedPets(localEquippedPets)
+	uiController:updateEquippedPets(localEquippedPets)
 end
 
 --------------------------------------------------------------------------------

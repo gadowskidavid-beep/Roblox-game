@@ -26,8 +26,8 @@ local ZONE_SPACING = 250
 
 -- How many destructibles to spawn per zone (distributed randomly)
 local DESTRUCTIBLES_PER_ZONE = 20
--- Minimum distance between spawned destructibles (studs)
-local MIN_SPAWN_DISTANCE = 12
+-- Minimum distance between spawned destructibles (studs) - prevents overlap between all types
+local MIN_SPAWN_DISTANCE = 15
 
 function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._dataService = dataService
@@ -355,7 +355,14 @@ function ZoneService.attackDestructible(player, destructibleId)
 			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
 			if zoneFolder then
 				local origin = getZoneOrigin(zoneId)
-				local newPosition = getRandomPositionInZone(origin, {})
+				-- Gather positions of all existing destructibles in this zone to prevent overlap
+				local existingPositions = {}
+				for _, d in pairs(ZoneService._destructibles) do
+					if d.zoneId == zoneId and d.position then
+						table.insert(existingPositions, d.position)
+					end
+				end
+				local newPosition = getRandomPositionInZone(origin, existingPositions)
 				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder)
 			end
 		end)
