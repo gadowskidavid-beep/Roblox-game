@@ -3,7 +3,7 @@
   "type": "fix",
   "title": "Player test bug fixes: equip/unequip, destructible spacing, pet speed, camera, E-key, UI, leaderboard, data saving",
   "description": "Comprehensive bug fix and improvement pass based on player testing: 1. Fix pet equip/unequip completely with debug prints. 2. Shared position list for all destructible types with 15-stud min distance. 3. Slow pet movement (lerp 1.5), ground-level (height 0-0.5). 4. Pet attack cancellation on click elsewhere or player moving away. 5. Remove camera effect from egg animation. 6. E-key direct hatch (no menu). 7. BillboardGui showing egg contents with percentages. 8. Remove equipped pet bar UI. 9. Leaderboard (leaderstats with Level and Diamonds). 10. Data save with memory-only mode message.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Fix PetService equip/unequip with debug prints",
     "Fix destructible spawning with shared position tracking and 15-stud minimum distance",
