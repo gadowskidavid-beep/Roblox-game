@@ -578,7 +578,21 @@ function ZoneService._spawnEggStations()
 	end
 end
 
--- Spawn zone gates between adjacent zones (visible barriers with cost labels)
+-- Zone gate pillar colors per zone (matching the zone's theme)
+local GATE_PILLAR_COLORS = {
+	[2] = Color3.fromRGB(140, 140, 160), -- Stadt: gray/blue-ish concrete
+	[3] = Color3.fromRGB(194, 178, 128), -- Strand: sandy
+	[4] = Color3.fromRGB(180, 140, 60),  -- Wueste: golden sand
+	[5] = Color3.fromRGB(160, 200, 240), -- Eiswelt: icy blue
+	[6] = Color3.fromRGB(120, 40, 20),   -- Vulkan: dark red/lava
+	[7] = Color3.fromRGB(240, 240, 200), -- Himmel: bright gold/white
+	[8] = Color3.fromRGB(40, 20, 80),    -- Weltraum: dark purple
+}
+
+-- Spawn large Pet Simulator 1 style zone gates between adjacent zones
+-- Each gate consists of: two tall pillars, a connecting arch on top,
+-- a semi-transparent barrier in the middle (disappears on unlock),
+-- and a large BillboardGui showing zone name and cost.
 function ZoneService._spawnZoneGates()
 	local workspace = game:GetService("Workspace")
 	local gatesFolder = workspace:FindFirstChild("ZoneGates")
@@ -599,63 +613,171 @@ function ZoneService._spawnZoneGates()
 		local gateX = (prevCenter + currCenter) / 2
 		local gateZ = -100 -- center Z of zones
 
-		-- Gate wall (tall translucent barrier)
-		local gate = Instance.new("Part")
-		gate.Name = "ZoneGate_" .. tostring(gateZone)
-		gate.Size = Vector3.new(4, 20, 60)
-		gate.Position = Vector3.new(gateX, 10, gateZ)
-		gate.Anchored = true
-		gate.CanCollide = true
-		gate.Color = Color3.fromRGB(255, 80, 80)
-		gate.Material = Enum.Material.ForceField
-		gate.Transparency = 0.4
-		gate.Parent = gatesFolder
+		-- Gate dimensions
+		local PILLAR_WIDTH = 4
+		local PILLAR_HEIGHT = 20
+		local PILLAR_DEPTH = 4
+		local GATE_OPENING_WIDTH = 20 -- space between pillars for walking through
+		local ARCH_HEIGHT = 4
+		local BARRIER_THICKNESS = 2
 
-		-- Tag it so client can identify it
+		local pillarColor = GATE_PILLAR_COLORS[gateZone] or Color3.fromRGB(150, 150, 150)
+		local pillarMaterial = Enum.Material.Concrete
+
+		-- Create a model to hold all gate parts
+		local gateModel = Instance.new("Model")
+		gateModel.Name = "ZoneGateModel_" .. tostring(gateZone)
+		gateModel.Parent = gatesFolder
+
+		-- LEFT PILLAR (negative Z side)
+		local leftPillar = Instance.new("Part")
+		leftPillar.Name = "LeftPillar"
+		leftPillar.Size = Vector3.new(PILLAR_WIDTH, PILLAR_HEIGHT, PILLAR_DEPTH)
+		leftPillar.Position = Vector3.new(gateX, PILLAR_HEIGHT / 2, gateZ - GATE_OPENING_WIDTH / 2 - PILLAR_DEPTH / 2)
+		leftPillar.Anchored = true
+		leftPillar.CanCollide = true
+		leftPillar.Color = pillarColor
+		leftPillar.Material = pillarMaterial
+		leftPillar.Parent = gateModel
+
+		-- RIGHT PILLAR (positive Z side)
+		local rightPillar = Instance.new("Part")
+		rightPillar.Name = "RightPillar"
+		rightPillar.Size = Vector3.new(PILLAR_WIDTH, PILLAR_HEIGHT, PILLAR_DEPTH)
+		rightPillar.Position = Vector3.new(gateX, PILLAR_HEIGHT / 2, gateZ + GATE_OPENING_WIDTH / 2 + PILLAR_DEPTH / 2)
+		rightPillar.Anchored = true
+		rightPillar.CanCollide = true
+		rightPillar.Color = pillarColor
+		rightPillar.Material = pillarMaterial
+		rightPillar.Parent = gateModel
+
+		-- TOP ARCH (connects both pillars at the top)
+		local archWidth = GATE_OPENING_WIDTH + PILLAR_DEPTH * 2 -- spans full width including pillars
+		local topArch = Instance.new("Part")
+		topArch.Name = "TopArch"
+		topArch.Size = Vector3.new(PILLAR_WIDTH, ARCH_HEIGHT, archWidth)
+		topArch.Position = Vector3.new(gateX, PILLAR_HEIGHT + ARCH_HEIGHT / 2, gateZ)
+		topArch.Anchored = true
+		topArch.CanCollide = true
+		topArch.Color = pillarColor
+		topArch.Material = pillarMaterial
+		topArch.Parent = gateModel
+
+		-- Decorative top trim (slightly wider, darker)
+		local topTrim = Instance.new("Part")
+		topTrim.Name = "TopTrim"
+		topTrim.Size = Vector3.new(PILLAR_WIDTH + 1, 1, archWidth + 1)
+		topTrim.Position = Vector3.new(gateX, PILLAR_HEIGHT + ARCH_HEIGHT + 0.5, gateZ)
+		topTrim.Anchored = true
+		topTrim.CanCollide = true
+		topTrim.Color = Color3.fromRGB(
+			math.max(0, pillarColor.R * 255 - 40),
+			math.max(0, pillarColor.G * 255 - 40),
+			math.max(0, pillarColor.B * 255 - 40)
+		)
+		topTrim.Material = Enum.Material.SmoothPlastic
+		topTrim.Parent = gateModel
+
+		-- Pillar caps (decorative top pieces on each pillar)
+		local leftCap = Instance.new("Part")
+		leftCap.Name = "LeftPillarCap"
+		leftCap.Size = Vector3.new(PILLAR_WIDTH + 1, 1.5, PILLAR_DEPTH + 1)
+		leftCap.Position = Vector3.new(gateX, PILLAR_HEIGHT + 0.75, leftPillar.Position.Z)
+		leftCap.Anchored = true
+		leftCap.CanCollide = true
+		leftCap.Color = pillarColor
+		leftCap.Material = Enum.Material.SmoothPlastic
+		leftCap.Parent = gateModel
+
+		local rightCap = Instance.new("Part")
+		rightCap.Name = "RightPillarCap"
+		rightCap.Size = Vector3.new(PILLAR_WIDTH + 1, 1.5, PILLAR_DEPTH + 1)
+		rightCap.Position = Vector3.new(gateX, PILLAR_HEIGHT + 0.75, rightPillar.Position.Z)
+		rightCap.Anchored = true
+		rightCap.CanCollide = true
+		rightCap.Color = pillarColor
+		rightCap.Material = Enum.Material.SmoothPlastic
+		rightCap.Parent = gateModel
+
+		-- BARRIER (semi-transparent wall in the gate opening, reddish when locked)
+		local barrier = Instance.new("Part")
+		barrier.Name = "GateBarrier_" .. tostring(gateZone)
+		barrier.Size = Vector3.new(BARRIER_THICKNESS, PILLAR_HEIGHT, GATE_OPENING_WIDTH)
+		barrier.Position = Vector3.new(gateX, PILLAR_HEIGHT / 2, gateZ)
+		barrier.Anchored = true
+		barrier.CanCollide = true
+		barrier.Color = Color3.fromRGB(255, 60, 60)
+		barrier.Material = Enum.Material.ForceField
+		barrier.Transparency = 0.5
+		barrier.Parent = gateModel
+
+		-- Tag barrier so client can identify it
 		local zoneTag = Instance.new("IntValue")
 		zoneTag.Name = "GateZoneId"
 		zoneTag.Value = gateZone
-		zoneTag.Parent = gate
+		zoneTag.Parent = barrier
 
-		-- Cost label (BillboardGui with the unlock cost)
+		-- BILLBOARD GUI on the top arch (large, readable zone name and cost)
 		local cost = Config.ZoneGateCosts[gateZone] or 0
 		local billboard = Instance.new("BillboardGui")
 		billboard.Name = "GateLabel"
-		billboard.Size = UDim2.fromOffset(200, 80)
-		billboard.StudsOffset = Vector3.new(0, 12, 0)
+		billboard.Size = UDim2.fromOffset(300, 120)
+		billboard.StudsOffset = Vector3.new(0, 6, 0)
 		billboard.AlwaysOnTop = true
-		billboard.MaxDistance = 25
-		billboard.Adornee = gate
-		billboard.Parent = gate
+		billboard.MaxDistance = 60
+		billboard.Adornee = topArch
+		billboard.Parent = topArch
 
-		local costLabel = Instance.new("TextLabel")
-		costLabel.Name = "CostText"
-		costLabel.Size = UDim2.fromScale(1, 0.5)
-		costLabel.Position = UDim2.fromScale(0, 0)
-		costLabel.BackgroundTransparency = 1
-		costLabel.Text = zoneDef.name
-		costLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-		costLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		costLabel.TextStrokeTransparency = 0.3
-		costLabel.Font = Enum.Font.GothamBold
-		costLabel.TextScaled = true
-		costLabel.Parent = billboard
+		-- Background frame for the sign
+		local signBg = Instance.new("Frame")
+		signBg.Name = "SignBackground"
+		signBg.Size = UDim2.fromScale(1, 1)
+		signBg.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+		signBg.BackgroundTransparency = 0.3
+		signBg.BorderSizePixel = 0
+		signBg.Parent = billboard
 
+		local signCorner = Instance.new("UICorner")
+		signCorner.CornerRadius = UDim.new(0, 12)
+		signCorner.Parent = signBg
+
+		local signPadding = Instance.new("UIPadding")
+		signPadding.PaddingTop = UDim.new(0, 8)
+		signPadding.PaddingBottom = UDim.new(0, 8)
+		signPadding.PaddingLeft = UDim.new(0, 12)
+		signPadding.PaddingRight = UDim.new(0, 12)
+		signPadding.Parent = signBg
+
+		-- Zone name label (top half)
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "ZoneName"
+		nameLabel.Size = UDim2.fromScale(1, 0.5)
+		nameLabel.Position = UDim2.fromScale(0, 0)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = zoneDef.name
+		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		nameLabel.TextStrokeTransparency = 0.2
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextScaled = true
+		nameLabel.Parent = signBg
+
+		-- Cost label (bottom half, gold color with coin icon text)
 		local priceLabel = Instance.new("TextLabel")
 		priceLabel.Name = "PriceText"
-		priceLabel.Size = UDim2.fromScale(1, 0.5)
-		priceLabel.Position = UDim2.fromScale(0, 0.5)
+		priceLabel.Size = UDim2.fromScale(1, 0.45)
+		priceLabel.Position = UDim2.fromScale(0, 0.55)
 		priceLabel.BackgroundTransparency = 1
 		priceLabel.Text = tostring(cost) .. " Coins"
 		priceLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
-		priceLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		priceLabel.TextStrokeTransparency = 0.3
+		priceLabel.TextStrokeColor3 = Color3.fromRGB(80, 60, 0)
+		priceLabel.TextStrokeTransparency = 0.2
 		priceLabel.Font = Enum.Font.GothamBold
 		priceLabel.TextScaled = true
-		priceLabel.Parent = billboard
+		priceLabel.Parent = signBg
 
-		-- Connect Touched event so players can unlock by walking into the gate
-		gate.Touched:Connect(function(hit)
+		-- Connect Touched event on the barrier for zone unlocking
+		barrier.Touched:Connect(function(hit)
 			local player = game:GetService("Players"):GetPlayerFromCharacter(hit.Parent)
 			if not player then return end
 
@@ -672,25 +794,80 @@ function ZoneService._spawnZoneGates()
 			end
 
 			if alreadyUnlocked then
-				-- Remove the gate for this player (destroy it since single-player focus)
-				gate:Destroy()
+				-- Remove only the barrier (pillars and arch stay)
+				barrier.CanCollide = false
+				barrier.Transparency = 1
 				return
 			end
 
 			-- Try to unlock the zone
 			local success, err = ZoneService.unlockZone(player, gateZone)
 			if success then
-				-- Store gate position before destroying
-				local gatePosition = gate.Position
-				gate:Destroy()
-				-- Fire zone unlock effect with gate position
+				-- Remove the barrier (make invisible and non-collidable)
+				local barrierPosition = barrier.Position
+				barrier.CanCollide = false
+				barrier.Transparency = 1
+
+				-- Fire zone unlock effect with gate position for particle/flash effect
 				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 				if remotes then
 					local event = remotes:FindFirstChild("ZoneUnlocked")
 					if event then
-						event:FireClient(player, gateZone, gatePosition)
+						event:FireClient(player, gateZone, barrierPosition)
 					end
 				end
+
+				-- Create a brief unlock flash effect on the pillars (Neon flash)
+				local TweenService = game:GetService("TweenService")
+				local flashInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+				-- Flash pillars and arch briefly to white then back
+				local partsToFlash = { leftPillar, rightPillar, topArch }
+				for _, flashPart in ipairs(partsToFlash) do
+					local originalColor = flashPart.Color
+					flashPart.Color = Color3.fromRGB(255, 255, 255)
+					flashPart.Material = Enum.Material.Neon
+					TweenService:Create(flashPart, flashInfo, {
+						Color = originalColor,
+					}):Play()
+					-- Restore material after flash
+					task.delay(0.5, function()
+						flashPart.Material = pillarMaterial
+					end)
+				end
+
+				-- Spawn particles at the barrier position for unlock celebration
+				local particlePart = Instance.new("Part")
+				particlePart.Name = "UnlockParticles"
+				particlePart.Size = Vector3.new(1, 1, 1)
+				particlePart.Position = barrierPosition
+				particlePart.Anchored = true
+				particlePart.CanCollide = false
+				particlePart.Transparency = 1
+				particlePart.Parent = workspace
+
+				local particles = Instance.new("ParticleEmitter")
+				particles.Color = ColorSequence.new(Color3.fromRGB(255, 220, 0), Color3.fromRGB(255, 255, 255))
+				particles.Size = NumberSequence.new(1, 0)
+				particles.Lifetime = NumberRange.new(0.5, 1.5)
+				particles.Speed = NumberRange.new(10, 25)
+				particles.SpreadAngle = Vector2.new(180, 180)
+				particles.Rate = 200
+				particles.Parent = particlePart
+
+				-- Stop emitting after a short burst, then clean up
+				task.delay(0.5, function()
+					particles.Rate = 0
+				end)
+				task.delay(2, function()
+					particlePart:Destroy()
+				end)
+
+				-- Update billboard to show "UNLOCKED" text
+				nameLabel.Text = zoneDef.name .. " - UNLOCKED!"
+				nameLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+				priceLabel.Text = "Welcome!"
+				priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
 			end
 		end)
 	end

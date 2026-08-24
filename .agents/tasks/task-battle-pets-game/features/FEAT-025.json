@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-025",
+  "type": "feature",
+  "title": "Large Pet Simulator 1 style zone gates replacing small red barriers",
+  "description": "Replace the old small red ForceField gate between zones with large walkthrough archway gates like Pet Simulator 1. Two tall pillars (4x20x4), connecting arch on top, barrier in the middle that disappears when unlocked, BillboardGui with zone name and cost.",
+  "status": "in_progress",
+  "dependencies": [],
+  "steps": [
+    "Replace _spawnZoneGates() in ZoneService.lua with large gate construction (pillars, arch, barrier, billboard)",
+    "Remove old static ZoneGate_1_2 Part from generate_rbxlx.py build_workspace()",
+    "Add unlock particle/flash effect firing to client on gate unlock",
+    "Regenerate BATTLE_PETS.rbxlx",
+    "Validate XML"
+  ],
+  "acceptance_criteria": [
+    "Two tall pillars (4x20x4 studs) are created left and right of the gate",
+    "An arch/beam connects the pillars on top",
+    "A semi-transparent reddish barrier exists when locked (CanCollide=true, Transparency=0.5)",
+    "BillboardGui shows next zone name and cost in large readable text",
+    "Touching the barrier when player has enough coins unlocks it (coins deducted)",
+    "On unlock: barrier disappears (CanCollide=false, Transparency=1), pillars and arch remain",
+    "Pillar color matches next zone theme",
+    "Gate is positioned exactly at the boundary between zones",
+    "Old small red gate system is fully removed",
+    "BATTLE_PETS.rbxlx is regenerated and valid XML"
+  ]
+}

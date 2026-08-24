@@ -253,11 +253,47 @@ def build_workspace():
         153, 25, 230, material=288, transparency=0.2
     ))
 
-    # Zone Gate between Zone 1 and Zone 2
+    # Zone Gate between Zone 1 and Zone 2 (large archway - left pillar, right pillar, arch, barrier)
+    # The full gate structure is created dynamically by ZoneService._spawnZoneGates() at runtime.
+    # Static placeholder parts here represent the permanent structural elements.
+    gate_x = 125  # halfway between zone centers (0 and 250)
+    gate_z = -100  # center Z of zones
+    pillar_h = 20
+    pillar_w = 4
+    opening_w = 20  # space between pillars
+    arch_h = 4
+
+    # Left Pillar
     parts.append(make_part_xml(
-        "ZoneGate_1_2", "Part",
-        125, 8, -100, 4, 16, 16,
-        230, 179, 25, material=288, transparency=0.3
+        "ZoneGate_LeftPillar", "Part",
+        gate_x, pillar_h // 2, gate_z - opening_w // 2 - pillar_w // 2,
+        pillar_w, pillar_h, pillar_w,
+        140, 140, 160, material=256
+    ))
+
+    # Right Pillar
+    parts.append(make_part_xml(
+        "ZoneGate_RightPillar", "Part",
+        gate_x, pillar_h // 2, gate_z + opening_w // 2 + pillar_w // 2,
+        pillar_w, pillar_h, pillar_w,
+        140, 140, 160, material=256
+    ))
+
+    # Top Arch
+    arch_width = opening_w + pillar_w * 2
+    parts.append(make_part_xml(
+        "ZoneGate_TopArch", "Part",
+        gate_x, pillar_h + arch_h // 2, gate_z,
+        pillar_w, arch_h, arch_width,
+        140, 140, 160, material=256
+    ))
+
+    # Barrier (semi-transparent red, collidable when locked)
+    parts.append(make_part_xml(
+        "ZoneGate_Barrier", "Part",
+        gate_x, pillar_h // 2, gate_z,
+        2, pillar_h, opening_w,
+        255, 60, 60, material=288, transparency=0.5
     ))
 
     # Terrain (placeholder)
