@@ -3,7 +3,7 @@
   "type": "enhancement",
   "title": "Game polish: world deco, barriers, UI animations, effects, pet glow, bug fixes",
   "description": "Comprehensive polish pass to make Battle Pets feel juicy like Pet Simulator 1. Adds procedural world decoration (trees/rocks/flowers for Zone 1, street lamps/benches for Zone 2), invisible barriers at zone edges, smooth UI panel tween animations, improved HP bars, level-up celebration effect, improved currency popups, rarity-based pet glow/particles, and bug fixes found during code review.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Add procedural world decoration to ZoneService: trees, rocks, flowers in Zone 1; street lamps, benches in Zone 2",
     "Add invisible wall barriers at the edges of both zones to prevent falling off",
@@ -30,5 +30,5 @@
     "BATTLE_PETS.rbxlx regenerated successfully and is valid XML"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "All improvements implemented successfully. Verified: (1) CurrencyService already sends two positional args (coins, diamonds) matching the client handler - the v3 review bug was already fixed in a prior commit. (2) UpgradeUpdated sends full data.upgrades table matching client expectation. (3) CampaignVictory client handler already accepts (levelNum, rewards). No event payload mismatches remain. New features: world decoration creates 12 trees, 8 rocks, 20 flower clusters in Zone 1; 10 street lamps, 8 benches, 6 planters in Zone 2. Barriers are 40-stud tall invisible walls on all outer edges. UI panels use Back easing slide animation. HP bars are 120x24 with gradient, text overlay, and hit-shake. Level-up triggers golden text + 16 expanding particle ring. Currency popups scale in with Back easing then float and fade. Pets get brightness-scaled PointLight and orbiting Neon particles for Rare+."
 }
