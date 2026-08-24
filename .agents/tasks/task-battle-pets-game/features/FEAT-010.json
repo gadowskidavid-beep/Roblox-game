@@ -1,7 +1,7 @@
 {
   "id": "FEAT-010",
   "title": "Fix destructible distribution, auto-attack pets, remove click requirement",
-  "status": "in_progress",
+  "status": "completed",
   "description": "A) ZoneService - distribute destructibles randomly across the zone floor (200x2x200 studs), spawn 15-20 per zone with spacing. B) PetController - pets auto-attack nearest destructible within 40 studs, no click required. C) Main.client.lua - remove/simplify click-to-attack logic since pets attack automatically.",
   "steps": [
     "Update ZoneService.lua to spawn 20 destructibles randomly distributed across zone floor area",
