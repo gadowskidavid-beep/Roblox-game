@@ -155,6 +155,7 @@ Config.Campaign = {
 		Common = 10,
 		Uncommon = 20,
 		Rare = 35,
+		Epic = 45,
 		Legendary = 50,
 	},
 }

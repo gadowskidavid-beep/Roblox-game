@@ -59,7 +59,8 @@ local function weightedRandomPet(petPool, player)
 end
 
 -- Hatch an egg and return the new pet
-function PetService.hatchEgg(player, eggType)
+-- If skipCostDeduction is true, assumes cost was already deducted by the caller (EggService)
+function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
@@ -82,11 +83,13 @@ function PetService.hatchEgg(player, eggType)
 		return nil, "No cost defined for egg zone"
 	end
 
-	-- Deduct cost
-	if eggCost.Coins then
-		local success = PetService._currencyService.removeCoins(player, eggCost.Coins)
-		if not success then
-			return nil, "Not enough coins"
+	-- Deduct cost (only if not already deducted by EggService)
+	if not skipCostDeduction then
+		if eggCost.Coins then
+			local success = PetService._currencyService.removeCoins(player, eggCost.Coins)
+			if not success then
+				return nil, "Not enough coins"
+			end
 		end
 	end
 

@@ -289,11 +289,11 @@ function ZoneService.attackDestructible(player, destructibleId)
 			ZoneService._currencyService.addDiamonds(player, destructible.drops.Diamonds)
 		end
 
-		-- Fire destroyed event
+		-- Fire destroyed event to all clients so everyone sees the destruction
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDestroyed")
 			if event then
-				event:FireClient(player, destructibleId)
+				event:FireAllClients(destructibleId, destructible.drops)
 			end
 		end
 
@@ -319,11 +319,11 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		-- Fire damaged event
+		-- Fire damaged event to all clients so everyone sees HP changes
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDamaged")
 			if event then
-				event:FireClient(player, destructibleId, destructible.hp, destructible.maxHp)
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp)
 			end
 		end
 	end

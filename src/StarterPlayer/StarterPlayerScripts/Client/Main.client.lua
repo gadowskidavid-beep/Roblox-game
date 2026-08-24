@@ -222,12 +222,16 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		local result = workspace:Raycast(ray.Origin, ray.Direction * 100, raycastParams)
 		if result and result.Instance then
 			local hit = result.Instance
-			-- Check if the hit object is in the Destructibles folder
-			local destructiblesFolder = workspace:FindFirstChild("Destructibles")
-			if destructiblesFolder and hit:IsDescendantOf(destructiblesFolder) then
-				-- Send all equipped pets to attack this destructible
-				for uniqueId, _ in pairs(petController._equippedPets) do
-					petController:sendPetToAttack(uniqueId, hit)
+			-- Check if the hit object is in the Zones folder (where destructibles live)
+			local zonesFolder = workspace:FindFirstChild("Zones")
+			if zonesFolder and hit:IsDescendantOf(zonesFolder) then
+				-- Verify this is a destructible (has DestructibleId value)
+				local destructibleId = hit:FindFirstChild("DestructibleId")
+				if destructibleId then
+					-- Send all equipped pets to attack this destructible
+					for uniqueId, _ in pairs(petController._equippedPets) do
+						petController:sendPetToAttack(uniqueId, hit)
+					end
 				end
 			end
 		end

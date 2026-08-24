@@ -23,6 +23,7 @@ CampaignService._activeBattles = {}
 local LANE_LENGTH = 100
 local PET_START_X = 0
 local ENEMY_START_X = LANE_LENGTH
+local ATTACK_COOLDOWN = 1.0 -- seconds between attacks (normalizes DPS across frame rates)
 
 function CampaignService.init(dataService, currencyService, petService)
 	CampaignService._dataService = dataService
@@ -190,6 +191,7 @@ function CampaignService.deployPet(player, petInstanceId)
 		position = PET_START_X,
 		attacking = false,
 		target = nil,
+		attackTimer = 0, -- cooldown timer for attacks
 	})
 
 	-- Fire update event
@@ -258,6 +260,11 @@ function CampaignService._updateBattle(userId, battle, dt)
 		pet.attacking = false
 		pet.target = nil
 
+		-- Decrement attack timer
+		if pet.attackTimer > 0 then
+			pet.attackTimer = pet.attackTimer - dt
+		end
+
 		-- Find closest enemy
 		local closestEnemy = nil
 		local closestDist = math.huge
@@ -270,10 +277,13 @@ function CampaignService._updateBattle(userId, battle, dt)
 		end
 
 		if closestEnemy and closestDist <= 3 then
-			-- Attack the enemy
+			-- Attack the enemy (cooldown-based fixed damage)
 			pet.attacking = true
 			pet.target = closestEnemy
-			closestEnemy.hp = closestEnemy.hp - pet.damage * dt
+			if pet.attackTimer <= 0 then
+				closestEnemy.hp = closestEnemy.hp - pet.damage
+				pet.attackTimer = ATTACK_COOLDOWN
+			end
 		elseif closestEnemy then
 			-- Move toward enemy
 			pet.position = pet.position + pet.speed * dt
@@ -283,7 +293,11 @@ function CampaignService._updateBattle(userId, battle, dt)
 
 			-- Check if reached enemy base
 			if pet.position >= LANE_LENGTH then
-				battle.enemyBaseHP = battle.enemyBaseHP - pet.damage * dt
+				pet.attacking = true
+				if pet.attackTimer <= 0 then
+					battle.enemyBaseHP = battle.enemyBaseHP - pet.damage
+					pet.attackTimer = ATTACK_COOLDOWN
+				end
 			end
 		end
 	end
@@ -293,6 +307,15 @@ function CampaignService._updateBattle(userId, battle, dt)
 		local enemy = battle.enemies[i]
 		enemy.attacking = false
 		enemy.target = nil
+
+		-- Decrement attack timer
+		if enemy.attackTimer then
+			if enemy.attackTimer > 0 then
+				enemy.attackTimer = enemy.attackTimer - dt
+			end
+		else
+			enemy.attackTimer = 0
+		end
 
 		-- Find closest pet
 		local closestPet = nil
@@ -310,17 +333,24 @@ function CampaignService._updateBattle(userId, battle, dt)
 		end
 
 		if closestPet and closestDist <= 3 then
-			-- Attack the pet
+			-- Attack the pet (cooldown-based fixed damage)
 			enemy.attacking = true
 			enemy.target = closestPet
-			closestPet.hp = closestPet.hp - enemy.damage * dt
+			if enemy.attackTimer <= 0 then
+				closestPet.hp = closestPet.hp - enemy.damage
+				enemy.attackTimer = ATTACK_COOLDOWN
+			end
 		else
 			-- Move toward player base
 			enemy.position = enemy.position - enemy.speed * dt
 
 			-- Check if reached player base
 			if enemy.position <= 0 then
-				battle.playerBaseHP = battle.playerBaseHP - enemy.damage * dt
+				enemy.attacking = true
+				if not enemy.attackTimer or enemy.attackTimer <= 0 then
+					battle.playerBaseHP = battle.playerBaseHP - enemy.damage
+					enemy.attackTimer = ATTACK_COOLDOWN
+				end
 			end
 		end
 	end

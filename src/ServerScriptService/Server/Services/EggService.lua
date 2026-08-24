@@ -15,6 +15,9 @@ EggService._dataService = nil
 EggService._currencyService = nil
 EggService._petService = nil
 
+-- Per-player purchase lock to prevent concurrent hatch exploits
+EggService._hatchLock = {}
+
 function EggService.init(dataService, currencyService, petService)
 	EggService._dataService = dataService
 	EggService._currencyService = currencyService
@@ -27,66 +30,83 @@ function EggService.purchaseAndHatch(player, eggType)
 		return nil, "Invalid parameters"
 	end
 
-	-- Validate egg type exists
-	local eggDef = PetData.Eggs[eggType]
-	if not eggDef then
-		return nil, "Unknown egg type: " .. tostring(eggType)
+	-- Per-player lock: prevent concurrent egg hatching
+	if EggService._hatchLock[player.UserId] then
+		return nil, "Already hatching an egg"
 	end
+	EggService._hatchLock[player.UserId] = true
 
-	local data = EggService._dataService.getPlayerData(player)
-	if not data then
-		return nil, "No player data"
-	end
-
-	-- Validate player has unlocked the required zone for this egg
-	local zoneRequired = eggDef.zone
-	local zoneUnlocked = false
-	for _, unlockedId in ipairs(data.unlockedZones) do
-		if unlockedId == zoneRequired then
-			zoneUnlocked = true
-			break
+	-- Wrap in a function so we can always release the lock
+	local function doHatch()
+		-- Validate egg type exists
+		local eggDef = PetData.Eggs[eggType]
+		if not eggDef then
+			return nil, "Unknown egg type: " .. tostring(eggType)
 		end
-	end
-	if not zoneUnlocked then
-		return nil, "Zone not unlocked for this egg type"
-	end
 
-	-- Validate cost (check before deducting - PetService.hatchEgg also deducts)
-	local eggCost = Config.EggCosts[zoneRequired]
-	if eggCost and eggCost.Coins then
-		local balance = EggService._currencyService.getBalance(player)
-		if balance.coins < eggCost.Coins then
-			return nil, "Not enough coins"
+		local data = EggService._dataService.getPlayerData(player)
+		if not data then
+			return nil, "No player data"
 		end
-	end
 
-	-- Fire hatch start event to client (triggers animation)
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("EggHatchStart")
-		if event then
-			event:FireClient(player, eggType)
+		-- Validate player has unlocked the required zone for this egg
+		local zoneRequired = eggDef.zone
+		local zoneUnlocked = false
+		for _, unlockedId in ipairs(data.unlockedZones) do
+			if unlockedId == zoneRequired then
+				zoneUnlocked = true
+				break
+			end
 		end
-	end
-
-	-- Short delay to allow client to play animation
-	task.wait(2)
-
-	-- Delegate to PetService for actual hatching (handles cost deduction)
-	local newPet, err = EggService._petService.hatchEgg(player, eggType)
-	if not newPet then
-		return nil, err
-	end
-
-	-- Fire hatch result event with the new pet data
-	if remotes then
-		local event = remotes:FindFirstChild("EggHatchResult")
-		if event then
-			event:FireClient(player, newPet)
+		if not zoneUnlocked then
+			return nil, "Zone not unlocked for this egg type"
 		end
+
+		-- Deduct cost BEFORE the animation delay to prevent TOCTOU race condition
+		local eggCost = Config.EggCosts[zoneRequired]
+		if eggCost and eggCost.Coins then
+			local success = EggService._currencyService.removeCoins(player, eggCost.Coins)
+			if not success then
+				return nil, "Not enough coins"
+			end
+		end
+
+		-- Fire hatch start event to client (triggers animation)
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchStart")
+			if event then
+				event:FireClient(player, eggType)
+			end
+		end
+
+		-- Short delay to allow client to play animation
+		task.wait(2)
+
+		-- Delegate to PetService for actual hatching (cost already deducted)
+		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
+		if not newPet then
+			-- Refund the coins if hatching failed for some reason
+			if eggCost and eggCost.Coins then
+				EggService._currencyService.addCoins(player, eggCost.Coins)
+			end
+			return nil, err
+		end
+
+		-- Fire hatch result event with the new pet data
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchResult")
+			if event then
+				event:FireClient(player, newPet)
+			end
+		end
+
+		return newPet, nil
 	end
 
-	return newPet, nil
+	local newPet, err = doHatch()
+	EggService._hatchLock[player.UserId] = nil
+	return newPet, err
 end
 
 -- Get eggs available to a player based on their unlocked zones

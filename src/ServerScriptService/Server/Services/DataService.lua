@@ -14,6 +14,9 @@ local DataService = {}
 -- In-memory cache of player data
 DataService._cache = {}
 
+-- Track whether a player's data loaded successfully (prevents overwriting real saves with defaults)
+DataService._canSave = {}
+
 -- DataStore reference
 local dataStore = DataStoreService:GetDataStore(Config.DataStoreName)
 
@@ -45,16 +48,27 @@ local function deepCopy(original)
 	return copy
 end
 
--- Load player data from DataStore
+-- Load player data from DataStore with retry logic
 function DataService.loadPlayerData(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
 
 	local key = "Player_" .. tostring(player.UserId)
-	local success, data = pcall(function()
-		return dataStore:GetAsync(key)
-	end)
+	local MAX_RETRIES = 3
+	local success, data = false, nil
+
+	for attempt = 1, MAX_RETRIES do
+		success, data = pcall(function()
+			return dataStore:GetAsync(key)
+		end)
+		if success then
+			break
+		end
+		if attempt < MAX_RETRIES then
+			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
+		end
+	end
 
 	if success and data then
 		-- Merge with defaults (handles new fields added after save)
@@ -65,12 +79,16 @@ function DataService.loadPlayerData(player)
 			end
 		end
 		DataService._cache[player.UserId] = data
-	else
-		-- Use defaults if load fails or no data exists
+		DataService._canSave[player.UserId] = true
+	elseif success and not data then
+		-- No existing save, new player - safe to save defaults
 		DataService._cache[player.UserId] = getDefaultData()
-		if not success then
-			warn("[DataService] Failed to load data for " .. player.Name .. ": " .. tostring(data))
-		end
+		DataService._canSave[player.UserId] = true
+	else
+		-- Load failed after all retries - use defaults but do NOT allow saving
+		DataService._cache[player.UserId] = getDefaultData()
+		DataService._canSave[player.UserId] = false
+		warn("[DataService] Failed to load data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(data))
 	end
 
 	return DataService._cache[player.UserId]
@@ -79,6 +97,12 @@ end
 -- Save player data to DataStore
 function DataService.savePlayerData(player)
 	if not player or not player:IsA("Player") then
+		return false
+	end
+
+	-- Guard: do not save if initial load failed (prevents overwriting real data with defaults)
+	if not DataService._canSave[player.UserId] then
+		warn("[DataService] Skipping save for " .. player.Name .. " - initial load failed")
 		return false
 	end
 
@@ -111,6 +135,7 @@ end
 function DataService.onPlayerRemoving(player)
 	DataService.savePlayerData(player)
 	DataService._cache[player.UserId] = nil
+	DataService._canSave[player.UserId] = nil
 end
 
 -- Periodic auto-save for all online players (every 60 seconds)
@@ -122,6 +147,17 @@ function DataService.startAutoSave()
 				if DataService._cache[player.UserId] then
 					DataService.savePlayerData(player)
 				end
+			end
+		end
+	end)
+end
+
+-- Bind to server shutdown: save all players before the server exits
+function DataService.bindToClose()
+	game:BindToClose(function()
+		for _, player in ipairs(Players:GetPlayers()) do
+			if DataService._cache[player.UserId] then
+				DataService.savePlayerData(player)
 			end
 		end
 	end)

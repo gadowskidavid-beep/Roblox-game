@@ -94,6 +94,9 @@ CampaignService.init(DataService, CurrencyService, PetService)
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
+-- Bind to server shutdown to save all player data
+DataService.bindToClose()
+
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
 ----------------------------------------------

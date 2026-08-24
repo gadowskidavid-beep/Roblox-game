@@ -1009,6 +1009,7 @@ Config.Campaign = {
 		Common = 10,
 		Uncommon = 20,
 		Rare = 35,
+		Epic = 45,
 		Legendary = 50,
 	},
 }
@@ -1339,6 +1340,7 @@ CampaignData.DeployCosts = {
 	Common = 10,
 	Uncommon = 20,
 	Rare = 35,
+	Epic = 45,
 	Legendary = 50,
 }
 
@@ -1683,6 +1685,9 @@ CampaignService.init(DataService, CurrencyService, PetService)
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
+-- Bind to server shutdown to save all player data
+DataService.bindToClose()
+
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
 ----------------------------------------------
@@ -1866,6 +1871,9 @@ local DataService = {}
 -- In-memory cache of player data
 DataService._cache = {}
 
+-- Track whether a player's data loaded successfully (prevents overwriting real saves with defaults)
+DataService._canSave = {}
+
 -- DataStore reference
 local dataStore = DataStoreService:GetDataStore(Config.DataStoreName)
 
@@ -1897,16 +1905,27 @@ local function deepCopy(original)
 	return copy
 end
 
--- Load player data from DataStore
+-- Load player data from DataStore with retry logic
 function DataService.loadPlayerData(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
 
 	local key = "Player_" .. tostring(player.UserId)
-	local success, data = pcall(function()
-		return dataStore:GetAsync(key)
-	end)
+	local MAX_RETRIES = 3
+	local success, data = false, nil
+
+	for attempt = 1, MAX_RETRIES do
+		success, data = pcall(function()
+			return dataStore:GetAsync(key)
+		end)
+		if success then
+			break
+		end
+		if attempt < MAX_RETRIES then
+			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
+		end
+	end
 
 	if success and data then
 		-- Merge with defaults (handles new fields added after save)
@@ -1917,12 +1936,16 @@ function DataService.loadPlayerData(player)
 			end
 		end
 		DataService._cache[player.UserId] = data
-	else
-		-- Use defaults if load fails or no data exists
+		DataService._canSave[player.UserId] = true
+	elseif success and not data then
+		-- No existing save, new player - safe to save defaults
 		DataService._cache[player.UserId] = getDefaultData()
-		if not success then
-			warn("[DataService] Failed to load data for " .. player.Name .. ": " .. tostring(data))
-		end
+		DataService._canSave[player.UserId] = true
+	else
+		-- Load failed after all retries - use defaults but do NOT allow saving
+		DataService._cache[player.UserId] = getDefaultData()
+		DataService._canSave[player.UserId] = false
+		warn("[DataService] Failed to load data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(data))
 	end
 
 	return DataService._cache[player.UserId]
@@ -1931,6 +1954,12 @@ end
 -- Save player data to DataStore
 function DataService.savePlayerData(player)
 	if not player or not player:IsA("Player") then
+		return false
+	end
+
+	-- Guard: do not save if initial load failed (prevents overwriting real data with defaults)
+	if not DataService._canSave[player.UserId] then
+		warn("[DataService] Skipping save for " .. player.Name .. " - initial load failed")
 		return false
 	end
 
@@ -1963,6 +1992,7 @@ end
 function DataService.onPlayerRemoving(player)
 	DataService.savePlayerData(player)
 	DataService._cache[player.UserId] = nil
+	DataService._canSave[player.UserId] = nil
 end
 
 -- Periodic auto-save for all online players (every 60 seconds)
@@ -1974,6 +2004,17 @@ function DataService.startAutoSave()
 				if DataService._cache[player.UserId] then
 					DataService.savePlayerData(player)
 				end
+			end
+		end
+	end)
+end
+
+-- Bind to server shutdown: save all players before the server exits
+function DataService.bindToClose()
+	game:BindToClose(function()
+		for _, player in ipairs(Players:GetPlayers()) do
+			if DataService._cache[player.UserId] then
+				DataService.savePlayerData(player)
 			end
 		end
 	end)
@@ -2234,7 +2275,8 @@ local function weightedRandomPet(petPool, player)
 end
 
 -- Hatch an egg and return the new pet
-function PetService.hatchEgg(player, eggType)
+-- If skipCostDeduction is true, assumes cost was already deducted by the caller (EggService)
+function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
@@ -2257,11 +2299,13 @@ function PetService.hatchEgg(player, eggType)
 		return nil, "No cost defined for egg zone"
 	end
 
-	-- Deduct cost
-	if eggCost.Coins then
-		local success = PetService._currencyService.removeCoins(player, eggCost.Coins)
-		if not success then
-			return nil, "Not enough coins"
+	-- Deduct cost (only if not already deducted by EggService)
+	if not skipCostDeduction then
+		if eggCost.Coins then
+			local success = PetService._currencyService.removeCoins(player, eggCost.Coins)
+			if not success then
+				return nil, "Not enough coins"
+			end
 		end
 	end
 
@@ -2931,11 +2975,11 @@ function ZoneService.attackDestructible(player, destructibleId)
 			ZoneService._currencyService.addDiamonds(player, destructible.drops.Diamonds)
 		end
 
-		-- Fire destroyed event
+		-- Fire destroyed event to all clients so everyone sees the destruction
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDestroyed")
 			if event then
-				event:FireClient(player, destructibleId)
+				event:FireAllClients(destructibleId, destructible.drops)
 			end
 		end
 
@@ -2961,11 +3005,11 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		-- Fire damaged event
+		-- Fire damaged event to all clients so everyone sees HP changes
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDamaged")
 			if event then
-				event:FireClient(player, destructibleId, destructible.hp, destructible.maxHp)
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp)
 			end
 		end
 	end
@@ -3005,6 +3049,7 @@ CampaignService._activeBattles = {}
 local LANE_LENGTH = 100
 local PET_START_X = 0
 local ENEMY_START_X = LANE_LENGTH
+local ATTACK_COOLDOWN = 1.0 -- seconds between attacks (normalizes DPS across frame rates)
 
 function CampaignService.init(dataService, currencyService, petService)
 	CampaignService._dataService = dataService
@@ -3172,6 +3217,7 @@ function CampaignService.deployPet(player, petInstanceId)
 		position = PET_START_X,
 		attacking = false,
 		target = nil,
+		attackTimer = 0, -- cooldown timer for attacks
 	})
 
 	-- Fire update event
@@ -3240,6 +3286,11 @@ function CampaignService._updateBattle(userId, battle, dt)
 		pet.attacking = false
 		pet.target = nil
 
+		-- Decrement attack timer
+		if pet.attackTimer > 0 then
+			pet.attackTimer = pet.attackTimer - dt
+		end
+
 		-- Find closest enemy
 		local closestEnemy = nil
 		local closestDist = math.huge
@@ -3252,10 +3303,13 @@ function CampaignService._updateBattle(userId, battle, dt)
 		end
 
 		if closestEnemy and closestDist <= 3 then
-			-- Attack the enemy
+			-- Attack the enemy (cooldown-based fixed damage)
 			pet.attacking = true
 			pet.target = closestEnemy
-			closestEnemy.hp = closestEnemy.hp - pet.damage * dt
+			if pet.attackTimer <= 0 then
+				closestEnemy.hp = closestEnemy.hp - pet.damage
+				pet.attackTimer = ATTACK_COOLDOWN
+			end
 		elseif closestEnemy then
 			-- Move toward enemy
 			pet.position = pet.position + pet.speed * dt
@@ -3265,7 +3319,11 @@ function CampaignService._updateBattle(userId, battle, dt)
 
 			-- Check if reached enemy base
 			if pet.position >= LANE_LENGTH then
-				battle.enemyBaseHP = battle.enemyBaseHP - pet.damage * dt
+				pet.attacking = true
+				if pet.attackTimer <= 0 then
+					battle.enemyBaseHP = battle.enemyBaseHP - pet.damage
+					pet.attackTimer = ATTACK_COOLDOWN
+				end
 			end
 		end
 	end
@@ -3275,6 +3333,15 @@ function CampaignService._updateBattle(userId, battle, dt)
 		local enemy = battle.enemies[i]
 		enemy.attacking = false
 		enemy.target = nil
+
+		-- Decrement attack timer
+		if enemy.attackTimer then
+			if enemy.attackTimer > 0 then
+				enemy.attackTimer = enemy.attackTimer - dt
+			end
+		else
+			enemy.attackTimer = 0
+		end
 
 		-- Find closest pet
 		local closestPet = nil
@@ -3292,17 +3359,24 @@ function CampaignService._updateBattle(userId, battle, dt)
 		end
 
 		if closestPet and closestDist <= 3 then
-			-- Attack the pet
+			-- Attack the pet (cooldown-based fixed damage)
 			enemy.attacking = true
 			enemy.target = closestPet
-			closestPet.hp = closestPet.hp - enemy.damage * dt
+			if enemy.attackTimer <= 0 then
+				closestPet.hp = closestPet.hp - enemy.damage
+				enemy.attackTimer = ATTACK_COOLDOWN
+			end
 		else
 			-- Move toward player base
 			enemy.position = enemy.position - enemy.speed * dt
 
 			-- Check if reached player base
 			if enemy.position <= 0 then
-				battle.playerBaseHP = battle.playerBaseHP - enemy.damage * dt
+				enemy.attacking = true
+				if not enemy.attackTimer or enemy.attackTimer <= 0 then
+					battle.playerBaseHP = battle.playerBaseHP - enemy.damage
+					enemy.attackTimer = ATTACK_COOLDOWN
+				end
 			end
 		end
 	end
@@ -3449,6 +3523,9 @@ EggService._dataService = nil
 EggService._currencyService = nil
 EggService._petService = nil
 
+-- Per-player purchase lock to prevent concurrent hatch exploits
+EggService._hatchLock = {}
+
 function EggService.init(dataService, currencyService, petService)
 	EggService._dataService = dataService
 	EggService._currencyService = currencyService
@@ -3461,66 +3538,83 @@ function EggService.purchaseAndHatch(player, eggType)
 		return nil, "Invalid parameters"
 	end
 
-	-- Validate egg type exists
-	local eggDef = PetData.Eggs[eggType]
-	if not eggDef then
-		return nil, "Unknown egg type: " .. tostring(eggType)
+	-- Per-player lock: prevent concurrent egg hatching
+	if EggService._hatchLock[player.UserId] then
+		return nil, "Already hatching an egg"
 	end
+	EggService._hatchLock[player.UserId] = true
 
-	local data = EggService._dataService.getPlayerData(player)
-	if not data then
-		return nil, "No player data"
-	end
-
-	-- Validate player has unlocked the required zone for this egg
-	local zoneRequired = eggDef.zone
-	local zoneUnlocked = false
-	for _, unlockedId in ipairs(data.unlockedZones) do
-		if unlockedId == zoneRequired then
-			zoneUnlocked = true
-			break
+	-- Wrap in a function so we can always release the lock
+	local function doHatch()
+		-- Validate egg type exists
+		local eggDef = PetData.Eggs[eggType]
+		if not eggDef then
+			return nil, "Unknown egg type: " .. tostring(eggType)
 		end
-	end
-	if not zoneUnlocked then
-		return nil, "Zone not unlocked for this egg type"
-	end
 
-	-- Validate cost (check before deducting - PetService.hatchEgg also deducts)
-	local eggCost = Config.EggCosts[zoneRequired]
-	if eggCost and eggCost.Coins then
-		local balance = EggService._currencyService.getBalance(player)
-		if balance.coins < eggCost.Coins then
-			return nil, "Not enough coins"
+		local data = EggService._dataService.getPlayerData(player)
+		if not data then
+			return nil, "No player data"
 		end
-	end
 
-	-- Fire hatch start event to client (triggers animation)
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("EggHatchStart")
-		if event then
-			event:FireClient(player, eggType)
+		-- Validate player has unlocked the required zone for this egg
+		local zoneRequired = eggDef.zone
+		local zoneUnlocked = false
+		for _, unlockedId in ipairs(data.unlockedZones) do
+			if unlockedId == zoneRequired then
+				zoneUnlocked = true
+				break
+			end
 		end
-	end
-
-	-- Short delay to allow client to play animation
-	task.wait(2)
-
-	-- Delegate to PetService for actual hatching (handles cost deduction)
-	local newPet, err = EggService._petService.hatchEgg(player, eggType)
-	if not newPet then
-		return nil, err
-	end
-
-	-- Fire hatch result event with the new pet data
-	if remotes then
-		local event = remotes:FindFirstChild("EggHatchResult")
-		if event then
-			event:FireClient(player, newPet)
+		if not zoneUnlocked then
+			return nil, "Zone not unlocked for this egg type"
 		end
+
+		-- Deduct cost BEFORE the animation delay to prevent TOCTOU race condition
+		local eggCost = Config.EggCosts[zoneRequired]
+		if eggCost and eggCost.Coins then
+			local success = EggService._currencyService.removeCoins(player, eggCost.Coins)
+			if not success then
+				return nil, "Not enough coins"
+			end
+		end
+
+		-- Fire hatch start event to client (triggers animation)
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchStart")
+			if event then
+				event:FireClient(player, eggType)
+			end
+		end
+
+		-- Short delay to allow client to play animation
+		task.wait(2)
+
+		-- Delegate to PetService for actual hatching (cost already deducted)
+		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
+		if not newPet then
+			-- Refund the coins if hatching failed for some reason
+			if eggCost and eggCost.Coins then
+				EggService._currencyService.addCoins(player, eggCost.Coins)
+			end
+			return nil, err
+		end
+
+		-- Fire hatch result event with the new pet data
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchResult")
+			if event then
+				event:FireClient(player, newPet)
+			end
+		end
+
+		return newPet, nil
 	end
 
-	return newPet, nil
+	local newPet, err = doHatch()
+	EggService._hatchLock[player.UserId] = nil
+	return newPet, err
 end
 
 -- Get eggs available to a player based on their unlocked zones
@@ -3798,12 +3892,16 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		local result = workspace:Raycast(ray.Origin, ray.Direction * 100, raycastParams)
 		if result and result.Instance then
 			local hit = result.Instance
-			-- Check if the hit object is in the Destructibles folder
-			local destructiblesFolder = workspace:FindFirstChild("Destructibles")
-			if destructiblesFolder and hit:IsDescendantOf(destructiblesFolder) then
-				-- Send all equipped pets to attack this destructible
-				for uniqueId, _ in pairs(petController._equippedPets) do
-					petController:sendPetToAttack(uniqueId, hit)
+			-- Check if the hit object is in the Zones folder (where destructibles live)
+			local zonesFolder = workspace:FindFirstChild("Zones")
+			if zonesFolder and hit:IsDescendantOf(zonesFolder) then
+				-- Verify this is a destructible (has DestructibleId value)
+				local destructibleId = hit:FindFirstChild("DestructibleId")
+				if destructibleId then
+					-- Send all equipped pets to attack this destructible
+					for uniqueId, _ in pairs(petController._equippedPets) do
+						petController:sendPetToAttack(uniqueId, hit)
+					end
 				end
 			end
 		end
