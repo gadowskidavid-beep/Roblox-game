@@ -166,7 +166,12 @@ function DataService.getPlayerData(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
-	return DataService._cache[player.UserId]
+	local data = DataService._cache[player.UserId]
+	if data then
+		-- Include computed xpNeeded for client XP bar
+		data.xpNeeded = (data.level or 1) * 100
+	end
+	return data
 end
 
 -- Called when player leaves - save and cleanup

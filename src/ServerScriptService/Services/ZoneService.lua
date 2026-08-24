@@ -329,6 +329,10 @@ function ZoneService.attackDestructible(player, destructibleId)
 			ZoneService._currencyService.addDiamonds(player, destructible.drops.Diamonds)
 		end
 
+		-- Award XP for destroying a destructible
+		local xpReward = destructible.zoneId * 5
+		ZoneService._awardXP(player, xpReward)
+
 		-- Fire destroyed event to all clients so everyone sees the destruction
 		if remotes then
 			local event = remotes:FindFirstChild("DestructibleDestroyed")
@@ -377,6 +381,34 @@ function ZoneService.attackDestructible(player, destructibleId)
 	end
 
 	return true, nil
+end
+
+-- Award XP to a player and handle level-ups
+-- XP needed for next level: level * 100 (linear scaling)
+function ZoneService._awardXP(player, amount)
+	if not player or not amount or amount <= 0 then return end
+
+	local data = ZoneService._dataService.getPlayerData(player)
+	if not data then return end
+
+	data.xp = (data.xp or 0) + amount
+
+	-- Check for level up
+	local xpNeeded = (data.level or 1) * 100
+	while data.xp >= xpNeeded do
+		data.xp = data.xp - xpNeeded
+		data.level = (data.level or 1) + 1
+		xpNeeded = data.level * 100
+	end
+
+	-- Fire XP update to client
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if remotes then
+		local event = remotes:FindFirstChild("XPUpdated")
+		if event then
+			event:FireClient(player, data.level, data.xp, data.level * 100)
+		end
+	end
 end
 
 return ZoneService

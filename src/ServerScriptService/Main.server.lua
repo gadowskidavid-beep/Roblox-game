@@ -40,6 +40,7 @@ local remoteEvents = {
 	"CampaignDefeat",
 	"UpgradeUpdated",
 	"CollectCurrency",
+	"XPUpdated",
 }
 
 for _, eventName in ipairs(remoteEvents) do

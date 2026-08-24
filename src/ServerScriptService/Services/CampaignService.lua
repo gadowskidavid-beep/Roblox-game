@@ -125,6 +125,32 @@ function CampaignService.startLevel(player, levelNum)
 	-- Spawn first wave
 	CampaignService._spawnWave(player.UserId, battleState)
 
+	-- Build available pets list for the client deploy cards
+	local availablePets = {}
+	if data and data.pets then
+		for _, pet in ipairs(data.pets) do
+			local deployCost = CampaignData.DeployCosts[pet.rarity] or 10
+			table.insert(availablePets, {
+				id = pet.id,
+				uniqueId = pet.id,
+				name = pet.name,
+				rarity = pet.rarity,
+				energyCost = deployCost,
+			})
+		end
+	end
+
+	-- Send initial battle state to client
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if remotes then
+		local event = remotes:FindFirstChild("CampaignBattleUpdate")
+		if event then
+			local snapshot = CampaignService._getBattleSnapshot(battleState)
+			snapshot.availablePets = availablePets
+			event:FireClient(player, snapshot)
+		end
+	end
+
 	return true, nil
 end
 
@@ -254,6 +280,12 @@ function CampaignService._updateBattle(userId, battle, dt)
 		end
 	end
 
+	-- Broadcast timer: send state to client periodically
+	if not battle.broadcastTimer then
+		battle.broadcastTimer = 0
+	end
+	battle.broadcastTimer = battle.broadcastTimer + dt
+
 	-- Move and process deployed pets
 	for i = #battle.deployedPets, 1, -1 do
 		local pet = battle.deployedPets[i]
@@ -369,6 +401,21 @@ function CampaignService._updateBattle(userId, battle, dt)
 		end
 	end
 
+	-- Broadcast battle state to client every 0.5 seconds
+	if battle.broadcastTimer >= 0.5 then
+		battle.broadcastTimer = 0
+		local player = game:GetService("Players"):GetPlayerByUserId(userId)
+		if player then
+			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+			if remotes then
+				local event = remotes:FindFirstChild("CampaignBattleUpdate")
+				if event then
+					event:FireClient(player, CampaignService._getBattleSnapshot(battle))
+				end
+			end
+		end
+	end
+
 	-- Check victory condition: enemy base destroyed
 	if battle.enemyBaseHP <= 0 then
 		CampaignService._onVictory(userId, battle)
@@ -454,15 +501,52 @@ end
 
 -- Get a serializable snapshot of the battle state for client
 function CampaignService._getBattleSnapshot(battle)
+	-- Build entity list for visual representation
+	local entities = {}
+
+	-- Add deployed pets
+	for _, pet in ipairs(battle.deployedPets) do
+		table.insert(entities, {
+			id = pet.id,
+			name = pet.name,
+			rarity = pet.rarity,
+			isEnemy = false,
+			isBoss = false,
+			hp = pet.hp,
+			maxHP = pet.maxHp,
+			lanePosition = pet.position / LANE_LENGTH,
+			lane = 2,
+		})
+	end
+
+	-- Add enemies
+	for i, enemy in ipairs(battle.enemies) do
+		table.insert(entities, {
+			id = "enemy_" .. tostring(i),
+			name = enemy.name,
+			isEnemy = true,
+			isBoss = enemy.isBoss,
+			hp = enemy.hp,
+			maxHP = enemy.maxHp,
+			lanePosition = enemy.position / LANE_LENGTH,
+			lane = 2,
+		})
+	end
+
+	-- Build available pets list from the player data (need userId from battle context)
+	-- Note: availablePets are built per-call in deployPet, here we use a placeholder
+	-- The client will receive the pet cards from the initial setup
+
 	return {
 		energy = battle.energy,
 		maxEnergy = battle.maxEnergy,
-		playerBaseHP = battle.playerBaseHP,
-		enemyBaseHP = battle.enemyBaseHP,
+		playerHP = battle.playerBaseHP,
+		playerMaxHP = Config.Campaign.BaseHealth,
+		enemyHP = battle.enemyBaseHP,
+		enemyMaxHP = battle.levelDef.enemyBaseHP,
 		currentWave = battle.currentWave,
 		totalWaves = battle.totalWaves,
-		petCount = #battle.deployedPets,
-		enemyCount = #battle.enemies,
+		entities = entities,
 	}
 end
 

@@ -131,9 +131,20 @@ petController:init(Remotes)
 campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
 
--- Initialize equipped pets visuals from initial data
+-- Initialize equipped pets visuals from initial data (called ONCE)
+-- Build the local list from server data and update both controllers
 if playerData and playerData.equippedPets then
 	localEquippedPets = buildEquippedListFromData(playerData)
+	-- Deduplicate: ensure no pet ID appears twice in the list
+	local seenIds = {}
+	local dedupedList = {}
+	for _, pet in ipairs(localEquippedPets) do
+		if pet.id and not seenIds[pet.id] then
+			seenIds[pet.id] = true
+			table.insert(dedupedList, pet)
+		end
+	end
+	localEquippedPets = dedupedList
 	petController:updateEquippedPets(localEquippedPets)
 	uiController:updateEquippedPets(localEquippedPets)
 end
@@ -154,22 +165,19 @@ end)
 
 -- Pet equipped (server sends a single pet table with .id field)
 PetEquipped.OnClientEvent:Connect(function(petData)
-	-- Add the newly equipped pet to our local list
+	-- Add the newly equipped pet to our local list (strict deduplication)
 	if petData and type(petData) == "table" and petData.id then
-		-- Avoid duplicates
-		local found = false
-		for _, existing in ipairs(localEquippedPets) do
-			if existing.id == petData.id then
-				found = true
-				break
+		-- Remove any existing entry with same ID first (prevents duplicates)
+		for i = #localEquippedPets, 1, -1 do
+			if localEquippedPets[i].id == petData.id then
+				table.remove(localEquippedPets, i)
 			end
 		end
-		if not found then
-			table.insert(localEquippedPets, petData)
-		end
+		-- Add the pet
+		table.insert(localEquippedPets, petData)
 	end
-	uiController:updateEquippedPets(localEquippedPets)
 	petController:updateEquippedPets(localEquippedPets)
+	uiController:updateEquippedPets(localEquippedPets)
 end)
 
 -- Pet unequipped (server sends a single string petInstanceId)
@@ -183,8 +191,8 @@ PetUnequipped.OnClientEvent:Connect(function(petInstanceId)
 			end
 		end
 	end
-	uiController:updateEquippedPets(localEquippedPets)
 	petController:updateEquippedPets(localEquippedPets)
+	uiController:updateEquippedPets(localEquippedPets)
 end)
 
 -- Zone unlocked
@@ -274,6 +282,12 @@ end)
 -- Currency collected (floating popup at position)
 CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
 	effectsController:showCurrencyPopup(position, amount, currencyType)
+end)
+
+-- XP updated from server (level, xp, xpNeeded)
+local XPUpdated = Remotes:WaitForChild("XPUpdated")
+XPUpdated.OnClientEvent:Connect(function(level, xp, xpNeeded)
+	uiController:updateXP(level, xp, xpNeeded)
 end)
 
 --------------------------------------------------------------------------------

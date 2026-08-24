@@ -270,10 +270,10 @@ function CampaignController:_startLevel(levelNum)
 	if self._remotes then
 		local startRemote = self._remotes:FindFirstChild("StartCampaignLevel")
 		if startRemote then
-			local result = startRemote:InvokeServer(levelNum)
-			if result and result.success then
+			local success, errMsg = startRemote:InvokeServer(levelNum)
+			if success then
 				self:hideCampaignSelect()
-				self:showBattleUI(result.initialState)
+				self:showBattleUI(nil)
 			end
 		end
 	end

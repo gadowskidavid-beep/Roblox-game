@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-011",
+  "type": "fix",
+  "title": "Fix duplicate pet model bug, improve pet visuals, fix various gameplay issues",
+  "description": "Fix the duplicate pet model bug where 2 identical models spawn for 1 equipped pet. Improve pet visuals with floating height (2-3 studs), shadow effect, and nametag. Fix various gameplay flow issues across egg hatching, upgrades, zone gates, and currency collection.",
+  "status": "in_progress",
+  "steps": [
+    "Fix PetController duplicate model bug by adding initialization guard and cleanup in updateEquippedPets",
+    "Increase pet follow height to 2.5 studs above ground and add shadow Part below each pet",
+    "Ensure pets follow BEHIND the player (increase follow distance)",
+    "Verify egg hatching flow works correctly (shop button -> hatch -> receive pet)",
+    "Verify upgrade purchasing flow works correctly",
+    "Verify zone gate unlocking flow works correctly",
+    "Ensure equipped pet bar correctly displays pet data",
+    "Verify currency is correctly added after destroying destructibles",
+    "Regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "Only exactly 1 pet model per equipped pet exists at any time",
+    "Pets float 2.5 studs above ground with a visible shadow Part beneath them",
+    "Pets follow behind the player at adequate distance (not overlapping)",
+    "Pet nametag with name visible above pet head",
+    "All scripts syntactically valid",
+    "BATTLE_PETS.rbxlx regenerated and valid XML"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}
