@@ -3,7 +3,7 @@
   "type": "feat",
   "title": "Background music per zone, egg flow polish, pet stay-at-destructible behavior",
   "description": "1. Add per-zone background music with crossfade on zone change. 2. Polish egg hatching E-key flow (direct hatch on ProximityPrompt). 3. Fix pet behavior: slow approach to destructibles, stay there bouncing, only return when destroyed or player >60 studs away.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Add zone music data to ZoneData.lua with Roblox asset IDs per zone",
     "Create MusicController on client that manages a Sound in SoundService, crossfades between zone tracks",
