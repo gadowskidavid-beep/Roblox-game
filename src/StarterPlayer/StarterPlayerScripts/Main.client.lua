@@ -406,9 +406,19 @@ local function fireClickDamage(target)
 	-- Fire click attack to server (always 1 damage)
 	ClickAttackDestructible:InvokeServer(target.destructibleId)
 
-	-- Spawn crit circles around the destructible
+	-- Spawn a single crit button (BillboardGui) on the destructible
 	if target.part and target.part.Parent then
-		effectsController:spawnCritCircles(target.part, target.destructibleId)
+		effectsController:spawnCritButton(target.part, target.destructibleId, function()
+			-- Crit button was clicked: fire crit attack to server
+			CritAttackDestructible:InvokeServer(target.destructibleId)
+
+			-- Show crit visual feedback
+			effectsController:playCritSound(target.part.Position)
+
+			-- Show gold "CRIT! 2" popup
+			local critPos = target.part.Position + Vector3.new(0, 2, 0)
+			petController:showDamageText(critPos, 2, true)
+		end)
 	end
 
 	-- Show visual effects for the click
@@ -429,64 +439,12 @@ local function fireClickDamage(target)
 	end
 end
 
--- Helper: Raycast from screen position to find a crit circle
-local function raycastForCritCircle(screenPosition)
-	local camera = workspace.CurrentCamera
-	if not camera then return nil end
-
-	local ray = camera:ViewportPointToRay(screenPosition.X, screenPosition.Y)
-	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = { player.Character }
-
-	local result = workspace:Raycast(ray.Origin, ray.Direction * 200, raycastParams)
-	if not result or not result.Instance then return nil end
-
-	local hit = result.Instance
-	-- Check if this part is a crit circle (tagged with CritCircle and CritDestructibleId)
-	local critTag = hit:FindFirstChild("CritCircle")
-	local critDestructibleId = hit:FindFirstChild("CritDestructibleId")
-	if critTag and critDestructibleId then
-		return {
-			part = hit,
-			destructibleId = critDestructibleId.Value,
-		}
-	end
-
-	return nil
-end
-
--- Helper: handle crit circle click (flash, remove circle, fire CritAttack)
-local function fireCritDamage(critTarget)
-	if not critTarget or not critTarget.destructibleId then return end
-
-	-- Fire crit attack to server (2 damage if crit window is valid)
-	CritAttackDestructible:InvokeServer(critTarget.destructibleId)
-
-	-- Show crit visual feedback
-	if critTarget.part and critTarget.part.Parent then
-		local critPos = critTarget.part.Position
-		effectsController:showCritHitEffect(critTarget.part)
-		effectsController:playCritSound(critPos)
-
-		-- Show gold "CRIT! 2" popup
-		petController:showDamageText(critPos + Vector3.new(0, 1, 0), 2, true)
-	end
-end
-
 -- Mouse/Touch down: start tracking for click vs hold + immediate click damage
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
-
-		-- First check if clicking a crit circle (priority over destructible clicks)
-		local critTarget = raycastForCritCircle(input.Position)
-		if critTarget then
-			fireCritDamage(critTarget)
-			return -- Crit circle click does NOT spawn new circles or trigger normal click
-		end
 
 		local target = raycastForDestructible(input.Position)
 		if target then

@@ -23,6 +23,7 @@ local RARITY_COLORS = {
 function EffectsController.new()
 	local self = setmetatable({}, EffectsController)
 	self._progressBars = {}
+	self._critButtons = {}
 	self._initialized = false
 	self._lastHatchPosition = nil
 	return self
@@ -718,138 +719,185 @@ function EffectsController:showLevelUpCelebration(newLevel)
 end
 
 --------------------------------------------------------------------------------
--- Crit Circles: glowing rings that orbit a destructible after clicking it.
--- Clicking a circle triggers a crit (2x damage). Circles are client-side only.
--- Each circle has a random orbit speed, direction, and color (yellow/orange/white).
--- Circles disappear after 2-3 seconds. Tagged with CritCircle + CritDestructibleId.
+-- Crit Button: a single BillboardGui button that appears on a destructible
+-- after clicking it. The button is a golden circle with lightning icon that
+-- orbits the destructible via StudsOffset animation. Only 1 button per
+-- destructible at a time. Clicking the button triggers crit (2x damage).
+-- Button disappears after 2 seconds if not clicked.
+-- Returns a callback function that the caller should use to connect to the
+-- button's Activated event for firing crit damage.
 --------------------------------------------------------------------------------
-function EffectsController:spawnCritCircles(destructiblePart, destructibleId)
+function EffectsController:spawnCritButton(destructiblePart, destructibleId, onCritClicked)
 	if not self._initialized then return end
 	if not destructiblePart or not destructiblePart:IsA("BasePart") then return end
 
-	local center = destructiblePart.Position
-	local numCircles = math.random(3, 5)
+	-- Remove any existing crit button on this destructible
+	self:removeCritButton(destructibleId)
 
-	-- Crit circle colors (yellow, orange, white variants)
-	local critColors = {
-		Color3.fromRGB(255, 220, 0),   -- bright yellow
-		Color3.fromRGB(255, 160, 0),   -- orange
-		Color3.fromRGB(255, 255, 220), -- warm white
-		Color3.fromRGB(255, 200, 50),  -- golden
-		Color3.fromRGB(255, 140, 30),  -- deep orange
-	}
+	-- Create BillboardGui attached to the destructible
+	local billboardGui = Instance.new("BillboardGui")
+	billboardGui.Name = "CritButton_" .. destructibleId
+	billboardGui.Size = UDim2.fromOffset(60, 60)
+	billboardGui.StudsOffset = Vector3.new(3, 2, 0)
+	billboardGui.AlwaysOnTop = true
+	billboardGui.Adornee = destructiblePart
+	billboardGui.Parent = self._playerGui
 
-	for i = 1, numCircles do
-		local circleSize = 2 + math.random() * 1 -- 2-3 studs
-		local lifetime = 2 + math.random() * 1 -- 2-3 seconds
+	-- Create the circular button (golden ring with lightning icon)
+	local button = Instance.new("TextButton")
+	button.Name = "CritBtn"
+	button.Size = UDim2.fromScale(1, 1)
+	button.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	button.BackgroundTransparency = 0.1
+	button.Text = "\226\154\161" -- lightning bolt unicode
+	button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	button.TextStrokeColor3 = Color3.fromRGB(180, 100, 0)
+	button.TextStrokeTransparency = 0
+	button.Font = Enum.Font.GothamBold
+	button.TextScaled = true
+	button.AutoButtonColor = true
+	button.Parent = billboardGui
 
-		-- Random starting angle and orbit parameters
-		local startAngle = math.random() * math.pi * 2
-		local orbitRadius = 4 + math.random() * 3 -- 4-7 studs from center
-		local orbitSpeed = (0.5 + math.random() * 1.5) * (math.random() > 0.5 and 1 or -1) -- random direction
-		local verticalOffset = 1 + math.random() * 3 -- height variation
-		local color = critColors[math.random(1, #critColors)]
+	-- Round the button with UICorner
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = button
 
-		-- Create the crit circle (torus-like ring using a cylinder)
-		local circle = Instance.new("Part")
-		circle.Name = "CritCircle_" .. i
-		circle.Shape = Enum.PartType.Cylinder
-		circle.Size = Vector3.new(0.3, circleSize, circleSize)
-		circle.Color = color
-		circle.Material = Enum.Material.Neon
-		circle.Anchored = true
-		circle.CanCollide = true -- must be collidable for raycast detection
-		circle.Transparency = 0.1
-		circle.Parent = self._effectsFolder
+	-- Add glowing stroke
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "GlowStroke"
+	stroke.Thickness = 3
+	stroke.Color = Color3.fromRGB(255, 255, 100)
+	stroke.Transparency = 0.2
+	stroke.Parent = button
 
-		-- Position at starting orbit point
-		local startX = center.X + math.cos(startAngle) * orbitRadius
-		local startZ = center.Z + math.sin(startAngle) * orbitRadius
-		local startY = center.Y + verticalOffset
-		circle.CFrame = CFrame.new(startX, startY, startZ) * CFrame.Angles(0, 0, math.rad(90))
+	-- Pulse animation on the button (scale oscillation for attention)
+	local pulseUp = TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+	TweenService:Create(billboardGui, pulseUp, {
+		Size = UDim2.fromOffset(70, 70),
+	}):Play()
 
-		-- Tag as crit circle for raycast detection
-		local critTag = Instance.new("BoolValue")
-		critTag.Name = "CritCircle"
-		critTag.Value = true
-		critTag.Parent = circle
+	-- Orbit animation: move StudsOffset around the destructible over time
+	local startTime = tick()
+	local startAngle = math.random() * math.pi * 2
+	local orbitRadius = 3 + math.random() * 2 -- 3-5 studs offset
+	local orbitSpeed = 1.5 + math.random() * 1.0 -- radians per second
+	local orbitDirection = (math.random() > 0.5) and 1 or -1
+	local verticalCenter = 2 + math.random() * 1 -- 2-3 studs above center
 
-		local critDestId = Instance.new("StringValue")
-		critDestId.Name = "CritDestructibleId"
-		critDestId.Value = destructibleId
-		critDestId.Parent = circle
-
-		-- Add a small PointLight for glow effect
-		local glow = Instance.new("PointLight")
-		glow.Color = color
-		glow.Brightness = 2
-		glow.Range = 4
-		glow.Parent = circle
-
-		-- Animate orbit movement using a coroutine-style heartbeat connection
-		local startTime = tick()
-		local currentAngle = startAngle
-		local orbitConnection
-		orbitConnection = RunService.Heartbeat:Connect(function(dt)
-			if not circle or not circle.Parent then
-				if orbitConnection then
-					orbitConnection:Disconnect()
-				end
-				return
+	local orbitConnection
+	orbitConnection = RunService.Heartbeat:Connect(function(dt)
+		if not billboardGui or not billboardGui.Parent then
+			if orbitConnection then
+				orbitConnection:Disconnect()
 			end
+			return
+		end
 
-			-- Check if destructible still exists
-			if not destructiblePart or not destructiblePart.Parent then
-				-- Destructible was destroyed, remove circle
-				if orbitConnection then
-					orbitConnection:Disconnect()
-				end
-				circle:Destroy()
-				return
+		-- Check if destructible still exists
+		if not destructiblePart or not destructiblePart.Parent then
+			if orbitConnection then
+				orbitConnection:Disconnect()
 			end
+			billboardGui:Destroy()
+			self._critButtons[destructibleId] = nil
+			return
+		end
 
-			local elapsed = tick() - startTime
+		local elapsed = tick() - startTime
+		local angle = startAngle + elapsed * orbitSpeed * orbitDirection
+		local offsetX = math.cos(angle) * orbitRadius
+		local offsetZ = math.sin(angle) * orbitRadius
+		local offsetY = verticalCenter + math.sin(elapsed * 2.5) * 0.5
 
-			-- Check lifetime expiry
-			if elapsed >= lifetime then
-				if orbitConnection then
-					orbitConnection:Disconnect()
-				end
-				-- Fade out quickly before destroying
-				local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-				TweenService:Create(circle, fadeInfo, { Transparency = 1 }):Play()
-				TweenService:Create(glow, fadeInfo, { Brightness = 0 }):Play()
-				task.delay(0.35, function()
-					if circle and circle.Parent then
-						circle:Destroy()
-					end
-				end)
-				return
+		billboardGui.StudsOffset = Vector3.new(offsetX, offsetY, offsetZ)
+	end)
+
+	-- Handle button click: fire crit
+	local clicked = false
+	button.Activated:Connect(function()
+		if clicked then return end
+		clicked = true
+
+		-- Disconnect orbit
+		if orbitConnection then
+			orbitConnection:Disconnect()
+		end
+
+		-- Show crit hit visual effect
+		self:showCritButtonHitEffect(destructiblePart)
+
+		-- Remove the button
+		billboardGui:Destroy()
+		self._critButtons[destructibleId] = nil
+
+		-- Fire the crit callback
+		if onCritClicked then
+			onCritClicked()
+		end
+	end)
+
+	-- Timeout: disappear after 2 seconds if not clicked
+	task.delay(2, function()
+		if clicked then return end
+		if not billboardGui or not billboardGui.Parent then return end
+
+		-- Disconnect orbit
+		if orbitConnection then
+			orbitConnection:Disconnect()
+		end
+
+		-- Fade out
+		local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		TweenService:Create(button, fadeInfo, {
+			BackgroundTransparency = 1,
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
+		TweenService:Create(stroke, fadeInfo, {
+			Transparency = 1,
+		}):Play()
+
+		task.delay(0.35, function()
+			if billboardGui and billboardGui.Parent then
+				billboardGui:Destroy()
 			end
-
-			-- Update orbit position
-			currentAngle = currentAngle + orbitSpeed * dt
-			local orbCenter = destructiblePart.Position
-			local ox = orbCenter.X + math.cos(currentAngle) * orbitRadius
-			local oz = orbCenter.Z + math.sin(currentAngle) * orbitRadius
-			local oy = orbCenter.Y + verticalOffset + math.sin(elapsed * 2) * 0.5 -- gentle bobbing
-
-			circle.CFrame = CFrame.new(ox, oy, oz) * CFrame.Angles(0, 0, math.rad(90))
+			self._critButtons[destructibleId] = nil
 		end)
+	end)
+
+	-- Store reference for cleanup
+	if not self._critButtons then
+		self._critButtons = {}
 	end
+	self._critButtons[destructibleId] = billboardGui
 end
 
 --------------------------------------------------------------------------------
--- Crit Hit Effect: flash + expand on the crit circle when clicked, then destroy
+-- Remove existing crit button for a specific destructible
 --------------------------------------------------------------------------------
-function EffectsController:showCritHitEffect(critCirclePart)
+function EffectsController:removeCritButton(destructibleId)
+	if not self._critButtons then
+		self._critButtons = {}
+		return
+	end
+	local existing = self._critButtons[destructibleId]
+	if existing and existing.Parent then
+		existing:Destroy()
+	end
+	self._critButtons[destructibleId] = nil
+end
+
+--------------------------------------------------------------------------------
+-- Crit Button Hit Effect: golden flash burst at the destructible when crit fires
+--------------------------------------------------------------------------------
+function EffectsController:showCritButtonHitEffect(destructiblePart)
 	if not self._initialized then return end
-	if not critCirclePart or not critCirclePart:IsA("BasePart") then return end
+	if not destructiblePart or not destructiblePart:IsA("BasePart") then return end
 
-	local position = critCirclePart.Position
-	local color = critCirclePart.Color
+	local position = destructiblePart.Position + Vector3.new(0, 2, 0)
 
-	-- Create expanding flash at the circle's position
+	-- Create expanding golden flash
 	local flash = Instance.new("Part")
 	flash.Name = "CritFlash"
 	flash.Shape = Enum.PartType.Ball
@@ -883,9 +931,6 @@ function EffectsController:showCritHitEffect(critCirclePart)
 			flash:Destroy()
 		end
 	end)
-
-	-- Destroy the original crit circle immediately
-	critCirclePart:Destroy()
 end
 
 --------------------------------------------------------------------------------
@@ -935,6 +980,12 @@ function EffectsController:cleanup()
 		gui:Destroy()
 	end
 	self._progressBars = {}
+	for _, gui in pairs(self._critButtons) do
+		if gui and gui.Parent then
+			gui:Destroy()
+		end
+	end
+	self._critButtons = {}
 	if self._effectsFolder then
 		self._effectsFolder:Destroy()
 	end
