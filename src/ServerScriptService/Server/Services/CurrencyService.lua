@@ -62,7 +62,7 @@ function CurrencyService.addCoins(player, amount)
 	if remotes then
 		local event = remotes:FindFirstChild("CurrencyUpdated")
 		if event then
-			event:FireClient(player, { coins = data.coins, diamonds = data.diamonds })
+			event:FireClient(player, data.coins, data.diamonds)
 		end
 	end
 
@@ -92,7 +92,7 @@ function CurrencyService.removeCoins(player, amount)
 	if remotes then
 		local event = remotes:FindFirstChild("CurrencyUpdated")
 		if event then
-			event:FireClient(player, { coins = data.coins, diamonds = data.diamonds })
+			event:FireClient(player, data.coins, data.diamonds)
 		end
 	end
 
@@ -127,7 +127,7 @@ function CurrencyService.addDiamonds(player, amount)
 	if remotes then
 		local event = remotes:FindFirstChild("CurrencyUpdated")
 		if event then
-			event:FireClient(player, { coins = data.coins, diamonds = data.diamonds })
+			event:FireClient(player, data.coins, data.diamonds)
 		end
 	end
 
@@ -157,7 +157,7 @@ function CurrencyService.removeDiamonds(player, amount)
 	if remotes then
 		local event = remotes:FindFirstChild("CurrencyUpdated")
 		if event then
-			event:FireClient(player, { coins = data.coins, diamonds = data.diamonds })
+			event:FireClient(player, data.coins, data.diamonds)
 		end
 	end
 

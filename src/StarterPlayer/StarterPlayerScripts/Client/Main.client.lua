@@ -213,16 +213,24 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
 	end
 end)
 
--- Egg hatch started (play animation)
-EggHatchStart.OnClientEvent:Connect(function(eggPosition, eggType)
-	-- Animation will play at the egg position
+-- Egg hatch started (server sends eggType only; use player position for animation)
+EggHatchStart.OnClientEvent:Connect(function(eggType)
+	-- Animation position defaults to player character position
 	-- The result will come in EggHatchResult
 end)
 
--- Egg hatch result
-EggHatchResult.OnClientEvent:Connect(function(petData, eggPosition)
-	if eggPosition then
-		effectsController:showEggHatchAnimation(eggPosition, petData)
+-- Egg hatch result (server sends newPet data only; use player position for animation)
+EggHatchResult.OnClientEvent:Connect(function(petData)
+	-- Use player character position as the hatch animation origin
+	local hatchPosition = nil
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hatchPosition = hrp.Position + Vector3.new(0, 3, 5)
+		end
+	end
+	if hatchPosition then
+		effectsController:showEggHatchAnimation(hatchPosition, petData)
 	end
 	uiController:showEggHatch(petData)
 end)
@@ -232,8 +240,8 @@ CampaignBattleUpdate.OnClientEvent:Connect(function(battleState)
 	campaignController:updateBattle(battleState)
 end)
 
--- Campaign victory
-CampaignVictory.OnClientEvent:Connect(function(rewards)
+-- Campaign victory (server sends levelNum, rewards)
+CampaignVictory.OnClientEvent:Connect(function(levelNum, rewards)
 	campaignController:onVictory(rewards)
 end)
 

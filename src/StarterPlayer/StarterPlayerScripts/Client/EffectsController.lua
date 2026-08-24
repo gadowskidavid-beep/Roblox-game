@@ -104,6 +104,7 @@ end
 --------------------------------------------------------------------------------
 function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	if not self._initialized then return end
+	if not eggPosition then return end
 
 	local rarity = resultPet and resultPet.rarity or "Common"
 	local petName = resultPet and resultPet.name or "Pet"

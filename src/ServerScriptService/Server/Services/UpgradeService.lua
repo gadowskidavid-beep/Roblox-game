@@ -62,7 +62,7 @@ function UpgradeService.purchaseUpgrade(player, upgradeId)
 	if remotes then
 		local event = remotes:FindFirstChild("UpgradeUpdated")
 		if event then
-			event:FireClient(player, upgradeId, data.upgrades[upgradeId])
+			event:FireClient(player, data.upgrades)
 		end
 	end
 
