@@ -4837,8 +4837,9 @@ function ZoneService.setMasteryService(masteryService)
 end
 
 --------------------------------------------------------------------------------
--- WORLD DECORATION: Procedural trees, rocks, flowers (Zone 1), lamps, benches (Zone 2)
--- These are purely visual (CanCollide = false) and do not affect gameplay.
+-- WORLD DECORATION: Procedural zone-themed decorations for all 8 zones.
+-- These are purely visual (Anchored=true, CanCollide=false) and do not affect gameplay.
+-- Each zone spawns 8-12 decorations using getRandomPositionInZone with MIN_SPAWN_DISTANCE.
 --------------------------------------------------------------------------------
 function ZoneService._spawnWorldDecoration()
 	local workspace = game:GetService("Workspace")
@@ -4849,59 +4850,106 @@ function ZoneService._spawnWorldDecoration()
 		decoFolder.Parent = workspace
 	end
 
-	-- Zone 1: Gruene Wiesen - trees, rocks, flowers
+	-- Zone 1: Gruene Wiesen - green trees, flowers, rocks
 	ZoneService._spawnZone1Deco(decoFolder)
 
-	-- Zone 2: Stadt - street lamps, benches, planters
+	-- Zone 2: Stadt - street lamps, benches, trash cans, bushes
 	ZoneService._spawnZone2Deco(decoFolder)
+
+	-- Zone 3: Strand - palm trees, beach umbrellas, shells
+	ZoneService._spawnZone3Deco(decoFolder)
+
+	-- Zone 4: Wueste - cacti, dead trees, sand dunes
+	ZoneService._spawnZone4Deco(decoFolder)
+
+	-- Zone 5: Eiswelt - ice crystals, frozen trees, snowmen
+	ZoneService._spawnZone5Deco(decoFolder)
+
+	-- Zone 6: Vulkan - lava rocks, fire crystals, charred trees
+	ZoneService._spawnZone6Deco(decoFolder)
+
+	-- Zone 7: Himmel - clouds, floating islands, rainbows, stars
+	ZoneService._spawnZone7Deco(decoFolder)
+
+	-- Zone 8: Weltraum - asteroids, crystals, alien plants
+	ZoneService._spawnZone8Deco(decoFolder)
 end
 
+-- Helper: get zone origin for decoration spawning (bottom-left corner)
+local function getDecoZoneOrigin(zoneId)
+	local centerX = (zoneId - 1) * ZONE_SPACING
+	local centerZ = -100
+	return Vector3.new(centerX - ZONE_SIZE.X / 2, 0, centerZ - ZONE_SIZE.Z / 2)
+end
+
+--------------------------------------------------------------------------------
+-- ZONE 1: Gruene Wiesen - Green trees (brown trunk + green sphere), flowers, rocks
+--------------------------------------------------------------------------------
 function ZoneService._spawnZone1Deco(decoFolder)
 	local zone1Folder = Instance.new("Folder")
 	zone1Folder.Name = "Zone1_Deco"
 	zone1Folder.Parent = decoFolder
 
-	local origin = Vector3.new(-100, 0, -200) -- Zone 1 extends from -100..100 X, -200..0 Z
-	local zoneWidth = 200
-	local zoneDepth = 200
+	local origin = getDecoZoneOrigin(1)
+	local existingPositions = {}
 
-	-- Seed random for consistent decoration
 	math.randomseed(12345)
 
-	-- Spawn 12 trees (trunk cylinder + canopy sphere)
-	for i = 1, 12 do
-		local tx = origin.X + 15 + math.random() * (zoneWidth - 30)
-		local tz = origin.Z + 15 + math.random() * (zoneDepth - 30)
+	-- Spawn 4 green trees (brown trunk cylinder + green sphere top)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
 
-		-- Trunk
 		local trunk = Instance.new("Part")
 		trunk.Name = "Tree_Trunk_" .. i
 		trunk.Shape = Enum.PartType.Cylinder
-		trunk.Size = Vector3.new(6 + math.random() * 3, 1.5, 1.5)
+		trunk.Size = Vector3.new(7 + math.random() * 2, 1.5, 1.5)
 		trunk.Color = Color3.fromRGB(101, 67, 33)
 		trunk.Material = Enum.Material.Wood
 		trunk.Anchored = true
 		trunk.CanCollide = false
-		trunk.CFrame = CFrame.new(tx, trunk.Size.X / 2, tz) * CFrame.Angles(0, 0, math.rad(90))
+		trunk.CFrame = CFrame.new(pos.X, trunk.Size.X / 2, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
 		trunk.Parent = zone1Folder
 
-		-- Canopy
 		local canopy = Instance.new("Part")
 		canopy.Name = "Tree_Canopy_" .. i
 		canopy.Shape = Enum.PartType.Ball
-		canopy.Size = Vector3.new(7 + math.random() * 4, 6 + math.random() * 3, 7 + math.random() * 4)
+		canopy.Size = Vector3.new(7 + math.random() * 3, 6 + math.random() * 2, 7 + math.random() * 3)
 		canopy.Color = Color3.fromRGB(34 + math.random(0, 30), 139 + math.random(0, 40), 34)
 		canopy.Material = Enum.Material.Grass
 		canopy.Anchored = true
 		canopy.CanCollide = false
-		canopy.Position = Vector3.new(tx, trunk.Size.X + canopy.Size.Y / 2 - 1, tz)
+		canopy.Position = Vector3.new(pos.X, trunk.Size.X + canopy.Size.Y / 2 - 1, pos.Z)
 		canopy.Parent = zone1Folder
 	end
 
-	-- Spawn 8 rocks (slightly squished spheres)
-	for i = 1, 8 do
-		local rx = origin.X + 10 + math.random() * (zoneWidth - 20)
-		local rz = origin.Z + 10 + math.random() * (zoneDepth - 20)
+	-- Spawn 4 flowers (small colorful cylinders)
+	local flowerColors = {
+		Color3.fromRGB(255, 100, 100),
+		Color3.fromRGB(255, 200, 50),
+		Color3.fromRGB(200, 100, 255),
+		Color3.fromRGB(255, 150, 200),
+	}
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local flower = Instance.new("Part")
+		flower.Name = "Flower_" .. i
+		flower.Shape = Enum.PartType.Cylinder
+		flower.Size = Vector3.new(1.5, 1.2, 1.2)
+		flower.Color = flowerColors[((i - 1) % #flowerColors) + 1]
+		flower.Material = Enum.Material.SmoothPlastic
+		flower.Anchored = true
+		flower.CanCollide = false
+		flower.CFrame = CFrame.new(pos.X, 0.75, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		flower.Parent = zone1Folder
+	end
+
+	-- Spawn 4 rocks (gray boulders)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
 
 		local rock = Instance.new("Part")
 		rock.Name = "Rock_" .. i
@@ -4911,53 +4959,51 @@ function ZoneService._spawnZone1Deco(decoFolder)
 		rock.Material = Enum.Material.Slate
 		rock.Anchored = true
 		rock.CanCollide = false
-		rock.Position = Vector3.new(rx, rock.Size.Y / 2, rz)
+		rock.Position = Vector3.new(pos.X, rock.Size.Y / 2, pos.Z)
 		rock.Parent = zone1Folder
 	end
 
-	-- Reset random seed
 	math.randomseed(os.time())
 end
 
+--------------------------------------------------------------------------------
+-- ZONE 2: Stadt - Street lamps (gray pole + yellow ball), benches, trash cans, bushes
+--------------------------------------------------------------------------------
 function ZoneService._spawnZone2Deco(decoFolder)
 	local zone2Folder = Instance.new("Folder")
 	zone2Folder.Name = "Zone2_Deco"
 	zone2Folder.Parent = decoFolder
 
-	local originX = 150 -- Zone 2 extends from 150..350 X, -200..0 Z
-	local originZ = -200
-	local zoneWidth = 200
-	local zoneDepth = 200
+	local origin = getDecoZoneOrigin(2)
+	local existingPositions = {}
 
 	math.randomseed(54321)
 
-	-- Spawn 10 street lamps (tall pole + light sphere on top)
-	for i = 1, 10 do
-		local lx = originX + 20 + (i - 1) * (zoneWidth / 10)
-		local lz = originZ + 30 + math.random() * (zoneDepth - 60)
+	-- Spawn 3 street lamps (tall gray pole + yellow ball on top)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
 
-		-- Pole (tall thin cylinder)
 		local pole = Instance.new("Part")
 		pole.Name = "Lamp_Pole_" .. i
 		pole.Shape = Enum.PartType.Cylinder
 		pole.Size = Vector3.new(10, 0.6, 0.6)
-		pole.Color = Color3.fromRGB(60, 60, 70)
+		pole.Color = Color3.fromRGB(100, 100, 110)
 		pole.Material = Enum.Material.Metal
 		pole.Anchored = true
 		pole.CanCollide = false
-		pole.CFrame = CFrame.new(lx, 5, lz) * CFrame.Angles(0, 0, math.rad(90))
+		pole.CFrame = CFrame.new(pos.X, 5, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
 		pole.Parent = zone2Folder
 
-		-- Light globe (sphere with PointLight)
 		local globe = Instance.new("Part")
 		globe.Name = "Lamp_Globe_" .. i
 		globe.Shape = Enum.PartType.Ball
 		globe.Size = Vector3.new(2, 2, 2)
-		globe.Color = Color3.fromRGB(255, 240, 180)
+		globe.Color = Color3.fromRGB(255, 230, 80)
 		globe.Material = Enum.Material.Neon
 		globe.Anchored = true
 		globe.CanCollide = false
-		globe.Position = Vector3.new(lx, 10.5, lz)
+		globe.Position = Vector3.new(pos.X, 10.5, pos.Z)
 		globe.Parent = zone2Folder
 
 		local light = Instance.new("PointLight")
@@ -4967,12 +5013,11 @@ function ZoneService._spawnZone2Deco(decoFolder)
 		light.Parent = globe
 	end
 
-	-- Spawn 8 benches (flat rectangular box with shorter legs)
-	for i = 1, 8 do
-		local bx = originX + 20 + math.random() * (zoneWidth - 40)
-		local bz = originZ + 20 + math.random() * (zoneDepth - 40)
+	-- Spawn 3 benches (brown planks)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
 
-		-- Seat surface
 		local seat = Instance.new("Part")
 		seat.Name = "Bench_Seat_" .. i
 		seat.Shape = Enum.PartType.Block
@@ -4981,10 +5026,9 @@ function ZoneService._spawnZone2Deco(decoFolder)
 		seat.Material = Enum.Material.Wood
 		seat.Anchored = true
 		seat.CanCollide = false
-		seat.Position = Vector3.new(bx, 1.2, bz)
+		seat.Position = Vector3.new(pos.X, 1.2, pos.Z)
 		seat.Parent = zone2Folder
 
-		-- Back rest
 		local back = Instance.new("Part")
 		back.Name = "Bench_Back_" .. i
 		back.Shape = Enum.PartType.Block
@@ -4993,61 +5037,569 @@ function ZoneService._spawnZone2Deco(decoFolder)
 		back.Material = Enum.Material.Wood
 		back.Anchored = true
 		back.CanCollide = false
-		back.Position = Vector3.new(bx, 2.0, bz - 0.85)
+		back.Position = Vector3.new(pos.X, 2.0, pos.Z - 0.85)
 		back.Parent = zone2Folder
-
-		-- Leg 1
-		local leg1 = Instance.new("Part")
-		leg1.Name = "Bench_Leg1_" .. i
-		leg1.Shape = Enum.PartType.Block
-		leg1.Size = Vector3.new(0.3, 1.2, 0.3)
-		leg1.Color = Color3.fromRGB(60, 60, 70)
-		leg1.Material = Enum.Material.Metal
-		leg1.Anchored = true
-		leg1.CanCollide = false
-		leg1.Position = Vector3.new(bx - 2, 0.6, bz)
-		leg1.Parent = zone2Folder
-
-		-- Leg 2
-		local leg2 = Instance.new("Part")
-		leg2.Name = "Bench_Leg2_" .. i
-		leg2.Shape = Enum.PartType.Block
-		leg2.Size = Vector3.new(0.3, 1.2, 0.3)
-		leg2.Color = Color3.fromRGB(60, 60, 70)
-		leg2.Material = Enum.Material.Metal
-		leg2.Anchored = true
-		leg2.CanCollide = false
-		leg2.Position = Vector3.new(bx + 2, 0.6, bz)
-		leg2.Parent = zone2Folder
 	end
 
-	-- Spawn 6 small planters (colorful flower boxes for city color)
-	for i = 1, 6 do
-		local px = originX + 25 + math.random() * (zoneWidth - 50)
-		local pz = originZ + 25 + math.random() * (zoneDepth - 50)
+	-- Spawn 3 trash cans (gray cylinders)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
 
-		local planter = Instance.new("Part")
-		planter.Name = "Planter_" .. i
-		planter.Shape = Enum.PartType.Block
-		planter.Size = Vector3.new(3, 1.5, 3)
-		planter.Color = Color3.fromRGB(80, 80, 90)
-		planter.Material = Enum.Material.Concrete
-		planter.Anchored = true
-		planter.CanCollide = false
-		planter.Position = Vector3.new(px, 0.75, pz)
-		planter.Parent = zone2Folder
+		local can = Instance.new("Part")
+		can.Name = "TrashCan_" .. i
+		can.Shape = Enum.PartType.Cylinder
+		can.Size = Vector3.new(3, 2, 2)
+		can.Color = Color3.fromRGB(80, 80, 85)
+		can.Material = Enum.Material.Metal
+		can.Anchored = true
+		can.CanCollide = false
+		can.CFrame = CFrame.new(pos.X, 1.5, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		can.Parent = zone2Folder
+	end
 
-		-- Flowers on top
-		local flowers = Instance.new("Part")
-		flowers.Name = "PlanterFlowers_" .. i
-		flowers.Shape = Enum.PartType.Ball
-		flowers.Size = Vector3.new(2.5, 1.5, 2.5)
-		flowers.Color = Color3.fromRGB(200 + math.random(0, 55), 80 + math.random(0, 100), 100 + math.random(0, 100))
-		flowers.Material = Enum.Material.Grass
-		flowers.Anchored = true
-		flowers.CanCollide = false
-		flowers.Position = Vector3.new(px, 2.0, pz)
-		flowers.Parent = zone2Folder
+	-- Spawn 3 bushes (dark green spheres)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local bush = Instance.new("Part")
+		bush.Name = "Bush_" .. i
+		bush.Shape = Enum.PartType.Ball
+		bush.Size = Vector3.new(3 + math.random() * 2, 2.5 + math.random(), 3 + math.random() * 2)
+		bush.Color = Color3.fromRGB(20, 80, 20)
+		bush.Material = Enum.Material.Grass
+		bush.Anchored = true
+		bush.CanCollide = false
+		bush.Position = Vector3.new(pos.X, bush.Size.Y / 2, pos.Z)
+		bush.Parent = zone2Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+--------------------------------------------------------------------------------
+-- ZONE 3: Strand - Palm trees (tan trunk + green flat top), beach umbrellas, shells
+--------------------------------------------------------------------------------
+function ZoneService._spawnZone3Deco(decoFolder)
+	local zone3Folder = Instance.new("Folder")
+	zone3Folder.Name = "Zone3_Deco"
+	zone3Folder.Parent = decoFolder
+
+	local origin = getDecoZoneOrigin(3)
+	local existingPositions = {}
+
+	math.randomseed(33333)
+
+	-- Spawn 4 palm trees (tan trunk + green flat sphere top)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local trunk = Instance.new("Part")
+		trunk.Name = "Palm_Trunk_" .. i
+		trunk.Shape = Enum.PartType.Cylinder
+		trunk.Size = Vector3.new(9 + math.random() * 2, 1.2, 1.2)
+		trunk.Color = Color3.fromRGB(194, 154, 90)
+		trunk.Material = Enum.Material.Wood
+		trunk.Anchored = true
+		trunk.CanCollide = false
+		trunk.CFrame = CFrame.new(pos.X, trunk.Size.X / 2, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		trunk.Parent = zone3Folder
+
+		-- Flat green top (wider than tall)
+		local top = Instance.new("Part")
+		top.Name = "Palm_Top_" .. i
+		top.Shape = Enum.PartType.Ball
+		top.Size = Vector3.new(6 + math.random() * 2, 3, 6 + math.random() * 2)
+		top.Color = Color3.fromRGB(34, 139, 34)
+		top.Material = Enum.Material.Grass
+		top.Anchored = true
+		top.CanCollide = false
+		top.Position = Vector3.new(pos.X, trunk.Size.X + 1, pos.Z)
+		top.Parent = zone3Folder
+	end
+
+	-- Spawn 4 beach umbrellas (thin pole + colored wedge top)
+	local umbrellaColors = {
+		Color3.fromRGB(255, 80, 80),
+		Color3.fromRGB(80, 150, 255),
+		Color3.fromRGB(255, 200, 50),
+		Color3.fromRGB(255, 130, 200),
+	}
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local pole = Instance.new("Part")
+		pole.Name = "Umbrella_Pole_" .. i
+		pole.Shape = Enum.PartType.Cylinder
+		pole.Size = Vector3.new(5, 0.3, 0.3)
+		pole.Color = Color3.fromRGB(200, 200, 200)
+		pole.Material = Enum.Material.Metal
+		pole.Anchored = true
+		pole.CanCollide = false
+		pole.CFrame = CFrame.new(pos.X, 2.5, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		pole.Parent = zone3Folder
+
+		local canopy = Instance.new("Part")
+		canopy.Name = "Umbrella_Top_" .. i
+		canopy.Shape = Enum.PartType.Block
+		canopy.Size = Vector3.new(4, 0.5, 4)
+		canopy.Color = umbrellaColors[((i - 1) % #umbrellaColors) + 1]
+		canopy.Material = Enum.Material.Fabric
+		canopy.Anchored = true
+		canopy.CanCollide = false
+		canopy.CFrame = CFrame.new(pos.X, 5.2, pos.Z) * CFrame.Angles(0, 0, math.rad(5))
+		canopy.Parent = zone3Folder
+	end
+
+	-- Spawn 4 shells (small pink/white balls)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local shell = Instance.new("Part")
+		shell.Name = "Shell_" .. i
+		shell.Shape = Enum.PartType.Ball
+		shell.Size = Vector3.new(0.8 + math.random() * 0.5, 0.6, 0.8 + math.random() * 0.5)
+		if i % 2 == 0 then
+			shell.Color = Color3.fromRGB(255, 200, 200) -- pink
+		else
+			shell.Color = Color3.fromRGB(245, 240, 235) -- white
+		end
+		shell.Material = Enum.Material.SmoothPlastic
+		shell.Anchored = true
+		shell.CanCollide = false
+		shell.Position = Vector3.new(pos.X, 0.3, pos.Z)
+		shell.Parent = zone3Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+--------------------------------------------------------------------------------
+-- ZONE 4: Wueste - Cacti (green cylinders with arms), dead trees, sand dunes
+--------------------------------------------------------------------------------
+function ZoneService._spawnZone4Deco(decoFolder)
+	local zone4Folder = Instance.new("Folder")
+	zone4Folder.Name = "Zone4_Deco"
+	zone4Folder.Parent = decoFolder
+
+	local origin = getDecoZoneOrigin(4)
+	local existingPositions = {}
+
+	math.randomseed(44444)
+
+	-- Spawn 4 cacti (green cylinder body + arm cylinder)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		-- Main body
+		local body = Instance.new("Part")
+		body.Name = "Cactus_Body_" .. i
+		body.Shape = Enum.PartType.Cylinder
+		body.Size = Vector3.new(5 + math.random() * 2, 1.5, 1.5)
+		body.Color = Color3.fromRGB(34, 120, 34)
+		body.Material = Enum.Material.SmoothPlastic
+		body.Anchored = true
+		body.CanCollide = false
+		body.CFrame = CFrame.new(pos.X, body.Size.X / 2, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		body.Parent = zone4Folder
+
+		-- Arm (smaller cylinder sticking out to the side)
+		local arm = Instance.new("Part")
+		arm.Name = "Cactus_Arm_" .. i
+		arm.Shape = Enum.PartType.Cylinder
+		arm.Size = Vector3.new(2.5, 0.8, 0.8)
+		arm.Color = Color3.fromRGB(34, 120, 34)
+		arm.Material = Enum.Material.SmoothPlastic
+		arm.Anchored = true
+		arm.CanCollide = false
+		arm.CFrame = CFrame.new(pos.X + 1.2, body.Size.X * 0.6, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		arm.Parent = zone4Folder
+	end
+
+	-- Spawn 4 dead trees (brown thin cylinders)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local deadTree = Instance.new("Part")
+		deadTree.Name = "DeadTree_" .. i
+		deadTree.Shape = Enum.PartType.Cylinder
+		deadTree.Size = Vector3.new(6 + math.random() * 2, 0.8, 0.8)
+		deadTree.Color = Color3.fromRGB(101, 67, 33)
+		deadTree.Material = Enum.Material.Wood
+		deadTree.Anchored = true
+		deadTree.CanCollide = false
+		deadTree.CFrame = CFrame.new(pos.X, deadTree.Size.X / 2, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		deadTree.Parent = zone4Folder
+
+		-- A thin branch sticking out
+		local branch = Instance.new("Part")
+		branch.Name = "DeadTree_Branch_" .. i
+		branch.Shape = Enum.PartType.Cylinder
+		branch.Size = Vector3.new(2, 0.4, 0.4)
+		branch.Color = Color3.fromRGB(80, 50, 25)
+		branch.Material = Enum.Material.Wood
+		branch.Anchored = true
+		branch.CanCollide = false
+		branch.CFrame = CFrame.new(pos.X + 1, deadTree.Size.X * 0.7, pos.Z) * CFrame.Angles(0, 0, math.rad(45))
+		branch.Parent = zone4Folder
+	end
+
+	-- Spawn 4 sand dunes (tan wedge-like parts)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local dune = Instance.new("Part")
+		dune.Name = "SandDune_" .. i
+		dune.Shape = Enum.PartType.Block
+		dune.Size = Vector3.new(8 + math.random() * 4, 2 + math.random(), 6 + math.random() * 3)
+		dune.Color = Color3.fromRGB(210, 180, 120)
+		dune.Material = Enum.Material.Sand
+		dune.Anchored = true
+		dune.CanCollide = false
+		dune.CFrame = CFrame.new(pos.X, dune.Size.Y / 2 - 0.5, pos.Z) * CFrame.Angles(0, math.rad(math.random(0, 180)), math.rad(8))
+		dune.Parent = zone4Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+--------------------------------------------------------------------------------
+-- ZONE 5: Eiswelt - Ice crystals (cyan/blue wedges), frozen trees, snowmen
+--------------------------------------------------------------------------------
+function ZoneService._spawnZone5Deco(decoFolder)
+	local zone5Folder = Instance.new("Folder")
+	zone5Folder.Name = "Zone5_Deco"
+	zone5Folder.Parent = decoFolder
+
+	local origin = getDecoZoneOrigin(5)
+	local existingPositions = {}
+
+	math.randomseed(55555)
+
+	-- Spawn 4 ice crystals (cyan/blue wedge-shaped parts)
+	local crystalColors = {
+		Color3.fromRGB(100, 220, 255),
+		Color3.fromRGB(150, 240, 255),
+		Color3.fromRGB(80, 180, 240),
+		Color3.fromRGB(120, 200, 255),
+	}
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local crystal = Instance.new("Part")
+		crystal.Name = "IceCrystal_" .. i
+		crystal.Shape = Enum.PartType.Block
+		crystal.Size = Vector3.new(1.5 + math.random(), 4 + math.random() * 3, 1.5 + math.random())
+		crystal.Color = crystalColors[((i - 1) % #crystalColors) + 1]
+		crystal.Material = Enum.Material.Ice
+		crystal.Transparency = 0.2
+		crystal.Anchored = true
+		crystal.CanCollide = false
+		crystal.CFrame = CFrame.new(pos.X, crystal.Size.Y / 2, pos.Z) * CFrame.Angles(0, math.rad(math.random(0, 90)), math.rad(math.random(-15, 15)))
+		crystal.Parent = zone5Folder
+	end
+
+	-- Spawn 4 frozen trees (white trunk + light blue sphere top)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local trunk = Instance.new("Part")
+		trunk.Name = "FrozenTree_Trunk_" .. i
+		trunk.Shape = Enum.PartType.Cylinder
+		trunk.Size = Vector3.new(6 + math.random() * 2, 1.2, 1.2)
+		trunk.Color = Color3.fromRGB(220, 220, 230)
+		trunk.Material = Enum.Material.Ice
+		trunk.Anchored = true
+		trunk.CanCollide = false
+		trunk.CFrame = CFrame.new(pos.X, trunk.Size.X / 2, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		trunk.Parent = zone5Folder
+
+		local canopy = Instance.new("Part")
+		canopy.Name = "FrozenTree_Top_" .. i
+		canopy.Shape = Enum.PartType.Ball
+		canopy.Size = Vector3.new(5 + math.random() * 2, 4 + math.random(), 5 + math.random() * 2)
+		canopy.Color = Color3.fromRGB(180, 220, 255)
+		canopy.Material = Enum.Material.Ice
+		canopy.Transparency = 0.1
+		canopy.Anchored = true
+		canopy.CanCollide = false
+		canopy.Position = Vector3.new(pos.X, trunk.Size.X + canopy.Size.Y / 2 - 1, pos.Z)
+		canopy.Parent = zone5Folder
+	end
+
+	-- Spawn 4 snowmen (3 stacked white balls)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		-- Bottom ball (largest)
+		local bottom = Instance.new("Part")
+		bottom.Name = "Snowman_Bottom_" .. i
+		bottom.Shape = Enum.PartType.Ball
+		bottom.Size = Vector3.new(3, 3, 3)
+		bottom.Color = Color3.fromRGB(245, 245, 250)
+		bottom.Material = Enum.Material.SmoothPlastic
+		bottom.Anchored = true
+		bottom.CanCollide = false
+		bottom.Position = Vector3.new(pos.X, 1.5, pos.Z)
+		bottom.Parent = zone5Folder
+
+		-- Middle ball
+		local middle = Instance.new("Part")
+		middle.Name = "Snowman_Middle_" .. i
+		middle.Shape = Enum.PartType.Ball
+		middle.Size = Vector3.new(2.2, 2.2, 2.2)
+		middle.Color = Color3.fromRGB(245, 245, 250)
+		middle.Material = Enum.Material.SmoothPlastic
+		middle.Anchored = true
+		middle.CanCollide = false
+		middle.Position = Vector3.new(pos.X, 3.6, pos.Z)
+		middle.Parent = zone5Folder
+
+		-- Head ball (smallest)
+		local head = Instance.new("Part")
+		head.Name = "Snowman_Head_" .. i
+		head.Shape = Enum.PartType.Ball
+		head.Size = Vector3.new(1.5, 1.5, 1.5)
+		head.Color = Color3.fromRGB(245, 245, 250)
+		head.Material = Enum.Material.SmoothPlastic
+		head.Anchored = true
+		head.CanCollide = false
+		head.Position = Vector3.new(pos.X, 5.2, pos.Z)
+		head.Parent = zone5Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+--------------------------------------------------------------------------------
+-- ZONE 6: Vulkan - Lava rocks (dark red/black boulders), fire crystals, charred trees
+--------------------------------------------------------------------------------
+function ZoneService._spawnZone6Deco(decoFolder)
+	local zone6Folder = Instance.new("Folder")
+	zone6Folder.Name = "Zone6_Deco"
+	zone6Folder.Parent = decoFolder
+
+	local origin = getDecoZoneOrigin(6)
+	local existingPositions = {}
+
+	math.randomseed(66666)
+
+	-- Spawn 4 lava rocks (dark red/black boulders)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local rock = Instance.new("Part")
+		rock.Name = "LavaRock_" .. i
+		rock.Shape = Enum.PartType.Ball
+		rock.Size = Vector3.new(3 + math.random() * 2, 2.5 + math.random() * 2, 3 + math.random() * 2)
+		if i % 2 == 0 then
+			rock.Color = Color3.fromRGB(40, 20, 20) -- black
+		else
+			rock.Color = Color3.fromRGB(120, 30, 20) -- dark red
+		end
+		rock.Material = Enum.Material.Basalt
+		rock.Anchored = true
+		rock.CanCollide = false
+		rock.Position = Vector3.new(pos.X, rock.Size.Y / 2, pos.Z)
+		rock.Parent = zone6Folder
+	end
+
+	-- Spawn 4 fire crystals (orange neon wedge-like blocks)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local crystal = Instance.new("Part")
+		crystal.Name = "FireCrystal_" .. i
+		crystal.Shape = Enum.PartType.Block
+		crystal.Size = Vector3.new(1.2 + math.random(), 3 + math.random() * 3, 1.2 + math.random())
+		crystal.Color = Color3.fromRGB(255, 120 + math.random(0, 60), 0)
+		crystal.Material = Enum.Material.Neon
+		crystal.Anchored = true
+		crystal.CanCollide = false
+		crystal.CFrame = CFrame.new(pos.X, crystal.Size.Y / 2, pos.Z) * CFrame.Angles(0, math.rad(math.random(0, 180)), math.rad(math.random(-10, 10)))
+		crystal.Parent = zone6Folder
+	end
+
+	-- Spawn 4 charred trees (black thin cylinders)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local tree = Instance.new("Part")
+		tree.Name = "CharredTree_" .. i
+		tree.Shape = Enum.PartType.Cylinder
+		tree.Size = Vector3.new(5 + math.random() * 3, 0.7, 0.7)
+		tree.Color = Color3.fromRGB(20, 20, 20)
+		tree.Material = Enum.Material.Slate
+		tree.Anchored = true
+		tree.CanCollide = false
+		tree.CFrame = CFrame.new(pos.X, tree.Size.X / 2, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		tree.Parent = zone6Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+--------------------------------------------------------------------------------
+-- ZONE 7: Himmel - Clouds (white flat spheres), floating islands, rainbows, stars
+--------------------------------------------------------------------------------
+function ZoneService._spawnZone7Deco(decoFolder)
+	local zone7Folder = Instance.new("Folder")
+	zone7Folder.Name = "Zone7_Deco"
+	zone7Folder.Parent = decoFolder
+
+	local origin = getDecoZoneOrigin(7)
+	local existingPositions = {}
+
+	math.randomseed(77777)
+
+	-- Spawn 3 clouds (white flat spheres floating above ground)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local cloud = Instance.new("Part")
+		cloud.Name = "Cloud_" .. i
+		cloud.Shape = Enum.PartType.Ball
+		cloud.Size = Vector3.new(8 + math.random() * 4, 3 + math.random(), 6 + math.random() * 3)
+		cloud.Color = Color3.fromRGB(245, 245, 255)
+		cloud.Material = Enum.Material.SmoothPlastic
+		cloud.Transparency = 0.3
+		cloud.Anchored = true
+		cloud.CanCollide = false
+		cloud.Position = Vector3.new(pos.X, 8 + math.random() * 5, pos.Z)
+		cloud.Parent = zone7Folder
+	end
+
+	-- Spawn 3 floating islands (small parts elevated in the air)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local island = Instance.new("Part")
+		island.Name = "FloatingIsland_" .. i
+		island.Shape = Enum.PartType.Block
+		island.Size = Vector3.new(5 + math.random() * 3, 2, 5 + math.random() * 3)
+		island.Color = Color3.fromRGB(100, 200, 100)
+		island.Material = Enum.Material.Grass
+		island.Anchored = true
+		island.CanCollide = false
+		island.Position = Vector3.new(pos.X, 6 + math.random() * 4, pos.Z)
+		island.Parent = zone7Folder
+	end
+
+	-- Spawn 3 rainbows (arched neon parts)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local rainbow = Instance.new("Part")
+		rainbow.Name = "Rainbow_" .. i
+		rainbow.Shape = Enum.PartType.Block
+		rainbow.Size = Vector3.new(12, 1, 1)
+		rainbow.Color = Color3.fromRGB(255, 100 + math.random(0, 155), math.random(0, 255))
+		rainbow.Material = Enum.Material.Neon
+		rainbow.Transparency = 0.3
+		rainbow.Anchored = true
+		rainbow.CanCollide = false
+		rainbow.CFrame = CFrame.new(pos.X, 10, pos.Z) * CFrame.Angles(0, math.rad(math.random(0, 180)), math.rad(30))
+		rainbow.Parent = zone7Folder
+	end
+
+	-- Spawn 3 stars (yellow neon balls)
+	for i = 1, 3 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local star = Instance.new("Part")
+		star.Name = "Star_" .. i
+		star.Shape = Enum.PartType.Ball
+		star.Size = Vector3.new(1.5 + math.random(), 1.5 + math.random(), 1.5 + math.random())
+		star.Color = Color3.fromRGB(255, 255, 50)
+		star.Material = Enum.Material.Neon
+		star.Anchored = true
+		star.CanCollide = false
+		star.Position = Vector3.new(pos.X, 12 + math.random() * 5, pos.Z)
+		star.Parent = zone7Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+--------------------------------------------------------------------------------
+-- ZONE 8: Weltraum - Asteroids (dark gray boulders), crystals (purple neon), alien plants
+--------------------------------------------------------------------------------
+function ZoneService._spawnZone8Deco(decoFolder)
+	local zone8Folder = Instance.new("Folder")
+	zone8Folder.Name = "Zone8_Deco"
+	zone8Folder.Parent = decoFolder
+
+	local origin = getDecoZoneOrigin(8)
+	local existingPositions = {}
+
+	math.randomseed(88888)
+
+	-- Spawn 4 asteroids (dark gray boulders)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local asteroid = Instance.new("Part")
+		asteroid.Name = "Asteroid_" .. i
+		asteroid.Shape = Enum.PartType.Ball
+		asteroid.Size = Vector3.new(3 + math.random() * 3, 2.5 + math.random() * 2, 3 + math.random() * 3)
+		asteroid.Color = Color3.fromRGB(50 + math.random(0, 30), 50 + math.random(0, 30), 55 + math.random(0, 30))
+		asteroid.Material = Enum.Material.Slate
+		asteroid.Anchored = true
+		asteroid.CanCollide = false
+		asteroid.Position = Vector3.new(pos.X, asteroid.Size.Y / 2 + math.random() * 3, pos.Z)
+		asteroid.Parent = zone8Folder
+	end
+
+	-- Spawn 4 crystals (purple neon wedge-like blocks)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local crystal = Instance.new("Part")
+		crystal.Name = "SpaceCrystal_" .. i
+		crystal.Shape = Enum.PartType.Block
+		crystal.Size = Vector3.new(1.2 + math.random(), 4 + math.random() * 3, 1.2 + math.random())
+		crystal.Color = Color3.fromRGB(150 + math.random(0, 50), 50, 220 + math.random(0, 35))
+		crystal.Material = Enum.Material.Neon
+		crystal.Anchored = true
+		crystal.CanCollide = false
+		crystal.CFrame = CFrame.new(pos.X, crystal.Size.Y / 2, pos.Z) * CFrame.Angles(0, math.rad(math.random(0, 180)), math.rad(math.random(-15, 15)))
+		crystal.Parent = zone8Folder
+	end
+
+	-- Spawn 4 alien plants (green neon cylinders)
+	for i = 1, 4 do
+		local pos = getRandomPositionInZone(origin, existingPositions)
+		table.insert(existingPositions, pos)
+
+		local plant = Instance.new("Part")
+		plant.Name = "AlienPlant_" .. i
+		plant.Shape = Enum.PartType.Cylinder
+		plant.Size = Vector3.new(3 + math.random() * 2, 1 + math.random(), 1 + math.random())
+		plant.Color = Color3.fromRGB(50, 255, 80 + math.random(0, 80))
+		plant.Material = Enum.Material.Neon
+		plant.Anchored = true
+		plant.CanCollide = false
+		plant.CFrame = CFrame.new(pos.X, plant.Size.X / 2, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		plant.Parent = zone8Folder
 	end
 
 	math.randomseed(os.time())
