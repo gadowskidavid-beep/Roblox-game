@@ -70,4 +70,8 @@ Config.Campaign = {
 	},
 }
 
+-- Shiny/Rainbow variant chances (base, multiplied by LuckyEggs bonus)
+Config.SHINY_CHANCE = 0.01    -- 1% base chance
+Config.RAINBOW_CHANCE = 0.001 -- 0.1% base chance
+
 return Config

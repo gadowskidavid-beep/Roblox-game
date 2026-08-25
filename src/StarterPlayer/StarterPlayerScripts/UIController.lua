@@ -1773,8 +1773,6 @@ function UIController:_refreshPetIndex()
 			end
 
 			local isDiscovered = discoveredPets[discoveryKey] == true
-			-- Shiny and Rainbow variants are not yet obtainable
-			local isComingSoon = (variant == "Shiny" or variant == "Rainbow")
 			if isDiscovered then
 				discoveredCount = discoveredCount + 1
 			end
@@ -1794,7 +1792,7 @@ function UIController:_refreshPetIndex()
 
 			local cardStroke = Instance.new("UIStroke")
 			cardStroke.Thickness = 3
-			cardStroke.Color = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(80, 60, 100) or Color3.fromRGB(40, 40, 60))
+			cardStroke.Color = isDiscovered and variantColor or Color3.fromRGB(40, 40, 60)
 			cardStroke.Parent = card
 
 			-- Pet icon (circle)
@@ -1802,7 +1800,7 @@ function UIController:_refreshPetIndex()
 			petIcon.Name = "PetIcon"
 			petIcon.Size = UDim2.fromScale(0.45, 0.35)
 			petIcon.Position = UDim2.fromScale(0.275, 0.05)
-			petIcon.BackgroundColor3 = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(50, 40, 70) or Color3.fromRGB(30, 30, 45))
+			petIcon.BackgroundColor3 = isDiscovered and variantColor or Color3.fromRGB(30, 30, 45)
 			petIcon.Parent = card
 
 			local iconCorner = Instance.new("UICorner")
@@ -1814,7 +1812,7 @@ function UIController:_refreshPetIndex()
 			iconText.Size = UDim2.fromScale(1, 1)
 			iconText.BackgroundTransparency = 1
 			iconText.Text = isDiscovered and string.sub(petDef.name, 1, 1) or "?"
-			iconText.TextColor3 = isDiscovered and COLORS.White or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(60, 60, 80))
+			iconText.TextColor3 = isDiscovered and COLORS.White or Color3.fromRGB(60, 60, 80)
 			iconText.Font = Enum.Font.GothamBold
 			iconText.TextScaled = true
 			iconText.Parent = petIcon
@@ -1826,7 +1824,7 @@ function UIController:_refreshPetIndex()
 			nameLabel.Position = UDim2.fromScale(0.05, 0.44)
 			nameLabel.BackgroundTransparency = 1
 			nameLabel.Text = isDiscovered and petDef.name or "???"
-			nameLabel.TextColor3 = isDiscovered and COLORS.White or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(60, 60, 80))
+			nameLabel.TextColor3 = isDiscovered and COLORS.White or Color3.fromRGB(60, 60, 80)
 			nameLabel.Font = Enum.Font.GothamBold
 			nameLabel.TextScaled = true
 			nameLabel.Parent = card
@@ -1838,7 +1836,7 @@ function UIController:_refreshPetIndex()
 			variantLabel.Position = UDim2.fromScale(0.05, 0.6)
 			variantLabel.BackgroundTransparency = 1
 			variantLabel.Text = variant
-			variantLabel.TextColor3 = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(50, 50, 70))
+			variantLabel.TextColor3 = isDiscovered and variantColor or Color3.fromRGB(50, 50, 70)
 			variantLabel.Font = Enum.Font.GothamBold
 			variantLabel.TextScaled = true
 			variantLabel.Parent = card
@@ -1850,7 +1848,7 @@ function UIController:_refreshPetIndex()
 			rarityLabel.Position = UDim2.fromScale(0.05, 0.74)
 			rarityLabel.BackgroundTransparency = 1
 			rarityLabel.Text = isDiscovered and (petDef.rarity or "Common") or "---"
-			rarityLabel.TextColor3 = isDiscovered and rarityColor or (isComingSoon and Color3.fromRGB(80, 60, 100) or Color3.fromRGB(50, 50, 70))
+			rarityLabel.TextColor3 = isDiscovered and rarityColor or Color3.fromRGB(50, 50, 70)
 			rarityLabel.Font = Enum.Font.Gotham
 			rarityLabel.TextScaled = true
 			rarityLabel.Parent = card
@@ -1858,15 +1856,12 @@ function UIController:_refreshPetIndex()
 			-- Discovered check mark, "Coming Soon", or lock
 			local statusLabel = Instance.new("TextLabel")
 			statusLabel.Name = "Status"
-			statusLabel.Size = isComingSoon and UDim2.fromScale(0.8, 0.12) or UDim2.fromScale(0.3, 0.12)
-			statusLabel.Position = isComingSoon and UDim2.fromScale(0.1, 0.85) or UDim2.fromScale(0.65, 0.85)
+			statusLabel.Size = UDim2.fromScale(0.3, 0.12)
+			statusLabel.Position = UDim2.fromScale(0.65, 0.85)
 			statusLabel.BackgroundTransparency = 1
 			if isDiscovered then
 				statusLabel.Text = "OK"
 				statusLabel.TextColor3 = Color3.fromRGB(0, 200, 80)
-			elseif isComingSoon then
-				statusLabel.Text = "Coming Soon"
-				statusLabel.TextColor3 = Color3.fromRGB(140, 100, 180)
 			else
 				statusLabel.Text = "X"
 				statusLabel.TextColor3 = Color3.fromRGB(100, 40, 40)

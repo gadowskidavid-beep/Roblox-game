@@ -1931,18 +1931,47 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		return nil, "Invalid pet in pool"
 	end
 
+	-- Roll for Shiny/Rainbow variant
+	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
+	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
+	local variant = "Normal"
+	if math.random() < Config.RAINBOW_CHANCE * luckyMultiplier then
+		variant = "Rainbow"
+	elseif math.random() < Config.SHINY_CHANCE * luckyMultiplier then
+		variant = "Shiny"
+	end
+
+	-- Set name and damage based on variant
+	local petName = petDef.name
+	local petDamage = petDef.baseDamage
+	if variant == "Shiny" then
+		petName = "Shiny " .. petDef.name
+		petDamage = petDef.baseDamage * 3
+	elseif variant == "Rainbow" then
+		petName = "Rainbow " .. petDef.name
+		petDamage = petDef.baseDamage * 5
+	end
+
 	-- Create unique pet instance
 	local newPet = {
 		id = HttpService:GenerateGUID(false),
 		petId = petId,
-		name = petDef.name,
+		name = petName,
 		rarity = petDef.rarity,
-		damage = petDef.baseDamage,
+		damage = petDamage,
+		variant = variant,
 		equipped = false,
 	}
 
 	-- Track discovery (collection book)
-	local discoveryKey = petId -- Normal variant
+	local discoveryKey
+	if variant == "Normal" then
+		discoveryKey = petId
+	elseif variant == "Shiny" then
+		discoveryKey = "Shiny_" .. petId
+	elseif variant == "Rainbow" then
+		discoveryKey = "Rainbow_" .. petId
+	end
 	if not data.discoveredPets then
 		data.discoveredPets = {}
 	end
@@ -2197,7 +2226,19 @@ function PetService.getPetDamage(pet, player)
 	local strongBonus = PetService._upgradeService.getUpgradeBonus(player, "StrongPets")
 
 	if strongBonus > 0 then
-		return math.floor(baseDamage * strongBonus)
+		baseDamage = math.floor(baseDamage * strongBonus)
+	end
+
+	-- Variant damage multipliers
+	if pet.variant == "Shiny" then
+		baseDamage = baseDamage * 3
+	elseif pet.variant == "Rainbow" then
+		baseDamage = baseDamage * 5
+	end
+
+	-- Golden multiplier (separate path, stacks)
+	if pet.golden then
+		baseDamage = baseDamage * 2
 	end
 
 	return baseDamage
@@ -8402,8 +8443,6 @@ function UIController:_refreshPetIndex()
 			end
 
 			local isDiscovered = discoveredPets[discoveryKey] == true
-			-- Shiny and Rainbow variants are not yet obtainable
-			local isComingSoon = (variant == "Shiny" or variant == "Rainbow")
 			if isDiscovered then
 				discoveredCount = discoveredCount + 1
 			end
@@ -8423,7 +8462,7 @@ function UIController:_refreshPetIndex()
 
 			local cardStroke = Instance.new("UIStroke")
 			cardStroke.Thickness = 3
-			cardStroke.Color = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(80, 60, 100) or Color3.fromRGB(40, 40, 60))
+			cardStroke.Color = isDiscovered and variantColor or Color3.fromRGB(40, 40, 60)
 			cardStroke.Parent = card
 
 			-- Pet icon (circle)
@@ -8431,7 +8470,7 @@ function UIController:_refreshPetIndex()
 			petIcon.Name = "PetIcon"
 			petIcon.Size = UDim2.fromScale(0.45, 0.35)
 			petIcon.Position = UDim2.fromScale(0.275, 0.05)
-			petIcon.BackgroundColor3 = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(50, 40, 70) or Color3.fromRGB(30, 30, 45))
+			petIcon.BackgroundColor3 = isDiscovered and variantColor or Color3.fromRGB(30, 30, 45)
 			petIcon.Parent = card
 
 			local iconCorner = Instance.new("UICorner")
@@ -8443,7 +8482,7 @@ function UIController:_refreshPetIndex()
 			iconText.Size = UDim2.fromScale(1, 1)
 			iconText.BackgroundTransparency = 1
 			iconText.Text = isDiscovered and string.sub(petDef.name, 1, 1) or "?"
-			iconText.TextColor3 = isDiscovered and COLORS.White or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(60, 60, 80))
+			iconText.TextColor3 = isDiscovered and COLORS.White or Color3.fromRGB(60, 60, 80)
 			iconText.Font = Enum.Font.GothamBold
 			iconText.TextScaled = true
 			iconText.Parent = petIcon
@@ -8455,7 +8494,7 @@ function UIController:_refreshPetIndex()
 			nameLabel.Position = UDim2.fromScale(0.05, 0.44)
 			nameLabel.BackgroundTransparency = 1
 			nameLabel.Text = isDiscovered and petDef.name or "???"
-			nameLabel.TextColor3 = isDiscovered and COLORS.White or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(60, 60, 80))
+			nameLabel.TextColor3 = isDiscovered and COLORS.White or Color3.fromRGB(60, 60, 80)
 			nameLabel.Font = Enum.Font.GothamBold
 			nameLabel.TextScaled = true
 			nameLabel.Parent = card
@@ -8467,7 +8506,7 @@ function UIController:_refreshPetIndex()
 			variantLabel.Position = UDim2.fromScale(0.05, 0.6)
 			variantLabel.BackgroundTransparency = 1
 			variantLabel.Text = variant
-			variantLabel.TextColor3 = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(50, 50, 70))
+			variantLabel.TextColor3 = isDiscovered and variantColor or Color3.fromRGB(50, 50, 70)
 			variantLabel.Font = Enum.Font.GothamBold
 			variantLabel.TextScaled = true
 			variantLabel.Parent = card
@@ -8479,7 +8518,7 @@ function UIController:_refreshPetIndex()
 			rarityLabel.Position = UDim2.fromScale(0.05, 0.74)
 			rarityLabel.BackgroundTransparency = 1
 			rarityLabel.Text = isDiscovered and (petDef.rarity or "Common") or "---"
-			rarityLabel.TextColor3 = isDiscovered and rarityColor or (isComingSoon and Color3.fromRGB(80, 60, 100) or Color3.fromRGB(50, 50, 70))
+			rarityLabel.TextColor3 = isDiscovered and rarityColor or Color3.fromRGB(50, 50, 70)
 			rarityLabel.Font = Enum.Font.Gotham
 			rarityLabel.TextScaled = true
 			rarityLabel.Parent = card
@@ -8487,15 +8526,12 @@ function UIController:_refreshPetIndex()
 			-- Discovered check mark, "Coming Soon", or lock
 			local statusLabel = Instance.new("TextLabel")
 			statusLabel.Name = "Status"
-			statusLabel.Size = isComingSoon and UDim2.fromScale(0.8, 0.12) or UDim2.fromScale(0.3, 0.12)
-			statusLabel.Position = isComingSoon and UDim2.fromScale(0.1, 0.85) or UDim2.fromScale(0.65, 0.85)
+			statusLabel.Size = UDim2.fromScale(0.3, 0.12)
+			statusLabel.Position = UDim2.fromScale(0.65, 0.85)
 			statusLabel.BackgroundTransparency = 1
 			if isDiscovered then
 				statusLabel.Text = "OK"
 				statusLabel.TextColor3 = Color3.fromRGB(0, 200, 80)
-			elseif isComingSoon then
-				statusLabel.Text = "Coming Soon"
-				statusLabel.TextColor3 = Color3.fromRGB(140, 100, 180)
 			else
 				statusLabel.Text = "X"
 				statusLabel.TextColor3 = Color3.fromRGB(100, 40, 40)
@@ -11108,7 +11144,22 @@ function EffectsController:completeEggHatch(petData)
 
 	local rarity = petData and petData.rarity or "Common"
 	local petName = petData and petData.name or "Pet"
+	local variant = petData and petData.variant or "Normal"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+
+	-- Variant-specific color overrides
+	local variantColor = nil
+	local variantPrefix = nil
+	if variant == "Shiny" then
+		variantColor = Color3.fromRGB(180, 0, 255)  -- purple
+		variantPrefix = "SHINY"
+	elseif variant == "Rainbow" then
+		variantColor = Color3.fromRGB(255, 100, 200) -- rainbow pink
+		variantPrefix = "RAINBOW"
+	end
+
+	-- Use variant color for flash if applicable, otherwise rarity color
+	local flashColor = variantColor or rarityColor
 
 	-- If wobble was never started (edge case), start the full UI now
 	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
@@ -11142,16 +11193,16 @@ function EffectsController:completeEggHatch(petData)
 			shakeTween.Completed:Wait()
 		end
 
-		-- Phase 2: Flash egg to rarity color and scale up
+		-- Phase 2: Flash egg to rarity/variant color and scale up
 		local crackInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		TweenService:Create(eggFrame, crackInfo, {
-			BackgroundColor3 = rarityColor,
+			BackgroundColor3 = flashColor,
 		}):Play()
 		TweenService:Create(eggContainer, crackInfo, {
 			Size = UDim2.fromOffset(150, 200),
 		}):Play()
 		TweenService:Create(eggStroke, crackInfo, {
-			Color = rarityColor,
+			Color = flashColor,
 		}):Play()
 		task.wait(0.2)
 
@@ -11181,7 +11232,7 @@ function EffectsController:completeEggHatch(petData)
 		petNameLabel.Position = UDim2.fromScale(0, 0.1)
 		petNameLabel.BackgroundTransparency = 1
 		petNameLabel.Text = petName
-		petNameLabel.TextColor3 = rarityColor
+		petNameLabel.TextColor3 = variantColor or rarityColor
 		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		petNameLabel.TextStrokeTransparency = 0
 		petNameLabel.Font = Enum.Font.GothamBold
@@ -11195,8 +11246,8 @@ function EffectsController:completeEggHatch(petData)
 		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
 		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
 		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = rarity
-		rarityLabel.TextColor3 = rarityColor
+		rarityLabel.Text = variantPrefix or rarity
+		rarityLabel.TextColor3 = variantColor or rarityColor
 		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		rarityLabel.TextStrokeTransparency = 0.2
 		rarityLabel.Font = Enum.Font.GothamBold
@@ -12228,6 +12279,10 @@ Config.Campaign = {
 		Legendary = 50,
 	},
 }
+
+-- Shiny/Rainbow variant chances (base, multiplied by LuckyEggs bonus)
+Config.SHINY_CHANCE = 0.01    -- 1% base chance
+Config.RAINBOW_CHANCE = 0.001 -- 0.1% base chance
 
 return Config
 ]]></ProtectedString>

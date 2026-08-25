@@ -1,0 +1,7 @@
+{
+  "task_id": "task-shiny-rainbow-variants",
+  "task_description": "Implement Shiny and Rainbow pet variant system: 1% Shiny / 0.1% Rainbow chance on egg hatch (multiplied by LuckyEggs), 3x/5x damage multipliers, discovery tracking, Pet Index UI update, and hatch reveal animation with variant-specific colors.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null
+}
