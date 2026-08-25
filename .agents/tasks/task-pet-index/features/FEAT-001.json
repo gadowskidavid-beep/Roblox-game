@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Add discoveredPets tracking and conditional 'NEW PET!' popup + Pet Index (Collection Book) UI with all pets in all variants (Normal, Golden, Shiny, Rainbow)",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "1. In src/ReplicatedStorage/Shared/PetData.lua, add a VARIANTS constant: PetData.Variants = {'Normal', 'Golden', 'Shiny', 'Rainbow'} so both server and client can reference it.",
     "2. In src/ServerScriptService/Services/DataService.lua, add 'discoveredPets = {}' to the getDefaultData() return table. Also add 'discoveredPets' to the getClientData() function's clientData table (deep copy).",
@@ -36,5 +36,5 @@
     "Grep UIController.lua for 'isNewDiscovery' to confirm the popup is conditional"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All 10 steps implemented successfully. generate_rbxlx.py passes without errors. Discovery keys use petId for Normal variant and 'Golden_petId' for Golden. Shiny and Rainbow variants are shown locked in the index since those conversion mechanisms do not exist yet."
 }
