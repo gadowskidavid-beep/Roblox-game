@@ -308,7 +308,22 @@ function EffectsController:completeEggHatch(petData)
 
 	local rarity = petData and petData.rarity or "Common"
 	local petName = petData and petData.name or "Pet"
+	local variant = petData and petData.variant or "Normal"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+
+	-- Variant-specific color overrides
+	local variantColor = nil
+	local variantPrefix = nil
+	if variant == "Shiny" then
+		variantColor = Color3.fromRGB(180, 0, 255)  -- purple
+		variantPrefix = "SHINY"
+	elseif variant == "Rainbow" then
+		variantColor = Color3.fromRGB(255, 100, 200) -- rainbow pink
+		variantPrefix = "RAINBOW"
+	end
+
+	-- Use variant color for flash if applicable, otherwise rarity color
+	local flashColor = variantColor or rarityColor
 
 	-- If wobble was never started (edge case), start the full UI now
 	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
@@ -342,16 +357,16 @@ function EffectsController:completeEggHatch(petData)
 			shakeTween.Completed:Wait()
 		end
 
-		-- Phase 2: Flash egg to rarity color and scale up
+		-- Phase 2: Flash egg to rarity/variant color and scale up
 		local crackInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		TweenService:Create(eggFrame, crackInfo, {
-			BackgroundColor3 = rarityColor,
+			BackgroundColor3 = flashColor,
 		}):Play()
 		TweenService:Create(eggContainer, crackInfo, {
 			Size = UDim2.fromOffset(150, 200),
 		}):Play()
 		TweenService:Create(eggStroke, crackInfo, {
-			Color = rarityColor,
+			Color = flashColor,
 		}):Play()
 		task.wait(0.2)
 
@@ -381,7 +396,7 @@ function EffectsController:completeEggHatch(petData)
 		petNameLabel.Position = UDim2.fromScale(0, 0.1)
 		petNameLabel.BackgroundTransparency = 1
 		petNameLabel.Text = petName
-		petNameLabel.TextColor3 = rarityColor
+		petNameLabel.TextColor3 = variantColor or rarityColor
 		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		petNameLabel.TextStrokeTransparency = 0
 		petNameLabel.Font = Enum.Font.GothamBold
@@ -395,8 +410,8 @@ function EffectsController:completeEggHatch(petData)
 		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
 		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
 		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = rarity
-		rarityLabel.TextColor3 = rarityColor
+		rarityLabel.Text = variantPrefix or rarity
+		rarityLabel.TextColor3 = variantColor or rarityColor
 		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		rarityLabel.TextStrokeTransparency = 0.2
 		rarityLabel.Font = Enum.Font.GothamBold

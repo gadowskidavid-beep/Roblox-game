@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Implement Shiny and Rainbow variant system: server-side variant rolling on egg hatch, damage multipliers, discovery tracking, and client-side UI updates (Pet Index and hatch reveal animation).",
+  "status": "completed",
+  "steps": [
+    "1. In src/ReplicatedStorage/Shared/Config.lua, add two new constants: Config.SHINY_CHANCE = 0.01 (1%) and Config.RAINBOW_CHANCE = 0.001 (0.1%).",
+    "2. In src/ServerScriptService/Services/PetService.lua function hatchEgg: After selecting petId with weightedRandomPet and before creating the newPet table, add variant rolling logic. Roll for Rainbow first (0.1% base * LuckyEggs multiplier), then Shiny (1% base * LuckyEggs multiplier), else Normal. Get LuckyEggs bonus via PetService._upgradeService.getUpgradeBonus(player, 'LuckyEggs'). If bonus is 0, treat multiplier as 1. Store the chosen variant in a local variable.",
+    "3. In the same hatchEgg function: When constructing the newPet table, add a 'variant' field set to the rolled variant string ('Normal', 'Shiny', or 'Rainbow'). If variant is 'Shiny', set name to 'Shiny ' .. petDef.name and damage to petDef.baseDamage * 3. If 'Rainbow', set name to 'Rainbow ' .. petDef.name and damage to petDef.baseDamage * 5. For Normal, keep existing behavior.",
+    "4. In PetService.hatchEgg discovery tracking: Update the discoveryKey to include variant. For Normal keep key as petId. For Shiny use 'Shiny_' .. petId. For Rainbow use 'Rainbow_' .. petId. This follows the existing Golden pattern ('Golden_' .. petId).",
+    "5. In src/ServerScriptService/Services/PetService.lua function getPetDamage: After applying the StrongPets multiplier, check pet.variant. If 'Shiny', multiply by 3. If 'Rainbow', multiply by 5. Also check pet.golden (existing): if true, multiply by 2. These stack with each other (golden is separate path, but variant multiplier covers Shiny/Rainbow on top of StrongPets).",
+    "6. In src/StarterPlayer/StarterPlayerScripts/UIController.lua function _refreshPetIndex: Remove the 'isComingSoon' logic that marks Shiny/Rainbow as 'Coming Soon'. Instead, treat them just like Normal and Golden - they show as locked (undiscovered) or discovered based on discoveredPets[discoveryKey]. Remove the special purple 'Coming Soon' text and use the standard 'X' (locked) state.",
+    "7. In src/StarterPlayer/StarterPlayerScripts/EffectsController.lua function completeEggHatch: Accept variant info from petData. If petData.variant == 'Shiny', set the reveal text color to purple (Color3.fromRGB(180, 0, 255)), prefix the name with 'SHINY' in the reveal label, and change the rarity label to show 'SHINY' in purple. If petData.variant == 'Rainbow', use a rainbow color (Color3.fromRGB(255, 100, 200) for the text, or cycle through multiple colors), prefix with 'RAINBOW', and show 'RAINBOW' as the rarity/variant label in rainbow colors.",
+    "8. In the same completeEggHatch function: Add a variant-specific background flash color: Shiny gets a purple flash (override rarityColor with purple for the egg crack phase), Rainbow gets a pink/rainbow flash.",
+    "9. Run python3 tools/generate_rbxlx.py to regenerate BATTLE_PETS.rbxlx and confirm no errors."
+  ],
+  "acceptance_criteria": [
+    "Config.lua contains Config.SHINY_CHANCE = 0.01 and Config.RAINBOW_CHANCE = 0.001",
+    "PetService.hatchEgg rolls for Shiny (1%) and Rainbow (0.1%) variants, multiplied by LuckyEggs bonus",
+    "Hatched Shiny pets have variant='Shiny', name prefixed with 'Shiny ', and damage = baseDamage * 3",
+    "Hatched Rainbow pets have variant='Rainbow', name prefixed with 'Rainbow ', and damage = baseDamage * 5",
+    "Discovery keys for Shiny/Rainbow use 'Shiny_petId' and 'Rainbow_petId' pattern",
+    "getPetDamage applies Shiny (3x) and Rainbow (5x) multipliers on top of StrongPets bonus",
+    "Pet Index no longer shows 'Coming Soon' for Shiny/Rainbow - instead shows standard locked/discovered state",
+    "EffectsController.completeEggHatch shows variant-specific text colors and prefixes (purple for Shiny, rainbow colors for Rainbow)",
+    "python3 tools/generate_rbxlx.py runs without errors"
+  ],
+  "verification": [
+    "Run: cd /projects/sandbox/Roblox-game && python3 tools/generate_rbxlx.py"
+  ],
+  "blocked_reason": null,
+  "findings": "All changes validated with python3 tools/generate_rbxlx.py. Build succeeds. UIController had a duplicate else block from the original if/elseif/else structure that was cleaned up. Post-review fix: removed double-baked damage multipliers from getPetDamage (variant Shiny/Rainbow and Golden multipliers were applied both at creation time and at runtime, resulting in 9x/25x/4x instead of intended 3x/5x/2x). The fix removes the runtime re-application since damage is already baked at creation/conversion time. LuckyEggs bonus interpretation verified correct: QuestData defines LuckyEggs levels as multipliers (1.2, 1.5, 2.0), consistent with how StrongPets and weightedRandomPet use them."
+}

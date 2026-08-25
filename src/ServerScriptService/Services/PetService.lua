@@ -100,18 +100,47 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		return nil, "Invalid pet in pool"
 	end
 
+	-- Roll for Shiny/Rainbow variant
+	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
+	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
+	local variant = "Normal"
+	if math.random() < Config.RAINBOW_CHANCE * luckyMultiplier then
+		variant = "Rainbow"
+	elseif math.random() < Config.SHINY_CHANCE * luckyMultiplier then
+		variant = "Shiny"
+	end
+
+	-- Set name and damage based on variant
+	local petName = petDef.name
+	local petDamage = petDef.baseDamage
+	if variant == "Shiny" then
+		petName = "Shiny " .. petDef.name
+		petDamage = petDef.baseDamage * 3
+	elseif variant == "Rainbow" then
+		petName = "Rainbow " .. petDef.name
+		petDamage = petDef.baseDamage * 5
+	end
+
 	-- Create unique pet instance
 	local newPet = {
 		id = HttpService:GenerateGUID(false),
 		petId = petId,
-		name = petDef.name,
+		name = petName,
 		rarity = petDef.rarity,
-		damage = petDef.baseDamage,
+		damage = petDamage,
+		variant = variant,
 		equipped = false,
 	}
 
 	-- Track discovery (collection book)
-	local discoveryKey = petId -- Normal variant
+	local discoveryKey
+	if variant == "Normal" then
+		discoveryKey = petId
+	elseif variant == "Shiny" then
+		discoveryKey = "Shiny_" .. petId
+	elseif variant == "Rainbow" then
+		discoveryKey = "Rainbow_" .. petId
+	end
 	if not data.discoveredPets then
 		data.discoveredPets = {}
 	end
@@ -357,6 +386,9 @@ function PetService.getInventory(player)
 end
 
 -- Calculate effective pet damage with StrongPets upgrade multiplier
+-- Note: variant (Shiny 3x, Rainbow 5x) and golden (2x) multipliers are already
+-- baked into pet.damage at creation time (hatchEgg / convertToGoldenPet).
+-- Only the StrongPets upgrade bonus is applied at runtime to avoid double-multiplying.
 function PetService.getPetDamage(pet, player)
 	if not pet or not player then
 		return 0
@@ -366,7 +398,7 @@ function PetService.getPetDamage(pet, player)
 	local strongBonus = PetService._upgradeService.getUpgradeBonus(player, "StrongPets")
 
 	if strongBonus > 0 then
-		return math.floor(baseDamage * strongBonus)
+		baseDamage = math.floor(baseDamage * strongBonus)
 	end
 
 	return baseDamage
