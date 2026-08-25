@@ -27,6 +27,7 @@ function EffectsController.new()
 	self._activePopups = {}
 	self._initialized = false
 	self._lastHatchPosition = nil
+	self._isHatching = false
 	return self
 end
 
@@ -149,17 +150,23 @@ end
 -- Egg Hatch Animation: full-screen UI overlay with a 2D egg that wobbles,
 -- cracks open with a flash, then reveals the pet name and rarity.
 -- Pure ScreenGui animation - no 3D Parts, no camera changes.
+-- NOTE: eggPosition is unused (screen-space animation) but retained for API
+-- compatibility with callers in Main.client.lua.
 --------------------------------------------------------------------------------
 function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	if not self._initialized then return end
+
+	-- Reentrancy guard: prevent stacking overlays from rapid successive hatch events
+	if self._isHatching then return end
+	self._isHatching = true
 
 	local rarity = resultPet and resultPet.rarity or "Common"
 	local petName = resultPet and resultPet.name or "Pet"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
-	-- Create full-screen overlay ScreenGui
+	-- Create full-screen overlay ScreenGui (unique name to avoid collision with UIController)
 	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "EggHatchOverlay"
+	screenGui.Name = "EffectsController_EggHatchAnim"
 	screenGui.IgnoreGuiInset = true
 	screenGui.DisplayOrder = 50
 	screenGui.ResetOnSpawn = false
@@ -382,6 +389,7 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 		if screenGui and screenGui.Parent then
 			screenGui:Destroy()
 		end
+		self._isHatching = false
 	end)
 end
 

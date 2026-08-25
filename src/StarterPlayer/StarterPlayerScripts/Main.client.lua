@@ -278,7 +278,9 @@ EggHatchResult.OnClientEvent:Connect(function(petData)
 	if hatchPosition then
 		effectsController:showEggHatchAnimation(hatchPosition, petData)
 	end
-	task.delay(3, function()
+	-- Delay the UIController modal until after the EffectsController animation
+	-- finishes (~5s total: wobble + crack + flash + reveal + fade)
+	task.delay(5.5, function()
 		uiController:showEggHatch(petData)
 	end)
 end)

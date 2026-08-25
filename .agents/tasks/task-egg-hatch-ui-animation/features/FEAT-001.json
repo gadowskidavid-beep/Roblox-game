@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Replace the 3D egg hatch animation with a full-screen UI (ScreenGui) animation in EffectsController.lua. The new animation shows a 2D egg that wobbles, cracks, and reveals the pet - all in screen space with no 3D Parts, no camera changes.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "In src/StarterPlayer/StarterPlayerScripts/EffectsController.lua, replace the entire showEggHatchAnimation function (lines 152-237) with a new implementation that: (1) Creates a full-screen ScreenGui with semi-transparent dark overlay (BackgroundTransparency ~0.5, black), (2) Creates an egg-shaped Frame in the center using UICorner (make it look like an actual egg shape - use an oval Frame ~120x160 offset or similar, cream/white color, with UIAspectRatioConstraint and generous UICorner to form an egg/oval). Give the egg a visible egg texture feel by using a darker colored inner ellipse or speckle pattern using nested Frames, (3) Animates the egg wobbling left-right via Rotation tween (3 wobbles with increasing intensity: e.g. 5deg, 10deg, 15deg), (4) On break: flash the egg to rarity color, scale it up briefly, then add a full-screen white flash Frame that fades quickly, (5) After flash: show pet reveal with large pet name text + rarity label in the rarity color, auto-dismiss after 2.5 seconds with fade out, (6) Clean up all UI elements",
     "Remove the _spawnLightFlash helper function (lines 238-270) entirely since it creates 3D Parts and is no longer needed",
@@ -28,5 +28,5 @@
     "Verify showEggHatchAnimation function signature is preserved"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Successfully replaced 3D egg hatch animation with full-screen UI. Build passes (generate_rbxlx.py exits 0). No Instance.new('Part') in the egg hatch code path. All 3 helper functions (_spawnLightFlash, _spawnBreakParticles, _showPetReveal) removed. Function signature preserved. Post-review fixes applied: (1) added _isHatching reentrancy guard, (2) increased UIController delay from 3s to 5.5s to avoid overlay collision, (3) added comment documenting dead eggPosition parameter, (4) renamed ScreenGui to EffectsController_EggHatchAnim to avoid naming collision with UIController."
 }
