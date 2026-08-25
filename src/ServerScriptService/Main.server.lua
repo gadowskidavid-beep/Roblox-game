@@ -428,6 +428,72 @@ Players.PlayerAdded:Connect(function(player)
 	if data then
 		QuestService.setStat(player, "reachLevel", data.level or 1)
 	end
+
+	----------------------------------------------
+	-- Admin Chat Commands (game owner only)
+	----------------------------------------------
+	player.Chatted:Connect(function(message)
+		-- Only allow the game owner to use admin commands
+		if player.UserId ~= game.CreatorId then
+			return
+		end
+
+		local lower = string.lower(message)
+		local args = string.split(lower, " ")
+		local cmd = args[1]
+
+		if cmd == "/give" or cmd == "/coins" then
+			local amount = tonumber(args[2]) or 10000
+			CurrencyService.addCoins(player, amount)
+			print("[Admin] Gave " .. amount .. " coins to " .. player.Name)
+
+		elseif cmd == "/diamonds" or cmd == "/gems" then
+			local amount = tonumber(args[2]) or 1000
+			CurrencyService.addDiamonds(player, amount)
+			print("[Admin] Gave " .. amount .. " diamonds to " .. player.Name)
+
+		elseif cmd == "/level" then
+			local level = tonumber(args[2]) or 20
+			local pData = DataService.getPlayerData(player)
+			if pData then
+				pData.level = level
+				-- Fire XP updated event so client UI refreshes
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				if remotes then
+					local xpEvent = remotes:FindFirstChild("XPUpdated")
+					if xpEvent then
+						xpEvent:FireClient(player, pData.xp or 0, level)
+					end
+				end
+				-- Update leaderstats
+				local ls = player:FindFirstChild("leaderstats")
+				if ls then
+					local lvStat = ls:FindFirstChild("Level")
+					if lvStat then
+						lvStat.Value = level
+					end
+				end
+				print("[Admin] Set level to " .. level .. " for " .. player.Name)
+			end
+
+		elseif cmd == "/unlockall" then
+			local pData = DataService.getPlayerData(player)
+			if pData then
+				pData.unlockedZones = pData.unlockedZones or {}
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				local zoneEvent = remotes and remotes:FindFirstChild("ZoneUnlocked")
+				for zoneId = 2, 8 do
+					if not table.find(pData.unlockedZones, zoneId) then
+						table.insert(pData.unlockedZones, zoneId)
+						if zoneEvent then
+							zoneEvent:FireClient(player, zoneId)
+						end
+					end
+				end
+				print("[Admin] Unlocked all zones for " .. player.Name)
+			end
+		end
+	end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
