@@ -16,6 +16,7 @@ local PetService = {}
 PetService._dataService = nil
 PetService._currencyService = nil
 PetService._upgradeService = nil
+PetService._masteryService = nil
 
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
@@ -23,7 +24,12 @@ function PetService.init(dataService, currencyService, upgradeService)
 	PetService._upgradeService = upgradeService
 end
 
--- Weighted random selection from a pet pool, respecting LuckyEggs upgrade
+-- Set mastery service reference (called after init to avoid circular deps)
+function PetService.setMasteryService(masteryService)
+	PetService._masteryService = masteryService
+end
+
+-- Weighted random selection from a pet pool, respecting LuckyEggs upgrade and BetterLuck mastery
 local function weightedRandomPet(petPool, player)
 	-- Calculate total weight
 	local totalWeight = 0
@@ -37,6 +43,13 @@ local function weightedRandomPet(petPool, player)
 			local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 			if luckyBonus > 0 then
 				weight = weight * luckyBonus
+			end
+			-- BetterLuck mastery bonus: further increases weight of rarer pets
+			if PetService._masteryService then
+				local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
+				if betterLuckBonus > 0 then
+					weight = weight * betterLuckBonus
+				end
 			end
 		end
 		totalWeight = totalWeight + weight

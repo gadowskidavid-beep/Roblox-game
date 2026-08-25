@@ -839,6 +839,7 @@ UpgradeService.setQuestService(QuestService)
 UpgradeService.setMasteryService(MasteryService)
 
 PetService.init(DataService, CurrencyService, UpgradeService)
+PetService.setMasteryService(MasteryService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
 
@@ -853,6 +854,34 @@ DataService.startAutoSave()
 
 -- Bind to server shutdown to save all player data
 DataService.bindToClose()
+
+----------------------------------------------
+-- WalkSpeed Buff System
+----------------------------------------------
+
+-- Compute and apply walk speed buffs for a player
+-- Formula: 16 * sprintingBonus * fasterRunningBonus * shopSpeedMultiplier
+local function applyWalkSpeedBuffs(player)
+	if not player or not player.Character then return end
+	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	local baseSpeed = 16
+
+	-- Sprinting quest bonus (multiplier from QuestData)
+	local sprintingBonus = QuestService.getUpgradeBonus(player, "Sprinting")
+	local sprintingMultiplier = (sprintingBonus > 0) and sprintingBonus or 1
+
+	-- FasterRunning mastery bonus (multiplier from MasteryData)
+	local fasterRunningBonus = MasteryService.getBuffBonus(player, "FasterRunning")
+	local fasterRunningMultiplier = (fasterRunningBonus > 0) and fasterRunningBonus or 1
+
+	-- Speed Potion shop buff (2x when active, 1 otherwise)
+	local shopSpeedMultiplier = ShopService.getShopMultiplier(player, "speed")
+
+	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
+	humanoid.WalkSpeed = finalSpeed
+end
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -997,7 +1026,12 @@ getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffI
 	if type(buffId) ~= "string" then
 		return false, "Invalid buff ID parameter"
 	end
-	return MasteryService.purchaseBuff(player, buffId)
+	local success, msg = MasteryService.purchaseBuff(player, buffId)
+	-- Refresh walkspeed in case FasterRunning was purchased
+	if success then
+		applyWalkSpeedBuffs(player)
+	end
+	return success, msg
 end
 
 -- GetMasteryState
@@ -1139,7 +1173,12 @@ getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
 	if type(itemId) ~= "string" then
 		return false, "Invalid item ID parameter"
 	end
-	return ShopService.purchaseItem(player, itemId)
+	local success, msg = ShopService.purchaseItem(player, itemId)
+	-- Refresh walkspeed in case Speed Potion was purchased
+	if success then
+		applyWalkSpeedBuffs(player)
+	end
+	return success, msg
 end
 
 -- GetShopBuffs (returns active buffs for the player)
@@ -1173,6 +1212,14 @@ Players.PlayerAdded:Connect(function(player)
 
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
+
+	-- Apply walkspeed on CharacterAdded (after Humanoid exists)
+	player.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid", 10)
+		if humanoid then
+			applyWalkSpeedBuffs(player)
+		end
+	end)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
 	local leaderstats = Instance.new("Folder")
@@ -1381,6 +1428,17 @@ task.spawn(function()
 					end
 				end
 			end
+		end
+	end
+end)
+
+-- Periodic WalkSpeed refresh: every 5 seconds, reapply walkspeed buffs for all players
+-- Handles buff expiry (e.g., Speed Potion wearing off)
+task.spawn(function()
+	while true do
+		task.wait(5)
+		for _, player in ipairs(Players:GetPlayers()) do
+			applyWalkSpeedBuffs(player)
 		end
 	end
 end)
@@ -1728,15 +1786,23 @@ function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply DropCloner and LuckyDrops bonuses to coin amounts
+-- Apply DropCloner, LuckyDrops, and CoinCollector bonuses to coin amounts
 local function applyBonuses(player, amount)
 	local finalAmount = amount
 
-	-- Apply LuckyDrops multiplier
+	-- Apply LuckyDrops multiplier (maps to MoreCoins mastery via UpgradeService)
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
 		if luckyDropsBonus > 0 then
 			finalAmount = math.floor(finalAmount * luckyDropsBonus)
+		end
+	end
+
+	-- Apply CoinCollector quest bonus multiplier
+	if CurrencyService._upgradeService then
+		local coinCollectorBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "CoinCollector")
+		if coinCollectorBonus > 0 then
+			finalAmount = math.floor(finalAmount * coinCollectorBonus)
 		end
 	end
 
@@ -1914,6 +1980,7 @@ local PetService = {}
 PetService._dataService = nil
 PetService._currencyService = nil
 PetService._upgradeService = nil
+PetService._masteryService = nil
 
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
@@ -1921,7 +1988,12 @@ function PetService.init(dataService, currencyService, upgradeService)
 	PetService._upgradeService = upgradeService
 end
 
--- Weighted random selection from a pet pool, respecting LuckyEggs upgrade
+-- Set mastery service reference (called after init to avoid circular deps)
+function PetService.setMasteryService(masteryService)
+	PetService._masteryService = masteryService
+end
+
+-- Weighted random selection from a pet pool, respecting LuckyEggs upgrade and BetterLuck mastery
 local function weightedRandomPet(petPool, player)
 	-- Calculate total weight
 	local totalWeight = 0
@@ -1935,6 +2007,13 @@ local function weightedRandomPet(petPool, player)
 			local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 			if luckyBonus > 0 then
 				weight = weight * luckyBonus
+			end
+			-- BetterLuck mastery bonus: further increases weight of rarer pets
+			if PetService._masteryService then
+				local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
+				if betterLuckBonus > 0 then
+					weight = weight * betterLuckBonus
+				end
 			end
 		end
 		totalWeight = totalWeight + weight
