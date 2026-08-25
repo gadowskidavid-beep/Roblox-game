@@ -1160,17 +1160,17 @@ Players.PlayerAdded:Connect(function(player)
 		local args = string.split(lower, " ")
 		local cmd = args[1]
 
-		if cmd == "/give" or cmd == "/coins" then
+		if cmd == "!give" or cmd == "!coins" then
 			local amount = tonumber(args[2]) or 10000
 			CurrencyService.addCoins(player, amount)
 			print("[Admin] Gave " .. amount .. " coins to " .. player.Name)
 
-		elseif cmd == "/diamonds" or cmd == "/gems" then
+		elseif cmd == "!diamonds" or cmd == "!gems" then
 			local amount = tonumber(args[2]) or 1000
 			CurrencyService.addDiamonds(player, amount)
 			print("[Admin] Gave " .. amount .. " diamonds to " .. player.Name)
 
-		elseif cmd == "/level" then
+		elseif cmd == "!level" then
 			local level = tonumber(args[2]) or 20
 			local pData = DataService.getPlayerData(player)
 			if pData then
@@ -1194,7 +1194,7 @@ Players.PlayerAdded:Connect(function(player)
 				print("[Admin] Set level to " .. level .. " for " .. player.Name)
 			end
 
-		elseif cmd == "/unlockall" then
+		elseif cmd == "!unlockall" then
 			local pData = DataService.getPlayerData(player)
 			if pData then
 				pData.unlockedZones = pData.unlockedZones or {}
