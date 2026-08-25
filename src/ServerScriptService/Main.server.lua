@@ -17,6 +17,7 @@ local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
+local ShopService = require(script.Parent.Services.ShopService)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -61,6 +62,7 @@ local remoteEvents = {
 	"XPUpdated",
 	"QuestProgressUpdated",
 	"MasteryUpdated",
+	"ShopBuffsUpdated",
 }
 
 for _, eventName in ipairs(remoteEvents) do
@@ -90,6 +92,8 @@ local remoteFunctions = {
 	"ConvertToGoldenPet",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
+	"PurchaseShopItem",
+	"GetShopBuffs",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -111,14 +115,18 @@ CurrencyService._upgradeService = UpgradeService
 -- Initialize quest and mastery services
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
+ShopService.init(DataService, CurrencyService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
 UpgradeService.setMasteryService(MasteryService)
 
 PetService.init(DataService, CurrencyService, UpgradeService)
+PetService.setMasteryService(MasteryService)
+PetService.setShopService(ShopService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
+ShopService.setEggService(EggService)
 
 ZoneService.init(DataService, CurrencyService, PetService)
 ZoneService.setQuestService(QuestService)
@@ -131,6 +139,34 @@ DataService.startAutoSave()
 
 -- Bind to server shutdown to save all player data
 DataService.bindToClose()
+
+----------------------------------------------
+-- WalkSpeed Buff System
+----------------------------------------------
+
+-- Compute and apply walk speed buffs for a player
+-- Formula: 16 * sprintingBonus * fasterRunningBonus * shopSpeedMultiplier
+local function applyWalkSpeedBuffs(player)
+	if not player or not player.Character then return end
+	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	local baseSpeed = 16
+
+	-- Sprinting quest bonus (multiplier from QuestData)
+	local sprintingBonus = QuestService.getUpgradeBonus(player, "Sprinting")
+	local sprintingMultiplier = (sprintingBonus > 0) and sprintingBonus or 1
+
+	-- FasterRunning mastery bonus (multiplier from MasteryData)
+	local fasterRunningBonus = MasteryService.getBuffBonus(player, "FasterRunning")
+	local fasterRunningMultiplier = (fasterRunningBonus > 0) and fasterRunningBonus or 1
+
+	-- Speed Potion shop buff (2x when active, 1 otherwise)
+	local shopSpeedMultiplier = ShopService.getShopMultiplier(player, "speed")
+
+	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
+	humanoid.WalkSpeed = finalSpeed
+end
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -275,7 +311,12 @@ getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffI
 	if type(buffId) ~= "string" then
 		return false, "Invalid buff ID parameter"
 	end
-	return MasteryService.purchaseBuff(player, buffId)
+	local success, msg = MasteryService.purchaseBuff(player, buffId)
+	-- Refresh walkspeed in case FasterRunning was purchased
+	if success then
+		applyWalkSpeedBuffs(player)
+	end
+	return success, msg
 end
 
 -- GetMasteryState
@@ -406,6 +447,33 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	return data.discoveredPets or {}
 end
 
+-- PurchaseShopItem (2 second cooldown)
+getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "PurchaseShopItem", 2) then
+		return false, "Please wait before purchasing again"
+	end
+	if type(itemId) ~= "string" then
+		return false, "Invalid item ID parameter"
+	end
+	local success, msg = ShopService.purchaseItem(player, itemId)
+	-- Refresh walkspeed in case Speed Potion was purchased
+	if success then
+		applyWalkSpeedBuffs(player)
+	end
+	return success, msg
+end
+
+-- GetShopBuffs (returns active buffs for the player)
+getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return {}
+	end
+	return ShopService.getActiveBuffs(player)
+end
+
 ----------------------------------------------
 -- Player Lifecycle
 ----------------------------------------------
@@ -429,6 +497,14 @@ Players.PlayerAdded:Connect(function(player)
 
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
+
+	-- Apply walkspeed on CharacterAdded (after Humanoid exists)
+	player.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid", 10)
+		if humanoid then
+			applyWalkSpeedBuffs(player)
+		end
+	end)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
 	local leaderstats = Instance.new("Folder")
@@ -535,6 +611,9 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup rate limits
 	rateLimits[player.UserId] = nil
 
+	-- Cleanup ShopService player state (active buffs)
+	ShopService._activeBuffs[player.UserId] = nil
+
 	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
 	ZoneService.onPlayerRemoving(player)
 
@@ -634,6 +713,17 @@ task.spawn(function()
 					end
 				end
 			end
+		end
+	end
+end)
+
+-- Periodic WalkSpeed refresh: every 5 seconds, reapply walkspeed buffs for all players
+-- Handles buff expiry (e.g., Speed Potion wearing off)
+task.spawn(function()
+	while true do
+		task.wait(5)
+		for _, player in ipairs(Players:GetPlayers()) do
+			applyWalkSpeedBuffs(player)
 		end
 	end
 end)

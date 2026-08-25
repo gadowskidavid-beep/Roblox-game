@@ -18,15 +18,23 @@ function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply DropCloner and LuckyDrops bonuses to coin amounts
+-- Apply DropCloner, LuckyDrops, and CoinCollector bonuses to coin amounts
 local function applyBonuses(player, amount)
 	local finalAmount = amount
 
-	-- Apply LuckyDrops multiplier
+	-- Apply LuckyDrops multiplier (maps to MoreCoins mastery via UpgradeService)
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
 		if luckyDropsBonus > 0 then
 			finalAmount = math.floor(finalAmount * luckyDropsBonus)
+		end
+	end
+
+	-- Apply CoinCollector quest bonus multiplier
+	if CurrencyService._upgradeService then
+		local coinCollectorBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "CoinCollector")
+		if coinCollectorBonus > 0 then
+			finalAmount = math.floor(finalAmount * coinCollectorBonus)
 		end
 	end
 

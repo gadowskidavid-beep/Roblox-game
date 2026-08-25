@@ -1,0 +1,22 @@
+{
+  "id": "FEAT-002",
+  "type": "fix",
+  "description": "Improve DataService reliability: Change SetAsync to UpdateAsync with 3 retries and exponential backoff in savePlayerData. Add a schemaVersion field to saved data. Implement deep-merge of default data on load so that newly added fields (discoveredPets, shopPurchases, etc.) are populated for existing saves including nested tables.",
+  "status": "completed",
+  "steps": [
+    "1. In DataService.lua savePlayerData function: Replace the pcall(dataStore:SetAsync(key, data)) call with UpdateAsync. UpdateAsync takes a transform function that receives oldData and returns newData. Use the cached data as newData. Wrap in retry loop (3 attempts, exponential backoff 2^attempt seconds), matching the pattern already used in loadPlayerData.",
+    "2. Add a SCHEMA_VERSION constant (set to 2) at the top of DataService. In getDefaultData(), include schemaVersion = 2. In loadPlayerData(), after loading, set data.schemaVersion = SCHEMA_VERSION to stamp the current version.",
+    "3. Replace the shallow field merge in loadPlayerData (the for field, defaultValue in pairs(defaults) loop) with a recursive deepMerge function that handles nested tables. If data[field] is nil, set it to the default. If both are tables, recurse into them to add missing sub-keys. This ensures existing saves get new nested fields like questStats sub-fields and shopPurchases sub-fields."
+  ],
+  "acceptance_criteria": [
+    "savePlayerData uses UpdateAsync instead of SetAsync, wrapped in 3-retry loop with exponential backoff",
+    "getDefaultData includes schemaVersion = 2 field",
+    "loadPlayerData performs deep merge of defaults into loaded data for nested tables",
+    "python3 tools/generate_rbxlx.py runs successfully"
+  ],
+  "verification": [
+    "Run python3 tools/generate_rbxlx.py and confirm it exits with code 0"
+  ],
+  "blocked_reason": null,
+  "findings": "All three improvements implemented successfully. UpdateAsync uses transform function that returns cached data. deepMerge recurses into nested tables (questStats, shopPurchases, etc.) to fill missing sub-keys without overwriting existing values. SCHEMA_VERSION = 2 is stamped on every load."
+}

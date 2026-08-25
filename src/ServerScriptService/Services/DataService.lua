@@ -11,6 +11,8 @@ local RunService = game:GetService("RunService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 
+local SCHEMA_VERSION = 2
+
 local DataService = {}
 
 -- In-memory cache of player data
@@ -50,6 +52,7 @@ local function getDefaultData()
 	}
 
 	return {
+		schemaVersion = SCHEMA_VERSION,
 		coins = 0,
 		diamonds = 0,
 		xp = 0,
@@ -73,6 +76,10 @@ local function getDefaultData()
 		masteryBuffs = {},
 		-- Pet discovery tracking (collection book)
 		discoveredPets = {},
+		-- Shop purchases (permanent effects)
+		shopPurchases = {
+			extraEquipSlots = 0,
+		},
 	}
 end
 
@@ -87,6 +94,24 @@ local function deepCopy(original)
 		end
 	end
 	return copy
+end
+
+-- Deep merge defaults into existing data (recurse into nested tables)
+-- Only fills in missing keys; never overwrites existing player values.
+local function deepMerge(data, defaults)
+	for key, defaultValue in pairs(defaults) do
+		if data[key] == nil then
+			-- Field missing entirely, copy the default
+			if type(defaultValue) == "table" then
+				data[key] = deepCopy(defaultValue)
+			else
+				data[key] = defaultValue
+			end
+		elseif type(defaultValue) == "table" and type(data[key]) == "table" then
+			-- Both are tables, recurse to fill missing sub-keys
+			deepMerge(data[key], defaultValue)
+		end
+	end
 end
 
 -- Load player data from DataStore with retry logic
@@ -120,13 +145,11 @@ function DataService.loadPlayerData(player)
 	end
 
 	if success and data then
-		-- Merge with defaults (handles new fields added after save)
+		-- Deep merge with defaults (handles new fields and nested sub-fields added after save)
 		local defaults = getDefaultData()
-		for field, defaultValue in pairs(defaults) do
-			if data[field] == nil then
-				data[field] = defaultValue
-			end
-		end
+		deepMerge(data, defaults)
+		-- Stamp current schema version
+		data.schemaVersion = SCHEMA_VERSION
 		DataService._cache[player.UserId] = data
 		DataService._canSave[player.UserId] = true
 	elseif success and not data then
@@ -166,12 +189,25 @@ function DataService.savePlayerData(player)
 	end
 
 	local key = "Player_" .. tostring(player.UserId)
-	local success, err = pcall(function()
-		dataStore:SetAsync(key, data)
-	end)
+	local MAX_RETRIES = 3
+	local success, err = false, nil
+
+	for attempt = 1, MAX_RETRIES do
+		success, err = pcall(function()
+			dataStore:UpdateAsync(key, function(oldData)
+				return data
+			end)
+		end)
+		if success then
+			break
+		end
+		if attempt < MAX_RETRIES then
+			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
+		end
+	end
 
 	if not success then
-		warn("[DataService] Failed to save data for " .. player.Name .. ": " .. tostring(err))
+		warn("[DataService] Failed to save data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(err))
 	end
 
 	return success
@@ -217,6 +253,7 @@ function DataService.getClientData(player)
 		masteryPoints = data.masteryPoints,
 		masteryBuffs = deepCopy(data.masteryBuffs),
 		discoveredPets = deepCopy(data.discoveredPets or {}),
+		shopPurchases = deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
 	}
 
 	return clientData

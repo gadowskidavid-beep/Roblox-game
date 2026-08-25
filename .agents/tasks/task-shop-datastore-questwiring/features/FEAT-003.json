@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Wire up inactive quest and mastery bonuses that are defined in QuestData/MasteryData but not consumed: (1) Sprinting quest bonus = player walkspeed multiplier, (2) CoinCollector quest bonus = coin earning multiplier, (3) Mastery FasterRunning = walkspeed multiplier, (4) Mastery BetterLuck = egg luck multiplier. Also ensure all quest stat tracking (earnCoins, hatchEggs, destroyDestructibles, playtime, reachLevel, goldenPetsConverted) is firing correctly.",
+  "status": "completed",
+  "steps": [
+    "1. WALKSPEED WIRING: In Main.server.lua, add a function applyWalkSpeedBuffs(player) that: (a) gets base walkspeed (16), (b) multiplies by Sprinting quest bonus via QuestService.getUpgradeBonus(player, 'Sprinting') if > 0, (c) multiplies by FasterRunning mastery bonus via MasteryService.getBuffBonus(player, 'FasterRunning') if > 0, (d) multiplies by ShopService speed potion buff via ShopService.getShopMultiplier(player, 'speed') if > 1, (e) sets player.Character.Humanoid.WalkSpeed = finalSpeed. Call this function: on CharacterAdded (after Humanoid loads), on UpgradeUpdated (when quests complete), on MasteryUpdated (when mastery purchased), and on ShopBuffsUpdated. Also add a periodic task (every 5s) that refreshes walkspeed for all players to handle buff expiration.",
+    "2. COIN MULTIPLIER WIRING: In CurrencyService.addCoins, after existing LuckyDrops/DropCloner bonuses, also apply CoinCollector quest bonus. Get it via UpgradeService.getUpgradeBonus(player, 'CoinCollector') - if > 0 multiply finalAmount by it. Also apply Mastery MoreCoins bonus via the existing LuckyDrops mapping (which already maps to MoreCoins mastery in UpgradeService) - verify this path works. The existing applyBonuses function handles LuckyDrops which maps to MoreCoins mastery via UpgradeService. Add CoinCollector as a separate multiplier.",
+    "3. EGG LUCK WIRING (BetterLuck mastery): In PetService.lua weightedRandomPet function, the LuckyEggs bonus is already applied. Add BetterLuck mastery bonus: get MasteryService.getBuffBonus(player, 'BetterLuck') and multiply the weight boost for non-common pets by this additional factor. Need to pass MasteryService reference to PetService (add setMasteryService or pass during init).",
+    "4. QUEST STAT TRACKING VERIFICATION: Confirm all stat types fire correctly: destroyDestructibles (ZoneService fires this on destructible death), hatchEggs (EggService fires this), earnCoins (ZoneService fires this on coin drops), playtime (Main.server periodic + on PlayerRemoving), reachLevel (set on join and on level-up - verify level-up path fires QuestService.setStat), goldenPetsConverted (Main.server fires after ConvertToGoldenPet success). Check that XP/level-up path in ZoneService or wherever XP is awarded also calls QuestService.setStat('reachLevel', newLevel).",
+    "5. Verify XP level-up fires setStat: Search for where level is incremented. If it happens in ZoneService (XP award on destroy), ensure that after level-up, QuestService.setStat(player, 'reachLevel', newLevel) is called and MasteryService.awardMasteryPoint(player) is called."
+  ],
+  "acceptance_criteria": [
+    "Player walkspeed is modified based on Sprinting quest level, FasterRunning mastery level, and ShopService speed potion",
+    "CoinCollector quest bonus multiplies coins earned from drops",
+    "BetterLuck mastery bonus improves egg hatch rarity chances",
+    "All six quest stat types are being tracked (destroyDestructibles, hatchEggs, earnCoins, playtime, reachLevel, goldenPetsConverted)",
+    "Level-up triggers QuestService.setStat for reachLevel",
+    "python3 tools/generate_rbxlx.py runs successfully"
+  ],
+  "verification": [
+    "Run python3 tools/generate_rbxlx.py and confirm it exits with code 0"
+  ],
+  "blocked_reason": null,
+  "findings": "All quest stat tracking was already correctly wired: destroyDestructibles (ZoneService), hatchEggs (EggService), earnCoins (ZoneService), playtime (Main.server periodic + PlayerRemoving), reachLevel (ZoneService._awardXP level-up path + on join), goldenPetsConverted (Main.server ConvertToGoldenPet handler). ZoneService._awardXP already calls QuestService.setStat(player, reachLevel, data.level) and MasteryService.awardMasteryPoint(player) on level-up. UpgradeService.getUpgradeBonus correctly handles CoinCollector since it checks QuestData.Quests first. RemoteEvents like UpgradeUpdated/MasteryUpdated/ShopBuffsUpdated are FireClient events so cannot be listened to server-side; used direct applyWalkSpeedBuffs calls in handlers plus a 5s periodic loop for buff expiry coverage."
+}

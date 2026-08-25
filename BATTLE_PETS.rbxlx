@@ -734,6 +734,7 @@ local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
+local ShopService = require(script.Parent.Services.ShopService)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -778,6 +779,7 @@ local remoteEvents = {
 	"XPUpdated",
 	"QuestProgressUpdated",
 	"MasteryUpdated",
+	"ShopBuffsUpdated",
 }
 
 for _, eventName in ipairs(remoteEvents) do
@@ -807,6 +809,8 @@ local remoteFunctions = {
 	"ConvertToGoldenPet",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
+	"PurchaseShopItem",
+	"GetShopBuffs",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -828,14 +832,18 @@ CurrencyService._upgradeService = UpgradeService
 -- Initialize quest and mastery services
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
+ShopService.init(DataService, CurrencyService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
 UpgradeService.setMasteryService(MasteryService)
 
 PetService.init(DataService, CurrencyService, UpgradeService)
+PetService.setMasteryService(MasteryService)
+PetService.setShopService(ShopService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
+ShopService.setEggService(EggService)
 
 ZoneService.init(DataService, CurrencyService, PetService)
 ZoneService.setQuestService(QuestService)
@@ -848,6 +856,34 @@ DataService.startAutoSave()
 
 -- Bind to server shutdown to save all player data
 DataService.bindToClose()
+
+----------------------------------------------
+-- WalkSpeed Buff System
+----------------------------------------------
+
+-- Compute and apply walk speed buffs for a player
+-- Formula: 16 * sprintingBonus * fasterRunningBonus * shopSpeedMultiplier
+local function applyWalkSpeedBuffs(player)
+	if not player or not player.Character then return end
+	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	local baseSpeed = 16
+
+	-- Sprinting quest bonus (multiplier from QuestData)
+	local sprintingBonus = QuestService.getUpgradeBonus(player, "Sprinting")
+	local sprintingMultiplier = (sprintingBonus > 0) and sprintingBonus or 1
+
+	-- FasterRunning mastery bonus (multiplier from MasteryData)
+	local fasterRunningBonus = MasteryService.getBuffBonus(player, "FasterRunning")
+	local fasterRunningMultiplier = (fasterRunningBonus > 0) and fasterRunningBonus or 1
+
+	-- Speed Potion shop buff (2x when active, 1 otherwise)
+	local shopSpeedMultiplier = ShopService.getShopMultiplier(player, "speed")
+
+	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
+	humanoid.WalkSpeed = finalSpeed
+end
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -992,7 +1028,12 @@ getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffI
 	if type(buffId) ~= "string" then
 		return false, "Invalid buff ID parameter"
 	end
-	return MasteryService.purchaseBuff(player, buffId)
+	local success, msg = MasteryService.purchaseBuff(player, buffId)
+	-- Refresh walkspeed in case FasterRunning was purchased
+	if success then
+		applyWalkSpeedBuffs(player)
+	end
+	return success, msg
 end
 
 -- GetMasteryState
@@ -1123,6 +1164,33 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	return data.discoveredPets or {}
 end
 
+-- PurchaseShopItem (2 second cooldown)
+getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "PurchaseShopItem", 2) then
+		return false, "Please wait before purchasing again"
+	end
+	if type(itemId) ~= "string" then
+		return false, "Invalid item ID parameter"
+	end
+	local success, msg = ShopService.purchaseItem(player, itemId)
+	-- Refresh walkspeed in case Speed Potion was purchased
+	if success then
+		applyWalkSpeedBuffs(player)
+	end
+	return success, msg
+end
+
+-- GetShopBuffs (returns active buffs for the player)
+getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return {}
+	end
+	return ShopService.getActiveBuffs(player)
+end
+
 ----------------------------------------------
 -- Player Lifecycle
 ----------------------------------------------
@@ -1146,6 +1214,14 @@ Players.PlayerAdded:Connect(function(player)
 
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
+
+	-- Apply walkspeed on CharacterAdded (after Humanoid exists)
+	player.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid", 10)
+		if humanoid then
+			applyWalkSpeedBuffs(player)
+		end
+	end)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
 	local leaderstats = Instance.new("Folder")
@@ -1252,6 +1328,9 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup rate limits
 	rateLimits[player.UserId] = nil
 
+	-- Cleanup ShopService player state (active buffs)
+	ShopService._activeBuffs[player.UserId] = nil
+
 	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
 	ZoneService.onPlayerRemoving(player)
 
@@ -1355,6 +1434,17 @@ task.spawn(function()
 	end
 end)
 
+-- Periodic WalkSpeed refresh: every 5 seconds, reapply walkspeed buffs for all players
+-- Handles buff expiry (e.g., Speed Potion wearing off)
+task.spawn(function()
+	while true do
+		task.wait(5)
+		for _, player in ipairs(Players:GetPlayers()) do
+			applyWalkSpeedBuffs(player)
+		end
+	end
+end)
+
 print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
@@ -1379,6 +1469,8 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+
+local SCHEMA_VERSION = 2
 
 local DataService = {}
 
@@ -1419,6 +1511,7 @@ local function getDefaultData()
 	}
 
 	return {
+		schemaVersion = SCHEMA_VERSION,
 		coins = 0,
 		diamonds = 0,
 		xp = 0,
@@ -1442,6 +1535,10 @@ local function getDefaultData()
 		masteryBuffs = {},
 		-- Pet discovery tracking (collection book)
 		discoveredPets = {},
+		-- Shop purchases (permanent effects)
+		shopPurchases = {
+			extraEquipSlots = 0,
+		},
 	}
 end
 
@@ -1456,6 +1553,24 @@ local function deepCopy(original)
 		end
 	end
 	return copy
+end
+
+-- Deep merge defaults into existing data (recurse into nested tables)
+-- Only fills in missing keys; never overwrites existing player values.
+local function deepMerge(data, defaults)
+	for key, defaultValue in pairs(defaults) do
+		if data[key] == nil then
+			-- Field missing entirely, copy the default
+			if type(defaultValue) == "table" then
+				data[key] = deepCopy(defaultValue)
+			else
+				data[key] = defaultValue
+			end
+		elseif type(defaultValue) == "table" and type(data[key]) == "table" then
+			-- Both are tables, recurse to fill missing sub-keys
+			deepMerge(data[key], defaultValue)
+		end
+	end
 end
 
 -- Load player data from DataStore with retry logic
@@ -1489,13 +1604,11 @@ function DataService.loadPlayerData(player)
 	end
 
 	if success and data then
-		-- Merge with defaults (handles new fields added after save)
+		-- Deep merge with defaults (handles new fields and nested sub-fields added after save)
 		local defaults = getDefaultData()
-		for field, defaultValue in pairs(defaults) do
-			if data[field] == nil then
-				data[field] = defaultValue
-			end
-		end
+		deepMerge(data, defaults)
+		-- Stamp current schema version
+		data.schemaVersion = SCHEMA_VERSION
 		DataService._cache[player.UserId] = data
 		DataService._canSave[player.UserId] = true
 	elseif success and not data then
@@ -1535,12 +1648,25 @@ function DataService.savePlayerData(player)
 	end
 
 	local key = "Player_" .. tostring(player.UserId)
-	local success, err = pcall(function()
-		dataStore:SetAsync(key, data)
-	end)
+	local MAX_RETRIES = 3
+	local success, err = false, nil
+
+	for attempt = 1, MAX_RETRIES do
+		success, err = pcall(function()
+			dataStore:UpdateAsync(key, function(oldData)
+				return data
+			end)
+		end)
+		if success then
+			break
+		end
+		if attempt < MAX_RETRIES then
+			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
+		end
+	end
 
 	if not success then
-		warn("[DataService] Failed to save data for " .. player.Name .. ": " .. tostring(err))
+		warn("[DataService] Failed to save data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(err))
 	end
 
 	return success
@@ -1586,6 +1712,7 @@ function DataService.getClientData(player)
 		masteryPoints = data.masteryPoints,
 		masteryBuffs = deepCopy(data.masteryBuffs),
 		discoveredPets = deepCopy(data.discoveredPets or {}),
+		shopPurchases = deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
 	}
 
 	return clientData
@@ -1661,15 +1788,23 @@ function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply DropCloner and LuckyDrops bonuses to coin amounts
+-- Apply DropCloner, LuckyDrops, and CoinCollector bonuses to coin amounts
 local function applyBonuses(player, amount)
 	local finalAmount = amount
 
-	-- Apply LuckyDrops multiplier
+	-- Apply LuckyDrops multiplier (maps to MoreCoins mastery via UpgradeService)
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
 		if luckyDropsBonus > 0 then
 			finalAmount = math.floor(finalAmount * luckyDropsBonus)
+		end
+	end
+
+	-- Apply CoinCollector quest bonus multiplier
+	if CurrencyService._upgradeService then
+		local coinCollectorBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "CoinCollector")
+		if coinCollectorBonus > 0 then
+			finalAmount = math.floor(finalAmount * coinCollectorBonus)
 		end
 	end
 
@@ -1847,6 +1982,8 @@ local PetService = {}
 PetService._dataService = nil
 PetService._currencyService = nil
 PetService._upgradeService = nil
+PetService._masteryService = nil
+PetService._shopService = nil
 
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
@@ -1854,7 +1991,17 @@ function PetService.init(dataService, currencyService, upgradeService)
 	PetService._upgradeService = upgradeService
 end
 
--- Weighted random selection from a pet pool, respecting LuckyEggs upgrade
+-- Set mastery service reference (called after init to avoid circular deps)
+function PetService.setMasteryService(masteryService)
+	PetService._masteryService = masteryService
+end
+
+-- Set shop service reference (called after init to avoid circular deps)
+function PetService.setShopService(shopService)
+	PetService._shopService = shopService
+end
+
+-- Weighted random selection from a pet pool, respecting LuckyEggs upgrade, BetterLuck mastery, and Lucky Potion
 local function weightedRandomPet(petPool, player)
 	-- Calculate total weight
 	local totalWeight = 0
@@ -1868,6 +2015,20 @@ local function weightedRandomPet(petPool, player)
 			local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 			if luckyBonus > 0 then
 				weight = weight * luckyBonus
+			end
+			-- BetterLuck mastery bonus: further increases weight of rarer pets
+			if PetService._masteryService then
+				local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
+				if betterLuckBonus > 0 then
+					weight = weight * betterLuckBonus
+				end
+			end
+			-- Lucky Potion shop buff: further increases weight of rarer pets
+			if PetService._shopService then
+				local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
+				if shopLuckMultiplier > 1 then
+					weight = weight * shopLuckMultiplier
+				end
 			end
 		end
 		totalWeight = totalWeight + weight
@@ -1934,6 +2095,20 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	-- Roll for Shiny/Rainbow variant
 	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
+	-- BetterLuck mastery bonus also improves variant roll
+	if PetService._masteryService then
+		local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
+		if betterLuckBonus > 0 then
+			luckyMultiplier = luckyMultiplier * betterLuckBonus
+		end
+	end
+	-- Lucky Potion shop buff also improves variant roll
+	if PetService._shopService then
+		local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
+		if shopLuckMultiplier > 1 then
+			luckyMultiplier = luckyMultiplier * shopLuckMultiplier
+		end
+	end
 	local variant = "Normal"
 	if math.random() < Config.RAINBOW_CHANCE * luckyMultiplier then
 		variant = "Rainbow"
@@ -1997,11 +2172,16 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	return newPet, nil
 end
 
--- Get maximum equipped pets for a player (base + Friendship bonus)
+-- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
 local function getMaxEquipped(player)
 	local base = Config.MaxEquippedPetsBase
 	local bonus = PetService._upgradeService.getUpgradeBonus(player, "Friendship")
-	return base + (bonus or 0)
+	local extraSlots = 0
+	local data = PetService._dataService.getPlayerData(player)
+	if data and data.shopPurchases then
+		extraSlots = data.shopPurchases.extraEquipSlots or 0
+	end
+	return base + (bonus or 0) + extraSlots
 end
 
 -- Equip a pet by instance ID
@@ -5671,6 +5851,87 @@ function EggService.setQuestService(questService)
 	EggService._questService = questService
 end
 
+-- Hatch an egg for free (used by auto-hatch; no cost deduction, still validates zone)
+function EggService.hatchFree(player, eggType)
+	if not player or type(eggType) ~= "string" then
+		return nil, "Invalid parameters"
+	end
+
+	-- Per-player lock: prevent concurrent egg hatching
+	if EggService._hatchLock[player.UserId] then
+		return nil, "Already hatching an egg"
+	end
+	EggService._hatchLock[player.UserId] = true
+
+	local function doHatch()
+		-- Validate egg type exists
+		local eggDef = PetData.Eggs[eggType]
+		if not eggDef then
+			return nil, "Unknown egg type: " .. tostring(eggType)
+		end
+
+		local data = EggService._dataService.getPlayerData(player)
+		if not data then
+			return nil, "No player data"
+		end
+
+		-- Validate player has unlocked the required zone for this egg
+		local zoneRequired = eggDef.zone
+		local zoneUnlocked = false
+		for _, unlockedId in ipairs(data.unlockedZones) do
+			if unlockedId == zoneRequired then
+				zoneUnlocked = true
+				break
+			end
+		end
+		if not zoneUnlocked then
+			return nil, "Zone not unlocked for this egg type"
+		end
+
+		-- No cost deduction for auto-hatch (player already paid for the buff)
+
+		-- Fire hatch start event to client (triggers animation)
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchStart")
+			if event then
+				event:FireClient(player, eggType)
+			end
+		end
+
+		-- Short delay to allow client to start animation
+		task.wait(1)
+
+		-- Delegate to PetService for actual hatching (skip cost deduction)
+		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
+		if not newPet then
+			return nil, err
+		end
+
+		-- Fire hatch result event with the new pet data
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchResult")
+			if event then
+				event:FireClient(player, newPet)
+			end
+		end
+
+		-- Strip isNewDiscovery from the pet table so it does not persist in DataStore
+		newPet.isNewDiscovery = nil
+
+		-- Track quest progress: egg hatched
+		if EggService._questService then
+			EggService._questService.incrementStat(player, "hatchEggs", 1)
+		end
+
+		return newPet, nil
+	end
+
+	local newPet, err = doHatch()
+	EggService._hatchLock[player.UserId] = nil
+	return newPet, err
+end
+
 -- Get eggs available to a player based on their unlocked zones
 function EggService.getAvailableEggs(player)
 	if not player then
@@ -6137,6 +6398,8 @@ local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
 local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
+local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
+local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -6153,6 +6416,7 @@ local CampaignVictory = Remotes:WaitForChild("CampaignVictory")
 local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
+local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -6383,6 +6647,10 @@ end)
 
 CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
 	effectsController:showCurrencyPopup(position, amount, currencyType)
+end)
+
+ShopBuffsUpdated.OnClientEvent:Connect(function(buffs)
+	uiController:updateShopBuffs(buffs)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")
@@ -6743,6 +7011,8 @@ function UIController.new()
 	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
 	-- Pet index (collection book) state
 	self._discoveredPets = {}
+	-- Shop buffs state
+	self._shopBuffs = {}
 	return self
 end
 
@@ -6774,6 +7044,7 @@ function UIController:init(remotes, playerData)
 	self:_createQuestWindow()
 	self:_createMasteryWindow()
 	self:_createShopWindow()
+	self:_createShopScreen()
 	self:_createPetIndex()
 
 	self._initialized = true
@@ -6974,6 +7245,7 @@ function UIController:_createNavButtons(parent)
 	local buttons = {
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
 		{ name = "Index", icon = "I", color = Color3.fromRGB(255, 100, 180), screen = "PetIndex" },
+		{ name = "Shop", icon = "S", color = COLORS.NavShop, screen = "ShopScreen" },
 		{ name = "Quests", icon = "!", color = COLORS.NavQuests, screen = "QuestWindow" },
 		{ name = "Mastery", icon = "M", color = COLORS.NavMastery, screen = "MasteryWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
@@ -8274,6 +8546,271 @@ function UIController:showEggStationPrompt(eggType)
 	-- No-op: E-key ProximityPrompt handles hatching directly
 end
 
+--------------------------------------------------------------------------------
+-- SHOP SCREEN (Diamond potions and permanent purchases)
+--------------------------------------------------------------------------------
+function UIController:_createShopScreen()
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "ShopScreen"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Enabled = false
+	screenGui.Parent = self._playerGui
+	self._screens.ShopScreen = screenGui
+
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "MainFrame"
+	mainFrame.Size = UDim2.fromScale(0.7, 0.7)
+	mainFrame.Position = UDim2.fromScale(0.15, 0.15)
+	mainFrame.BackgroundColor3 = COLORS.Background
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Parent = screenGui
+
+	local mainCorner = Instance.new("UICorner")
+	mainCorner.CornerRadius = UDim.new(0, 16)
+	mainCorner.Parent = mainFrame
+
+	local mainStroke = Instance.new("UIStroke")
+	mainStroke.Thickness = 5
+	mainStroke.Color = COLORS.NavShop
+	mainStroke.Parent = mainFrame
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.fromScale(0.4, 0.08)
+	title.Position = UDim2.fromScale(0.3, 0.01)
+	title.BackgroundTransparency = 1
+	title.Text = "SHOP"
+	title.TextColor3 = COLORS.NavShop
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = mainFrame
+
+	local subtitle = Instance.new("TextLabel")
+	subtitle.Name = "Subtitle"
+	subtitle.Size = UDim2.fromScale(0.6, 0.04)
+	subtitle.Position = UDim2.fromScale(0.2, 0.085)
+	subtitle.BackgroundTransparency = 1
+	subtitle.Text = "Spend diamonds on powerful buffs!"
+	subtitle.TextColor3 = Color3.fromRGB(180, 180, 200)
+	subtitle.Font = Enum.Font.Gotham
+	subtitle.TextScaled = true
+	subtitle.Parent = mainFrame
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(44, 44)
+	closeBtn.Position = UDim2.new(1, -54, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 24
+	closeBtn.Parent = mainFrame
+
+	local closeBtnCorner = Instance.new("UICorner")
+	closeBtnCorner.CornerRadius = UDim.new(1, 0)
+	closeBtnCorner.Parent = closeBtn
+
+	closeBtn.MouseButton1Click:Connect(function()
+		self:toggleScreen("ShopScreen")
+	end)
+
+	local scrollFrame = Instance.new("ScrollingFrame")
+	scrollFrame.Name = "ShopGrid"
+	scrollFrame.Size = UDim2.fromScale(0.94, 0.76)
+	scrollFrame.Position = UDim2.fromScale(0.03, 0.14)
+	scrollFrame.BackgroundTransparency = 1
+	scrollFrame.ScrollBarThickness = 8
+	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(0, 150, 255)
+	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
+	scrollFrame.Parent = mainFrame
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.Name = "GridLayout"
+	gridLayout.CellSize = UDim2.fromOffset(220, 200)
+	gridLayout.CellPadding = UDim2.fromOffset(12, 12)
+	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	gridLayout.Parent = scrollFrame
+
+	gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
+	end)
+
+	self:_refreshShopGrid()
+end
+
+function UIController:_refreshShopGrid()
+	local screenGui = self._screens.ShopScreen
+	if not screenGui then return end
+	local mainFrame = screenGui:FindFirstChild("MainFrame")
+	if not mainFrame then return end
+	local scrollFrame = mainFrame:FindFirstChild("ShopGrid")
+	if not scrollFrame then return end
+
+	for _, child in ipairs(scrollFrame:GetChildren()) do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	-- Shop items definition (client-side display data)
+	local shopItems = {
+		{ id = "LuckyPotion", name = "Lucky Potion", icon = "L", description = "2x egg luck for 5 min", cost = 100, color = Color3.fromRGB(0, 220, 100), durationText = "5 min" },
+		{ id = "SpeedPotion", name = "Speed Potion", icon = "S", description = "2x walkspeed for 5 min", cost = 50, color = Color3.fromRGB(0, 180, 255), durationText = "5 min" },
+		{ id = "AutoHatch", name = "Auto-Hatch", icon = "A", description = "Auto-hatch eggs for 10 min", cost = 500, color = Color3.fromRGB(255, 150, 0), durationText = "10 min" },
+		{ id = "ExtraEquipSlot", name = "Extra Equip Slot", icon = "+", description = "Permanently equip +1 pet", cost = 1000, color = Color3.fromRGB(255, 80, 200), durationText = "Permanent" },
+	}
+
+	local activeBuffs = self._shopBuffs or {}
+
+	for order, item in ipairs(shopItems) do
+		local card = Instance.new("Frame")
+		card.Name = "ShopItem_" .. item.id
+		card.BackgroundColor3 = Color3.fromRGB(
+			math.floor(item.color.R * 255 * 0.2 + 25),
+			math.floor(item.color.G * 255 * 0.2 + 25),
+			math.floor(item.color.B * 255 * 0.2 + 40)
+		)
+		card.LayoutOrder = order
+		card.Parent = scrollFrame
+
+		local cardCorner = Instance.new("UICorner")
+		cardCorner.CornerRadius = UDim.new(0, 12)
+		cardCorner.Parent = card
+
+		local cardStroke = Instance.new("UIStroke")
+		cardStroke.Thickness = 3
+		cardStroke.Color = item.color
+		cardStroke.Parent = card
+
+		-- Icon
+		local iconLabel = Instance.new("TextLabel")
+		iconLabel.Name = "Icon"
+		iconLabel.Size = UDim2.fromScale(0.35, 0.22)
+		iconLabel.Position = UDim2.fromScale(0.325, 0.02)
+		iconLabel.BackgroundTransparency = 1
+		iconLabel.Text = item.icon
+		iconLabel.TextColor3 = item.color
+		iconLabel.Font = Enum.Font.GothamBold
+		iconLabel.TextScaled = true
+		iconLabel.Parent = card
+
+		-- Item name
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "ItemName"
+		nameLabel.Size = UDim2.fromScale(0.9, 0.12)
+		nameLabel.Position = UDim2.fromScale(0.05, 0.25)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = item.name
+		nameLabel.TextColor3 = COLORS.White
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextScaled = true
+		nameLabel.Parent = card
+
+		-- Description
+		local descLabel = Instance.new("TextLabel")
+		descLabel.Name = "Description"
+		descLabel.Size = UDim2.fromScale(0.9, 0.1)
+		descLabel.Position = UDim2.fromScale(0.05, 0.38)
+		descLabel.BackgroundTransparency = 1
+		descLabel.Text = item.description
+		descLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+		descLabel.Font = Enum.Font.Gotham
+		descLabel.TextScaled = true
+		descLabel.Parent = card
+
+		-- Duration label
+		local durationLabel = Instance.new("TextLabel")
+		durationLabel.Name = "Duration"
+		durationLabel.Size = UDim2.fromScale(0.9, 0.09)
+		durationLabel.Position = UDim2.fromScale(0.05, 0.49)
+		durationLabel.BackgroundTransparency = 1
+		durationLabel.Text = item.durationText
+		durationLabel.TextColor3 = item.color
+		durationLabel.Font = Enum.Font.GothamBold
+		durationLabel.TextScaled = true
+		durationLabel.Parent = card
+
+		-- Active buff indicator (if applicable)
+		local buffKey = nil
+		if item.id == "LuckyPotion" then buffKey = "luck"
+		elseif item.id == "SpeedPotion" then buffKey = "speed"
+		elseif item.id == "AutoHatch" then buffKey = "autoHatch"
+		end
+
+		if buffKey and activeBuffs[buffKey] then
+			local remaining = activeBuffs[buffKey]
+			local mins = math.floor(remaining / 60)
+			local secs = remaining % 60
+			local activeLabel = Instance.new("TextLabel")
+			activeLabel.Name = "ActiveLabel"
+			activeLabel.Size = UDim2.fromScale(0.9, 0.09)
+			activeLabel.Position = UDim2.fromScale(0.05, 0.59)
+			activeLabel.BackgroundTransparency = 1
+			activeLabel.Text = "ACTIVE: " .. tostring(mins) .. "m " .. tostring(secs) .. "s"
+			activeLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+			activeLabel.Font = Enum.Font.GothamBold
+			activeLabel.TextScaled = true
+			activeLabel.Parent = card
+		end
+
+		-- Buy button
+		local buyBtn = Instance.new("TextButton")
+		buyBtn.Name = "BuyBtn"
+		buyBtn.Size = UDim2.fromScale(0.7, 0.17)
+		buyBtn.Position = UDim2.fromScale(0.15, 0.78)
+		buyBtn.BackgroundColor3 = COLORS.NavShop
+		buyBtn.Text = tostring(item.cost) .. " Diamonds"
+		buyBtn.TextColor3 = COLORS.White
+		buyBtn.Font = Enum.Font.GothamBold
+		buyBtn.TextScaled = true
+		buyBtn.Parent = card
+
+		local buyCorner = Instance.new("UICorner")
+		buyCorner.CornerRadius = UDim.new(0, 8)
+		buyCorner.Parent = buyBtn
+
+		local buyStroke = Instance.new("UIStroke")
+		buyStroke.Thickness = 2
+		buyStroke.Color = Color3.fromRGB(0, 100, 200)
+		buyStroke.Parent = buyBtn
+
+		local itemId = item.id
+		buyBtn.MouseButton1Click:Connect(function()
+			self:_purchaseShopItem(itemId)
+		end)
+
+		buyBtn.MouseEnter:Connect(function()
+			TweenService:Create(buyBtn, TweenInfo.new(0.1), {
+				Size = UDim2.fromScale(0.74, 0.18),
+			}):Play()
+		end)
+		buyBtn.MouseLeave:Connect(function()
+			TweenService:Create(buyBtn, TweenInfo.new(0.1), {
+				Size = UDim2.fromScale(0.7, 0.17),
+			}):Play()
+		end)
+	end
+end
+
+function UIController:_purchaseShopItem(itemId)
+	if self._remotes then
+		local remote = self._remotes:FindFirstChild("PurchaseShopItem")
+		if remote then
+			local success, err = remote:InvokeServer(itemId)
+			if not success and err then
+				print("[UIController] Shop purchase failed: " .. tostring(err))
+			end
+		end
+	end
+end
+
+function UIController:updateShopBuffs(buffs)
+	self._shopBuffs = buffs or {}
+	self:_refreshShopGrid()
+end
+
 function UIController:_hatchEgg(eggType)
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("HatchEgg")
@@ -8813,6 +9350,19 @@ function UIController:toggleScreen(screenName)
 						if discovered then
 							self._discoveredPets = discovered
 							self:_refreshPetIndex()
+						end
+					end)
+				end
+			end
+			-- Refresh shop buffs when opening shop screen
+			if screenName == "ShopScreen" and self._remotes then
+				local remote = self._remotes:FindFirstChild("GetShopBuffs")
+				if remote then
+					task.spawn(function()
+						local buffs = remote:InvokeServer()
+						if buffs then
+							self._shopBuffs = buffs
+							self:_refreshShopGrid()
 						end
 					end)
 				end
@@ -13271,11 +13821,83 @@ MasteryData.Buffs = {
 		-- Multiplier on walk speed
 		bonusPerLevel = { 1.05, 1.1, 1.15, 1.2, 1.3, 1.4, 1.5, 1.6, 1.75, 2.0 },
 	},
+	LongerBuffs = {
+		id = "LongerBuffs",
+		displayName = "Longer Buffs",
+		description = "Shop potions last longer",
+		icon = "⏱",
+		color = { 100, 200, 255 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 3, 4, 5 },
+		bonusPerLevel = { 1.2, 1.4, 1.6, 1.8, 2.0 },
+	},
+	MorePetSlots = {
+		id = "MorePetSlots",
+		displayName = "More Pet Slots",
+		description = "Equip more pets at once",
+		icon = "🐾",
+		color = { 180, 120, 60 },
+		maxLevel = 5,
+		pointsPerLevel = { 2, 3, 4, 5, 6 },
+		bonusPerLevel = { 1, 2, 3, 4, 5 },
+	},
+	BiggerRange = {
+		id = "BiggerRange",
+		displayName = "Bigger Range",
+		description = "Pets detect breakables from further away",
+		icon = "◎",
+		color = { 100, 255, 150 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 2, 3, 3 },
+		bonusPerLevel = { 1.2, 1.4, 1.6, 1.8, 2.0 },
+	},
+	QuickHatch = {
+		id = "QuickHatch",
+		displayName = "Quick Hatch",
+		description = "Eggs hatch faster",
+		icon = "🥚",
+		color = { 255, 240, 180 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 1, 2, 2, 3 },
+		bonusPerLevel = { 0.9, 0.8, 0.7, 0.6, 0.5 },
+	},
+	DropMagnet = {
+		id = "DropMagnet",
+		displayName = "Drop Magnet",
+		description = "Collect drops from further away",
+		icon = "🧲",
+		color = { 255, 80, 80 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 2, 3, 4 },
+		bonusPerLevel = { 1.3, 1.6, 2.0, 2.5, 3.0 },
+	},
+	DoubleJump = {
+		id = "DoubleJump",
+		displayName = "Double Jump",
+		description = "Unlocks extra jumps",
+		icon = "⬆",
+		color = { 150, 200, 255 },
+		maxLevel = 3,
+		pointsPerLevel = { 3, 5, 7 },
+		bonusPerLevel = { 2, 2, 3 },
+	},
+	CritPower = {
+		id = "CritPower",
+		displayName = "Crit Power",
+		description = "Crit hits deal more damage",
+		icon = "💥",
+		color = { 255, 100, 50 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 3, 4, 5 },
+		bonusPerLevel = { 3, 4, 5, 7, 10 },
+	},
 }
 
 -- Ordered list for UI display
 MasteryData.BuffOrder = {
 	"MoreCoins", "MoreDiamonds", "BetterLuck", "XPBoost", "FasterRunning",
+	"LongerBuffs", "MorePetSlots", "BiggerRange", "QuickHatch", "DropMagnet",
+	"DoubleJump", "CritPower",
 }
 
 return MasteryData
