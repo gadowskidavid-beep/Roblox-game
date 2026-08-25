@@ -406,8 +406,9 @@ local function fireClickDamage(target)
 	-- Fire click attack to server (always 1 damage)
 	ClickAttackDestructible:InvokeServer(target.destructibleId)
 
-	-- Spawn a single crit button (BillboardGui) on the destructible
-	if target.part and target.part.Parent then
+	-- Spawn a crit button only if there is NOT already one active
+	-- Prevents spammy rapid spawn/destroy cycles on every click
+	if target.part and target.part.Parent and not effectsController:hasCritButtonActive() then
 		effectsController:spawnCritButton(target.part, target.destructibleId, function()
 			-- Crit button was clicked: fire crit attack to server
 			CritAttackDestructible:InvokeServer(target.destructibleId)

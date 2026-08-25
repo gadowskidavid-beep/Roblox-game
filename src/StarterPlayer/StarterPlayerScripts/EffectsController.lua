@@ -24,6 +24,7 @@ function EffectsController.new()
 	local self = setmetatable({}, EffectsController)
 	self._progressBars = {}
 	self._critButtons = {}
+	self._activePopups = {}
 	self._initialized = false
 	self._lastHatchPosition = nil
 	return self
@@ -45,6 +46,18 @@ end
 function EffectsController:showCurrencyPopup(position, amount, currencyType)
 	if not self._initialized then return end
 
+	-- Limit active popups to 5 max to prevent Part spam
+	local MAX_POPUPS = 5
+	while #self._activePopups >= MAX_POPUPS do
+		local oldest = table.remove(self._activePopups, 1)
+		if oldest.billboard and oldest.billboard.Parent then
+			oldest.billboard:Destroy()
+		end
+		if oldest.anchor and oldest.anchor.Parent then
+			oldest.anchor:Destroy()
+		end
+	end
+
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "CurrencyPopup"
 	billboardGui.Size = UDim2.fromOffset(160, 60)
@@ -64,6 +77,10 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 
 	billboardGui.Adornee = anchor
 	billboardGui.Parent = self._playerGui
+
+	-- Track this popup for limit enforcement
+	local popupEntry = { billboard = billboardGui, anchor = anchor }
+	table.insert(self._activePopups, popupEntry)
 
 	local color = Color3.fromRGB(255, 220, 0)  -- yellow for coins
 	local prefix = "+$"
@@ -117,6 +134,13 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 		end
 		if anchor and anchor.Parent then
 			anchor:Destroy()
+		end
+		-- Remove from active popups tracking
+		for i, entry in ipairs(self._activePopups) do
+			if entry.billboard == billboardGui then
+				table.remove(self._activePopups, i)
+				break
+			end
 		end
 	end)
 end
@@ -733,11 +757,11 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	-- Only 1 crit button globally at a time: remove any existing one
 	self:_removeGlobalCritButton()
 
-	-- Create BillboardGui attached to the destructible (static position)
+	-- Create BillboardGui attached to the destructible (randomized offset position)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "CritButton_" .. destructibleId
-	billboardGui.Size = UDim2.fromOffset(50, 50)
-	billboardGui.StudsOffset = Vector3.new(0, 1, 0) -- centered slightly above the destructible
+	billboardGui.Size = UDim2.fromOffset(55, 55)
+	billboardGui.StudsOffset = Vector3.new(math.random(-2, 2), 2 + math.random() * 1.5, math.random(-2, 2))
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = destructiblePart
 	billboardGui.Parent = self._playerGui
@@ -792,8 +816,8 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 		end
 	end)
 
-	-- Timeout: disappear after 2 seconds if not clicked
-	task.delay(2, function()
+	-- Timeout: disappear after 3 seconds if not clicked
+	task.delay(3, function()
 		if clicked then return end
 		if not billboardGui or not billboardGui.Parent then return end
 
@@ -843,6 +867,13 @@ function EffectsController:_removeGlobalCritButton()
 		self._critButtons[id] = nil
 	end
 	self._globalCritButtonId = nil
+end
+
+--------------------------------------------------------------------------------
+-- Check if a crit button is currently active (not yet consumed or timed out)
+--------------------------------------------------------------------------------
+function EffectsController:hasCritButtonActive()
+	return self._globalCritButtonId ~= nil
 end
 
 --------------------------------------------------------------------------------
@@ -952,6 +983,15 @@ function EffectsController:cleanup()
 		end
 	end
 	self._critButtons = {}
+	for _, entry in ipairs(self._activePopups) do
+		if entry.billboard and entry.billboard.Parent then
+			entry.billboard:Destroy()
+		end
+		if entry.anchor and entry.anchor.Parent then
+			entry.anchor:Destroy()
+		end
+	end
+	self._activePopups = {}
 	if self._effectsFolder then
 		self._effectsFolder:Destroy()
 	end
