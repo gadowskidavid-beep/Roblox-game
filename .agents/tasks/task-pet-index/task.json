@@ -1,7 +1,14 @@
 {
   "task_id": "task-pet-index",
   "task_description": "Add discoveredPets tracking so the NEW PET popup only shows for first-time discoveries, plus a Pet Index/Collection Book UI showing all pets in all variants (Normal, Golden, Shiny, Rainbow)",
-  "status": "in_progress",
+  "status": "completed",
   "feature_order": ["FEAT-001"],
-  "blocked_reason": null
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "python3 tools/generate_rbxlx.py runs successfully. All acceptance criteria verified via grep. Semantic review v2 APPROVED."
+  }
 }
