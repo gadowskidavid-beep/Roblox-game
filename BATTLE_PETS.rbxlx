@@ -3676,17 +3676,35 @@ function ZoneService._spawnZoneGates()
 		rightCap.Material = Enum.Material.SmoothPlastic
 		rightCap.Parent = gateModel
 
-		-- BARRIER (semi-transparent wall in the gate opening, reddish when locked)
+		-- BARRIER (semi-transparent visual wall in the gate opening, reddish when locked)
+		-- CanCollide is false so the Touched trigger can detect players reliably.
+		-- A separate invisible Blocker part handles the physical collision.
 		local barrier = Instance.new("Part")
 		barrier.Name = "GateBarrier_" .. tostring(gateZone)
 		barrier.Size = Vector3.new(BARRIER_THICKNESS, PILLAR_HEIGHT, GATE_OPENING_WIDTH)
 		barrier.Position = Vector3.new(gateX, PILLAR_HEIGHT / 2, gateZ)
 		barrier.Anchored = true
-		barrier.CanCollide = true
+		barrier.CanCollide = false
 		barrier.Color = Color3.fromRGB(255, 60, 60)
 		barrier.Material = Enum.Material.ForceField
 		barrier.Transparency = 0.5
 		barrier.Parent = gateModel
+
+		-- Invisible blocker part that physically stops players from walking through
+		local blocker = Instance.new("Part")
+		blocker.Name = "GateBlocker_" .. tostring(gateZone)
+		blocker.Size = Vector3.new(BARRIER_THICKNESS + 1, PILLAR_HEIGHT, GATE_OPENING_WIDTH)
+		blocker.Position = Vector3.new(gateX, PILLAR_HEIGHT / 2, gateZ)
+		blocker.Anchored = true
+		blocker.CanCollide = true
+		blocker.Transparency = 1
+		blocker.Parent = gateModel
+
+		-- Tag blocker with the zone ID so it can be found per-player
+		local blockerZoneTag = Instance.new("IntValue")
+		blockerZoneTag.Name = "GateZoneId"
+		blockerZoneTag.Value = gateZone
+		blockerZoneTag.Parent = blocker
 
 		-- Tag barrier so client can identify it
 		local zoneTag = Instance.new("IntValue")
@@ -3754,8 +3772,17 @@ function ZoneService._spawnZoneGates()
 		priceLabel.Parent = signBg
 
 		-- Connect Touched event on the barrier for zone unlocking
-		barrier.Touched:Connect(function(hit)
+		-- Use a helper to resolve the player from either direct body part or accessory handle
+		local function getPlayerFromHit(hit)
 			local player = game:GetService("Players"):GetPlayerFromCharacter(hit.Parent)
+			if not player and hit.Parent then
+				player = game:GetService("Players"):GetPlayerFromCharacter(hit.Parent.Parent)
+			end
+			return player
+		end
+
+		barrier.Touched:Connect(function(hit)
+			local player = getPlayerFromHit(hit)
 			if not player then return end
 
 			-- Check if player already unlocked this zone
@@ -3771,19 +3798,23 @@ function ZoneService._spawnZoneGates()
 			end
 
 			if alreadyUnlocked then
-				-- Remove only the barrier (pillars and arch stay)
-				barrier.CanCollide = false
+				-- Remove the visual barrier and the physical blocker
 				barrier.Transparency = 1
+				if blocker and blocker.Parent then
+					blocker:Destroy()
+				end
 				return
 			end
 
 			-- Try to unlock the zone
 			local success, err = ZoneService.unlockZone(player, gateZone)
 			if success then
-				-- Remove the barrier (make invisible and non-collidable)
+				-- Remove the barrier (make invisible) and destroy the blocker
 				local barrierPosition = barrier.Position
-				barrier.CanCollide = false
 				barrier.Transparency = 1
+				if blocker and blocker.Parent then
+					blocker:Destroy()
+				end
 
 				-- Fire zone unlock effect with gate position for particle/flash effect
 				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -3847,7 +3878,96 @@ function ZoneService._spawnZoneGates()
 				priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
 			end
 		end)
+
+		-- Also connect Touched on the blocker so players hitting the invisible wall
+		-- can still trigger unlock logic (the blocker is what they physically contact)
+		blocker.Touched:Connect(function(hit)
+			local player = getPlayerFromHit(hit)
+			if not player then return end
+
+			local data = ZoneService._dataService.getPlayerData(player)
+			if not data then return end
+
+			local alreadyUnlocked = false
+			for _, unlockedId in ipairs(data.unlockedZones) do
+				if unlockedId == gateZone then
+					alreadyUnlocked = true
+					break
+				end
+			end
+
+			if alreadyUnlocked then
+				-- Player already owns this zone - remove barrier and blocker
+				barrier.Transparency = 1
+				if blocker and blocker.Parent then
+					blocker:Destroy()
+				end
+				return
+			end
+
+			-- Try to unlock the zone
+			local success, err = ZoneService.unlockZone(player, gateZone)
+			if success then
+				local barrierPosition = barrier.Position
+				barrier.Transparency = 1
+				if blocker and blocker.Parent then
+					blocker:Destroy()
+				end
+
+				-- Fire zone unlock effect
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				if remotes then
+					local event = remotes:FindFirstChild("ZoneUnlocked")
+					if event then
+						event:FireClient(player, gateZone, barrierPosition)
+					end
+				end
+
+				-- Update billboard to show "UNLOCKED" text
+				nameLabel.Text = zoneDef.name .. " - UNLOCKED!"
+				nameLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+				priceLabel.Text = "Welcome!"
+				priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+			end
+		end)
 	end
+
+	-- Proactive barrier removal: when a player spawns, remove blockers for zones
+	-- they have already unlocked. This prevents the "can see UNLOCKED but can't walk
+	-- through" issue caused by unreliable Touched event firing.
+	game:GetService("Players").PlayerAdded:Connect(function(player)
+		player.CharacterAdded:Connect(function()
+			-- Small delay to ensure DataService has loaded the player data
+			task.delay(1, function()
+				local data = ZoneService._dataService.getPlayerData(player)
+				if not data then return end
+
+				local workspace = game:GetService("Workspace")
+				local gatesFolder = workspace:FindFirstChild("ZoneGates")
+				if not gatesFolder then return end
+
+				for _, unlockedZoneId in ipairs(data.unlockedZones) do
+					-- Find and remove blockers for this zone
+					for _, gateModel in ipairs(gatesFolder:GetChildren()) do
+						if gateModel:IsA("Model") then
+							for _, part in ipairs(gateModel:GetChildren()) do
+								if part:IsA("BasePart") then
+									local tag = part:FindFirstChild("GateZoneId")
+									if tag and tag.Value == unlockedZoneId then
+										if part.Name:find("GateBlocker_") then
+											part:Destroy()
+										elseif part.Name:find("GateBarrier_") then
+											part.Transparency = 1
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end)
+		end)
+	end)
 end
 
 -- Unlock a zone for a player
