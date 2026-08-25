@@ -2217,6 +2217,9 @@ function PetService.getInventory(player)
 end
 
 -- Calculate effective pet damage with StrongPets upgrade multiplier
+-- Note: variant (Shiny 3x, Rainbow 5x) and golden (2x) multipliers are already
+-- baked into pet.damage at creation time (hatchEgg / convertToGoldenPet).
+-- Only the StrongPets upgrade bonus is applied at runtime to avoid double-multiplying.
 function PetService.getPetDamage(pet, player)
 	if not pet or not player then
 		return 0
@@ -2227,18 +2230,6 @@ function PetService.getPetDamage(pet, player)
 
 	if strongBonus > 0 then
 		baseDamage = math.floor(baseDamage * strongBonus)
-	end
-
-	-- Variant damage multipliers
-	if pet.variant == "Shiny" then
-		baseDamage = baseDamage * 3
-	elseif pet.variant == "Rainbow" then
-		baseDamage = baseDamage * 5
-	end
-
-	-- Golden multiplier (separate path, stacks)
-	if pet.golden then
-		baseDamage = baseDamage * 2
 	end
 
 	return baseDamage
