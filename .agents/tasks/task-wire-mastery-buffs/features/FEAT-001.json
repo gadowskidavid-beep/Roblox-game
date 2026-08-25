@@ -26,5 +26,5 @@
     "Run: python3 tools/generate_rbxlx.py from /projects/sandbox/Roblox-game/ and verify it completes without errors"
   ],
   "blocked_reason": null,
-  "findings": "All 7 mastery buffs wired successfully. ZoneService already had _masteryService and setMasteryService. PetService already had _masteryService. ShopService and EggService needed new _masteryService fields and setter methods. Client-side buffs (BiggerRange, DropMagnet, DoubleJump) are applied via GetMasteryState on init and refreshed via MasteryUpdated event. Build passes cleanly with python3 tools/generate_rbxlx.py."
+  "findings": "All 7 mastery buffs wired successfully. ZoneService already had _masteryService and setMasteryService. PetService already had _masteryService. ShopService and EggService needed new _masteryService fields and setter methods. Client-side buffs (BiggerRange, DropMagnet, DoubleJump) are applied via GetMasteryState on init and refreshed via MasteryUpdated event. Build passes cleanly with python3 tools/generate_rbxlx.py. Review v1 fixes applied: DoubleJump event leak resolved (connections moved outside onCharacterAdded), CritPower comment added explaining absolute-value semantics, QuickHatch 1*qhBonus simplified to qhBonus."
 }
