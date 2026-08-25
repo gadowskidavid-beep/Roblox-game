@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Replace the 3D egg hatch animation with a full-screen UI (ScreenGui) animation in EffectsController.lua. The new animation shows a 2D egg that wobbles, cracks, and reveals the pet - all in screen space with no 3D Parts, no camera changes.",
+  "status": "completed",
+  "steps": [
+    "In src/StarterPlayer/StarterPlayerScripts/EffectsController.lua, replace the entire showEggHatchAnimation function (lines 152-237) with a new implementation that: (1) Creates a full-screen ScreenGui with semi-transparent dark overlay (BackgroundTransparency ~0.5, black), (2) Creates an egg-shaped Frame in the center using UICorner (make it look like an actual egg shape - use an oval Frame ~120x160 offset or similar, cream/white color, with UIAspectRatioConstraint and generous UICorner to form an egg/oval). Give the egg a visible egg texture feel by using a darker colored inner ellipse or speckle pattern using nested Frames, (3) Animates the egg wobbling left-right via Rotation tween (3 wobbles with increasing intensity: e.g. 5deg, 10deg, 15deg), (4) On break: flash the egg to rarity color, scale it up briefly, then add a full-screen white flash Frame that fades quickly, (5) After flash: show pet reveal with large pet name text + rarity label in the rarity color, auto-dismiss after 2.5 seconds with fade out, (6) Clean up all UI elements",
+    "Remove the _spawnLightFlash helper function (lines 238-270) entirely since it creates 3D Parts and is no longer needed",
+    "Remove the _spawnBreakParticles helper function (lines 271-305) entirely since it creates 3D Parts and is no longer needed",
+    "Update the _showPetReveal function to work as a UI-based reveal (or inline it into the new showEggHatchAnimation). It should show the pet name and rarity as large centered text labels within the same ScreenGui overlay, NOT using BillboardGui or 3D Parts",
+    "Ensure the function signature remains showEggHatchAnimation(eggPosition, resultPet) for API compatibility with Main.client.lua callers (eggPosition parameter can be ignored since animation is now screen-space)",
+    "Run python3 tools/generate_rbxlx.py to regenerate BATTLE_PETS.rbxlx"
+  ],
+  "acceptance_criteria": [
+    "showEggHatchAnimation function exists with same signature (eggPosition, resultPet)",
+    "No 3D Parts (Instance.new('Part')) are created anywhere in the egg hatch animation code path",
+    "No camera manipulation in the egg hatch animation",
+    "Animation uses ScreenGui with dark overlay, egg Frame with UICorner, TweenService for wobble/crack/reveal",
+    "Egg shape looks like an actual egg (oval, cream-colored, with some texture detail using nested UI elements)",
+    "RARITY_COLORS are used for the reveal flash and text",
+    "_spawnLightFlash and _spawnBreakParticles functions are removed",
+    "python3 tools/generate_rbxlx.py runs successfully (exit code 0)"
+  ],
+  "verification": [
+    "Run: cd /projects/sandbox/Roblox-game && python3 tools/generate_rbxlx.py",
+    "Confirm exit code 0 and BATTLE_PETS.rbxlx is regenerated",
+    "Grep EffectsController.lua for Instance.new(\"Part\") within the hatch animation functions - should not exist in showEggHatchAnimation or related helpers",
+    "Verify showEggHatchAnimation function signature is preserved"
+  ],
+  "blocked_reason": null,
+  "findings": "Successfully replaced 3D egg hatch animation with full-screen UI. Build passes (generate_rbxlx.py exits 0). No Instance.new('Part') in the egg hatch code path. All 3 helper functions (_spawnLightFlash, _spawnBreakParticles, _showPetReveal) removed. Function signature preserved. Post-review fixes applied: (1) added _isHatching reentrancy guard, (2) increased UIController delay from 3s to 5.5s to avoid overlay collision, (3) added comment documenting dead eggPosition parameter, (4) renamed ScreenGui to EffectsController_EggHatchAnim to avoid naming collision with UIController."
+}

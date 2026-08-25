@@ -1,0 +1,7 @@
+{
+  "task_id": "task-egg-hatch-ui-animation",
+  "task_description": "Replace the 3D egg hatch animation (Parts, light flash, particles) with a full-screen UI animation using ScreenGui. Egg appears as 2D shape on screen, wobbles, cracks open with rarity color flash, reveals pet name and rarity. No camera changes, no 3D Parts.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null
+}
