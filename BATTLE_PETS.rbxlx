@@ -2747,8 +2747,8 @@ function ZoneService.init(dataService, currencyService, petService)
 	-- Spawn world decoration (trees, rocks, flowers, lamps, benches)
 	ZoneService._spawnWorldDecoration()
 
-	-- Spawn invisible barriers at zone edges to prevent falling off
-	ZoneService._spawnBarriers()
+	-- Spawn colorful building walls along zone edges (replaces invisible barriers)
+	ZoneService._spawnZoneWalls()
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -5606,26 +5606,131 @@ function ZoneService._spawnZone8Deco(decoFolder)
 end
 
 --------------------------------------------------------------------------------
--- BARRIERS: Invisible walls at zone edges to prevent falling off
--- Each zone gets 4 walls around its perimeter (tall, invisible, collidable).
+-- ZONE WALLS: Colorful cartoon building skylines along zone edges.
+-- Instead of invisible barriers, tall candy-colored buildings line the N, S,
+-- and one outer edge of each zone (like Pet Simulator 1 style city skylines).
+-- Between adjacent zones (shared east/west edges) there are NO buildings
+-- because that is where the gates connect the zones.
+--
+-- Zone color palettes:
+--   Zone 1: pastels
+--   Zone 2: city grays
+--   Zone 3: beach tans/corals
+--   Zone 4: desert oranges
+--   Zone 5: ice blues/whites
+--   Zone 6: dark reds
+--   Zone 7: whites/golds
+--   Zone 8: dark purples/neons
 --------------------------------------------------------------------------------
-function ZoneService._spawnBarriers()
+
+-- Color palettes per zone for building walls
+local ZONE_WALL_PALETTES = {
+	[1] = { -- Pastels
+		Color3.fromRGB(255, 182, 193), -- pink
+		Color3.fromRGB(200, 170, 255), -- lavender
+		Color3.fromRGB(173, 216, 230), -- light blue
+		Color3.fromRGB(180, 255, 180), -- light green
+		Color3.fromRGB(255, 255, 180), -- light yellow
+		Color3.fromRGB(255, 200, 150), -- peach
+		Color3.fromRGB(200, 255, 255), -- light cyan
+		Color3.fromRGB(255, 180, 255), -- light magenta
+		Color3.fromRGB(200, 255, 200), -- light lime
+	},
+	[2] = { -- City grays
+		Color3.fromRGB(140, 140, 150),
+		Color3.fromRGB(100, 110, 120),
+		Color3.fromRGB(160, 160, 170),
+		Color3.fromRGB(120, 120, 130),
+		Color3.fromRGB(180, 180, 190),
+		Color3.fromRGB(90, 95, 105),
+		Color3.fromRGB(150, 155, 160),
+		Color3.fromRGB(110, 115, 125),
+		Color3.fromRGB(170, 170, 180),
+	},
+	[3] = { -- Beach tans/corals
+		Color3.fromRGB(237, 201, 136), -- sandy
+		Color3.fromRGB(255, 127, 80),  -- coral
+		Color3.fromRGB(210, 180, 140), -- tan
+		Color3.fromRGB(244, 164, 96),  -- sandy brown
+		Color3.fromRGB(255, 160, 122), -- light salmon
+		Color3.fromRGB(222, 184, 135), -- burlywood
+		Color3.fromRGB(255, 200, 150), -- light coral
+		Color3.fromRGB(240, 220, 170), -- pale sand
+		Color3.fromRGB(255, 140, 105), -- deep coral
+	},
+	[4] = { -- Desert oranges
+		Color3.fromRGB(210, 140, 50),
+		Color3.fromRGB(230, 160, 60),
+		Color3.fromRGB(190, 120, 40),
+		Color3.fromRGB(240, 180, 80),
+		Color3.fromRGB(200, 130, 30),
+		Color3.fromRGB(220, 150, 50),
+		Color3.fromRGB(180, 110, 20),
+		Color3.fromRGB(250, 190, 90),
+		Color3.fromRGB(170, 100, 30),
+	},
+	[5] = { -- Ice blues/whites
+		Color3.fromRGB(200, 230, 255),
+		Color3.fromRGB(220, 240, 255),
+		Color3.fromRGB(180, 220, 250),
+		Color3.fromRGB(240, 250, 255),
+		Color3.fromRGB(160, 210, 245),
+		Color3.fromRGB(230, 245, 255),
+		Color3.fromRGB(190, 225, 250),
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(210, 235, 255),
+	},
+	[6] = { -- Dark reds
+		Color3.fromRGB(140, 30, 20),
+		Color3.fromRGB(160, 40, 30),
+		Color3.fromRGB(120, 20, 15),
+		Color3.fromRGB(180, 50, 35),
+		Color3.fromRGB(100, 15, 10),
+		Color3.fromRGB(150, 35, 25),
+		Color3.fromRGB(170, 45, 30),
+		Color3.fromRGB(130, 25, 18),
+		Color3.fromRGB(190, 55, 40),
+	},
+	[7] = { -- Whites/golds
+		Color3.fromRGB(255, 255, 240),
+		Color3.fromRGB(255, 215, 0),
+		Color3.fromRGB(250, 250, 230),
+		Color3.fromRGB(255, 223, 100),
+		Color3.fromRGB(245, 245, 220),
+		Color3.fromRGB(255, 200, 50),
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(240, 230, 200),
+		Color3.fromRGB(255, 210, 70),
+	},
+	[8] = { -- Dark purples/neons
+		Color3.fromRGB(80, 20, 150),
+		Color3.fromRGB(150, 0, 255),
+		Color3.fromRGB(60, 10, 120),
+		Color3.fromRGB(200, 50, 255),
+		Color3.fromRGB(100, 30, 180),
+		Color3.fromRGB(170, 20, 230),
+		Color3.fromRGB(50, 0, 100),
+		Color3.fromRGB(130, 10, 200),
+		Color3.fromRGB(220, 80, 255),
+	},
+}
+
+function ZoneService._spawnZoneWalls()
 	local workspace = game:GetService("Workspace")
-	local barrierFolder = workspace:FindFirstChild("Barriers")
-	if not barrierFolder then
-		barrierFolder = Instance.new("Folder")
-		barrierFolder.Name = "Barriers"
-		barrierFolder.Parent = workspace
+	local wallsFolder = workspace:FindFirstChild("ZoneWalls")
+	if not wallsFolder then
+		wallsFolder = Instance.new("Folder")
+		wallsFolder.Name = "ZoneWalls"
+		wallsFolder.Parent = workspace
 	end
 
+	-- Also spawn lobby barriers (these remain invisible since lobby doesn't need buildings)
+	local lobbyHalfW = LOBBY_SIZE / 2
+	local lobbyHalfD = LOBBY_SIZE / 2
 	local BARRIER_HEIGHT = 40
 	local BARRIER_THICKNESS = 4
 
-	-- Spawn barriers for lobby island
-	local lobbyHalfW = LOBBY_SIZE / 2
-	local lobbyHalfD = LOBBY_SIZE / 2
-
-	-- Lobby North wall
+	-- Lobby North wall (invisible)
 	local lobbyWallN = Instance.new("Part")
 	lobbyWallN.Name = "Barrier_Lobby_N"
 	lobbyWallN.Size = Vector3.new(LOBBY_SIZE + BARRIER_THICKNESS, BARRIER_HEIGHT, BARRIER_THICKNESS)
@@ -5633,9 +5738,9 @@ function ZoneService._spawnBarriers()
 	lobbyWallN.Anchored = true
 	lobbyWallN.CanCollide = true
 	lobbyWallN.Transparency = 1
-	lobbyWallN.Parent = barrierFolder
+	lobbyWallN.Parent = wallsFolder
 
-	-- Lobby South wall
+	-- Lobby South wall (invisible)
 	local lobbyWallS = Instance.new("Part")
 	lobbyWallS.Name = "Barrier_Lobby_S"
 	lobbyWallS.Size = Vector3.new(LOBBY_SIZE + BARRIER_THICKNESS, BARRIER_HEIGHT, BARRIER_THICKNESS)
@@ -5643,9 +5748,9 @@ function ZoneService._spawnBarriers()
 	lobbyWallS.Anchored = true
 	lobbyWallS.CanCollide = true
 	lobbyWallS.Transparency = 1
-	lobbyWallS.Parent = barrierFolder
+	lobbyWallS.Parent = wallsFolder
 
-	-- Lobby West wall (far left edge of the lobby)
+	-- Lobby West wall (invisible)
 	local lobbyWallW = Instance.new("Part")
 	lobbyWallW.Name = "Barrier_Lobby_W"
 	lobbyWallW.Size = Vector3.new(BARRIER_THICKNESS, BARRIER_HEIGHT, LOBBY_SIZE + BARRIER_THICKNESS)
@@ -5653,45 +5758,255 @@ function ZoneService._spawnBarriers()
 	lobbyWallW.Anchored = true
 	lobbyWallW.CanCollide = true
 	lobbyWallW.Transparency = 1
-	lobbyWallW.Parent = barrierFolder
+	lobbyWallW.Parent = wallsFolder
 
-	-- Spawn barriers for all 8 zones
+	-- Spawn building walls for all 8 zones
 	for zoneId = 1, 8 do
-		local centerX = (zoneId - 1) * ZONE_SPACING
-		local centerZ = -100
-		local halfW = ZONE_SIZE.X / 2
-		local halfD = ZONE_SIZE.Z / 2
+		ZoneService._spawnZoneWallsForZone(zoneId, wallsFolder)
+	end
+end
 
-		-- North wall (positive Z edge)
-		local wallN = Instance.new("Part")
-		wallN.Name = "Barrier_Z" .. zoneId .. "_N"
-		wallN.Size = Vector3.new(ZONE_SIZE.X + BARRIER_THICKNESS, BARRIER_HEIGHT, BARRIER_THICKNESS)
-		wallN.Position = Vector3.new(centerX, BARRIER_HEIGHT / 2, centerZ + halfD + BARRIER_THICKNESS / 2)
-		wallN.Anchored = true
-		wallN.CanCollide = true
-		wallN.Transparency = 1
-		wallN.Parent = barrierFolder
+-- Spawn colorful building walls for a single zone along N, S, and one outer edge.
+-- The east edge (positive X) between adjacent zones is left open for gates,
+-- except for zone 8 which has buildings on its east edge (end of the map).
+-- The west edge (negative X) is also open for gates except for zone 1 (start of map, connects to lobby).
+function ZoneService._spawnZoneWallsForZone(zoneId, wallsFolder)
+	local zoneFolder = Instance.new("Folder")
+	zoneFolder.Name = "ZoneWall_" .. tostring(zoneId)
+	zoneFolder.Parent = wallsFolder
 
-		-- South wall (negative Z edge)
-		local wallS = Instance.new("Part")
-		wallS.Name = "Barrier_Z" .. zoneId .. "_S"
-		wallS.Size = Vector3.new(ZONE_SIZE.X + BARRIER_THICKNESS, BARRIER_HEIGHT, BARRIER_THICKNESS)
-		wallS.Position = Vector3.new(centerX, BARRIER_HEIGHT / 2, centerZ - halfD - BARRIER_THICKNESS / 2)
-		wallS.Anchored = true
-		wallS.CanCollide = true
-		wallS.Transparency = 1
-		wallS.Parent = barrierFolder
+	local centerX = (zoneId - 1) * ZONE_SPACING
+	local centerZ = -100
+	local halfW = ZONE_SIZE.X / 2  -- 100
+	local halfD = ZONE_SIZE.Z / 2  -- 100
 
-		-- East wall (positive X edge) - only for zone 8 (last zone)
-		if zoneId == 8 then
-			local wallE = Instance.new("Part")
-			wallE.Name = "Barrier_Z" .. zoneId .. "_E"
-			wallE.Size = Vector3.new(BARRIER_THICKNESS, BARRIER_HEIGHT, ZONE_SIZE.Z + BARRIER_THICKNESS)
-			wallE.Position = Vector3.new(centerX + halfW + BARRIER_THICKNESS / 2, BARRIER_HEIGHT / 2, centerZ)
-			wallE.Anchored = true
-			wallE.CanCollide = true
-			wallE.Transparency = 1
-			wallE.Parent = barrierFolder
+	local palette = ZONE_WALL_PALETTES[zoneId] or ZONE_WALL_PALETTES[1]
+
+	-- Seed random for deterministic building placement per zone
+	math.randomseed(7000 + zoneId * 100)
+
+	-- Building spacing: every 12-15 studs along edges
+	local BUILDING_SPACING = 13
+
+	-- North edge (Z = centerZ + halfD = Z=0): buildings along the full width
+	local northZ = centerZ + halfD
+	local northStartX = centerX - halfW
+	local northEndX = centerX + halfW
+	local buildingCount = 0
+
+	local x = northStartX + 5
+	while x < northEndX - 5 do
+		local height = 20 + math.random() * 20  -- 20-40
+		local width = 8 + math.random() * 7     -- 8-15
+		local depth = 4 + math.random() * 2     -- 4-6
+		local color = palette[math.random(1, #palette)]
+
+		local building = Instance.new("Part")
+		building.Name = "Building_N_" .. buildingCount
+		building.Shape = Enum.PartType.Block
+		building.Size = Vector3.new(width, height, depth)
+		building.Position = Vector3.new(x, height / 2, northZ + depth / 2)
+		building.Anchored = true
+		building.CanCollide = true
+		building.Color = color
+		building.Material = Enum.Material.SmoothPlastic
+		building.Parent = zoneFolder
+
+		-- Add white window squares on the front face (facing into the zone, negative Z)
+		ZoneService._addBuildingWindows(building, height, width, depth, "south", zoneFolder, buildingCount, "N")
+
+		buildingCount = buildingCount + 1
+		x = x + width + (12 + math.random() * 3 - width)
+		if x < x then break end -- safety
+		-- Ensure we advance at least BUILDING_SPACING
+		local nextX = northStartX + 5 + buildingCount * BUILDING_SPACING
+		if x < nextX then x = nextX end
+	end
+
+	-- South edge (Z = centerZ - halfD = Z=-200): buildings along the full width
+	local southZ = centerZ - halfD
+	local southStartX = centerX - halfW
+	local southEndX = centerX + halfW
+	buildingCount = 0
+
+	x = southStartX + 5
+	while x < southEndX - 5 do
+		local height = 20 + math.random() * 20
+		local width = 8 + math.random() * 7
+		local depth = 4 + math.random() * 2
+		local color = palette[math.random(1, #palette)]
+
+		local building = Instance.new("Part")
+		building.Name = "Building_S_" .. buildingCount
+		building.Shape = Enum.PartType.Block
+		building.Size = Vector3.new(width, height, depth)
+		building.Position = Vector3.new(x, height / 2, southZ - depth / 2)
+		building.Anchored = true
+		building.CanCollide = true
+		building.Color = color
+		building.Material = Enum.Material.SmoothPlastic
+		building.Parent = zoneFolder
+
+		-- Add white window squares on the front face (facing into the zone, positive Z)
+		ZoneService._addBuildingWindows(building, height, width, depth, "north", zoneFolder, buildingCount, "S")
+
+		buildingCount = buildingCount + 1
+		local nextX = southStartX + 5 + buildingCount * BUILDING_SPACING
+		if x + BUILDING_SPACING > nextX then
+			x = x + BUILDING_SPACING
+		else
+			x = nextX
+		end
+	end
+
+	-- Outer side edge: zone 1 gets west wall, zone 8 gets east wall
+	-- All other zones share edges with adjacent zones so no building walls there
+	if zoneId == 1 then
+		-- West edge (X = centerX - halfW): buildings along full depth (lobby path area excluded)
+		local westX = centerX - halfW
+		local wallStartZ = centerZ - halfD
+		local wallEndZ = centerZ + halfD
+		buildingCount = 0
+
+		local z = wallStartZ + 5
+		while z < wallEndZ - 5 do
+			local height = 20 + math.random() * 20
+			local width = 8 + math.random() * 7
+			local depth = 4 + math.random() * 2
+			local color = palette[math.random(1, #palette)]
+
+			-- Skip the area where the lobby path connects (around Z=-100, +/-10)
+			if z > (LOBBY_CENTER_Z - 12) and z < (LOBBY_CENTER_Z + 12) then
+				z = LOBBY_CENTER_Z + 12
+				if z >= wallEndZ - 5 then break end
+			end
+
+			local building = Instance.new("Part")
+			building.Name = "Building_W_" .. buildingCount
+			building.Shape = Enum.PartType.Block
+			building.Size = Vector3.new(depth, height, width)
+			building.Position = Vector3.new(westX - depth / 2, height / 2, z)
+			building.Anchored = true
+			building.CanCollide = true
+			building.Color = color
+			building.Material = Enum.Material.SmoothPlastic
+			building.Parent = zoneFolder
+
+			-- Add windows on the front face (facing into the zone, positive X)
+			ZoneService._addBuildingWindows(building, height, width, depth, "east", zoneFolder, buildingCount, "W")
+
+			buildingCount = buildingCount + 1
+			local nextZ = wallStartZ + 5 + buildingCount * BUILDING_SPACING
+			if z + BUILDING_SPACING > nextZ then
+				z = z + BUILDING_SPACING
+			else
+				z = nextZ
+			end
+		end
+	end
+
+	if zoneId == 8 then
+		-- East edge (X = centerX + halfW): buildings along full depth
+		local eastX = centerX + halfW
+		local wallStartZ = centerZ - halfD
+		local wallEndZ = centerZ + halfD
+		buildingCount = 0
+
+		local z = wallStartZ + 5
+		while z < wallEndZ - 5 do
+			local height = 20 + math.random() * 20
+			local width = 8 + math.random() * 7
+			local depth = 4 + math.random() * 2
+			local color = palette[math.random(1, #palette)]
+
+			local building = Instance.new("Part")
+			building.Name = "Building_E_" .. buildingCount
+			building.Shape = Enum.PartType.Block
+			building.Size = Vector3.new(depth, height, width)
+			building.Position = Vector3.new(eastX + depth / 2, height / 2, z)
+			building.Anchored = true
+			building.CanCollide = true
+			building.Color = color
+			building.Material = Enum.Material.SmoothPlastic
+			building.Parent = zoneFolder
+
+			-- Add windows on the front face (facing into the zone, negative X)
+			ZoneService._addBuildingWindows(building, height, width, depth, "west", zoneFolder, buildingCount, "E")
+
+			buildingCount = buildingCount + 1
+			local nextZ = wallStartZ + 5 + buildingCount * BUILDING_SPACING
+			if z + BUILDING_SPACING > nextZ then
+				z = z + BUILDING_SPACING
+			else
+				z = nextZ
+			end
+		end
+	end
+
+	-- Reset random seed
+	math.randomseed(os.time())
+end
+
+-- Add white window squares to a building face.
+-- direction: "north" (front facing +Z), "south" (-Z), "east" (+X), "west" (-X)
+function ZoneService._addBuildingWindows(building, height, width, depth, direction, parent, buildingIdx, edge)
+	-- Only add windows to ~60% of buildings (randomized)
+	if math.random() > 0.6 then return end
+
+	-- Determine how many windows (2-4 rows, 1-2 columns)
+	local rows = math.random(2, 4)
+	local cols = math.random(1, 2)
+	local windowSize = 2
+
+	for row = 1, rows do
+		for col = 1, cols do
+			local window = Instance.new("Part")
+			window.Name = "Window_" .. edge .. buildingIdx .. "_" .. row .. "_" .. col
+			window.Shape = Enum.PartType.Block
+			window.Color = Color3.fromRGB(255, 255, 255)
+			window.Material = Enum.Material.SmoothPlastic
+			window.Anchored = true
+			window.CanCollide = false
+
+			-- Calculate window position offset relative to building center
+			local yOffset = -height / 2 + row * (height / (rows + 1))
+			local colOffset = (col - (cols + 1) / 2) * (windowSize + 1.5)
+
+			if direction == "south" then
+				-- Front face is -Z
+				window.Size = Vector3.new(windowSize, windowSize, 0.3)
+				window.Position = Vector3.new(
+					building.Position.X + colOffset,
+					building.Position.Y + yOffset,
+					building.Position.Z - depth / 2 - 0.15
+				)
+			elseif direction == "north" then
+				-- Front face is +Z
+				window.Size = Vector3.new(windowSize, windowSize, 0.3)
+				window.Position = Vector3.new(
+					building.Position.X + colOffset,
+					building.Position.Y + yOffset,
+					building.Position.Z + depth / 2 + 0.15
+				)
+			elseif direction == "east" then
+				-- Front face is +X
+				window.Size = Vector3.new(0.3, windowSize, windowSize)
+				window.Position = Vector3.new(
+					building.Position.X + depth / 2 + 0.15,
+					building.Position.Y + yOffset,
+					building.Position.Z + colOffset
+				)
+			elseif direction == "west" then
+				-- Front face is -X
+				window.Size = Vector3.new(0.3, windowSize, windowSize)
+				window.Position = Vector3.new(
+					building.Position.X - depth / 2 - 0.15,
+					building.Position.Y + yOffset,
+					building.Position.Z + colOffset
+				)
+			end
+
+			window.Parent = parent
 		end
 	end
 end
