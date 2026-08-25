@@ -260,27 +260,19 @@ EggHatchStart.OnClientEvent:Connect(function(eggType)
 	if hatchPosition then
 		effectsController._lastHatchPosition = hatchPosition
 	end
+	-- Start the egg wobble animation immediately so the player sees feedback right away
+	effectsController:startEggWobble()
 end)
 
 EggHatchResult.OnClientEvent:Connect(function(petData)
-	local hatchPosition = effectsController._lastHatchPosition
-	if not hatchPosition then
-		if player.Character then
-			local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-			if hrp then
-				local lookVector = hrp.CFrame.LookVector
-				hatchPosition = hrp.Position + lookVector * 6
-			end
-		end
-	end
 	effectsController._lastHatchPosition = nil
 
-	if hatchPosition then
-		effectsController:showEggHatchAnimation(hatchPosition, petData)
-	end
+	-- Complete the egg hatch animation (cancels wobble, does shakes + reveal)
+	effectsController:completeEggHatch(petData)
+
 	-- Delay the UIController modal until after the EffectsController animation
-	-- finishes (~5s total: wobble + crack + flash + reveal + fade)
-	task.delay(5.5, function()
+	-- finishes (~4s total: shakes + crack + flash + reveal + auto-dismiss)
+	task.delay(4, function()
 		uiController:showEggHatch(petData)
 	end)
 end)
