@@ -13821,11 +13821,83 @@ MasteryData.Buffs = {
 		-- Multiplier on walk speed
 		bonusPerLevel = { 1.05, 1.1, 1.15, 1.2, 1.3, 1.4, 1.5, 1.6, 1.75, 2.0 },
 	},
+	LongerBuffs = {
+		id = "LongerBuffs",
+		displayName = "Longer Buffs",
+		description = "Shop potions last longer",
+		icon = "⏱",
+		color = { 100, 200, 255 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 3, 4, 5 },
+		bonusPerLevel = { 1.2, 1.4, 1.6, 1.8, 2.0 },
+	},
+	MorePetSlots = {
+		id = "MorePetSlots",
+		displayName = "More Pet Slots",
+		description = "Equip more pets at once",
+		icon = "🐾",
+		color = { 180, 120, 60 },
+		maxLevel = 5,
+		pointsPerLevel = { 2, 3, 4, 5, 6 },
+		bonusPerLevel = { 1, 2, 3, 4, 5 },
+	},
+	BiggerRange = {
+		id = "BiggerRange",
+		displayName = "Bigger Range",
+		description = "Pets detect breakables from further away",
+		icon = "◎",
+		color = { 100, 255, 150 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 2, 3, 3 },
+		bonusPerLevel = { 1.2, 1.4, 1.6, 1.8, 2.0 },
+	},
+	QuickHatch = {
+		id = "QuickHatch",
+		displayName = "Quick Hatch",
+		description = "Eggs hatch faster",
+		icon = "🥚",
+		color = { 255, 240, 180 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 1, 2, 2, 3 },
+		bonusPerLevel = { 0.9, 0.8, 0.7, 0.6, 0.5 },
+	},
+	DropMagnet = {
+		id = "DropMagnet",
+		displayName = "Drop Magnet",
+		description = "Collect drops from further away",
+		icon = "🧲",
+		color = { 255, 80, 80 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 2, 3, 4 },
+		bonusPerLevel = { 1.3, 1.6, 2.0, 2.5, 3.0 },
+	},
+	DoubleJump = {
+		id = "DoubleJump",
+		displayName = "Double Jump",
+		description = "Unlocks extra jumps",
+		icon = "⬆",
+		color = { 150, 200, 255 },
+		maxLevel = 3,
+		pointsPerLevel = { 3, 5, 7 },
+		bonusPerLevel = { 2, 2, 3 },
+	},
+	CritPower = {
+		id = "CritPower",
+		displayName = "Crit Power",
+		description = "Crit hits deal more damage",
+		icon = "💥",
+		color = { 255, 100, 50 },
+		maxLevel = 5,
+		pointsPerLevel = { 1, 2, 3, 4, 5 },
+		bonusPerLevel = { 3, 4, 5, 7, 10 },
+	},
 }
 
 -- Ordered list for UI display
 MasteryData.BuffOrder = {
 	"MoreCoins", "MoreDiamonds", "BetterLuck", "XPBoost", "FasterRunning",
+	"LongerBuffs", "MorePetSlots", "BiggerRange", "QuickHatch", "DropMagnet",
+	"DoubleJump", "CritPower",
 }
 
 return MasteryData
