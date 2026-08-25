@@ -4854,6 +4854,37 @@ function ZoneService._spawnWorldDecoration()
 
 	-- Zone 2: Stadt - street lamps, benches, planters
 	ZoneService._spawnZone2Deco(decoFolder)
+
+	-- Colorful buildings along Zone 1 north edge
+	local buildingsFolder = Instance.new("Folder")
+	buildingsFolder.Name = "Buildings"
+	buildingsFolder.Parent = decoFolder
+
+	local buildingColors = {
+		Color3.fromRGB(255, 120, 180),
+		Color3.fromRGB(120, 180, 255),
+		Color3.fromRGB(180, 255, 120),
+		Color3.fromRGB(255, 200, 80),
+		Color3.fromRGB(200, 120, 255),
+		Color3.fromRGB(120, 255, 220),
+		Color3.fromRGB(255, 150, 100),
+		Color3.fromRGB(150, 150, 255),
+	}
+
+	for i = 1, 8 do
+		local height = 20 + (i * 3)
+		local width = 10
+
+		local building = Instance.new("Part")
+		building.Name = "Building_" .. i
+		building.Size = Vector3.new(width, height, 5)
+		building.Position = Vector3.new(-90 + (i - 1) * 24, height / 2, -5)
+		building.Anchored = true
+		building.CanCollide = true
+		building.Color = buildingColors[i]
+		building.Material = Enum.Material.SmoothPlastic
+		building.Parent = buildingsFolder
+	end
 end
 
 function ZoneService._spawnZone1Deco(decoFolder)
