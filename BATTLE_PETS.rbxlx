@@ -10985,12 +10985,13 @@ function EffectsController:showLevelUpCelebration(newLevel)
 end
 
 --------------------------------------------------------------------------------
--- Crit Button: a single STATIC BillboardGui button (Fortnite-style weak point)
--- that appears on a destructible after clicking it. The button is a golden
--- circle with a crosshair icon, fixed in position on the destructible surface.
+-- Crit Button: a single BillboardGui button (Fortnite-style weak point)
+-- that appears on a destructible after clicking it. The button is a white
+-- circle that randomly varies in size (22-40px) and teleports to a random
+-- offset around the destructible each spawn, making it harder to click.
 -- Only 1 crit button exists globally at a time (spawning a new one removes the
 -- previous one). Clicking the button triggers crit (2x damage).
--- Button disappears after 2 seconds if not clicked.
+-- Button disappears after 3 seconds if not clicked.
 --------------------------------------------------------------------------------
 function EffectsController:spawnCritButton(destructiblePart, destructibleId, onCritClicked)
 	if not self._initialized then return end
@@ -10999,21 +11000,22 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	-- Only 1 crit button globally at a time: remove any existing one
 	self:_removeGlobalCritButton()
 
-	-- Create BillboardGui attached to the destructible (centered, no random offset)
+	-- Create BillboardGui attached to the destructible (random offset each spawn)
+	local critSize = math.random(22, 40)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "CritButton_" .. destructibleId
-	billboardGui.Size = UDim2.fromOffset(80, 80)
-	billboardGui.StudsOffset = Vector3.new(0, 0, 0)
+	billboardGui.Size = UDim2.fromOffset(critSize, critSize)
+	billboardGui.StudsOffset = Vector3.new(math.random(-3, 3), math.random(0, 3), math.random(-3, 3))
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Active = true
 	billboardGui.Adornee = destructiblePart
 	billboardGui.Parent = self._playerGui
 
-	-- Create the circular button (plain golden circle, no text)
+	-- Create the circular button (plain white circle, no text)
 	local button = Instance.new("TextButton")
 	button.Name = "CritBtn"
 	button.Size = UDim2.fromScale(1, 1)
-	button.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	button.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	button.BackgroundTransparency = 0
 	button.Text = ""
 	button.AutoButtonColor = true
@@ -11028,7 +11030,7 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	local stroke = Instance.new("UIStroke")
 	stroke.Name = "GlowStroke"
 	stroke.Thickness = 4
-	stroke.Color = Color3.fromRGB(255, 255, 100)
+	stroke.Color = Color3.fromRGB(220, 220, 220)
 	stroke.Transparency = 0.2
 	stroke.Parent = button
 
