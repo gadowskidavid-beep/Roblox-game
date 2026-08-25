@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Wire all 7 new mastery buffs (LongerBuffs, MorePetSlots, BiggerRange, QuickHatch, DropMagnet, DoubleJump, CritPower) so they affect gameplay. Currently they only exist as data in MasteryData.lua but have no functional effect.",
+  "status": "in_progress",
+  "steps": [
+    "1. ShopService.lua - LongerBuffs: In the purchaseItem function, after calculating `local expiry = os.clock() + itemDef.duration`, apply the LongerBuffs mastery bonus. ShopService needs a _masteryService reference (add setMasteryService method). Get the bonus via MasteryService.getBuffBonus(player, 'LongerBuffs') and multiply the duration by it before computing expiry. Also update Main.server.lua to call ShopService.setMasteryService(MasteryService).",
+    "2. PetService.lua - MorePetSlots: In the getMaxEquipped local function, get the MorePetSlots mastery bonus via PetService._masteryService.getBuffBonus(player, 'MorePetSlots') and add it to the max equipped count (bonusPerLevel values are 1,2,3,4,5 which represent additional slots).",
+    "3. PetController.lua - BiggerRange: In the getAllDestructiblesInRange method, the maxDistance parameter defaults to 40 (self._autoAttackRange). Add a mechanism to apply the BiggerRange mastery bonus. Since PetController is client-side, it needs to fetch the mastery state. Add a _biggerRangeMultiplier field (default 1) and a setBiggerRangeMultiplier method. In _startAutoAttack where self._autoAttackRange is used, multiply the range by the multiplier. In Main.client.lua, after getting initial player data and on MasteryUpdated events, compute the BiggerRange bonus from the mastery state and call petController:setBiggerRangeMultiplier(bonus).",
+    "4. EggService.lua - QuickHatch: In both purchaseAndHatch and hatchFree functions, the `task.wait(1)` line controls hatch animation delay. Add a _masteryService reference to EggService (add setMasteryService method). Before the task.wait call, get the QuickHatch bonus via MasteryService.getBuffBonus(player, 'QuickHatch') and multiply the wait time by it (bonusPerLevel values are 0.9, 0.8, 0.7, 0.6, 0.5 so they reduce the wait). Update Main.server.lua to call EggService.setMasteryService(MasteryService).",
+    "5. DropMagnet - cosmetic-ready: Add a comment in PetController.lua near getAllDestructiblesInRange noting that DropMagnet would increase collection radius when a drop collection system exists. Since there is no explicit drop collection radius system (drops are awarded server-side immediately on destructible destruction), mark this as cosmetic-ready with a TODO comment. Also wire a _dropMagnetMultiplier field and setDropMagnetMultiplier method so it is ready to be used when drop collection is implemented.",
+    "6. Main.client.lua - DoubleJump: Add a DoubleJump system using Humanoid.StateChanged. On character added, connect to Humanoid.StateChanged. Track jump count. When the player lands (Enum.HumanoidStateType.Landed), reset jump count to 0. When the player is in Freefall state and presses Space (UserInputService.JumpRequest), check if extra jumps are available based on the DoubleJump mastery bonus (bonusPerLevel: 2, 2, 3 representing max total jumps including the first). If jumps remaining > 0, set Humanoid:ChangeState(Enum.HumanoidStateType.Jumping). The bonus value needs to come from the mastery state fetched via GetMasteryState or from MasteryUpdated events.",
+    "7. ZoneService.lua - CritPower: In the critAttackDestructible function, the line `local critDamage = 2` is hardcoded. Replace it with: get the CritPower mastery bonus via ZoneService._masteryService.getBuffBonus(player, 'CritPower'). If the bonus is > 0, use it as the crit damage; otherwise fall back to 2."
+  ],
+  "acceptance_criteria": [
+    "ShopService.purchaseItem multiplies buff duration by LongerBuffs mastery bonus when active",
+    "PetService getMaxEquipped adds MorePetSlots mastery bonus to max equipped count",
+    "PetController auto-attack range is multiplied by BiggerRange mastery bonus",
+    "EggService task.wait delay is multiplied by QuickHatch mastery bonus (reducing hatch time)",
+    "DropMagnet is wired as cosmetic-ready with multiplier field and setter method",
+    "DoubleJump system allows extra jumps based on mastery bonus level",
+    "ZoneService critAttackDestructible uses CritPower mastery bonus instead of hardcoded 2",
+    "python3 tools/generate_rbxlx.py runs successfully after all changes"
+  ],
+  "verification": [
+    "Run: python3 tools/generate_rbxlx.py from /projects/sandbox/Roblox-game/ and verify it completes without errors"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

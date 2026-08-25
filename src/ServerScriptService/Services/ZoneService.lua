@@ -2017,8 +2017,14 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 		return false, "Zone not unlocked"
 	end
 
-	-- Crit deals 2 damage
+	-- Crit deals 2 damage (or more with CritPower mastery)
 	local critDamage = 2
+	if ZoneService._masteryService then
+		local critBonus = ZoneService._masteryService.getBuffBonus(player, "CritPower")
+		if critBonus > 0 then
+			critDamage = critBonus
+		end
+	end
 
 	-- Apply damage
 	destructible.hp = destructible.hp - critDamage

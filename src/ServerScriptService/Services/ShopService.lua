@@ -16,6 +16,7 @@ local ShopService = {}
 ShopService._dataService = nil
 ShopService._currencyService = nil
 ShopService._eggService = nil
+ShopService._masteryService = nil
 
 -- In-memory timed buff storage: _activeBuffs[userId] = { buffType = expiryTimestamp, ... }
 ShopService._activeBuffs = {}
@@ -82,6 +83,11 @@ function ShopService.setEggService(eggService)
 	ShopService._eggService = eggService
 end
 
+-- Set MasteryService reference (called after init to avoid circular deps)
+function ShopService.setMasteryService(masteryService)
+	ShopService._masteryService = masteryService
+end
+
 -- Purchase a shop item
 function ShopService.purchaseItem(player, itemId)
 	if not player or type(itemId) ~= "string" then
@@ -117,7 +123,15 @@ function ShopService.purchaseItem(player, itemId)
 		if not ShopService._activeBuffs[userId] then
 			ShopService._activeBuffs[userId] = {}
 		end
-		local expiry = os.clock() + itemDef.duration
+		-- Apply LongerBuffs mastery bonus to duration
+		local effectiveDuration = itemDef.duration
+		if ShopService._masteryService then
+			local longerBuffsBonus = ShopService._masteryService.getBuffBonus(player, "LongerBuffs")
+			if longerBuffsBonus > 0 then
+				effectiveDuration = effectiveDuration * longerBuffsBonus
+			end
+		end
+		local expiry = os.clock() + effectiveDuration
 		ShopService._activeBuffs[userId][itemDef.buffType] = expiry
 	end
 

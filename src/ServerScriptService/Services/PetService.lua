@@ -206,7 +206,7 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	return newPet, nil
 end
 
--- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
+-- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots + MorePetSlots mastery)
 local function getMaxEquipped(player)
 	local base = Config.MaxEquippedPetsBase
 	local bonus = PetService._upgradeService.getUpgradeBonus(player, "Friendship")
@@ -215,7 +215,12 @@ local function getMaxEquipped(player)
 	if data and data.shopPurchases then
 		extraSlots = data.shopPurchases.extraEquipSlots or 0
 	end
-	return base + (bonus or 0) + extraSlots
+	-- MorePetSlots mastery bonus: adds additional equip slots
+	local morePetSlotsBonus = 0
+	if PetService._masteryService then
+		morePetSlotsBonus = PetService._masteryService.getBuffBonus(player, "MorePetSlots")
+	end
+	return base + (bonus or 0) + extraSlots + morePetSlotsBonus
 end
 
 -- Equip a pet by instance ID

@@ -56,6 +56,9 @@ function PetController.new()
 	self._manualTargetMode = false -- when true, pets follow manual orders instead of auto
 	self._manualTargetExpiry = 0 -- tick() when manual mode expires
 	self._manualTargetDuration = 5 -- seconds before reverting to auto-distribute
+	-- Mastery buff multipliers (set from Main.client.lua)
+	self._biggerRangeMultiplier = 1 -- BiggerRange mastery: multiplies detection range
+	self._dropMagnetMultiplier = 1 -- DropMagnet mastery: multiplies drop collection radius (cosmetic-ready)
 	return self
 end
 
@@ -734,6 +737,9 @@ end
 function PetController:getAllDestructiblesInRange(maxDistance)
 	if not self._initialized then return {} end
 
+	-- Apply BiggerRange mastery multiplier to detection range
+	local effectiveMaxDistance = (maxDistance or 40) * self._biggerRangeMultiplier
+
 	local character = self._player.Character
 	if not character then return {} end
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
@@ -748,7 +754,7 @@ function PetController:getAllDestructiblesInRange(maxDistance)
 	for _, obj in ipairs(zonesFolder:GetDescendants()) do
 		if obj:IsA("BasePart") and obj:FindFirstChild("DestructibleId") then
 			local dist = (obj.Position - playerPos).Magnitude
-			if dist < (maxDistance or 40) then
+			if dist < effectiveMaxDistance then
 				table.insert(results, {
 					part = obj,
 					id = obj:FindFirstChild("DestructibleId").Value,
@@ -1031,6 +1037,22 @@ end
 --------------------------------------------------------------------------------
 function PetController:setFasterPetsMultiplier(multiplier)
 	self._fasterPetsMultiplier = multiplier or 0
+end
+
+--------------------------------------------------------------------------------
+-- Set BiggerRange mastery multiplier (increases auto-attack detection range)
+--------------------------------------------------------------------------------
+function PetController:setBiggerRangeMultiplier(mult)
+	self._biggerRangeMultiplier = mult or 1
+end
+
+--------------------------------------------------------------------------------
+-- Set DropMagnet mastery multiplier (cosmetic-ready)
+-- TODO: When a drop collection radius system is implemented, this multiplier
+-- will increase the radius at which drops are automatically collected by the player.
+--------------------------------------------------------------------------------
+function PetController:setDropMagnetMultiplier(mult)
+	self._dropMagnetMultiplier = mult or 1
 end
 
 --------------------------------------------------------------------------------

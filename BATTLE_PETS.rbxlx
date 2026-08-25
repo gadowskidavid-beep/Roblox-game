@@ -843,7 +843,9 @@ PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
+EggService.setMasteryService(MasteryService)
 ShopService.setEggService(EggService)
+ShopService.setMasteryService(MasteryService)
 
 ZoneService.init(DataService, CurrencyService, PetService)
 ZoneService.setQuestService(QuestService)
@@ -2172,7 +2174,7 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	return newPet, nil
 end
 
--- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
+-- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots + MorePetSlots mastery)
 local function getMaxEquipped(player)
 	local base = Config.MaxEquippedPetsBase
 	local bonus = PetService._upgradeService.getUpgradeBonus(player, "Friendship")
@@ -2181,7 +2183,12 @@ local function getMaxEquipped(player)
 	if data and data.shopPurchases then
 		extraSlots = data.shopPurchases.extraEquipSlots or 0
 	end
-	return base + (bonus or 0) + extraSlots
+	-- MorePetSlots mastery bonus: adds additional equip slots
+	local morePetSlotsBonus = 0
+	if PetService._masteryService then
+		morePetSlotsBonus = PetService._masteryService.getBuffBonus(player, "MorePetSlots")
+	end
+	return base + (bonus or 0) + extraSlots + morePetSlotsBonus
 end
 
 -- Equip a pet by instance ID
@@ -4683,8 +4690,14 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 		return false, "Zone not unlocked"
 	end
 
-	-- Crit deals 2 damage
+	-- Crit deals 2 damage (or more with CritPower mastery)
 	local critDamage = 2
+	if ZoneService._masteryService then
+		local critBonus = ZoneService._masteryService.getBuffBonus(player, "CritPower")
+		if critBonus > 0 then
+			critDamage = critBonus
+		end
+	end
 
 	-- Apply damage
 	destructible.hp = destructible.hp - critDamage
@@ -5743,6 +5756,7 @@ EggService._dataService = nil
 EggService._currencyService = nil
 EggService._petService = nil
 EggService._questService = nil
+EggService._masteryService = nil
 
 -- Per-player purchase lock to prevent concurrent hatch exploits
 EggService._hatchLock = {}
@@ -5809,8 +5823,15 @@ function EggService.purchaseAndHatch(player, eggType)
 			end
 		end
 
-		-- Short delay to allow client to start animation (1 second; wobble begins immediately on client)
-		task.wait(1)
+		-- Short delay to allow client to start animation (reduced by QuickHatch mastery)
+		local hatchDelay = 1
+		if EggService._masteryService then
+			local qhBonus = EggService._masteryService.getBuffBonus(player, "QuickHatch")
+			if qhBonus > 0 then
+				hatchDelay = 1 * qhBonus
+			end
+		end
+		task.wait(hatchDelay)
 
 		-- Delegate to PetService for actual hatching (cost already deducted)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
@@ -5849,6 +5870,11 @@ end
 -- Set quest service reference (called after init to avoid circular deps)
 function EggService.setQuestService(questService)
 	EggService._questService = questService
+end
+
+-- Set mastery service reference (called after init to avoid circular deps)
+function EggService.setMasteryService(masteryService)
+	EggService._masteryService = masteryService
 end
 
 -- Hatch an egg for free (used by auto-hatch; no cost deduction, still validates zone)
@@ -5899,8 +5925,15 @@ function EggService.hatchFree(player, eggType)
 			end
 		end
 
-		-- Short delay to allow client to start animation
-		task.wait(1)
+		-- Short delay to allow client to start animation (reduced by QuickHatch mastery)
+		local hatchDelay = 1
+		if EggService._masteryService then
+			local qhBonus = EggService._masteryService.getBuffBonus(player, "QuickHatch")
+			if qhBonus > 0 then
+				hatchDelay = 1 * qhBonus
+			end
+		end
+		task.wait(hatchDelay)
 
 		-- Delegate to PetService for actual hatching (skip cost deduction)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
@@ -6506,6 +6539,37 @@ if playerData and playerData.upgrades and playerData.upgrades.FasterPets then
 	end
 end
 
+-- Apply BiggerRange and DropMagnet mastery buffs from initial mastery state
+local function applyMasteryBuffsToClient(masteryState)
+	if not masteryState or not masteryState.buffs then return end
+
+	-- BiggerRange: multiplies pet detection range
+	local biggerRangeLevel = masteryState.buffs.BiggerRange or 0
+	if biggerRangeLevel > 0 then
+		local buffDef = MasteryData.Buffs.BiggerRange
+		if buffDef and buffDef.bonusPerLevel[biggerRangeLevel] then
+			petController:setBiggerRangeMultiplier(buffDef.bonusPerLevel[biggerRangeLevel])
+		end
+	else
+		petController:setBiggerRangeMultiplier(1)
+	end
+
+	-- DropMagnet: multiplies drop collection radius (cosmetic-ready)
+	local dropMagnetLevel = masteryState.buffs.DropMagnet or 0
+	if dropMagnetLevel > 0 then
+		local buffDef = MasteryData.Buffs.DropMagnet
+		if buffDef and buffDef.bonusPerLevel[dropMagnetLevel] then
+			petController:setDropMagnetMultiplier(buffDef.bonusPerLevel[dropMagnetLevel])
+		end
+	else
+		petController:setDropMagnetMultiplier(1)
+	end
+end
+
+-- Fetch initial mastery state and apply client-side buffs
+local initialMasteryState = GetMasteryState:InvokeServer()
+applyMasteryBuffsToClient(initialMasteryState)
+
 --------------------------------------------------------------------------------
 -- REMOTE EVENT HANDLERS
 --------------------------------------------------------------------------------
@@ -6643,6 +6707,8 @@ end)
 local MasteryUpdated = Remotes:WaitForChild("MasteryUpdated")
 MasteryUpdated.OnClientEvent:Connect(function(masteryState)
 	uiController:updateMastery(masteryState)
+	-- Reapply client-side mastery buffs (BiggerRange, DropMagnet, DoubleJump)
+	applyMasteryBuffsToClient(masteryState)
 end)
 
 CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
@@ -6856,6 +6922,53 @@ end)
 --------------------------------------------------------------------------------
 local function onCharacterAdded(character)
 	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+	local humanoid = character:WaitForChild("Humanoid")
+
+	-- DoubleJump system: allows extra jumps based on mastery level
+	local jumpCount = 0
+	local maxJumps = 1 -- default: single jump only
+
+	-- Compute maxJumps from mastery state
+	local function updateMaxJumps(masteryState)
+		if masteryState and masteryState.buffs then
+			local djLevel = masteryState.buffs.DoubleJump or 0
+			if djLevel > 0 then
+				local buffDef = MasteryData.Buffs.DoubleJump
+				if buffDef and buffDef.bonusPerLevel[djLevel] then
+					maxJumps = buffDef.bonusPerLevel[djLevel]
+				end
+			else
+				maxJumps = 1
+			end
+		end
+	end
+
+	-- Apply from initial mastery state
+	updateMaxJumps(initialMasteryState)
+
+	-- Listen for mastery updates to refresh maxJumps
+	MasteryUpdated.OnClientEvent:Connect(function(masteryState)
+		updateMaxJumps(masteryState)
+	end)
+
+	-- Reset jump count on landing
+	humanoid.StateChanged:Connect(function(_, newState)
+		if newState == Enum.HumanoidStateType.Landed then
+			jumpCount = 0
+		elseif newState == Enum.HumanoidStateType.Jumping then
+			jumpCount = jumpCount + 1
+		end
+	end)
+
+	-- Handle jump requests for extra jumps (mid-air)
+	UserInputService.JumpRequest:Connect(function()
+		if maxJumps <= 1 then return end -- no double jump mastery
+		if humanoid:GetState() == Enum.HumanoidStateType.Freefall then
+			if jumpCount < maxJumps then
+				humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+		end
+	end)
 
 	-- Campaign portal proximity (touch detection)
 	local campaignPortal = workspace:FindFirstChild("CampaignPortal")
@@ -9456,6 +9569,9 @@ function PetController.new()
 	self._manualTargetMode = false -- when true, pets follow manual orders instead of auto
 	self._manualTargetExpiry = 0 -- tick() when manual mode expires
 	self._manualTargetDuration = 5 -- seconds before reverting to auto-distribute
+	-- Mastery buff multipliers (set from Main.client.lua)
+	self._biggerRangeMultiplier = 1 -- BiggerRange mastery: multiplies detection range
+	self._dropMagnetMultiplier = 1 -- DropMagnet mastery: multiplies drop collection radius (cosmetic-ready)
 	return self
 end
 
@@ -10134,6 +10250,9 @@ end
 function PetController:getAllDestructiblesInRange(maxDistance)
 	if not self._initialized then return {} end
 
+	-- Apply BiggerRange mastery multiplier to detection range
+	local effectiveMaxDistance = (maxDistance or 40) * self._biggerRangeMultiplier
+
 	local character = self._player.Character
 	if not character then return {} end
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
@@ -10148,7 +10267,7 @@ function PetController:getAllDestructiblesInRange(maxDistance)
 	for _, obj in ipairs(zonesFolder:GetDescendants()) do
 		if obj:IsA("BasePart") and obj:FindFirstChild("DestructibleId") then
 			local dist = (obj.Position - playerPos).Magnitude
-			if dist < (maxDistance or 40) then
+			if dist < effectiveMaxDistance then
 				table.insert(results, {
 					part = obj,
 					id = obj:FindFirstChild("DestructibleId").Value,
@@ -10431,6 +10550,22 @@ end
 --------------------------------------------------------------------------------
 function PetController:setFasterPetsMultiplier(multiplier)
 	self._fasterPetsMultiplier = multiplier or 0
+end
+
+--------------------------------------------------------------------------------
+-- Set BiggerRange mastery multiplier (increases auto-attack detection range)
+--------------------------------------------------------------------------------
+function PetController:setBiggerRangeMultiplier(mult)
+	self._biggerRangeMultiplier = mult or 1
+end
+
+--------------------------------------------------------------------------------
+-- Set DropMagnet mastery multiplier (cosmetic-ready)
+-- TODO: When a drop collection radius system is implemented, this multiplier
+-- will increase the radius at which drops are automatically collected by the player.
+--------------------------------------------------------------------------------
+function PetController:setDropMagnetMultiplier(mult)
+	self._dropMagnetMultiplier = mult or 1
 end
 
 --------------------------------------------------------------------------------

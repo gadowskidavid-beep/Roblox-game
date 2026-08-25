@@ -15,6 +15,7 @@ EggService._dataService = nil
 EggService._currencyService = nil
 EggService._petService = nil
 EggService._questService = nil
+EggService._masteryService = nil
 
 -- Per-player purchase lock to prevent concurrent hatch exploits
 EggService._hatchLock = {}
@@ -81,8 +82,15 @@ function EggService.purchaseAndHatch(player, eggType)
 			end
 		end
 
-		-- Short delay to allow client to start animation (1 second; wobble begins immediately on client)
-		task.wait(1)
+		-- Short delay to allow client to start animation (reduced by QuickHatch mastery)
+		local hatchDelay = 1
+		if EggService._masteryService then
+			local qhBonus = EggService._masteryService.getBuffBonus(player, "QuickHatch")
+			if qhBonus > 0 then
+				hatchDelay = 1 * qhBonus
+			end
+		end
+		task.wait(hatchDelay)
 
 		-- Delegate to PetService for actual hatching (cost already deducted)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
@@ -121,6 +129,11 @@ end
 -- Set quest service reference (called after init to avoid circular deps)
 function EggService.setQuestService(questService)
 	EggService._questService = questService
+end
+
+-- Set mastery service reference (called after init to avoid circular deps)
+function EggService.setMasteryService(masteryService)
+	EggService._masteryService = masteryService
 end
 
 -- Hatch an egg for free (used by auto-hatch; no cost deduction, still validates zone)
@@ -171,8 +184,15 @@ function EggService.hatchFree(player, eggType)
 			end
 		end
 
-		-- Short delay to allow client to start animation
-		task.wait(1)
+		-- Short delay to allow client to start animation (reduced by QuickHatch mastery)
+		local hatchDelay = 1
+		if EggService._masteryService then
+			local qhBonus = EggService._masteryService.getBuffBonus(player, "QuickHatch")
+			if qhBonus > 0 then
+				hatchDelay = 1 * qhBonus
+			end
+		end
+		task.wait(hatchDelay)
 
 		-- Delegate to PetService for actual hatching (skip cost deduction)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)

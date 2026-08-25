@@ -175,6 +175,37 @@ if playerData and playerData.upgrades and playerData.upgrades.FasterPets then
 	end
 end
 
+-- Apply BiggerRange and DropMagnet mastery buffs from initial mastery state
+local function applyMasteryBuffsToClient(masteryState)
+	if not masteryState or not masteryState.buffs then return end
+
+	-- BiggerRange: multiplies pet detection range
+	local biggerRangeLevel = masteryState.buffs.BiggerRange or 0
+	if biggerRangeLevel > 0 then
+		local buffDef = MasteryData.Buffs.BiggerRange
+		if buffDef and buffDef.bonusPerLevel[biggerRangeLevel] then
+			petController:setBiggerRangeMultiplier(buffDef.bonusPerLevel[biggerRangeLevel])
+		end
+	else
+		petController:setBiggerRangeMultiplier(1)
+	end
+
+	-- DropMagnet: multiplies drop collection radius (cosmetic-ready)
+	local dropMagnetLevel = masteryState.buffs.DropMagnet or 0
+	if dropMagnetLevel > 0 then
+		local buffDef = MasteryData.Buffs.DropMagnet
+		if buffDef and buffDef.bonusPerLevel[dropMagnetLevel] then
+			petController:setDropMagnetMultiplier(buffDef.bonusPerLevel[dropMagnetLevel])
+		end
+	else
+		petController:setDropMagnetMultiplier(1)
+	end
+end
+
+-- Fetch initial mastery state and apply client-side buffs
+local initialMasteryState = GetMasteryState:InvokeServer()
+applyMasteryBuffsToClient(initialMasteryState)
+
 --------------------------------------------------------------------------------
 -- REMOTE EVENT HANDLERS
 --------------------------------------------------------------------------------
@@ -312,6 +343,8 @@ end)
 local MasteryUpdated = Remotes:WaitForChild("MasteryUpdated")
 MasteryUpdated.OnClientEvent:Connect(function(masteryState)
 	uiController:updateMastery(masteryState)
+	-- Reapply client-side mastery buffs (BiggerRange, DropMagnet, DoubleJump)
+	applyMasteryBuffsToClient(masteryState)
 end)
 
 CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
@@ -525,6 +558,53 @@ end)
 --------------------------------------------------------------------------------
 local function onCharacterAdded(character)
 	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+	local humanoid = character:WaitForChild("Humanoid")
+
+	-- DoubleJump system: allows extra jumps based on mastery level
+	local jumpCount = 0
+	local maxJumps = 1 -- default: single jump only
+
+	-- Compute maxJumps from mastery state
+	local function updateMaxJumps(masteryState)
+		if masteryState and masteryState.buffs then
+			local djLevel = masteryState.buffs.DoubleJump or 0
+			if djLevel > 0 then
+				local buffDef = MasteryData.Buffs.DoubleJump
+				if buffDef and buffDef.bonusPerLevel[djLevel] then
+					maxJumps = buffDef.bonusPerLevel[djLevel]
+				end
+			else
+				maxJumps = 1
+			end
+		end
+	end
+
+	-- Apply from initial mastery state
+	updateMaxJumps(initialMasteryState)
+
+	-- Listen for mastery updates to refresh maxJumps
+	MasteryUpdated.OnClientEvent:Connect(function(masteryState)
+		updateMaxJumps(masteryState)
+	end)
+
+	-- Reset jump count on landing
+	humanoid.StateChanged:Connect(function(_, newState)
+		if newState == Enum.HumanoidStateType.Landed then
+			jumpCount = 0
+		elseif newState == Enum.HumanoidStateType.Jumping then
+			jumpCount = jumpCount + 1
+		end
+	end)
+
+	-- Handle jump requests for extra jumps (mid-air)
+	UserInputService.JumpRequest:Connect(function()
+		if maxJumps <= 1 then return end -- no double jump mastery
+		if humanoid:GetState() == Enum.HumanoidStateType.Freefall then
+			if jumpCount < maxJumps then
+				humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+		end
+	end)
 
 	-- Campaign portal proximity (touch detection)
 	local campaignPortal = workspace:FindFirstChild("CampaignPortal")
