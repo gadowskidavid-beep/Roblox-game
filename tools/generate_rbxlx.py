@@ -246,6 +246,48 @@ def build_workspace():
         128, 128, 140, material=768
     ))
 
+    # Zone 3: Strand - sandy baseplate
+    parts.append(make_part_xml(
+        "Zone3_Strand", "Part",
+        500, 0, -100, 200, 2, 200,
+        237, 201, 136, material=1024
+    ))
+
+    # Zone 4: Wueste - desert baseplate
+    parts.append(make_part_xml(
+        "Zone4_Wueste", "Part",
+        750, 0, -100, 200, 2, 200,
+        210, 180, 100, material=1024
+    ))
+
+    # Zone 5: Eiswelt - icy baseplate
+    parts.append(make_part_xml(
+        "Zone5_Eiswelt", "Part",
+        1000, 0, -100, 200, 2, 200,
+        200, 230, 255, material=1024
+    ))
+
+    # Zone 6: Vulkan - volcanic baseplate
+    parts.append(make_part_xml(
+        "Zone6_Vulkan", "Part",
+        1250, 0, -100, 200, 2, 200,
+        80, 30, 10, material=768
+    ))
+
+    # Zone 7: Himmel - heavenly baseplate
+    parts.append(make_part_xml(
+        "Zone7_Himmel", "Part",
+        1500, 0, -100, 200, 2, 200,
+        255, 255, 220, material=1024
+    ))
+
+    # Zone 8: Weltraum - space baseplate
+    parts.append(make_part_xml(
+        "Zone8_Weltraum", "Part",
+        1750, 0, -100, 200, 2, 200,
+        20, 10, 40, material=768
+    ))
+
     # Campaign Portal - purple Neon archway
     parts.append(make_part_xml(
         "CampaignPortal", "Part",
@@ -253,48 +295,52 @@ def build_workspace():
         153, 25, 230, material=288, transparency=0.2
     ))
 
-    # Zone Gate between Zone 1 and Zone 2 (large archway - left pillar, right pillar, arch, barrier)
-    # The full gate structure is created dynamically by ZoneService._spawnZoneGates() at runtime.
-    # Static placeholder parts here represent the permanent structural elements.
-    gate_x = 125  # halfway between zone centers (0 and 250)
-    gate_z = -100  # center Z of zones
+    # Zone Gates between adjacent zones (large archway style)
+    # Gates exist between zone 1->2, 2->3, 3->4, ..., 7->8
+    ZONE_SPACING = 250
     pillar_h = 20
     pillar_w = 4
     opening_w = 20  # space between pillars
     arch_h = 4
 
-    # Left Pillar
-    parts.append(make_part_xml(
-        "ZoneGate_LeftPillar", "Part",
-        gate_x, pillar_h // 2, gate_z - opening_w // 2 - pillar_w // 2,
-        pillar_w, pillar_h, pillar_w,
-        140, 140, 160, material=256
-    ))
+    for gate_idx in range(2, 9):
+        prev_center = (gate_idx - 2) * ZONE_SPACING
+        curr_center = (gate_idx - 1) * ZONE_SPACING
+        gate_x = (prev_center + curr_center) // 2
+        gate_z = -100  # center Z of zones
 
-    # Right Pillar
-    parts.append(make_part_xml(
-        "ZoneGate_RightPillar", "Part",
-        gate_x, pillar_h // 2, gate_z + opening_w // 2 + pillar_w // 2,
-        pillar_w, pillar_h, pillar_w,
-        140, 140, 160, material=256
-    ))
+        # Left Pillar
+        parts.append(make_part_xml(
+            f"ZoneGate{gate_idx}_LeftPillar", "Part",
+            gate_x, pillar_h // 2, gate_z - opening_w // 2 - pillar_w // 2,
+            pillar_w, pillar_h, pillar_w,
+            140, 140, 160, material=256
+        ))
 
-    # Top Arch
-    arch_width = opening_w + pillar_w * 2
-    parts.append(make_part_xml(
-        "ZoneGate_TopArch", "Part",
-        gate_x, pillar_h + arch_h // 2, gate_z,
-        pillar_w, arch_h, arch_width,
-        140, 140, 160, material=256
-    ))
+        # Right Pillar
+        parts.append(make_part_xml(
+            f"ZoneGate{gate_idx}_RightPillar", "Part",
+            gate_x, pillar_h // 2, gate_z + opening_w // 2 + pillar_w // 2,
+            pillar_w, pillar_h, pillar_w,
+            140, 140, 160, material=256
+        ))
 
-    # Barrier (semi-transparent red, collidable when locked)
-    parts.append(make_part_xml(
-        "ZoneGate_Barrier", "Part",
-        gate_x, pillar_h // 2, gate_z,
-        2, pillar_h, opening_w,
-        255, 60, 60, material=288, transparency=0.5
-    ))
+        # Top Arch
+        arch_width = opening_w + pillar_w * 2
+        parts.append(make_part_xml(
+            f"ZoneGate{gate_idx}_TopArch", "Part",
+            gate_x, pillar_h + arch_h // 2, gate_z,
+            pillar_w, arch_h, arch_width,
+            140, 140, 160, material=256
+        ))
+
+        # Barrier (semi-transparent red, collidable when locked)
+        parts.append(make_part_xml(
+            f"ZoneGate{gate_idx}_Barrier", "Part",
+            gate_x, pillar_h // 2, gate_z,
+            2, pillar_h, opening_w,
+            255, 60, 60, material=288, transparency=0.5
+        ))
 
     # Terrain (placeholder)
     terrain_ref = next_ref()
