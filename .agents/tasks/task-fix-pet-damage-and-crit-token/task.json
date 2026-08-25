@@ -1,0 +1,7 @@
+{
+  "task_id": "task-fix-pet-damage-and-crit-token",
+  "task_description": "Fix two P0 bugs: (1) Pet damage broken because PetController never calls AssignPetTarget remote, causing server to always return 'No pets assigned'. (2) Crit token is reusable/exploitable because the crit window is not consumed after use.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null
+}

@@ -68,6 +68,8 @@ function PetController:init(remotes)
 
 	self._remotes = remotes
 	self._player = Players.LocalPlayer
+	self._assignPetTarget = remotes:WaitForChild("AssignPetTarget")
+	self._serverAssignments = {} -- track current server-side assignments to avoid redundant calls
 
 	-- Create folder for pet models in workspace (destroy any pre-existing one)
 	local existingFolder = workspace:FindFirstChild("ClientPets")
@@ -436,6 +438,14 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 	-- Mark as attacking this specific destructible
 	self._attackingPets[uniqueId] = destructibleId
 
+	-- Notify server of pet assignment (only if changed)
+	if self._assignPetTarget and self._serverAssignments[uniqueId] ~= destructibleId then
+		self._serverAssignments[uniqueId] = destructibleId
+		task.spawn(function()
+			self._assignPetTarget:InvokeServer(uniqueId, destructibleId)
+		end)
+	end
+
 	local model = petInfo.model
 
 	-- Determine target position: on the ground beside the destructible
@@ -457,6 +467,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			targetPos = character.HumanoidRootPart.Position + character.HumanoidRootPart.CFrame.LookVector * 5
 		else
 			self._attackingPets[uniqueId] = nil
+			if self._assignPetTarget and self._serverAssignments[uniqueId] then
+				self._serverAssignments[uniqueId] = nil
+				task.spawn(function()
+					self._assignPetTarget:InvokeServer(uniqueId, nil)
+				end)
+			end
 			return
 		end
 	end
@@ -473,6 +489,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			while self._attackingPets[uniqueId] == destructibleId do
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
 					self._attackingPets[uniqueId] = nil
+					if self._assignPetTarget and self._serverAssignments[uniqueId] then
+						self._serverAssignments[uniqueId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(uniqueId, nil)
+						end)
+					end
 					return
 				end
 
@@ -481,6 +503,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 					if not destructiblePart.Parent then
 						-- Destructible was destroyed, return to follow
 						self._attackingPets[uniqueId] = nil
+						if self._assignPetTarget and self._serverAssignments[uniqueId] then
+							self._serverAssignments[uniqueId] = nil
+							task.spawn(function()
+								self._assignPetTarget:InvokeServer(uniqueId, nil)
+							end)
+						end
 						return
 					end
 				end
@@ -494,6 +522,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 						if playerDist > MAX_PLAYER_DIST then
 							-- Too far from player, return
 							self._attackingPets[uniqueId] = nil
+							if self._assignPetTarget and self._serverAssignments[uniqueId] then
+								self._serverAssignments[uniqueId] = nil
+								task.spawn(function()
+									self._assignPetTarget:InvokeServer(uniqueId, nil)
+								end)
+							end
 							return
 						end
 					end
@@ -533,6 +567,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			while self._attackingPets[uniqueId] == destructibleId do
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
 					self._attackingPets[uniqueId] = nil
+					if self._assignPetTarget and self._serverAssignments[uniqueId] then
+						self._serverAssignments[uniqueId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(uniqueId, nil)
+						end)
+					end
 					return
 				end
 
@@ -541,6 +581,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 					if not destructiblePart.Parent then
 						-- Destructible destroyed, return to follow
 						self._attackingPets[uniqueId] = nil
+						if self._assignPetTarget and self._serverAssignments[uniqueId] then
+							self._serverAssignments[uniqueId] = nil
+							task.spawn(function()
+								self._assignPetTarget:InvokeServer(uniqueId, nil)
+							end)
+						end
 						return
 					end
 				end
@@ -553,6 +599,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 						local playerDist = (rootPart.Position - model.PrimaryPart.Position).Magnitude
 						if playerDist > MAX_PLAYER_DIST then
 							self._attackingPets[uniqueId] = nil
+							if self._assignPetTarget and self._serverAssignments[uniqueId] then
+								self._serverAssignments[uniqueId] = nil
+								task.spawn(function()
+									self._assignPetTarget:InvokeServer(uniqueId, nil)
+								end)
+							end
 							return
 						end
 					end
@@ -583,6 +635,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end)
 	else
 		self._attackingPets[uniqueId] = nil
+		if self._assignPetTarget and self._serverAssignments[uniqueId] then
+			self._serverAssignments[uniqueId] = nil
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(uniqueId, nil)
+			end)
+		end
 	end
 end
 
@@ -751,6 +809,12 @@ function PetController:_startAutoAttack()
 				-- Release the pet from stationed state
 				if self._attackingPets[petId] then
 					self._attackingPets[petId] = nil
+					if self._assignPetTarget and self._serverAssignments[petId] then
+						self._serverAssignments[petId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(petId, nil)
+						end)
+					end
 				end
 			end
 			return
@@ -787,6 +851,12 @@ function PetController:_startAutoAttack()
 				-- Release stationing
 				if self._attackingPets[uniqueId] then
 					self._attackingPets[uniqueId] = nil
+					if self._assignPetTarget and self._serverAssignments[uniqueId] then
+						self._serverAssignments[uniqueId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(uniqueId, nil)
+						end)
+					end
 				end
 				-- Remove from targeted set
 				if currentTarget then
@@ -923,6 +993,15 @@ end
 --------------------------------------------------------------------------------
 function PetController:clearManualTarget()
 	self._manualTargetMode = false
+	-- Clear server assignments for all pets
+	if self._assignPetTarget then
+		for petId, _ in pairs(self._serverAssignments) do
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(petId, nil)
+			end)
+		end
+		self._serverAssignments = {}
+	end
 	-- Clear all pet targets and release stationing so they re-distribute on next frame
 	self._petTargets = {}
 	self._attackingPets = {}
@@ -934,6 +1013,15 @@ end
 --------------------------------------------------------------------------------
 function PetController:cancelAllAttacks()
 	self._manualTargetMode = false
+	-- Clear server assignments for all pets
+	if self._assignPetTarget then
+		for petId, _ in pairs(self._serverAssignments) do
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(petId, nil)
+			end)
+		end
+		self._serverAssignments = {}
+	end
 	self._petTargets = {}
 	self._attackingPets = {}
 end
@@ -950,6 +1038,15 @@ end
 --------------------------------------------------------------------------------
 function PetController:cleanup()
 	self:_stopAutoAttack()
+	-- Clear server assignments for all pets
+	if self._assignPetTarget then
+		for petId, _ in pairs(self._serverAssignments) do
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(petId, nil)
+			end)
+		end
+		self._serverAssignments = {}
+	end
 	for _, petInfo in pairs(self._equippedPets) do
 		if petInfo.model then
 			petInfo.model:Destroy()

@@ -1,0 +1,23 @@
+{
+  "project_type": "Roblox Luau game (Battle Pets - Pet Simulator)",
+  "language": "Lua (Luau)",
+  "build_system": "Python script tools/generate_rbxlx.py regenerates BATTLE_PETS.rbxlx from src/ tree",
+  "test_framework": "No automated test framework - validation is via Lua syntax check and successful rbxlx generation",
+  "build_command": "python3 tools/generate_rbxlx.py",
+  "test_command": "python3 -c \"import ast\" && python3 tools/generate_rbxlx.py",
+  "verification_instructions": "1. Run python3 tools/generate_rbxlx.py to regenerate the place file. 2. Verify no errors in output. 3. Verify BATTLE_PETS.rbxlx was updated.",
+  "snapshot_or_generated_files": "BATTLE_PETS.rbxlx is generated from src/ by running python3 tools/generate_rbxlx.py",
+  "setup_instructions": "cd /projects/sandbox/Roblox-game && python3 tools/generate_rbxlx.py",
+  "environment_constraints": "No Roblox Studio available. Validation limited to Lua syntax checking and rbxlx generation.",
+  "contribution_requirements": "After code changes, run python3 tools/generate_rbxlx.py to regenerate the .rbxlx file",
+  "key_patterns": "Server-authoritative architecture. Remotes folder at ReplicatedStorage.Remotes. RemoteFunctions used for request/response patterns. Server validates all actions. PetController uses self._remotes for remote access. ZoneService is a module with class-style functions.",
+  "relevant_files": [
+    "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
+    "src/ServerScriptService/Services/ZoneService.lua",
+    "src/StarterPlayer/StarterPlayerScripts/Main.client.lua",
+    "src/ServerScriptService/Main.server.lua",
+    "src/StarterPlayer/StarterPlayerScripts/EffectsController.lua",
+    "tools/generate_rbxlx.py"
+  ],
+  "directory_structure": "src/ServerScriptService/Services/ - server services (ZoneService, PetService, etc). src/StarterPlayer/StarterPlayerScripts/ - client controllers (PetController, UIController, etc). src/ReplicatedStorage/Shared/ - shared config/data modules. tools/ - build scripts."
+}

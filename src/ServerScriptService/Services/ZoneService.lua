@@ -1877,8 +1877,8 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 		return false, "Crit window expired"
 	end
 
-	-- Consume the crit window (one crit per window per circle click is fine,
-	-- but we keep the window open so multiple circles can crit within the window)
+	-- Consume the crit window immediately (one crit per click - prevents exploit)
+	playerCritWindows[destructibleId] = nil
 
 	local data = ZoneService._dataService.getPlayerData(player)
 	if not data then
