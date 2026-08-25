@@ -1,0 +1,7 @@
+{
+  "task_id": "task-shop-datastore-questwiring",
+  "task_description": "Implement Shop System (items/boosts for diamonds), DataStore improvements (UpdateAsync, schemaVersion, deep merge), and wire up inactive quest/mastery bonuses (walkspeed, coin multiplier, egg luck).",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}

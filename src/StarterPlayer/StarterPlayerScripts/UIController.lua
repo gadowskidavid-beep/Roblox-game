@@ -82,6 +82,8 @@ function UIController.new()
 	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
 	-- Pet index (collection book) state
 	self._discoveredPets = {}
+	-- Shop buffs state
+	self._shopBuffs = {}
 	return self
 end
 
@@ -113,6 +115,7 @@ function UIController:init(remotes, playerData)
 	self:_createQuestWindow()
 	self:_createMasteryWindow()
 	self:_createShopWindow()
+	self:_createShopScreen()
 	self:_createPetIndex()
 
 	self._initialized = true
@@ -313,6 +316,7 @@ function UIController:_createNavButtons(parent)
 	local buttons = {
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
 		{ name = "Index", icon = "I", color = Color3.fromRGB(255, 100, 180), screen = "PetIndex" },
+		{ name = "Shop", icon = "S", color = COLORS.NavShop, screen = "ShopScreen" },
 		{ name = "Quests", icon = "!", color = COLORS.NavQuests, screen = "QuestWindow" },
 		{ name = "Mastery", icon = "M", color = COLORS.NavMastery, screen = "MasteryWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
@@ -1613,6 +1617,271 @@ function UIController:showEggStationPrompt(eggType)
 	-- No-op: E-key ProximityPrompt handles hatching directly
 end
 
+--------------------------------------------------------------------------------
+-- SHOP SCREEN (Diamond potions and permanent purchases)
+--------------------------------------------------------------------------------
+function UIController:_createShopScreen()
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "ShopScreen"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Enabled = false
+	screenGui.Parent = self._playerGui
+	self._screens.ShopScreen = screenGui
+
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "MainFrame"
+	mainFrame.Size = UDim2.fromScale(0.7, 0.7)
+	mainFrame.Position = UDim2.fromScale(0.15, 0.15)
+	mainFrame.BackgroundColor3 = COLORS.Background
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Parent = screenGui
+
+	local mainCorner = Instance.new("UICorner")
+	mainCorner.CornerRadius = UDim.new(0, 16)
+	mainCorner.Parent = mainFrame
+
+	local mainStroke = Instance.new("UIStroke")
+	mainStroke.Thickness = 5
+	mainStroke.Color = COLORS.NavShop
+	mainStroke.Parent = mainFrame
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.fromScale(0.4, 0.08)
+	title.Position = UDim2.fromScale(0.3, 0.01)
+	title.BackgroundTransparency = 1
+	title.Text = "SHOP"
+	title.TextColor3 = COLORS.NavShop
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = mainFrame
+
+	local subtitle = Instance.new("TextLabel")
+	subtitle.Name = "Subtitle"
+	subtitle.Size = UDim2.fromScale(0.6, 0.04)
+	subtitle.Position = UDim2.fromScale(0.2, 0.085)
+	subtitle.BackgroundTransparency = 1
+	subtitle.Text = "Spend diamonds on powerful buffs!"
+	subtitle.TextColor3 = Color3.fromRGB(180, 180, 200)
+	subtitle.Font = Enum.Font.Gotham
+	subtitle.TextScaled = true
+	subtitle.Parent = mainFrame
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(44, 44)
+	closeBtn.Position = UDim2.new(1, -54, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 24
+	closeBtn.Parent = mainFrame
+
+	local closeBtnCorner = Instance.new("UICorner")
+	closeBtnCorner.CornerRadius = UDim.new(1, 0)
+	closeBtnCorner.Parent = closeBtn
+
+	closeBtn.MouseButton1Click:Connect(function()
+		self:toggleScreen("ShopScreen")
+	end)
+
+	local scrollFrame = Instance.new("ScrollingFrame")
+	scrollFrame.Name = "ShopGrid"
+	scrollFrame.Size = UDim2.fromScale(0.94, 0.76)
+	scrollFrame.Position = UDim2.fromScale(0.03, 0.14)
+	scrollFrame.BackgroundTransparency = 1
+	scrollFrame.ScrollBarThickness = 8
+	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(0, 150, 255)
+	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
+	scrollFrame.Parent = mainFrame
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.Name = "GridLayout"
+	gridLayout.CellSize = UDim2.fromOffset(220, 200)
+	gridLayout.CellPadding = UDim2.fromOffset(12, 12)
+	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	gridLayout.Parent = scrollFrame
+
+	gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
+	end)
+
+	self:_refreshShopGrid()
+end
+
+function UIController:_refreshShopGrid()
+	local screenGui = self._screens.ShopScreen
+	if not screenGui then return end
+	local mainFrame = screenGui:FindFirstChild("MainFrame")
+	if not mainFrame then return end
+	local scrollFrame = mainFrame:FindFirstChild("ShopGrid")
+	if not scrollFrame then return end
+
+	for _, child in ipairs(scrollFrame:GetChildren()) do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	-- Shop items definition (client-side display data)
+	local shopItems = {
+		{ id = "LuckyPotion", name = "Lucky Potion", icon = "L", description = "2x egg luck for 5 min", cost = 100, color = Color3.fromRGB(0, 220, 100), durationText = "5 min" },
+		{ id = "SpeedPotion", name = "Speed Potion", icon = "S", description = "2x walkspeed for 5 min", cost = 50, color = Color3.fromRGB(0, 180, 255), durationText = "5 min" },
+		{ id = "AutoHatch", name = "Auto-Hatch", icon = "A", description = "Auto-hatch eggs for 10 min", cost = 500, color = Color3.fromRGB(255, 150, 0), durationText = "10 min" },
+		{ id = "ExtraEquipSlot", name = "Extra Equip Slot", icon = "+", description = "Permanently equip +1 pet", cost = 1000, color = Color3.fromRGB(255, 80, 200), durationText = "Permanent" },
+	}
+
+	local activeBuffs = self._shopBuffs or {}
+
+	for order, item in ipairs(shopItems) do
+		local card = Instance.new("Frame")
+		card.Name = "ShopItem_" .. item.id
+		card.BackgroundColor3 = Color3.fromRGB(
+			math.floor(item.color.R * 255 * 0.2 + 25),
+			math.floor(item.color.G * 255 * 0.2 + 25),
+			math.floor(item.color.B * 255 * 0.2 + 40)
+		)
+		card.LayoutOrder = order
+		card.Parent = scrollFrame
+
+		local cardCorner = Instance.new("UICorner")
+		cardCorner.CornerRadius = UDim.new(0, 12)
+		cardCorner.Parent = card
+
+		local cardStroke = Instance.new("UIStroke")
+		cardStroke.Thickness = 3
+		cardStroke.Color = item.color
+		cardStroke.Parent = card
+
+		-- Icon
+		local iconLabel = Instance.new("TextLabel")
+		iconLabel.Name = "Icon"
+		iconLabel.Size = UDim2.fromScale(0.35, 0.22)
+		iconLabel.Position = UDim2.fromScale(0.325, 0.02)
+		iconLabel.BackgroundTransparency = 1
+		iconLabel.Text = item.icon
+		iconLabel.TextColor3 = item.color
+		iconLabel.Font = Enum.Font.GothamBold
+		iconLabel.TextScaled = true
+		iconLabel.Parent = card
+
+		-- Item name
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "ItemName"
+		nameLabel.Size = UDim2.fromScale(0.9, 0.12)
+		nameLabel.Position = UDim2.fromScale(0.05, 0.25)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = item.name
+		nameLabel.TextColor3 = COLORS.White
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextScaled = true
+		nameLabel.Parent = card
+
+		-- Description
+		local descLabel = Instance.new("TextLabel")
+		descLabel.Name = "Description"
+		descLabel.Size = UDim2.fromScale(0.9, 0.1)
+		descLabel.Position = UDim2.fromScale(0.05, 0.38)
+		descLabel.BackgroundTransparency = 1
+		descLabel.Text = item.description
+		descLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+		descLabel.Font = Enum.Font.Gotham
+		descLabel.TextScaled = true
+		descLabel.Parent = card
+
+		-- Duration label
+		local durationLabel = Instance.new("TextLabel")
+		durationLabel.Name = "Duration"
+		durationLabel.Size = UDim2.fromScale(0.9, 0.09)
+		durationLabel.Position = UDim2.fromScale(0.05, 0.49)
+		durationLabel.BackgroundTransparency = 1
+		durationLabel.Text = item.durationText
+		durationLabel.TextColor3 = item.color
+		durationLabel.Font = Enum.Font.GothamBold
+		durationLabel.TextScaled = true
+		durationLabel.Parent = card
+
+		-- Active buff indicator (if applicable)
+		local buffKey = nil
+		if item.id == "LuckyPotion" then buffKey = "luck"
+		elseif item.id == "SpeedPotion" then buffKey = "speed"
+		elseif item.id == "AutoHatch" then buffKey = "autoHatch"
+		end
+
+		if buffKey and activeBuffs[buffKey] then
+			local remaining = activeBuffs[buffKey]
+			local mins = math.floor(remaining / 60)
+			local secs = remaining % 60
+			local activeLabel = Instance.new("TextLabel")
+			activeLabel.Name = "ActiveLabel"
+			activeLabel.Size = UDim2.fromScale(0.9, 0.09)
+			activeLabel.Position = UDim2.fromScale(0.05, 0.59)
+			activeLabel.BackgroundTransparency = 1
+			activeLabel.Text = "ACTIVE: " .. tostring(mins) .. "m " .. tostring(secs) .. "s"
+			activeLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+			activeLabel.Font = Enum.Font.GothamBold
+			activeLabel.TextScaled = true
+			activeLabel.Parent = card
+		end
+
+		-- Buy button
+		local buyBtn = Instance.new("TextButton")
+		buyBtn.Name = "BuyBtn"
+		buyBtn.Size = UDim2.fromScale(0.7, 0.17)
+		buyBtn.Position = UDim2.fromScale(0.15, 0.78)
+		buyBtn.BackgroundColor3 = COLORS.NavShop
+		buyBtn.Text = tostring(item.cost) .. " Diamonds"
+		buyBtn.TextColor3 = COLORS.White
+		buyBtn.Font = Enum.Font.GothamBold
+		buyBtn.TextScaled = true
+		buyBtn.Parent = card
+
+		local buyCorner = Instance.new("UICorner")
+		buyCorner.CornerRadius = UDim.new(0, 8)
+		buyCorner.Parent = buyBtn
+
+		local buyStroke = Instance.new("UIStroke")
+		buyStroke.Thickness = 2
+		buyStroke.Color = Color3.fromRGB(0, 100, 200)
+		buyStroke.Parent = buyBtn
+
+		local itemId = item.id
+		buyBtn.MouseButton1Click:Connect(function()
+			self:_purchaseShopItem(itemId)
+		end)
+
+		buyBtn.MouseEnter:Connect(function()
+			TweenService:Create(buyBtn, TweenInfo.new(0.1), {
+				Size = UDim2.fromScale(0.74, 0.18),
+			}):Play()
+		end)
+		buyBtn.MouseLeave:Connect(function()
+			TweenService:Create(buyBtn, TweenInfo.new(0.1), {
+				Size = UDim2.fromScale(0.7, 0.17),
+			}):Play()
+		end)
+	end
+end
+
+function UIController:_purchaseShopItem(itemId)
+	if self._remotes then
+		local remote = self._remotes:FindFirstChild("PurchaseShopItem")
+		if remote then
+			local success, err = remote:InvokeServer(itemId)
+			if not success and err then
+				print("[UIController] Shop purchase failed: " .. tostring(err))
+			end
+		end
+	end
+end
+
+function UIController:updateShopBuffs(buffs)
+	self._shopBuffs = buffs or {}
+	self:_refreshShopGrid()
+end
+
 function UIController:_hatchEgg(eggType)
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("HatchEgg")
@@ -2152,6 +2421,19 @@ function UIController:toggleScreen(screenName)
 						if discovered then
 							self._discoveredPets = discovered
 							self:_refreshPetIndex()
+						end
+					end)
+				end
+			end
+			-- Refresh shop buffs when opening shop screen
+			if screenName == "ShopScreen" and self._remotes then
+				local remote = self._remotes:FindFirstChild("GetShopBuffs")
+				if remote then
+					task.spawn(function()
+						local buffs = remote:InvokeServer()
+						if buffs then
+							self._shopBuffs = buffs
+							self:_refreshShopGrid()
 						end
 					end)
 				end

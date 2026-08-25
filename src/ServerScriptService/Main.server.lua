@@ -17,6 +17,7 @@ local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
+local ShopService = require(script.Parent.Services.ShopService)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -61,6 +62,7 @@ local remoteEvents = {
 	"XPUpdated",
 	"QuestProgressUpdated",
 	"MasteryUpdated",
+	"ShopBuffsUpdated",
 }
 
 for _, eventName in ipairs(remoteEvents) do
@@ -90,6 +92,8 @@ local remoteFunctions = {
 	"ConvertToGoldenPet",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
+	"PurchaseShopItem",
+	"GetShopBuffs",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -111,6 +115,7 @@ CurrencyService._upgradeService = UpgradeService
 -- Initialize quest and mastery services
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
+ShopService.init(DataService, CurrencyService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
@@ -406,6 +411,28 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	return data.discoveredPets or {}
 end
 
+-- PurchaseShopItem (2 second cooldown)
+getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "PurchaseShopItem", 2) then
+		return false, "Please wait before purchasing again"
+	end
+	if type(itemId) ~= "string" then
+		return false, "Invalid item ID parameter"
+	end
+	return ShopService.purchaseItem(player, itemId)
+end
+
+-- GetShopBuffs (returns active buffs for the player)
+getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return {}
+	end
+	return ShopService.getActiveBuffs(player)
+end
+
 ----------------------------------------------
 -- Player Lifecycle
 ----------------------------------------------
@@ -534,6 +561,9 @@ Players.PlayerRemoving:Connect(function(player)
 
 	-- Cleanup rate limits
 	rateLimits[player.UserId] = nil
+
+	-- Cleanup ShopService player state (active buffs)
+	ShopService._activeBuffs[player.UserId] = nil
 
 	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
 	ZoneService.onPlayerRemoving(player)

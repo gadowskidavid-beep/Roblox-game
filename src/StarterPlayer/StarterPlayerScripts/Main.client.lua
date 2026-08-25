@@ -67,6 +67,8 @@ local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
 local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
+local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
+local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -83,6 +85,7 @@ local CampaignVictory = Remotes:WaitForChild("CampaignVictory")
 local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
+local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -313,6 +316,10 @@ end)
 
 CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
 	effectsController:showCurrencyPopup(position, amount, currencyType)
+end)
+
+ShopBuffsUpdated.OnClientEvent:Connect(function(buffs)
+	uiController:updateShopBuffs(buffs)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")

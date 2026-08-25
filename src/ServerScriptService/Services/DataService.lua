@@ -73,6 +73,10 @@ local function getDefaultData()
 		masteryBuffs = {},
 		-- Pet discovery tracking (collection book)
 		discoveredPets = {},
+		-- Shop purchases (permanent effects)
+		shopPurchases = {
+			extraEquipSlots = 0,
+		},
 	}
 end
 
@@ -217,6 +221,7 @@ function DataService.getClientData(player)
 		masteryPoints = data.masteryPoints,
 		masteryBuffs = deepCopy(data.masteryBuffs),
 		discoveredPets = deepCopy(data.discoveredPets or {}),
+		shopPurchases = deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
 	}
 
 	return clientData
