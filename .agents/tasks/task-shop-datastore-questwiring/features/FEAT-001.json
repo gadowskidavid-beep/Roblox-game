@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Implement a Shop System with ShopService, shop UI, and PurchaseShopItem RemoteFunction. Items: Lucky Potion (100 Diamonds, 2x egg luck 5 min), Speed Potion (50 Diamonds, 2x walkspeed 5 min), Auto-Hatch (500 Diamonds, auto-hatch 10 min), Extra Equip Slot (1000 Diamonds, permanent +1 equipped). Add 'S' shop nav button in UIController.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "1. Add ShopData to src/ReplicatedStorage/Shared/Config.lua (or create a new ShopData.lua). Define 4 items with their costs, durations, and effect types: LuckyPotion (100 diamonds, 2x egg luck, 300s), SpeedPotion (50 diamonds, 2x walkspeed, 300s), AutoHatch (500 diamonds, auto-hatch, 600s), ExtraEquipSlot (1000 diamonds, permanent +1 equip slot).",
     "2. Create src/ServerScriptService/Services/ShopService.lua following the existing service pattern (init(dataService, currencyService), module table). Implement: purchaseItem(player, itemId) that validates cost, deducts diamonds, applies timed buffs (stored per-player with expiry timestamps in a _activeBuffs table) or permanent effects (stored in player data as shopPurchases.extraEquipSlots counter). Include getActiveBuffs(player) to return currently active buffs. Include getShopMultiplier(player, buffType) that returns the multiplier (e.g. 2 for active LuckyPotion) or 1 if not active.",
@@ -24,5 +24,5 @@
     "Run python3 tools/generate_rbxlx.py and confirm it exits with code 0"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "ShopService created with all required exports. ShopScreen added as separate screen from legacy ShopWindow (egg station). Nav button added between Index and Quests. Build passes successfully."
 }
