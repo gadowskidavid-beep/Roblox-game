@@ -10999,27 +10999,23 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	-- Only 1 crit button globally at a time: remove any existing one
 	self:_removeGlobalCritButton()
 
-	-- Create BillboardGui attached to the destructible (randomized offset position)
+	-- Create BillboardGui attached to the destructible (centered, no random offset)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "CritButton_" .. destructibleId
-	billboardGui.Size = UDim2.fromOffset(55, 55)
-	billboardGui.StudsOffset = Vector3.new(math.random(-2, 2), 2 + math.random() * 1.5, math.random(-2, 2))
+	billboardGui.Size = UDim2.fromOffset(80, 80)
+	billboardGui.StudsOffset = Vector3.new(0, 0, 0)
 	billboardGui.AlwaysOnTop = true
+	billboardGui.Active = true
 	billboardGui.Adornee = destructiblePart
 	billboardGui.Parent = self._playerGui
 
-	-- Create the circular button (golden ring with crosshair icon)
+	-- Create the circular button (plain golden circle, no text)
 	local button = Instance.new("TextButton")
 	button.Name = "CritBtn"
 	button.Size = UDim2.fromScale(1, 1)
 	button.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-	button.BackgroundTransparency = 0.15
-	button.Text = "\226\154\161" -- lightning bolt unicode
-	button.TextColor3 = Color3.fromRGB(255, 255, 255)
-	button.TextStrokeColor3 = Color3.fromRGB(180, 100, 0)
-	button.TextStrokeTransparency = 0
-	button.Font = Enum.Font.GothamBold
-	button.TextScaled = true
+	button.BackgroundTransparency = 0
+	button.Text = ""
 	button.AutoButtonColor = true
 	button.Parent = billboardGui
 
@@ -11031,7 +11027,7 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	-- Add glowing stroke (subtle glow instead of pulse animation)
 	local stroke = Instance.new("UIStroke")
 	stroke.Name = "GlowStroke"
-	stroke.Thickness = 3
+	stroke.Thickness = 4
 	stroke.Color = Color3.fromRGB(255, 255, 100)
 	stroke.Transparency = 0.2
 	stroke.Parent = button
@@ -11067,8 +11063,6 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 		local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		TweenService:Create(button, fadeInfo, {
 			BackgroundTransparency = 1,
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
 		}):Play()
 		TweenService:Create(stroke, fadeInfo, {
 			Transparency = 1,
