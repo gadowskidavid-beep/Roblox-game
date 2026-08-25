@@ -433,8 +433,9 @@ Players.PlayerAdded:Connect(function(player)
 	-- Admin Chat Commands (game owner only)
 	----------------------------------------------
 	player.Chatted:Connect(function(message)
-		-- Only allow the game owner to use admin commands
-		if player.UserId ~= game.CreatorId then
+		-- Only allow the game owner to use admin commands (also allow in Studio for testing)
+		local isAdmin = (player.UserId == game.CreatorId) or game:GetService("RunService"):IsStudio()
+		if not isAdmin then
 			return
 		end
 
