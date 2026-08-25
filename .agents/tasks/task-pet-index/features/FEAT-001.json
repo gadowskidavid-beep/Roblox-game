@@ -1,0 +1,40 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Add discoveredPets tracking and conditional 'NEW PET!' popup + Pet Index (Collection Book) UI with all pets in all variants (Normal, Golden, Shiny, Rainbow)",
+  "status": "completed",
+  "steps": [
+    "1. In src/ReplicatedStorage/Shared/PetData.lua, add a VARIANTS constant: PetData.Variants = {'Normal', 'Golden', 'Shiny', 'Rainbow'} so both server and client can reference it.",
+    "2. In src/ServerScriptService/Services/DataService.lua, add 'discoveredPets = {}' to the getDefaultData() return table. Also add 'discoveredPets' to the getClientData() function's clientData table (deep copy).",
+    "3. In src/ServerScriptService/Services/PetService.lua, after creating newPet in hatchEgg(), build a discovery key (e.g., petId for normal, 'Golden_'..petId for golden) and add it to data.discoveredPets if not already there. Return a 'isNewDiscovery' boolean field on the newPet result table. Also in convertToGoldenPet(), when success is true, mark the golden variant as discovered ('Golden_'..requiredPetId).",
+    "4. In src/ServerScriptService/Main.server.lua, add a new RemoteFunction 'GetDiscoveredPets' to the remoteFunctions list. Add the handler that returns the player's discoveredPets table from DataService.getPlayerData(player).discoveredPets.",
+    "5. In src/StarterPlayer/StarterPlayerScripts/UIController.lua, modify showEggHatch(petData) to accept an optional second argument 'isNewDiscovery'. If isNewDiscovery is false or nil, skip showing the overlay entirely (or show a smaller 'hatched' message instead of the big NEW PET banner). Keep the full popup for first discoveries.",
+    "6. In src/StarterPlayer/StarterPlayerScripts/UIController.lua, add a new method _createPetIndex() that creates a ScreenGui 'PetIndex' with a grid showing all 4 pets x 4 variants = 16 entries. Discovered ones (checked against a self._discoveredPets table) show in color with the pet name. Undiscovered ones show as dark/silhouette with '???'. Show a progress counter at the top: 'X/16 Discovered'. Style it like the existing PetInventory window (dark navy bg, rounded corners, UIStroke, close button).",
+    "7. In src/StarterPlayer/StarterPlayerScripts/UIController.lua, in _createNavButtons(), add a new button { name = 'Index', icon = 'I', color = Color3.fromRGB(255, 100, 180), screen = 'PetIndex' } to the buttons table. This gives the player an 'I' button in the bottom nav bar.",
+    "8. In src/StarterPlayer/StarterPlayerScripts/UIController.lua, in the init() method, store playerData.discoveredPets into self._discoveredPets, then call self:_createPetIndex() alongside the other create calls.",
+    "9. In src/StarterPlayer/StarterPlayerScripts/Main.client.lua, in the EggHatchResult handler, pass petData.isNewDiscovery to uiController:showEggHatch(petData, petData.isNewDiscovery). Also add a WaitForChild for 'GetDiscoveredPets' remote and fetch discovered pets on init if not in playerData already.",
+    "10. Run python3 tools/generate_rbxlx.py to regenerate the .rbxlx file."
+  ],
+  "acceptance_criteria": [
+    "PetData.lua exports a Variants list with Normal, Golden, Shiny, Rainbow",
+    "DataService default data includes discoveredPets = {} and getClientData includes it",
+    "PetService.hatchEgg marks pet as discovered and returns isNewDiscovery field",
+    "PetService.convertToGoldenPet marks golden variant as discovered on success",
+    "UIController.showEggHatch only shows the full NEW PET popup when isNewDiscovery is true",
+    "A new Pet Index screen exists showing 16 entries (4 pets x 4 variants)",
+    "Discovered entries show in color with name, undiscovered show dark with ???",
+    "Progress counter shows X/16 Discovered",
+    "An 'Index' button with icon 'I' appears in the nav bar and opens the Pet Index",
+    "python3 tools/generate_rbxlx.py runs without errors"
+  ],
+  "verification": [
+    "Run `python3 tools/generate_rbxlx.py` and confirm it completes without errors",
+    "Grep PetData.lua for 'Variants' to confirm the constant exists",
+    "Grep DataService.lua for 'discoveredPets' to confirm it is in default data and client data",
+    "Grep PetService.lua for 'isNewDiscovery' to confirm the field is set on hatch result",
+    "Grep UIController.lua for 'PetIndex' to confirm the screen is created",
+    "Grep UIController.lua for 'isNewDiscovery' to confirm the popup is conditional"
+  ],
+  "blocked_reason": null,
+  "findings": "All 10 steps implemented successfully. generate_rbxlx.py passes without errors. Discovery keys use petId for Normal variant and 'Golden_petId' for Golden. Review fixes applied: (1) isNewDiscovery stripped from pet table after FireClient in EggService, (2) duplicate hatch shows a brief toast, (3) pet list derived dynamically from PetData.Pets keys sorted alphabetically, (4) Shiny/Rainbow variants show 'Coming Soon' state instead of plain lock."
+}

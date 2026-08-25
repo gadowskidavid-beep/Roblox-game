@@ -80,6 +80,8 @@ function UIController.new()
 	-- Quest and mastery state
 	self._questProgress = {}
 	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
+	-- Pet index (collection book) state
+	self._discoveredPets = {}
 	return self
 end
 
@@ -102,6 +104,7 @@ function UIController:init(remotes, playerData)
 			level = playerData.level or 1,
 			buffs = playerData.masteryBuffs or {},
 		}
+		self._discoveredPets = playerData.discoveredPets or {}
 	end
 
 	-- Create all UI
@@ -110,6 +113,7 @@ function UIController:init(remotes, playerData)
 	self:_createQuestWindow()
 	self:_createMasteryWindow()
 	self:_createShopWindow()
+	self:_createPetIndex()
 
 	self._initialized = true
 end
@@ -308,6 +312,7 @@ function UIController:_createNavButtons(parent)
 
 	local buttons = {
 		{ name = "Pets", icon = "P", color = COLORS.NavPets, screen = "PetInventory" },
+		{ name = "Index", icon = "I", color = Color3.fromRGB(255, 100, 180), screen = "PetIndex" },
 		{ name = "Quests", icon = "!", color = COLORS.NavQuests, screen = "QuestWindow" },
 		{ name = "Mastery", icon = "M", color = COLORS.NavMastery, screen = "MasteryWindow" },
 		{ name = "Settings", icon = "G", color = COLORS.NavSettings, screen = nil },
@@ -1618,6 +1623,268 @@ function UIController:_hatchEgg(eggType)
 end
 
 --------------------------------------------------------------------------------
+-- PET INDEX (Collection Book) - Shows all pets in all variants
+--------------------------------------------------------------------------------
+function UIController:_createPetIndex()
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "PetIndex"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Enabled = false
+	screenGui.Parent = self._playerGui
+	self._screens.PetIndex = screenGui
+
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Name = "MainFrame"
+	mainFrame.Size = UDim2.fromScale(0.8, 0.75)
+	mainFrame.Position = UDim2.fromScale(0.1, 0.125)
+	mainFrame.BackgroundColor3 = COLORS.Background
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Parent = screenGui
+
+	local mainCorner = Instance.new("UICorner")
+	mainCorner.CornerRadius = UDim.new(0, 16)
+	mainCorner.Parent = mainFrame
+
+	local mainStroke = Instance.new("UIStroke")
+	mainStroke.Thickness = 4
+	mainStroke.Color = Color3.fromRGB(255, 100, 180)
+	mainStroke.Parent = mainFrame
+
+	-- Title
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.fromScale(0.4, 0.08)
+	title.Position = UDim2.fromScale(0.3, 0.01)
+	title.BackgroundTransparency = 1
+	title.Text = "PET INDEX"
+	title.TextColor3 = Color3.fromRGB(255, 100, 180)
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = mainFrame
+
+	-- Progress counter
+	local progressLabel = Instance.new("TextLabel")
+	progressLabel.Name = "ProgressLabel"
+	progressLabel.Size = UDim2.fromScale(0.4, 0.05)
+	progressLabel.Position = UDim2.fromScale(0.3, 0.09)
+	progressLabel.BackgroundTransparency = 1
+	progressLabel.Text = "0/16 Discovered"
+	progressLabel.TextColor3 = Color3.fromRGB(200, 200, 220)
+	progressLabel.Font = Enum.Font.GothamBold
+	progressLabel.TextScaled = true
+	progressLabel.Parent = mainFrame
+
+	-- Close button
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(40, 40)
+	closeBtn.Position = UDim2.new(1, -50, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 22
+	closeBtn.Parent = mainFrame
+
+	local closeBtnCorner = Instance.new("UICorner")
+	closeBtnCorner.CornerRadius = UDim.new(1, 0)
+	closeBtnCorner.Parent = closeBtn
+
+	closeBtn.MouseButton1Click:Connect(function()
+		self:toggleScreen("PetIndex")
+	end)
+
+	-- Scrolling grid for pet entries
+	local scrollFrame = Instance.new("ScrollingFrame")
+	scrollFrame.Name = "IndexGrid"
+	scrollFrame.Size = UDim2.fromScale(0.94, 0.78)
+	scrollFrame.Position = UDim2.fromScale(0.03, 0.16)
+	scrollFrame.BackgroundTransparency = 1
+	scrollFrame.ScrollBarThickness = 6
+	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(255, 100, 180)
+	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
+	scrollFrame.Parent = mainFrame
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.Name = "GridLayout"
+	gridLayout.CellSize = UDim2.fromOffset(140, 160)
+	gridLayout.CellPadding = UDim2.fromOffset(10, 10)
+	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	gridLayout.Parent = scrollFrame
+
+	gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
+	end)
+
+	self:_refreshPetIndex()
+end
+
+function UIController:_refreshPetIndex()
+	local screenGui = self._screens.PetIndex
+	if not screenGui then return end
+	local mainFrame = screenGui:FindFirstChild("MainFrame")
+	if not mainFrame then return end
+	local scrollFrame = mainFrame:FindFirstChild("IndexGrid")
+	if not scrollFrame then return end
+
+	-- Clear existing cards
+	for _, child in ipairs(scrollFrame:GetChildren()) do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	local discoveredPets = self._discoveredPets or {}
+	local variants = PetData.Variants or {"Normal", "Golden", "Shiny", "Rainbow"}
+
+	-- Derive pet list from PetData.Pets keys (sorted alphabetically)
+	local petIds = {}
+	for petId, _ in pairs(PetData.Pets) do
+		table.insert(petIds, petId)
+	end
+	table.sort(petIds)
+
+	-- Variant colors for display
+	local variantColors = {
+		Normal = Color3.fromRGB(200, 200, 200),
+		Golden = Color3.fromRGB(255, 200, 0),
+		Shiny = Color3.fromRGB(0, 220, 255),
+		Rainbow = Color3.fromRGB(255, 100, 200),
+	}
+
+	local discoveredCount = 0
+	local totalCount = #petIds * #variants
+	local order = 0
+
+	for _, petId in ipairs(petIds) do
+		local petDef = PetData.Pets[petId]
+		if not petDef then continue end
+
+		for _, variant in ipairs(variants) do
+			order = order + 1
+
+			-- Build discovery key
+			local discoveryKey
+			if variant == "Normal" then
+				discoveryKey = petId
+			else
+				discoveryKey = variant .. "_" .. petId
+			end
+
+			local isDiscovered = discoveredPets[discoveryKey] == true
+			-- Shiny and Rainbow variants are not yet obtainable
+			local isComingSoon = (variant == "Shiny" or variant == "Rainbow")
+			if isDiscovered then
+				discoveredCount = discoveredCount + 1
+			end
+
+			local variantColor = variantColors[variant] or Color3.fromRGB(200, 200, 200)
+			local rarityColor = RARITY_COLORS[petDef.rarity or "Common"] or RARITY_COLORS.Common
+
+			local card = Instance.new("Frame")
+			card.Name = "IndexCard_" .. petId .. "_" .. variant
+			card.BackgroundColor3 = isDiscovered and COLORS.DarkBg or Color3.fromRGB(15, 18, 35)
+			card.LayoutOrder = order
+			card.Parent = scrollFrame
+
+			local cardCorner = Instance.new("UICorner")
+			cardCorner.CornerRadius = UDim.new(0, 12)
+			cardCorner.Parent = card
+
+			local cardStroke = Instance.new("UIStroke")
+			cardStroke.Thickness = 3
+			cardStroke.Color = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(80, 60, 100) or Color3.fromRGB(40, 40, 60))
+			cardStroke.Parent = card
+
+			-- Pet icon (circle)
+			local petIcon = Instance.new("Frame")
+			petIcon.Name = "PetIcon"
+			petIcon.Size = UDim2.fromScale(0.45, 0.35)
+			petIcon.Position = UDim2.fromScale(0.275, 0.05)
+			petIcon.BackgroundColor3 = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(50, 40, 70) or Color3.fromRGB(30, 30, 45))
+			petIcon.Parent = card
+
+			local iconCorner = Instance.new("UICorner")
+			iconCorner.CornerRadius = UDim.new(1, 0)
+			iconCorner.Parent = petIcon
+
+			-- Question mark or pet initial inside the circle
+			local iconText = Instance.new("TextLabel")
+			iconText.Size = UDim2.fromScale(1, 1)
+			iconText.BackgroundTransparency = 1
+			iconText.Text = isDiscovered and string.sub(petDef.name, 1, 1) or "?"
+			iconText.TextColor3 = isDiscovered and COLORS.White or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(60, 60, 80))
+			iconText.Font = Enum.Font.GothamBold
+			iconText.TextScaled = true
+			iconText.Parent = petIcon
+
+			-- Pet name
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.Name = "PetName"
+			nameLabel.Size = UDim2.fromScale(0.9, 0.14)
+			nameLabel.Position = UDim2.fromScale(0.05, 0.44)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Text = isDiscovered and petDef.name or "???"
+			nameLabel.TextColor3 = isDiscovered and COLORS.White or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(60, 60, 80))
+			nameLabel.Font = Enum.Font.GothamBold
+			nameLabel.TextScaled = true
+			nameLabel.Parent = card
+
+			-- Variant label
+			local variantLabel = Instance.new("TextLabel")
+			variantLabel.Name = "VariantLabel"
+			variantLabel.Size = UDim2.fromScale(0.9, 0.12)
+			variantLabel.Position = UDim2.fromScale(0.05, 0.6)
+			variantLabel.BackgroundTransparency = 1
+			variantLabel.Text = variant
+			variantLabel.TextColor3 = isDiscovered and variantColor or (isComingSoon and Color3.fromRGB(100, 80, 130) or Color3.fromRGB(50, 50, 70))
+			variantLabel.Font = Enum.Font.GothamBold
+			variantLabel.TextScaled = true
+			variantLabel.Parent = card
+
+			-- Rarity label
+			local rarityLabel = Instance.new("TextLabel")
+			rarityLabel.Name = "RarityLabel"
+			rarityLabel.Size = UDim2.fromScale(0.9, 0.1)
+			rarityLabel.Position = UDim2.fromScale(0.05, 0.74)
+			rarityLabel.BackgroundTransparency = 1
+			rarityLabel.Text = isDiscovered and (petDef.rarity or "Common") or "---"
+			rarityLabel.TextColor3 = isDiscovered and rarityColor or (isComingSoon and Color3.fromRGB(80, 60, 100) or Color3.fromRGB(50, 50, 70))
+			rarityLabel.Font = Enum.Font.Gotham
+			rarityLabel.TextScaled = true
+			rarityLabel.Parent = card
+
+			-- Discovered check mark, "Coming Soon", or lock
+			local statusLabel = Instance.new("TextLabel")
+			statusLabel.Name = "Status"
+			statusLabel.Size = isComingSoon and UDim2.fromScale(0.8, 0.12) or UDim2.fromScale(0.3, 0.12)
+			statusLabel.Position = isComingSoon and UDim2.fromScale(0.1, 0.85) or UDim2.fromScale(0.65, 0.85)
+			statusLabel.BackgroundTransparency = 1
+			if isDiscovered then
+				statusLabel.Text = "OK"
+				statusLabel.TextColor3 = Color3.fromRGB(0, 200, 80)
+			elseif isComingSoon then
+				statusLabel.Text = "Coming Soon"
+				statusLabel.TextColor3 = Color3.fromRGB(140, 100, 180)
+			else
+				statusLabel.Text = "X"
+				statusLabel.TextColor3 = Color3.fromRGB(100, 40, 40)
+			end
+			statusLabel.Font = Enum.Font.GothamBold
+			statusLabel.TextScaled = true
+			statusLabel.Parent = card
+		end
+	end
+
+	-- Update progress counter
+	local progressLabel = mainFrame:FindFirstChild("ProgressLabel")
+	if progressLabel then
+		progressLabel.Text = tostring(discoveredCount) .. "/" .. tostring(totalCount) .. " Discovered"
+	end
+end
+
+--------------------------------------------------------------------------------
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
@@ -1673,8 +1940,53 @@ function UIController:updateMastery(masteryState)
 	self:_refreshMasteryGrid()
 end
 
-function UIController:showEggHatch(petData)
+function UIController:_showHatchToast(petData)
 	if not self._playerGui then return end
+
+	local toast = Instance.new("ScreenGui")
+	toast.Name = "HatchToast"
+	toast.ResetOnSpawn = false
+	toast.Parent = self._playerGui
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(0.3, 0.06)
+	label.Position = UDim2.fromScale(0.35, 0.82)
+	label.BackgroundColor3 = COLORS.DarkBg
+	label.BackgroundTransparency = 0.15
+	label.BorderSizePixel = 0
+	label.Parent = toast
+
+	local labelCorner = Instance.new("UICorner")
+	labelCorner.CornerRadius = UDim.new(0, 10)
+	labelCorner.Parent = label
+
+	local labelStroke = Instance.new("UIStroke")
+	labelStroke.Thickness = 2
+	labelStroke.Color = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
+	labelStroke.Parent = label
+
+	local petName = petData and petData.name or "Pet"
+	label.Text = "Hatched: " .. petName
+	label.TextColor3 = COLORS.White
+	label.Font = Enum.Font.GothamBold
+	label.TextScaled = true
+
+	-- Fade out and destroy after 2.5 seconds
+	task.delay(2.5, function()
+		if toast and toast.Parent then
+			toast:Destroy()
+		end
+	end)
+end
+
+function UIController:showEggHatch(petData, isNewDiscovery)
+	if not self._playerGui then return end
+
+	-- If not a new discovery, show a brief toast confirming the hatch
+	if not isNewDiscovery then
+		self:_showHatchToast(petData)
+		return
+	end
 
 	local overlay = Instance.new("ScreenGui")
 	overlay.Name = "EggHatchOverlay"
@@ -1832,6 +2144,19 @@ function UIController:toggleScreen(screenName)
 						if state then
 							self._masteryState = state
 							self:_refreshMasteryGrid()
+						end
+					end)
+				end
+			end
+			-- Refresh discovered pets when opening pet index
+			if screenName == "PetIndex" and self._remotes then
+				local remote = self._remotes:FindFirstChild("GetDiscoveredPets")
+				if remote then
+					task.spawn(function()
+						local discovered = remote:InvokeServer()
+						if discovered then
+							self._discoveredPets = discovered
+							self:_refreshPetIndex()
 						end
 					end)
 				end

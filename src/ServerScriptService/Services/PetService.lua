@@ -110,6 +110,18 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		equipped = false,
 	}
 
+	-- Track discovery (collection book)
+	local discoveryKey = petId -- Normal variant
+	if not data.discoveredPets then
+		data.discoveredPets = {}
+	end
+	if not data.discoveredPets[discoveryKey] then
+		data.discoveredPets[discoveryKey] = true
+		newPet.isNewDiscovery = true
+	else
+		newPet.isNewDiscovery = false
+	end
+
 	-- Add to player inventory
 	table.insert(data.pets, newPet)
 
@@ -481,6 +493,15 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 				equipped = false,
 			}
 			table.insert(data.pets, goldenPet)
+
+			-- Track golden discovery (collection book)
+			local goldenKey = "Golden_" .. requiredPetId
+			if not data.discoveredPets then
+				data.discoveredPets = {}
+			end
+			if not data.discoveredPets[goldenKey] then
+				data.discoveredPets[goldenKey] = true
+			end
 		end
 	end
 
