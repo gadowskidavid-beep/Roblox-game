@@ -2,7 +2,7 @@
 	<Meta name="ExplicitAutoJoints">true</Meta>
 	<External>null</External>
 	<External>nil</External>
-	<Item class="Workspace" referent="RBX0000000B">
+	<Item class="Workspace" referent="RBX00000029">
 		<Properties>
 			<string name="Name">Workspace</string>
 		</Properties>
@@ -59,6 +59,108 @@
 		</Item>
 		<Item class="Part" referent="RBX00000004">
 			<Properties>
+				<string name="Name">Zone3_Strand</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>500</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4293773704</Color3uint8>
+				<token name="Material">1024</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000005">
+			<Properties>
+				<string name="Name">Zone4_Wueste</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>750</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4291998820</Color3uint8>
+				<token name="Material">1024</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000006">
+			<Properties>
+				<string name="Name">Zone5_Eiswelt</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1000</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4291356415</Color3uint8>
+				<token name="Material">1024</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000007">
+			<Properties>
+				<string name="Name">Zone6_Vulkan</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1250</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4283440650</Color3uint8>
+				<token name="Material">768</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000008">
+			<Properties>
+				<string name="Name">Zone7_Himmel</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1500</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294967260</Color3uint8>
+				<token name="Material">1024</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000009">
+			<Properties>
+				<string name="Name">Zone8_Weltraum</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1750</X><Y>0</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>200</X><Y>2</Y><Z>200</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4279503400</Color3uint8>
+				<token name="Material">768</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000000A">
+			<Properties>
 				<string name="Name">CampaignPortal</string>
 				<bool name="Anchored">true</bool>
 				<CoordinateFrame name="CFrame">
@@ -75,9 +177,9 @@
 				<float name="Transparency">0.2</float>
 			</Properties>
 		</Item>
-		<Item class="Part" referent="RBX00000005">
+		<Item class="Part" referent="RBX0000000B">
 			<Properties>
-				<string name="Name">ZoneGate_LeftPillar</string>
+				<string name="Name">ZoneGate2_LeftPillar</string>
 				<bool name="Anchored">true</bool>
 				<CoordinateFrame name="CFrame">
 					<X>125</X><Y>10</Y><Z>-112</Z>
@@ -92,9 +194,9 @@
 				<token name="Material">256</token>
 			</Properties>
 		</Item>
-		<Item class="Part" referent="RBX00000006">
+		<Item class="Part" referent="RBX0000000C">
 			<Properties>
-				<string name="Name">ZoneGate_RightPillar</string>
+				<string name="Name">ZoneGate2_RightPillar</string>
 				<bool name="Anchored">true</bool>
 				<CoordinateFrame name="CFrame">
 					<X>125</X><Y>10</Y><Z>-88</Z>
@@ -109,9 +211,9 @@
 				<token name="Material">256</token>
 			</Properties>
 		</Item>
-		<Item class="Part" referent="RBX00000007">
+		<Item class="Part" referent="RBX0000000D">
 			<Properties>
-				<string name="Name">ZoneGate_TopArch</string>
+				<string name="Name">ZoneGate2_TopArch</string>
 				<bool name="Anchored">true</bool>
 				<CoordinateFrame name="CFrame">
 					<X>125</X><Y>22</Y><Z>-100</Z>
@@ -126,9 +228,9 @@
 				<token name="Material">256</token>
 			</Properties>
 		</Item>
-		<Item class="Part" referent="RBX00000008">
+		<Item class="Part" referent="RBX0000000E">
 			<Properties>
-				<string name="Name">ZoneGate_Barrier</string>
+				<string name="Name">ZoneGate2_Barrier</string>
 				<bool name="Anchored">true</bool>
 				<CoordinateFrame name="CFrame">
 					<X>125</X><Y>10</Y><Z>-100</Z>
@@ -144,23 +246,437 @@
 				<float name="Transparency">0.5</float>
 			</Properties>
 		</Item>
-		<Item class="Terrain" referent="RBX00000009">
+		<Item class="Part" referent="RBX0000000F">
+			<Properties>
+				<string name="Name">ZoneGate3_LeftPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>375</X><Y>10</Y><Z>-112</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000010">
+			<Properties>
+				<string name="Name">ZoneGate3_RightPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>375</X><Y>10</Y><Z>-88</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000011">
+			<Properties>
+				<string name="Name">ZoneGate3_TopArch</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>375</X><Y>22</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>28</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000012">
+			<Properties>
+				<string name="Name">ZoneGate3_Barrier</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>375</X><Y>10</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>2</X><Y>20</Y><Z>20</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294917180</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.5</float>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000013">
+			<Properties>
+				<string name="Name">ZoneGate4_LeftPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>625</X><Y>10</Y><Z>-112</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000014">
+			<Properties>
+				<string name="Name">ZoneGate4_RightPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>625</X><Y>10</Y><Z>-88</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000015">
+			<Properties>
+				<string name="Name">ZoneGate4_TopArch</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>625</X><Y>22</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>28</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000016">
+			<Properties>
+				<string name="Name">ZoneGate4_Barrier</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>625</X><Y>10</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>2</X><Y>20</Y><Z>20</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294917180</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.5</float>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000017">
+			<Properties>
+				<string name="Name">ZoneGate5_LeftPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>875</X><Y>10</Y><Z>-112</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000018">
+			<Properties>
+				<string name="Name">ZoneGate5_RightPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>875</X><Y>10</Y><Z>-88</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000019">
+			<Properties>
+				<string name="Name">ZoneGate5_TopArch</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>875</X><Y>22</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>28</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001A">
+			<Properties>
+				<string name="Name">ZoneGate5_Barrier</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>875</X><Y>10</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>2</X><Y>20</Y><Z>20</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294917180</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.5</float>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001B">
+			<Properties>
+				<string name="Name">ZoneGate6_LeftPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1125</X><Y>10</Y><Z>-112</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001C">
+			<Properties>
+				<string name="Name">ZoneGate6_RightPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1125</X><Y>10</Y><Z>-88</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001D">
+			<Properties>
+				<string name="Name">ZoneGate6_TopArch</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1125</X><Y>22</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>28</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001E">
+			<Properties>
+				<string name="Name">ZoneGate6_Barrier</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1125</X><Y>10</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>2</X><Y>20</Y><Z>20</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294917180</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.5</float>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX0000001F">
+			<Properties>
+				<string name="Name">ZoneGate7_LeftPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1375</X><Y>10</Y><Z>-112</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000020">
+			<Properties>
+				<string name="Name">ZoneGate7_RightPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1375</X><Y>10</Y><Z>-88</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000021">
+			<Properties>
+				<string name="Name">ZoneGate7_TopArch</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1375</X><Y>22</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>28</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000022">
+			<Properties>
+				<string name="Name">ZoneGate7_Barrier</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1375</X><Y>10</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>2</X><Y>20</Y><Z>20</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294917180</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.5</float>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000023">
+			<Properties>
+				<string name="Name">ZoneGate8_LeftPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1625</X><Y>10</Y><Z>-112</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000024">
+			<Properties>
+				<string name="Name">ZoneGate8_RightPillar</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1625</X><Y>10</Y><Z>-88</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>20</Y><Z>4</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000025">
+			<Properties>
+				<string name="Name">ZoneGate8_TopArch</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1625</X><Y>22</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>4</X><Y>4</Y><Z>28</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4287401120</Color3uint8>
+				<token name="Material">256</token>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBX00000026">
+			<Properties>
+				<string name="Name">ZoneGate8_Barrier</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame">
+					<X>1625</X><Y>10</Y><Z>-100</Z>
+					<R00>1</R00><R01>0</R01><R02>0</R02>
+					<R10>0</R10><R11>1</R11><R12>0</R12>
+					<R20>0</R20><R21>0</R21><R22>1</R22>
+				</CoordinateFrame>
+				<Vector3 name="size">
+					<X>2</X><Y>20</Y><Z>20</Z>
+				</Vector3>
+				<Color3uint8 name="Color3uint8">4294917180</Color3uint8>
+				<token name="Material">288</token>
+				<float name="Transparency">0.5</float>
+			</Properties>
+		</Item>
+		<Item class="Terrain" referent="RBX00000027">
 			<Properties>
 				<string name="Name">Terrain</string>
 			</Properties>
 		</Item>
-		<Item class="Camera" referent="RBX0000000A">
+		<Item class="Camera" referent="RBX00000028">
 			<Properties>
 				<string name="Name">Camera</string>
 				<token name="CameraType">0</token>
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000023">
+	<Item class="ServerScriptService" referent="RBX00000041">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000022">
+			<Item class="Script" referent="RBX00000040">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -718,11 +1234,11 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX00000021">
+			<Item class="Folder" referent="RBX0000003F">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000018">
+				<Item class="ModuleScript" referent="RBX00000036">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -993,7 +1509,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000019">
+				<Item class="ModuleScript" referent="RBX00000037">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1181,7 +1697,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000001A">
+				<Item class="ModuleScript" referent="RBX00000038">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1687,7 +2203,7 @@ return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000001B">
+				<Item class="ModuleScript" referent="RBX00000039">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1783,7 +2299,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000001C">
+				<Item class="ModuleScript" referent="RBX0000003A">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1853,9 +2369,10 @@ function ZoneService.init(dataService, currencyService, petService)
 	end
 	ZoneService._zonesFolder = zonesFolder
 
-	-- Spawn destructibles for zones 1 and 2 (MVP)
-	ZoneService.spawnZone(1)
-	ZoneService.spawnZone(2)
+	-- Spawn destructibles for all 8 zones
+	for zoneId = 1, 8 do
+		ZoneService.spawnZone(zoneId)
+	end
 
 	-- Spawn zone gates between adjacent zones
 	ZoneService._spawnZoneGates()
@@ -2178,6 +2695,12 @@ function ZoneService._spawnEggStations()
 	local stationDefs = {
 		[1] = { eggType = "BasicEgg", name = "Basic Egg", cost = Config.EggCosts[1].Coins },
 		[2] = { eggType = "PremiumEgg", name = "Premium Egg", cost = Config.EggCosts[2].Coins },
+		[3] = { eggType = "StrandEgg", name = "Strand Egg", cost = Config.EggCosts[3].Coins },
+		[4] = { eggType = "WuesteEgg", name = "Wueste Egg", cost = Config.EggCosts[4].Coins },
+		[5] = { eggType = "EisweltEgg", name = "Eiswelt Egg", cost = Config.EggCosts[5].Coins },
+		[6] = { eggType = "VulkanEgg", name = "Vulkan Egg", cost = Config.EggCosts[6].Coins },
+		[7] = { eggType = "HimmelEgg", name = "Himmel Egg", cost = Config.EggCosts[7].Coins },
+		[8] = { eggType = "WeltraumEgg", name = "Weltraum Egg", cost = Config.EggCosts[8].Coins },
 	}
 
 	for zoneId, stationDef in pairs(stationDefs) do
@@ -2206,7 +2729,16 @@ function ZoneService._spawnEggStations()
 		egg.Position = stationPos + Vector3.new(0, 5, 0)
 		egg.Anchored = true
 		egg.CanCollide = false
-		egg.Color = zoneId == 1 and Color3.fromRGB(200, 230, 180) or Color3.fromRGB(180, 200, 255)
+		egg.Color = ({
+			[1] = Color3.fromRGB(200, 230, 180), -- green (Gruene Wiesen)
+			[2] = Color3.fromRGB(180, 200, 255), -- blue-gray (Stadt)
+			[3] = Color3.fromRGB(237, 201, 136), -- sandy (Strand)
+			[4] = Color3.fromRGB(210, 180, 100), -- desert gold (Wueste)
+			[5] = Color3.fromRGB(200, 230, 255), -- icy blue (Eiswelt)
+			[6] = Color3.fromRGB(200, 80, 30),   -- fiery red (Vulkan)
+			[7] = Color3.fromRGB(255, 255, 220), -- heavenly white (Himmel)
+			[8] = Color3.fromRGB(100, 50, 200),  -- cosmic purple (Weltraum)
+		})[zoneId] or Color3.fromRGB(200, 200, 200)
 		egg.Material = Enum.Material.SmoothPlastic
 		egg.Parent = stationsFolder
 
@@ -2391,8 +2923,8 @@ function ZoneService._spawnZoneGates()
 		gatesFolder.Parent = workspace
 	end
 
-	-- Create gates between zone 1->2, 2->3, etc. (MVP: only 1->2)
-	for gateZone = 2, 2 do
+	-- Create gates between zone 1->2, 2->3, etc.
+	for gateZone = 2, 8 do
 		local zoneDef = ZoneData.Zones[gateZone]
 		if not zoneDef then continue end
 
@@ -3549,8 +4081,8 @@ function ZoneService._spawnBarriers()
 	local BARRIER_HEIGHT = 40
 	local BARRIER_THICKNESS = 4
 
-	-- Spawn barriers for zones 1 and 2
-	for zoneId = 1, 2 do
+	-- Spawn barriers for all 8 zones
+	for zoneId = 1, 8 do
 		local centerX = (zoneId - 1) * ZONE_SPACING
 		local centerZ = -100
 		local halfW = ZONE_SIZE.X / 2
@@ -3606,7 +4138,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000001D">
+				<Item class="ModuleScript" referent="RBX0000003B">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4180,7 +4712,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000001E">
+				<Item class="ModuleScript" referent="RBX0000003C">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4339,7 +4871,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000001F">
+				<Item class="ModuleScript" referent="RBX0000003D">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4538,7 +5070,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000020">
+				<Item class="ModuleScript" referent="RBX0000003E">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4690,15 +5222,15 @@ return MasteryService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX0000002B">
+	<Item class="StarterPlayer" referent="RBX00000049">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX0000002A">
+		<Item class="StarterPlayerScripts" referent="RBX00000048">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000029">
+				<Item class="LocalScript" referent="RBX00000047">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -5294,7 +5826,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000024">
+				<Item class="ModuleScript" referent="RBX00000042">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7163,7 +7695,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000025">
+				<Item class="ModuleScript" referent="RBX00000043">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8136,7 +8668,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000026">
+				<Item class="ModuleScript" referent="RBX00000044">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9043,7 +9575,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000027">
+				<Item class="ModuleScript" referent="RBX00000045">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10132,7 +10664,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000028">
+				<Item class="ModuleScript" referent="RBX00000046">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10316,15 +10848,15 @@ return MusicController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX00000017">
+	<Item class="ReplicatedStorage" referent="RBX00000035">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX00000016">
+			<Item class="Folder" referent="RBX00000034">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000010">
+				<Item class="ModuleScript" referent="RBX0000002E">
 					<Properties>
 						<string name="Name">Config</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10404,7 +10936,7 @@ return Config
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000011">
+				<Item class="ModuleScript" referent="RBX0000002F">
 					<Properties>
 						<string name="Name">PetData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10471,13 +11003,73 @@ PetData.Eggs = {
 			{ petId = "Inferno", weight = 10 },
 		},
 	},
+	StrandEgg = {
+		name = "Strand Egg",
+		zone = 3,
+		petPool = {
+			{ petId = "Buddy", weight = 30 },
+			{ petId = "Whiskers", weight = 35 },
+			{ petId = "Blaze", weight = 25 },
+			{ petId = "Inferno", weight = 10 },
+		},
+	},
+	WuesteEgg = {
+		name = "Wueste Egg",
+		zone = 4,
+		petPool = {
+			{ petId = "Buddy", weight = 20 },
+			{ petId = "Whiskers", weight = 30 },
+			{ petId = "Blaze", weight = 35 },
+			{ petId = "Inferno", weight = 15 },
+		},
+	},
+	EisweltEgg = {
+		name = "Eiswelt Egg",
+		zone = 5,
+		petPool = {
+			{ petId = "Buddy", weight = 15 },
+			{ petId = "Whiskers", weight = 25 },
+			{ petId = "Blaze", weight = 40 },
+			{ petId = "Inferno", weight = 20 },
+		},
+	},
+	VulkanEgg = {
+		name = "Vulkan Egg",
+		zone = 6,
+		petPool = {
+			{ petId = "Buddy", weight = 10 },
+			{ petId = "Whiskers", weight = 20 },
+			{ petId = "Blaze", weight = 40 },
+			{ petId = "Inferno", weight = 30 },
+		},
+	},
+	HimmelEgg = {
+		name = "Himmel Egg",
+		zone = 7,
+		petPool = {
+			{ petId = "Buddy", weight = 5 },
+			{ petId = "Whiskers", weight = 15 },
+			{ petId = "Blaze", weight = 40 },
+			{ petId = "Inferno", weight = 40 },
+		},
+	},
+	WeltraumEgg = {
+		name = "Weltraum Egg",
+		zone = 8,
+		petPool = {
+			{ petId = "Buddy", weight = 5 },
+			{ petId = "Whiskers", weight = 10 },
+			{ petId = "Blaze", weight = 35 },
+			{ petId = "Inferno", weight = 50 },
+		},
+	},
 }
 
 return PetData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000012">
+				<Item class="ModuleScript" referent="RBX00000030">
 					<Properties>
 						<string name="Name">ZoneData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10692,7 +11284,7 @@ return ZoneData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000013">
+				<Item class="ModuleScript" referent="RBX00000031">
 					<Properties>
 						<string name="Name">CampaignData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10862,7 +11454,7 @@ return CampaignData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000014">
+				<Item class="ModuleScript" referent="RBX00000032">
 					<Properties>
 						<string name="Name">QuestData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11164,7 +11756,7 @@ return QuestData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000015">
+				<Item class="ModuleScript" referent="RBX00000033">
 					<Properties>
 						<string name="Name">MasteryData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11246,18 +11838,18 @@ return MasteryData
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX0000002C">
+	<Item class="StarterGui" referent="RBX0000004A">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
 	</Item>
-	<Item class="Lighting" referent="RBX0000000F">
+	<Item class="Lighting" referent="RBX0000002D">
 		<Properties>
 			<string name="Name">Lighting</string>
 			<float name="Brightness">2</float>
 			<float name="ClockTime">14</float>
 		</Properties>
-		<Item class="ColorCorrectionEffect" referent="RBX0000000C">
+		<Item class="ColorCorrectionEffect" referent="RBX0000002A">
 			<Properties>
 				<string name="Name">ColorCorrection</string>
 				<float name="Brightness">0.05</float>
@@ -11265,14 +11857,14 @@ return MasteryData
 				<float name="Saturation">0.2</float>
 			</Properties>
 		</Item>
-		<Item class="Atmosphere" referent="RBX0000000D">
+		<Item class="Atmosphere" referent="RBX0000002B">
 			<Properties>
 				<string name="Name">Atmosphere</string>
 				<float name="Density">0.3</float>
 				<float name="Offset">0.25</float>
 			</Properties>
 		</Item>
-		<Item class="BloomEffect" referent="RBX0000000E">
+		<Item class="BloomEffect" referent="RBX0000002C">
 			<Properties>
 				<string name="Name">Bloom</string>
 				<float name="Intensity">0.4</float>
@@ -11281,7 +11873,7 @@ return MasteryData
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000002D">
+	<Item class="SoundService" referent="RBX0000004B">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

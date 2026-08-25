@@ -61,6 +61,66 @@ PetData.Eggs = {
 			{ petId = "Inferno", weight = 10 },
 		},
 	},
+	StrandEgg = {
+		name = "Strand Egg",
+		zone = 3,
+		petPool = {
+			{ petId = "Buddy", weight = 30 },
+			{ petId = "Whiskers", weight = 35 },
+			{ petId = "Blaze", weight = 25 },
+			{ petId = "Inferno", weight = 10 },
+		},
+	},
+	WuesteEgg = {
+		name = "Wueste Egg",
+		zone = 4,
+		petPool = {
+			{ petId = "Buddy", weight = 20 },
+			{ petId = "Whiskers", weight = 30 },
+			{ petId = "Blaze", weight = 35 },
+			{ petId = "Inferno", weight = 15 },
+		},
+	},
+	EisweltEgg = {
+		name = "Eiswelt Egg",
+		zone = 5,
+		petPool = {
+			{ petId = "Buddy", weight = 15 },
+			{ petId = "Whiskers", weight = 25 },
+			{ petId = "Blaze", weight = 40 },
+			{ petId = "Inferno", weight = 20 },
+		},
+	},
+	VulkanEgg = {
+		name = "Vulkan Egg",
+		zone = 6,
+		petPool = {
+			{ petId = "Buddy", weight = 10 },
+			{ petId = "Whiskers", weight = 20 },
+			{ petId = "Blaze", weight = 40 },
+			{ petId = "Inferno", weight = 30 },
+		},
+	},
+	HimmelEgg = {
+		name = "Himmel Egg",
+		zone = 7,
+		petPool = {
+			{ petId = "Buddy", weight = 5 },
+			{ petId = "Whiskers", weight = 15 },
+			{ petId = "Blaze", weight = 40 },
+			{ petId = "Inferno", weight = 40 },
+		},
+	},
+	WeltraumEgg = {
+		name = "Weltraum Egg",
+		zone = 8,
+		petPool = {
+			{ petId = "Buddy", weight = 5 },
+			{ petId = "Whiskers", weight = 10 },
+			{ petId = "Blaze", weight = 35 },
+			{ petId = "Inferno", weight = 50 },
+		},
+	},
 }
 
 return PetData
