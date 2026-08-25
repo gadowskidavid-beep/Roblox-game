@@ -102,6 +102,9 @@ function EggService.purchaseAndHatch(player, eggType)
 			end
 		end
 
+		-- Strip isNewDiscovery from the pet table so it does not persist in DataStore
+		newPet.isNewDiscovery = nil
+
 		-- Track quest progress: egg hatched
 		if EggService._questService then
 			EggService._questService.incrementStat(player, "hatchEggs", 1)
