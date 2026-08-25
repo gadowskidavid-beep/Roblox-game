@@ -87,7 +87,7 @@ function EggService.purchaseAndHatch(player, eggType)
 		if EggService._masteryService then
 			local qhBonus = EggService._masteryService.getBuffBonus(player, "QuickHatch")
 			if qhBonus > 0 then
-				hatchDelay = 1 * qhBonus
+				hatchDelay = qhBonus
 			end
 		end
 		task.wait(hatchDelay)
@@ -189,7 +189,7 @@ function EggService.hatchFree(player, eggType)
 		if EggService._masteryService then
 			local qhBonus = EggService._masteryService.getBuffBonus(player, "QuickHatch")
 			if qhBonus > 0 then
-				hatchDelay = 1 * qhBonus
+				hatchDelay = qhBonus
 			end
 		end
 		task.wait(hatchDelay)

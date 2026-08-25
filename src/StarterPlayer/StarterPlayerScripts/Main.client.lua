@@ -556,53 +556,63 @@ end)
 --------------------------------------------------------------------------------
 -- CHARACTER SETUP (campaign portal, egg stations, ProximityPrompt)
 --------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+-- DOUBLE JUMP SYSTEM
+-- Shared state lives outside onCharacterAdded so that MasteryUpdated and
+-- JumpRequest connections are created only once (avoiding event leaks on respawn).
+--------------------------------------------------------------------------------
+local _djJumpCount = 0
+local _djMaxJumps = 1 -- default: single jump only
+local _djHumanoid = nil -- current humanoid reference, updated on each respawn
+
+-- Compute maxJumps from mastery state
+local function updateMaxJumps(masteryState)
+	if masteryState and masteryState.buffs then
+		local djLevel = masteryState.buffs.DoubleJump or 0
+		if djLevel > 0 then
+			local buffDef = MasteryData.Buffs.DoubleJump
+			if buffDef and buffDef.bonusPerLevel[djLevel] then
+				_djMaxJumps = buffDef.bonusPerLevel[djLevel]
+			end
+		else
+			_djMaxJumps = 1
+		end
+	end
+end
+
+-- Apply from initial mastery state
+updateMaxJumps(initialMasteryState)
+
+-- Listen for mastery updates to refresh maxJumps (single connection, never leaks)
+MasteryUpdated.OnClientEvent:Connect(function(masteryState)
+	updateMaxJumps(masteryState)
+end)
+
+-- Handle jump requests for extra jumps (single connection, never leaks)
+UserInputService.JumpRequest:Connect(function()
+	if _djMaxJumps <= 1 then return end -- no double jump mastery
+	if not _djHumanoid or not _djHumanoid.Parent then return end
+	if _djHumanoid:GetState() == Enum.HumanoidStateType.Freefall then
+		if _djJumpCount < _djMaxJumps then
+			_djHumanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+	end
+end)
+
 local function onCharacterAdded(character)
 	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 	local humanoid = character:WaitForChild("Humanoid")
 
-	-- DoubleJump system: allows extra jumps based on mastery level
-	local jumpCount = 0
-	local maxJumps = 1 -- default: single jump only
+	-- Update shared DoubleJump state for this new character
+	_djHumanoid = humanoid
+	_djJumpCount = 0
 
-	-- Compute maxJumps from mastery state
-	local function updateMaxJumps(masteryState)
-		if masteryState and masteryState.buffs then
-			local djLevel = masteryState.buffs.DoubleJump or 0
-			if djLevel > 0 then
-				local buffDef = MasteryData.Buffs.DoubleJump
-				if buffDef and buffDef.bonusPerLevel[djLevel] then
-					maxJumps = buffDef.bonusPerLevel[djLevel]
-				end
-			else
-				maxJumps = 1
-			end
-		end
-	end
-
-	-- Apply from initial mastery state
-	updateMaxJumps(initialMasteryState)
-
-	-- Listen for mastery updates to refresh maxJumps
-	MasteryUpdated.OnClientEvent:Connect(function(masteryState)
-		updateMaxJumps(masteryState)
-	end)
-
-	-- Reset jump count on landing
+	-- StateChanged is scoped to this humanoid instance (garbage-collected on death)
 	humanoid.StateChanged:Connect(function(_, newState)
 		if newState == Enum.HumanoidStateType.Landed then
-			jumpCount = 0
+			_djJumpCount = 0
 		elseif newState == Enum.HumanoidStateType.Jumping then
-			jumpCount = jumpCount + 1
-		end
-	end)
-
-	-- Handle jump requests for extra jumps (mid-air)
-	UserInputService.JumpRequest:Connect(function()
-		if maxJumps <= 1 then return end -- no double jump mastery
-		if humanoid:GetState() == Enum.HumanoidStateType.Freefall then
-			if jumpCount < maxJumps then
-				humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-			end
+			_djJumpCount = _djJumpCount + 1
 		end
 	end)
 

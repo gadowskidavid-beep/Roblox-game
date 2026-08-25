@@ -2018,6 +2018,10 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 	end
 
 	-- Crit deals 2 damage (or more with CritPower mastery)
+	-- NOTE: CritPower bonus values (3,4,5,7,10) are absolute damage values by design,
+	-- not multipliers of the base crit damage. The MasteryData table already encodes
+	-- the intended final damage at each level, so the base 2 is intentionally discarded
+	-- when the buff is active.
 	local critDamage = 2
 	if ZoneService._masteryService then
 		local critBonus = ZoneService._masteryService.getBuffBonus(player, "CritPower")
