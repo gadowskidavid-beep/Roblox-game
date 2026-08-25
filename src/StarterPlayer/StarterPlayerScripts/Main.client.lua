@@ -249,38 +249,12 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
 end)
 
 EggHatchStart.OnClientEvent:Connect(function(eggType)
-	local hatchPosition = nil
-	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		if hrp then
-			local lookVector = hrp.CFrame.LookVector
-			hatchPosition = hrp.Position + lookVector * 6 + Vector3.new(0, 0, 0)
-		end
-	end
-	if hatchPosition then
-		effectsController._lastHatchPosition = hatchPosition
-	end
+	effectsController:startEggWobble()
 end)
 
 EggHatchResult.OnClientEvent:Connect(function(petData)
-	local hatchPosition = effectsController._lastHatchPosition
-	if not hatchPosition then
-		if player.Character then
-			local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-			if hrp then
-				local lookVector = hrp.CFrame.LookVector
-				hatchPosition = hrp.Position + lookVector * 6
-			end
-		end
-	end
-	effectsController._lastHatchPosition = nil
-
-	if hatchPosition then
-		effectsController:showEggHatchAnimation(hatchPosition, petData)
-	end
-	-- Delay the UIController modal until after the EffectsController animation
-	-- finishes (~5s total: wobble + crack + flash + reveal + fade)
-	task.delay(5.5, function()
+	effectsController:completeEggHatch(petData)
+	task.delay(4, function()
 		uiController:showEggHatch(petData)
 	end)
 end)

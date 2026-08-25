@@ -147,22 +147,17 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 end
 
 --------------------------------------------------------------------------------
--- Egg Hatch Animation: full-screen UI overlay with a 2D egg that wobbles,
--- cracks open with a flash, then reveals the pet name and rarity.
--- Pure ScreenGui animation - no 3D Parts, no camera changes.
--- NOTE: eggPosition is unused (screen-space animation) but retained for API
--- compatibility with callers in Main.client.lua.
+-- Egg Hatch Animation (Phase 1): Start the egg wobble overlay immediately.
+-- Called when EggHatchStart fires (user presses E). Creates the full-screen
+-- overlay with the egg shape and starts a looping wobble animation.
+-- The wobble loops until completeEggHatch() is called.
 --------------------------------------------------------------------------------
-function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
+function EffectsController:startEggWobble()
 	if not self._initialized then return end
 
 	-- Reentrancy guard: prevent stacking overlays from rapid successive hatch events
 	if self._isHatching then return end
 	self._isHatching = true
-
-	local rarity = resultPet and resultPet.rarity or "Common"
-	local petName = resultPet and resultPet.name or "Pet"
-	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
 	-- Create full-screen overlay ScreenGui (unique name to avoid collision with UIController)
 	local screenGui = Instance.new("ScreenGui")
@@ -257,6 +252,67 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	shineCorner.CornerRadius = UDim.new(0.5, 0)
 	shineCorner.Parent = shine
 
+	-- Store references for phase 2 (completeEggHatch)
+	self._hatchScreenGui = screenGui
+	self._hatchEggContainer = eggContainer
+	self._hatchEggFrame = eggFrame
+	self._hatchEggStroke = eggStroke
+	self._hatchOverlay = overlay
+	self._hatchWobbling = true
+
+	-- Start looping wobble animation (repeats until completeEggHatch is called)
+	task.spawn(function()
+		local wobbleIntensities = {5, -8, 10, -12, 15, -10, 8, -5}
+		local index = 1
+		while self._hatchWobbling and eggContainer and eggContainer.Parent do
+			local angle = wobbleIntensities[index]
+			local wInfo = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+			local wobbleTween = TweenService:Create(eggContainer, wInfo, { Rotation = angle })
+			wobbleTween:Play()
+			wobbleTween.Completed:Wait()
+			task.wait(0.08)
+			index = (index % #wobbleIntensities) + 1
+		end
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- Egg Hatch Animation (Phase 2): Complete the hatch with crack/flash/reveal.
+-- Called when EggHatchResult fires (server sends the hatched pet data).
+-- Uses the overlay created by startEggWobble(). If no active wobble exists
+-- (edge case), creates everything fresh and runs the full animation.
+--------------------------------------------------------------------------------
+function EffectsController:completeEggHatch(petData)
+	if not self._initialized then return end
+
+	local rarity = petData and petData.rarity or "Common"
+	local petName = petData and petData.name or "Pet"
+	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+
+	-- Stop the wobble loop
+	self._hatchWobbling = false
+
+	-- If no active wobble overlay exists (edge case), run the full animation as fallback
+	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
+		self._isHatching = false
+		self:showEggHatchAnimation(nil, petData)
+		return
+	end
+
+	-- Get stored references from phase 1
+	local screenGui = self._hatchScreenGui
+	local eggContainer = self._hatchEggContainer
+	local eggFrame = self._hatchEggFrame
+	local eggStroke = self._hatchEggStroke
+	local overlay = self._hatchOverlay
+
+	-- Clear stored references
+	self._hatchScreenGui = nil
+	self._hatchEggContainer = nil
+	self._hatchEggFrame = nil
+	self._hatchEggStroke = nil
+	self._hatchOverlay = nil
+
 	-- White flash frame (used during break - starts invisible)
 	local whiteFlash = Instance.new("Frame")
 	whiteFlash.Name = "WhiteFlash"
@@ -309,31 +365,12 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	rarityLabel.ZIndex = 6
 	rarityLabel.Parent = revealContainer
 
-	-- Animation sequence (runs in a coroutine)
+	-- Crack/reveal animation sequence
 	task.spawn(function()
-		-- Phase 1: Wobble the egg (3 wobbles with increasing intensity)
-		-- Wobble 1 (small: 5 degrees)
-		local w1Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble1 = TweenService:Create(eggContainer, w1Info, { Rotation = 5 })
-		wobble1:Play()
-		wobble1.Completed:Wait()
-		task.wait(0.12)
-
-		-- Wobble 2 (medium: 10 degrees)
-		local w2Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble2 = TweenService:Create(eggContainer, w2Info, { Rotation = -10 })
-		wobble2:Play()
-		wobble2.Completed:Wait()
-		task.wait(0.12)
-
-		-- Wobble 3 (large: 15 degrees)
-		local w3Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble3 = TweenService:Create(eggContainer, w3Info, { Rotation = 15 })
-		wobble3:Play()
-		wobble3.Completed:Wait()
+		-- Brief pause to settle after wobble stops
 		task.wait(0.1)
 
-		-- Phase 2: Crack - flash egg to rarity color and scale up
+		-- Phase 1: Crack - flash egg to rarity color and scale up
 		local crackInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		TweenService:Create(eggFrame, crackInfo, {
 			BackgroundColor3 = rarityColor,
@@ -346,7 +383,7 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 		}):Play()
 		task.wait(0.25)
 
-		-- Phase 3: Break - full-screen white flash, hide egg
+		-- Phase 2: Break - full-screen white flash, hide egg
 		eggContainer.Visible = false
 		whiteFlash.BackgroundTransparency = 0
 
@@ -356,7 +393,7 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 		}):Play()
 		task.wait(0.3)
 
-		-- Phase 4: Reveal - show pet name and rarity in rarity color
+		-- Phase 3: Reveal - show pet name and rarity in rarity color
 		revealContainer.Visible = true
 
 		-- Scale-in bounce on reveal text
@@ -367,7 +404,7 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 		}):Play()
 		task.wait(0.4)
 
-		-- Phase 5: Auto-dismiss after 2.5 seconds with fade out
+		-- Phase 4: Auto-dismiss after 2.5 seconds with fade out
 		task.wait(2.5)
 
 		local fadeOutInfo = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
@@ -390,6 +427,29 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 			screenGui:Destroy()
 		end
 		self._isHatching = false
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- Egg Hatch Animation (Legacy/Fallback): full-screen UI overlay with a 2D egg
+-- that wobbles, cracks open with a flash, then reveals the pet name and rarity.
+-- Pure ScreenGui animation - no 3D Parts, no camera changes.
+-- Calls startEggWobble() then completeEggHatch() after a short delay.
+-- NOTE: eggPosition is unused (screen-space animation) but retained for API
+-- compatibility with callers in Main.client.lua.
+--------------------------------------------------------------------------------
+function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
+	if not self._initialized then return end
+
+	-- If already hatching (startEggWobble was called), skip
+	if self._isHatching then return end
+
+	-- Start the wobble phase
+	self:startEggWobble()
+
+	-- After a short delay, complete the hatch with the result
+	task.delay(0.8, function()
+		self:completeEggHatch(resultPet)
 	end)
 end
 
