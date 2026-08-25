@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-001",
+  "type": "fix",
+  "description": "Fix pet damage (client never calls AssignPetTarget) and fix crit token exploit (crit window reusable). Two P0 bugs in one feature.",
+  "status": "completed",
+  "steps": [
+    "Step 1 - Fix PetController.lua to call AssignPetTarget: In src/StarterPlayer/StarterPlayerScripts/PetController.lua, in the init() method, get a reference to the AssignPetTarget RemoteFunction: self._assignPetTarget = self._remotes:WaitForChild('AssignPetTarget'). Add a tracking table self._serverAssignments = {} to avoid redundant calls.",
+    "Step 2 - In PetController:sendPetToAttack(), after line 'self._attackingPets[uniqueId] = destructibleId', add rate-limited server assignment: Only call self._assignPetTarget:InvokeServer(uniqueId, destructibleId) if self._serverAssignments[uniqueId] ~= destructibleId. Then set self._serverAssignments[uniqueId] = destructibleId.",
+    "Step 3 - When a pet is cleared from attacking (self._attackingPets[uniqueId] = nil occurrences), also call self._assignPetTarget:InvokeServer(uniqueId, nil) and set self._serverAssignments[uniqueId] = nil. Key locations: the sendPetToAttack coroutine where it returns (destructible destroyed, player too far), cancelAllAttacks(), clearManualTarget(), and the auto-attack loop when a target becomes invalid.",
+    "Step 4 - Fix crit token exploit in src/ServerScriptService/Services/ZoneService.lua: In ZoneService.critAttackDestructible(), at line 1881 where the comment says 'we keep the window open so multiple circles can crit within the window', REPLACE that comment with code that CONSUMES the crit window: playerCritWindows[destructibleId] = nil. This ensures each normal click generates exactly ONE crit opportunity.",
+    "Step 5 - Run python3 tools/generate_rbxlx.py to regenerate BATTLE_PETS.rbxlx with the fixes."
+  ],
+  "acceptance_criteria": [
+    "PetController.init() stores a reference to AssignPetTarget RemoteFunction",
+    "PetController:sendPetToAttack() calls AssignPetTarget:InvokeServer(uniqueId, destructibleId) when assignment changes",
+    "When pets are cleared from targets (destroyed target, player too far, cancelAllAttacks, clearManualTarget), AssignPetTarget:InvokeServer(uniqueId, nil) is called to clear server assignment",
+    "Rate limiting prevents redundant InvokeServer calls (only fires when assignment actually changes)",
+    "In ZoneService.critAttackDestructible(), after validating the crit window, the window is consumed (set to nil) BEFORE damage is applied so the token cannot be reused",
+    "python3 tools/generate_rbxlx.py runs successfully and regenerates BATTLE_PETS.rbxlx"
+  ],
+  "verification": [
+    "Run: cd /projects/sandbox/Roblox-game && python3 tools/generate_rbxlx.py",
+    "Verify no Python errors in output",
+    "Verify BATTLE_PETS.rbxlx file is regenerated (check file modification time or content)",
+    "Run: grep -n 'AssignPetTarget' src/StarterPlayer/StarterPlayerScripts/PetController.lua to confirm the remote call is present",
+    "Run: grep -n '_serverAssignments' src/StarterPlayer/StarterPlayerScripts/PetController.lua to confirm rate-limiting tracking exists",
+    "Run: grep -n 'playerCritWindows\\[destructibleId\\] = nil' src/ServerScriptService/Services/ZoneService.lua to confirm crit window consumption exists before the damage logic"
+  ],
+  "blocked_reason": null,
+  "findings": "Both fixes implemented successfully. Build generates BATTLE_PETS.rbxlx without errors. PetController now has 15+ locations where server assignments are cleared when pets stop attacking, ensuring no stale server state."
+}
