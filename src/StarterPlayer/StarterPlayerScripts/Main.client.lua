@@ -61,7 +61,6 @@ local StartCampaignLevel = Remotes:WaitForChild("StartCampaignLevel")
 local DeployPetInCampaign = Remotes:WaitForChild("DeployPetInCampaign")
 local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
 local ClickAttackDestructible = Remotes:WaitForChild("ClickAttackDestructible")
-local CritAttackDestructible = Remotes:WaitForChild("CritAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
@@ -405,22 +404,6 @@ local function fireClickDamage(target)
 
 	-- Fire click attack to server (always 1 damage)
 	ClickAttackDestructible:InvokeServer(target.destructibleId)
-
-	-- Spawn a crit button only if there is NOT already one active
-	-- Prevents spammy rapid spawn/destroy cycles on every click
-	if target.part and target.part.Parent and not effectsController:hasCritButtonActive() then
-		effectsController:spawnCritButton(target.part, target.destructibleId, function()
-			-- Crit button was clicked: fire crit attack to server
-			CritAttackDestructible:InvokeServer(target.destructibleId)
-
-			-- Show crit visual feedback
-			effectsController:playCritSound(target.part.Position)
-
-			-- Show gold "CRIT! 2" popup
-			local critPos = target.part.Position + Vector3.new(0, 2, 0)
-			petController:showDamageText(critPos, 2, true)
-		end)
-	end
 
 	-- Show visual effects for the click
 	if target.part and target.part.Parent then
