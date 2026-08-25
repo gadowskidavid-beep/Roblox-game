@@ -840,8 +840,10 @@ UpgradeService.setMasteryService(MasteryService)
 
 PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
+PetService.setShopService(ShopService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
+ShopService.setEggService(EggService)
 
 ZoneService.init(DataService, CurrencyService, PetService)
 ZoneService.setQuestService(QuestService)
@@ -1981,6 +1983,7 @@ PetService._dataService = nil
 PetService._currencyService = nil
 PetService._upgradeService = nil
 PetService._masteryService = nil
+PetService._shopService = nil
 
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
@@ -1993,7 +1996,12 @@ function PetService.setMasteryService(masteryService)
 	PetService._masteryService = masteryService
 end
 
--- Weighted random selection from a pet pool, respecting LuckyEggs upgrade and BetterLuck mastery
+-- Set shop service reference (called after init to avoid circular deps)
+function PetService.setShopService(shopService)
+	PetService._shopService = shopService
+end
+
+-- Weighted random selection from a pet pool, respecting LuckyEggs upgrade, BetterLuck mastery, and Lucky Potion
 local function weightedRandomPet(petPool, player)
 	-- Calculate total weight
 	local totalWeight = 0
@@ -2013,6 +2021,13 @@ local function weightedRandomPet(petPool, player)
 				local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
 				if betterLuckBonus > 0 then
 					weight = weight * betterLuckBonus
+				end
+			end
+			-- Lucky Potion shop buff: further increases weight of rarer pets
+			if PetService._shopService then
+				local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
+				if shopLuckMultiplier > 1 then
+					weight = weight * shopLuckMultiplier
 				end
 			end
 		end
@@ -2080,6 +2095,20 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	-- Roll for Shiny/Rainbow variant
 	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
+	-- BetterLuck mastery bonus also improves variant roll
+	if PetService._masteryService then
+		local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
+		if betterLuckBonus > 0 then
+			luckyMultiplier = luckyMultiplier * betterLuckBonus
+		end
+	end
+	-- Lucky Potion shop buff also improves variant roll
+	if PetService._shopService then
+		local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
+		if shopLuckMultiplier > 1 then
+			luckyMultiplier = luckyMultiplier * shopLuckMultiplier
+		end
+	end
 	local variant = "Normal"
 	if math.random() < Config.RAINBOW_CHANCE * luckyMultiplier then
 		variant = "Rainbow"
@@ -2143,11 +2172,16 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	return newPet, nil
 end
 
--- Get maximum equipped pets for a player (base + Friendship bonus)
+-- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
 local function getMaxEquipped(player)
 	local base = Config.MaxEquippedPetsBase
 	local bonus = PetService._upgradeService.getUpgradeBonus(player, "Friendship")
-	return base + (bonus or 0)
+	local extraSlots = 0
+	local data = PetService._dataService.getPlayerData(player)
+	if data and data.shopPurchases then
+		extraSlots = data.shopPurchases.extraEquipSlots or 0
+	end
+	return base + (bonus or 0) + extraSlots
 end
 
 -- Equip a pet by instance ID
@@ -5815,6 +5849,87 @@ end
 -- Set quest service reference (called after init to avoid circular deps)
 function EggService.setQuestService(questService)
 	EggService._questService = questService
+end
+
+-- Hatch an egg for free (used by auto-hatch; no cost deduction, still validates zone)
+function EggService.hatchFree(player, eggType)
+	if not player or type(eggType) ~= "string" then
+		return nil, "Invalid parameters"
+	end
+
+	-- Per-player lock: prevent concurrent egg hatching
+	if EggService._hatchLock[player.UserId] then
+		return nil, "Already hatching an egg"
+	end
+	EggService._hatchLock[player.UserId] = true
+
+	local function doHatch()
+		-- Validate egg type exists
+		local eggDef = PetData.Eggs[eggType]
+		if not eggDef then
+			return nil, "Unknown egg type: " .. tostring(eggType)
+		end
+
+		local data = EggService._dataService.getPlayerData(player)
+		if not data then
+			return nil, "No player data"
+		end
+
+		-- Validate player has unlocked the required zone for this egg
+		local zoneRequired = eggDef.zone
+		local zoneUnlocked = false
+		for _, unlockedId in ipairs(data.unlockedZones) do
+			if unlockedId == zoneRequired then
+				zoneUnlocked = true
+				break
+			end
+		end
+		if not zoneUnlocked then
+			return nil, "Zone not unlocked for this egg type"
+		end
+
+		-- No cost deduction for auto-hatch (player already paid for the buff)
+
+		-- Fire hatch start event to client (triggers animation)
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchStart")
+			if event then
+				event:FireClient(player, eggType)
+			end
+		end
+
+		-- Short delay to allow client to start animation
+		task.wait(1)
+
+		-- Delegate to PetService for actual hatching (skip cost deduction)
+		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
+		if not newPet then
+			return nil, err
+		end
+
+		-- Fire hatch result event with the new pet data
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchResult")
+			if event then
+				event:FireClient(player, newPet)
+			end
+		end
+
+		-- Strip isNewDiscovery from the pet table so it does not persist in DataStore
+		newPet.isNewDiscovery = nil
+
+		-- Track quest progress: egg hatched
+		if EggService._questService then
+			EggService._questService.incrementStat(player, "hatchEggs", 1)
+		end
+
+		return newPet, nil
+	end
+
+	local newPet, err = doHatch()
+	EggService._hatchLock[player.UserId] = nil
+	return newPet, err
 end
 
 -- Get eggs available to a player based on their unlocked zones

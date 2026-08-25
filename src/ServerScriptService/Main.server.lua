@@ -123,8 +123,10 @@ UpgradeService.setMasteryService(MasteryService)
 
 PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
+PetService.setShopService(ShopService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
+ShopService.setEggService(EggService)
 
 ZoneService.init(DataService, CurrencyService, PetService)
 ZoneService.setQuestService(QuestService)

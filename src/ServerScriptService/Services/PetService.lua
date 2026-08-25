@@ -17,6 +17,7 @@ PetService._dataService = nil
 PetService._currencyService = nil
 PetService._upgradeService = nil
 PetService._masteryService = nil
+PetService._shopService = nil
 
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
@@ -29,7 +30,12 @@ function PetService.setMasteryService(masteryService)
 	PetService._masteryService = masteryService
 end
 
--- Weighted random selection from a pet pool, respecting LuckyEggs upgrade and BetterLuck mastery
+-- Set shop service reference (called after init to avoid circular deps)
+function PetService.setShopService(shopService)
+	PetService._shopService = shopService
+end
+
+-- Weighted random selection from a pet pool, respecting LuckyEggs upgrade, BetterLuck mastery, and Lucky Potion
 local function weightedRandomPet(petPool, player)
 	-- Calculate total weight
 	local totalWeight = 0
@@ -49,6 +55,13 @@ local function weightedRandomPet(petPool, player)
 				local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
 				if betterLuckBonus > 0 then
 					weight = weight * betterLuckBonus
+				end
+			end
+			-- Lucky Potion shop buff: further increases weight of rarer pets
+			if PetService._shopService then
+				local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
+				if shopLuckMultiplier > 1 then
+					weight = weight * shopLuckMultiplier
 				end
 			end
 		end
@@ -116,6 +129,20 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	-- Roll for Shiny/Rainbow variant
 	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
+	-- BetterLuck mastery bonus also improves variant roll
+	if PetService._masteryService then
+		local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
+		if betterLuckBonus > 0 then
+			luckyMultiplier = luckyMultiplier * betterLuckBonus
+		end
+	end
+	-- Lucky Potion shop buff also improves variant roll
+	if PetService._shopService then
+		local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
+		if shopLuckMultiplier > 1 then
+			luckyMultiplier = luckyMultiplier * shopLuckMultiplier
+		end
+	end
 	local variant = "Normal"
 	if math.random() < Config.RAINBOW_CHANCE * luckyMultiplier then
 		variant = "Rainbow"
@@ -179,11 +206,16 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	return newPet, nil
 end
 
--- Get maximum equipped pets for a player (base + Friendship bonus)
+-- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
 local function getMaxEquipped(player)
 	local base = Config.MaxEquippedPetsBase
 	local bonus = PetService._upgradeService.getUpgradeBonus(player, "Friendship")
-	return base + (bonus or 0)
+	local extraSlots = 0
+	local data = PetService._dataService.getPlayerData(player)
+	if data and data.shopPurchases then
+		extraSlots = data.shopPurchases.extraEquipSlots or 0
+	end
+	return base + (bonus or 0) + extraSlots
 end
 
 -- Equip a pet by instance ID

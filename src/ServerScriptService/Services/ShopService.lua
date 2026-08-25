@@ -8,11 +8,14 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
+local PetData = require(game.ReplicatedStorage.Shared.PetData)
+
 local ShopService = {}
 
 -- References to other services
 ShopService._dataService = nil
 ShopService._currencyService = nil
+ShopService._eggService = nil
 
 -- In-memory timed buff storage: _activeBuffs[userId] = { buffType = expiryTimestamp, ... }
 ShopService._activeBuffs = {}
@@ -72,11 +75,11 @@ function ShopService.init(dataService, currencyService)
 			ShopService._processAutoHatch()
 		end
 	end)
+end
 
-	-- Cleanup on player leave
-	Players.PlayerRemoving:Connect(function(player)
-		ShopService._activeBuffs[player.UserId] = nil
-	end)
+-- Set EggService reference (called after init to avoid circular deps)
+function ShopService.setEggService(eggService)
+	ShopService._eggService = eggService
 end
 
 -- Purchase a shop item
@@ -193,12 +196,31 @@ function ShopService._processAutoHatch()
 		local buffs = ShopService._activeBuffs[userId]
 		if buffs and buffs.autoHatch then
 			if now < buffs.autoHatch then
-				-- Buff active: fire EggHatchStart event to trigger auto-hatch
-				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-				if remotes then
-					local hatchEvent = remotes:FindFirstChild("EggHatchStart")
-					if hatchEvent then
-						hatchEvent:FireClient(player, "auto")
+				-- Buff active: determine the egg for the player's highest unlocked zone and hatch it
+				if ShopService._eggService and ShopService._dataService then
+					local data = ShopService._dataService.getPlayerData(player)
+					if data and data.unlockedZones then
+						-- Find the highest unlocked zone
+						local highestZone = 1
+						for _, zoneId in ipairs(data.unlockedZones) do
+							if zoneId > highestZone then
+								highestZone = zoneId
+							end
+						end
+						-- Find the egg type for this zone
+						local targetEgg = nil
+						for eggType, eggDef in pairs(PetData.Eggs) do
+							if eggDef.zone == highestZone then
+								targetEgg = eggType
+								break
+							end
+						end
+						-- Hatch the egg for free (cost already paid via buff purchase)
+						if targetEgg then
+							task.spawn(function()
+								ShopService._eggService.hatchFree(player, targetEgg)
+							end)
+						end
 					end
 				end
 			else

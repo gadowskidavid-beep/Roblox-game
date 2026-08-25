@@ -123,6 +123,87 @@ function EggService.setQuestService(questService)
 	EggService._questService = questService
 end
 
+-- Hatch an egg for free (used by auto-hatch; no cost deduction, still validates zone)
+function EggService.hatchFree(player, eggType)
+	if not player or type(eggType) ~= "string" then
+		return nil, "Invalid parameters"
+	end
+
+	-- Per-player lock: prevent concurrent egg hatching
+	if EggService._hatchLock[player.UserId] then
+		return nil, "Already hatching an egg"
+	end
+	EggService._hatchLock[player.UserId] = true
+
+	local function doHatch()
+		-- Validate egg type exists
+		local eggDef = PetData.Eggs[eggType]
+		if not eggDef then
+			return nil, "Unknown egg type: " .. tostring(eggType)
+		end
+
+		local data = EggService._dataService.getPlayerData(player)
+		if not data then
+			return nil, "No player data"
+		end
+
+		-- Validate player has unlocked the required zone for this egg
+		local zoneRequired = eggDef.zone
+		local zoneUnlocked = false
+		for _, unlockedId in ipairs(data.unlockedZones) do
+			if unlockedId == zoneRequired then
+				zoneUnlocked = true
+				break
+			end
+		end
+		if not zoneUnlocked then
+			return nil, "Zone not unlocked for this egg type"
+		end
+
+		-- No cost deduction for auto-hatch (player already paid for the buff)
+
+		-- Fire hatch start event to client (triggers animation)
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchStart")
+			if event then
+				event:FireClient(player, eggType)
+			end
+		end
+
+		-- Short delay to allow client to start animation
+		task.wait(1)
+
+		-- Delegate to PetService for actual hatching (skip cost deduction)
+		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
+		if not newPet then
+			return nil, err
+		end
+
+		-- Fire hatch result event with the new pet data
+		if remotes then
+			local event = remotes:FindFirstChild("EggHatchResult")
+			if event then
+				event:FireClient(player, newPet)
+			end
+		end
+
+		-- Strip isNewDiscovery from the pet table so it does not persist in DataStore
+		newPet.isNewDiscovery = nil
+
+		-- Track quest progress: egg hatched
+		if EggService._questService then
+			EggService._questService.incrementStat(player, "hatchEggs", 1)
+		end
+
+		return newPet, nil
+	end
+
+	local newPet, err = doHatch()
+	EggService._hatchLock[player.UserId] = nil
+	return newPet, err
+end
+
 -- Get eggs available to a player based on their unlocked zones
 function EggService.getAvailableEggs(player)
 	if not player then
