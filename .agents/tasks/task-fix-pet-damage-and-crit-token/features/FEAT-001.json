@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "fix",
   "description": "Fix pet damage (client never calls AssignPetTarget) and fix crit token exploit (crit window reusable). Two P0 bugs in one feature.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Step 1 - Fix PetController.lua to call AssignPetTarget: In src/StarterPlayer/StarterPlayerScripts/PetController.lua, in the init() method, get a reference to the AssignPetTarget RemoteFunction: self._assignPetTarget = self._remotes:WaitForChild('AssignPetTarget'). Add a tracking table self._serverAssignments = {} to avoid redundant calls.",
     "Step 2 - In PetController:sendPetToAttack(), after line 'self._attackingPets[uniqueId] = destructibleId', add rate-limited server assignment: Only call self._assignPetTarget:InvokeServer(uniqueId, destructibleId) if self._serverAssignments[uniqueId] ~= destructibleId. Then set self._serverAssignments[uniqueId] = destructibleId.",
@@ -27,5 +27,5 @@
     "Run: grep -n 'playerCritWindows\\[destructibleId\\] = nil' src/ServerScriptService/Services/ZoneService.lua to confirm crit window consumption exists before the damage logic"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Both fixes implemented successfully. Build generates BATTLE_PETS.rbxlx without errors. PetController now has 15+ locations where server assignments are cleared when pets stop attacking, ensuring no stale server state."
 }
