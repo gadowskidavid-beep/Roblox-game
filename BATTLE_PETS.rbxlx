@@ -2749,6 +2749,9 @@ function ZoneService.init(dataService, currencyService, petService)
 
 	-- Spawn invisible barriers at zone edges to prevent falling off
 	ZoneService._spawnBarriers()
+
+	-- Spawn colorful decorative buildings along zone edges (visual only)
+	ZoneService._spawnBuildingWalls()
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -4854,6 +4857,24 @@ function ZoneService._spawnWorldDecoration()
 
 	-- Zone 2: Stadt - street lamps, benches, planters
 	ZoneService._spawnZone2Deco(decoFolder)
+
+	-- Zone 3: Strand - palm trees, shells
+	ZoneService._spawnZone3Deco(decoFolder)
+
+	-- Zone 4: Wueste - cacti, sand dunes
+	ZoneService._spawnZone4Deco(decoFolder)
+
+	-- Zone 5: Eiswelt - ice crystals, snowmen
+	ZoneService._spawnZone5Deco(decoFolder)
+
+	-- Zone 6: Vulkan - lava rocks, fire crystals
+	ZoneService._spawnZone6Deco(decoFolder)
+
+	-- Zone 7: Himmel - clouds, stars
+	ZoneService._spawnZone7Deco(decoFolder)
+
+	-- Zone 8: Weltraum - asteroids, alien plants
+	ZoneService._spawnZone8Deco(decoFolder)
 end
 
 function ZoneService._spawnZone1Deco(decoFolder)
@@ -5053,10 +5074,541 @@ function ZoneService._spawnZone2Deco(decoFolder)
 	math.randomseed(os.time())
 end
 
+function ZoneService._spawnZone3Deco(decoFolder)
+	local zone3Folder = Instance.new("Folder")
+	zone3Folder.Name = "Zone3_Deco"
+	zone3Folder.Parent = decoFolder
+
+	local originX = 300 -- Zone 3 center X=400, extends 300..500
+	local originZ = -200
+	local zoneWidth = 200
+	local zoneDepth = 200
+
+	math.randomseed(33333)
+
+	-- Spawn 10 palm trees (thin trunk + elongated canopy)
+	for i = 1, 10 do
+		local tx = originX + 15 + math.random() * (zoneWidth - 30)
+		local tz = originZ + 15 + math.random() * (zoneDepth - 30)
+
+		local trunk = Instance.new("Part")
+		trunk.Name = "Palm_Trunk_" .. i
+		trunk.Shape = Enum.PartType.Cylinder
+		trunk.Size = Vector3.new(8 + math.random() * 3, 1.2, 1.2)
+		trunk.Color = Color3.fromRGB(160, 120, 60)
+		trunk.Material = Enum.Material.Wood
+		trunk.Anchored = true
+		trunk.CanCollide = false
+		trunk.CFrame = CFrame.new(tx, trunk.Size.X / 2, tz) * CFrame.Angles(0, 0, math.rad(90))
+		trunk.Parent = zone3Folder
+
+		local canopy = Instance.new("Part")
+		canopy.Name = "Palm_Canopy_" .. i
+		canopy.Shape = Enum.PartType.Ball
+		canopy.Size = Vector3.new(6 + math.random() * 3, 3, 6 + math.random() * 3)
+		canopy.Color = Color3.fromRGB(34, 160, 34)
+		canopy.Material = Enum.Material.Grass
+		canopy.Anchored = true
+		canopy.CanCollide = false
+		canopy.Position = Vector3.new(tx, trunk.Size.X + 1, tz)
+		canopy.Parent = zone3Folder
+	end
+
+	-- Spawn 8 shells (small flat discs on the ground)
+	for i = 1, 8 do
+		local sx = originX + 10 + math.random() * (zoneWidth - 20)
+		local sz = originZ + 10 + math.random() * (zoneDepth - 20)
+
+		local shell = Instance.new("Part")
+		shell.Name = "Shell_" .. i
+		shell.Shape = Enum.PartType.Cylinder
+		shell.Size = Vector3.new(0.3, 1.5 + math.random(), 1.5 + math.random())
+		shell.Color = Color3.fromRGB(240, 220, 180)
+		shell.Material = Enum.Material.SmoothPlastic
+		shell.Anchored = true
+		shell.CanCollide = false
+		shell.CFrame = CFrame.new(sx, 0.2, sz) * CFrame.Angles(0, 0, math.rad(90))
+		shell.Parent = zone3Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+function ZoneService._spawnZone4Deco(decoFolder)
+	local zone4Folder = Instance.new("Folder")
+	zone4Folder.Name = "Zone4_Deco"
+	zone4Folder.Parent = decoFolder
+
+	local originX = 500 -- Zone 4 center X=600, extends 500..700
+	local originZ = -200
+	local zoneWidth = 200
+	local zoneDepth = 200
+
+	math.randomseed(44444)
+
+	-- Spawn 10 cacti (tall green cylinders with arms)
+	for i = 1, 10 do
+		local cx = originX + 15 + math.random() * (zoneWidth - 30)
+		local cz = originZ + 15 + math.random() * (zoneDepth - 30)
+		local height = 4 + math.random() * 4
+
+		local body = Instance.new("Part")
+		body.Name = "Cactus_Body_" .. i
+		body.Shape = Enum.PartType.Cylinder
+		body.Size = Vector3.new(height, 2, 2)
+		body.Color = Color3.fromRGB(50, 150, 50)
+		body.Material = Enum.Material.SmoothPlastic
+		body.Anchored = true
+		body.CanCollide = false
+		body.CFrame = CFrame.new(cx, height / 2, cz) * CFrame.Angles(0, 0, math.rad(90))
+		body.Parent = zone4Folder
+
+		-- Cactus arm
+		local arm = Instance.new("Part")
+		arm.Name = "Cactus_Arm_" .. i
+		arm.Shape = Enum.PartType.Cylinder
+		arm.Size = Vector3.new(2.5, 1.2, 1.2)
+		arm.Color = Color3.fromRGB(60, 160, 60)
+		arm.Material = Enum.Material.SmoothPlastic
+		arm.Anchored = true
+		arm.CanCollide = false
+		arm.CFrame = CFrame.new(cx + 1.5, height * 0.6, cz) * CFrame.Angles(0, 0, math.rad(90))
+		arm.Parent = zone4Folder
+	end
+
+	-- Spawn 6 sand dunes (flat squished balls)
+	for i = 1, 6 do
+		local dx = originX + 20 + math.random() * (zoneWidth - 40)
+		local dz = originZ + 20 + math.random() * (zoneDepth - 40)
+
+		local dune = Instance.new("Part")
+		dune.Name = "SandDune_" .. i
+		dune.Shape = Enum.PartType.Ball
+		dune.Size = Vector3.new(10 + math.random() * 6, 3 + math.random() * 2, 10 + math.random() * 6)
+		dune.Color = Color3.fromRGB(210, 180, 100)
+		dune.Material = Enum.Material.Sand
+		dune.Anchored = true
+		dune.CanCollide = false
+		dune.Position = Vector3.new(dx, dune.Size.Y / 2 - 1, dz)
+		dune.Parent = zone4Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+function ZoneService._spawnZone5Deco(decoFolder)
+	local zone5Folder = Instance.new("Folder")
+	zone5Folder.Name = "Zone5_Deco"
+	zone5Folder.Parent = decoFolder
+
+	local originX = 700 -- Zone 5 center X=800, extends 700..900
+	local originZ = -200
+	local zoneWidth = 200
+	local zoneDepth = 200
+
+	math.randomseed(55555)
+
+	-- Spawn 10 ice crystals (tall diamond shapes)
+	for i = 1, 10 do
+		local ix = originX + 15 + math.random() * (zoneWidth - 30)
+		local iz = originZ + 15 + math.random() * (zoneDepth - 30)
+		local height = 3 + math.random() * 4
+
+		local crystal = Instance.new("Part")
+		crystal.Name = "IceCrystal_" .. i
+		crystal.Shape = Enum.PartType.Block
+		crystal.Size = Vector3.new(1.5, height, 1.5)
+		crystal.Color = Color3.fromRGB(180, 220, 255)
+		crystal.Material = Enum.Material.Ice
+		crystal.Transparency = 0.2
+		crystal.Anchored = true
+		crystal.CanCollide = false
+		crystal.CFrame = CFrame.new(ix, height / 2, iz) * CFrame.Angles(0, math.rad(math.random(0, 45)), math.rad(math.random(-10, 10)))
+		crystal.Parent = zone5Folder
+	end
+
+	-- Spawn 5 snowmen (3 stacked balls)
+	for i = 1, 5 do
+		local sx = originX + 20 + math.random() * (zoneWidth - 40)
+		local sz = originZ + 20 + math.random() * (zoneDepth - 40)
+
+		local bottom = Instance.new("Part")
+		bottom.Name = "Snowman_Bottom_" .. i
+		bottom.Shape = Enum.PartType.Ball
+		bottom.Size = Vector3.new(4, 4, 4)
+		bottom.Color = Color3.fromRGB(245, 245, 255)
+		bottom.Material = Enum.Material.SmoothPlastic
+		bottom.Anchored = true
+		bottom.CanCollide = false
+		bottom.Position = Vector3.new(sx, 2, sz)
+		bottom.Parent = zone5Folder
+
+		local middle = Instance.new("Part")
+		middle.Name = "Snowman_Middle_" .. i
+		middle.Shape = Enum.PartType.Ball
+		middle.Size = Vector3.new(3, 3, 3)
+		middle.Color = Color3.fromRGB(245, 245, 255)
+		middle.Material = Enum.Material.SmoothPlastic
+		middle.Anchored = true
+		middle.CanCollide = false
+		middle.Position = Vector3.new(sx, 5, sz)
+		middle.Parent = zone5Folder
+
+		local head = Instance.new("Part")
+		head.Name = "Snowman_Head_" .. i
+		head.Shape = Enum.PartType.Ball
+		head.Size = Vector3.new(2, 2, 2)
+		head.Color = Color3.fromRGB(245, 245, 255)
+		head.Material = Enum.Material.SmoothPlastic
+		head.Anchored = true
+		head.CanCollide = false
+		head.Position = Vector3.new(sx, 7.5, sz)
+		head.Parent = zone5Folder
+	end
+
+	math.randomseed(os.time())
+end
+
+function ZoneService._spawnZone6Deco(decoFolder)
+	local zone6Folder = Instance.new("Folder")
+	zone6Folder.Name = "Zone6_Deco"
+	zone6Folder.Parent = decoFolder
+
+	local originX = 900 -- Zone 6 center X=1000, extends 900..1100
+	local originZ = -200
+	local zoneWidth = 200
+	local zoneDepth = 200
+
+	math.randomseed(66666)
+
+	-- Spawn 10 lava rocks (dark jagged rocks with neon glow)
+	for i = 1, 10 do
+		local rx = originX + 15 + math.random() * (zoneWidth - 30)
+		local rz = originZ + 15 + math.random() * (zoneDepth - 30)
+
+		local rock = Instance.new("Part")
+		rock.Name = "LavaRock_" .. i
+		rock.Shape = Enum.PartType.Ball
+		rock.Size = Vector3.new(3 + math.random() * 3, 2 + math.random() * 3, 3 + math.random() * 3)
+		rock.Color = Color3.fromRGB(50, 30, 20)
+		rock.Material = Enum.Material.Basalt
+		rock.Anchored = true
+		rock.CanCollide = false
+		rock.Position = Vector3.new(rx, rock.Size.Y / 2, rz)
+		rock.Parent = zone6Folder
+	end
+
+	-- Spawn 6 fire crystals (neon orange/red blocks)
+	for i = 1, 6 do
+		local fx = originX + 20 + math.random() * (zoneWidth - 40)
+		local fz = originZ + 20 + math.random() * (zoneDepth - 40)
+		local height = 3 + math.random() * 3
+
+		local crystal = Instance.new("Part")
+		crystal.Name = "FireCrystal_" .. i
+		crystal.Shape = Enum.PartType.Block
+		crystal.Size = Vector3.new(1.5, height, 1.5)
+		crystal.Color = Color3.fromRGB(255, 100, 20)
+		crystal.Material = Enum.Material.Neon
+		crystal.Anchored = true
+		crystal.CanCollide = false
+		crystal.CFrame = CFrame.new(fx, height / 2, fz) * CFrame.Angles(0, math.rad(math.random(0, 90)), math.rad(math.random(-15, 15)))
+		crystal.Parent = zone6Folder
+
+		local glow = Instance.new("PointLight")
+		glow.Name = "FireGlow"
+		glow.Color = Color3.fromRGB(255, 80, 0)
+		glow.Brightness = 1.5
+		glow.Range = 10
+		glow.Parent = crystal
+	end
+
+	math.randomseed(os.time())
+end
+
+function ZoneService._spawnZone7Deco(decoFolder)
+	local zone7Folder = Instance.new("Folder")
+	zone7Folder.Name = "Zone7_Deco"
+	zone7Folder.Parent = decoFolder
+
+	local originX = 1100 -- Zone 7 center X=1200, extends 1100..1300
+	local originZ = -200
+	local zoneWidth = 200
+	local zoneDepth = 200
+
+	math.randomseed(77777)
+
+	-- Spawn 8 clouds (flat white transparent balls)
+	for i = 1, 8 do
+		local cx = originX + 20 + math.random() * (zoneWidth - 40)
+		local cz = originZ + 20 + math.random() * (zoneDepth - 40)
+		local cy = 8 + math.random() * 10
+
+		local cloud = Instance.new("Part")
+		cloud.Name = "Cloud_" .. i
+		cloud.Shape = Enum.PartType.Ball
+		cloud.Size = Vector3.new(8 + math.random() * 6, 3 + math.random() * 2, 6 + math.random() * 4)
+		cloud.Color = Color3.fromRGB(255, 255, 255)
+		cloud.Material = Enum.Material.SmoothPlastic
+		cloud.Transparency = 0.4
+		cloud.Anchored = true
+		cloud.CanCollide = false
+		cloud.Position = Vector3.new(cx, cy, cz)
+		cloud.Parent = zone7Folder
+	end
+
+	-- Spawn 6 stars (small neon yellow balls)
+	for i = 1, 6 do
+		local sx = originX + 15 + math.random() * (zoneWidth - 30)
+		local sz = originZ + 15 + math.random() * (zoneDepth - 30)
+		local sy = 5 + math.random() * 12
+
+		local star = Instance.new("Part")
+		star.Name = "Star_" .. i
+		star.Shape = Enum.PartType.Ball
+		star.Size = Vector3.new(1.5, 1.5, 1.5)
+		star.Color = Color3.fromRGB(255, 255, 100)
+		star.Material = Enum.Material.Neon
+		star.Anchored = true
+		star.CanCollide = false
+		star.Position = Vector3.new(sx, sy, sz)
+		star.Parent = zone7Folder
+
+		local glow = Instance.new("PointLight")
+		glow.Name = "StarGlow"
+		glow.Color = Color3.fromRGB(255, 255, 150)
+		glow.Brightness = 2
+		glow.Range = 8
+		glow.Parent = star
+	end
+
+	math.randomseed(os.time())
+end
+
+function ZoneService._spawnZone8Deco(decoFolder)
+	local zone8Folder = Instance.new("Folder")
+	zone8Folder.Name = "Zone8_Deco"
+	zone8Folder.Parent = decoFolder
+
+	local originX = 1300 -- Zone 8 center X=1400, extends 1300..1500
+	local originZ = -200
+	local zoneWidth = 200
+	local zoneDepth = 200
+
+	math.randomseed(88888)
+
+	-- Spawn 8 asteroids (dark gray irregular rocks floating)
+	for i = 1, 8 do
+		local ax = originX + 15 + math.random() * (zoneWidth - 30)
+		local az = originZ + 15 + math.random() * (zoneDepth - 30)
+		local ay = 3 + math.random() * 8
+
+		local asteroid = Instance.new("Part")
+		asteroid.Name = "Asteroid_" .. i
+		asteroid.Shape = Enum.PartType.Ball
+		asteroid.Size = Vector3.new(3 + math.random() * 4, 2 + math.random() * 3, 3 + math.random() * 4)
+		asteroid.Color = Color3.fromRGB(60 + math.random(0, 30), 50 + math.random(0, 20), 70 + math.random(0, 30))
+		asteroid.Material = Enum.Material.Slate
+		asteroid.Anchored = true
+		asteroid.CanCollide = false
+		asteroid.Position = Vector3.new(ax, ay, az)
+		asteroid.Parent = zone8Folder
+	end
+
+	-- Spawn 6 alien plants (neon green/purple stalks)
+	for i = 1, 6 do
+		local px = originX + 20 + math.random() * (zoneWidth - 40)
+		local pz = originZ + 20 + math.random() * (zoneDepth - 40)
+		local height = 3 + math.random() * 4
+
+		local stalk = Instance.new("Part")
+		stalk.Name = "AlienPlant_Stalk_" .. i
+		stalk.Shape = Enum.PartType.Cylinder
+		stalk.Size = Vector3.new(height, 0.8, 0.8)
+		stalk.Color = Color3.fromRGB(100, 0, 200)
+		stalk.Material = Enum.Material.Neon
+		stalk.Anchored = true
+		stalk.CanCollide = false
+		stalk.CFrame = CFrame.new(px, height / 2, pz) * CFrame.Angles(0, 0, math.rad(90))
+		stalk.Parent = zone8Folder
+
+		local bulb = Instance.new("Part")
+		bulb.Name = "AlienPlant_Bulb_" .. i
+		bulb.Shape = Enum.PartType.Ball
+		bulb.Size = Vector3.new(2, 2, 2)
+		bulb.Color = Color3.fromRGB(0, 255, 100)
+		bulb.Material = Enum.Material.Neon
+		bulb.Anchored = true
+		bulb.CanCollide = false
+		bulb.Position = Vector3.new(px, height + 1, pz)
+		bulb.Parent = zone8Folder
+
+		local glow = Instance.new("PointLight")
+		glow.Name = "AlienGlow"
+		glow.Color = Color3.fromRGB(0, 255, 100)
+		glow.Brightness = 1.5
+		glow.Range = 8
+		glow.Parent = bulb
+	end
+
+	math.randomseed(os.time())
+end
+
 --------------------------------------------------------------------------------
--- BARRIERS: Invisible walls at zone edges to prevent falling off
--- Each zone gets 4 walls around its perimeter (tall, invisible, collidable).
+-- BUILDING WALLS: Colorful decorative buildings along N, S, and outer edges
+-- These are purely visual (CanCollide = false) and do not replace barriers.
 --------------------------------------------------------------------------------
+function ZoneService._spawnBuildingWalls()
+	local workspace = game:GetService("Workspace")
+	local buildingsFolder = workspace:FindFirstChild("BuildingWalls")
+	if not buildingsFolder then
+		buildingsFolder = Instance.new("Folder")
+		buildingsFolder.Name = "BuildingWalls"
+		buildingsFolder.Parent = workspace
+	end
+
+	-- Candy colors per zone (bright building palette)
+	local zoneColors = {
+		[1] = { Color3.fromRGB(255, 150, 200), Color3.fromRGB(150, 255, 150), Color3.fromRGB(150, 200, 255) },
+		[2] = { Color3.fromRGB(200, 200, 220), Color3.fromRGB(180, 180, 200), Color3.fromRGB(160, 180, 220) },
+		[3] = { Color3.fromRGB(255, 220, 130), Color3.fromRGB(255, 180, 100), Color3.fromRGB(200, 240, 180) },
+		[4] = { Color3.fromRGB(255, 200, 80), Color3.fromRGB(220, 160, 60), Color3.fromRGB(255, 230, 130) },
+		[5] = { Color3.fromRGB(180, 220, 255), Color3.fromRGB(200, 240, 255), Color3.fromRGB(150, 200, 240) },
+		[6] = { Color3.fromRGB(255, 100, 50), Color3.fromRGB(200, 60, 30), Color3.fromRGB(255, 150, 80) },
+		[7] = { Color3.fromRGB(255, 255, 200), Color3.fromRGB(255, 220, 255), Color3.fromRGB(200, 220, 255) },
+		[8] = { Color3.fromRGB(150, 80, 255), Color3.fromRGB(80, 50, 180), Color3.fromRGB(200, 100, 255) },
+	}
+
+	math.randomseed(99999)
+
+	for zoneId = 1, 8 do
+		local centerX = (zoneId - 1) * ZONE_SPACING
+		local centerZ = -100
+		local halfW = ZONE_SIZE.X / 2
+		local colors = zoneColors[zoneId]
+		local zoneFolder = Instance.new("Folder")
+		zoneFolder.Name = "Buildings_Z" .. zoneId
+		zoneFolder.Parent = buildingsFolder
+
+		local buildingIndex = 0
+
+		-- North edge (Z = centerZ + halfW = centerZ + 100, so Z = 0)
+		local northZ = centerZ + halfW + 4
+		for bx = centerX - halfW + 7, centerX + halfW - 7, 14 do
+			buildingIndex = buildingIndex + 1
+			local height = 20 + math.random() * 20
+			local width = 8 + math.random() * 6
+			local color = colors[((buildingIndex - 1) % #colors) + 1]
+
+			local building = Instance.new("Part")
+			building.Name = "Building_N_" .. buildingIndex
+			building.Shape = Enum.PartType.Block
+			building.Size = Vector3.new(width, height, 6)
+			building.Position = Vector3.new(bx, height / 2, northZ)
+			building.Anchored = true
+			building.CanCollide = false
+			building.Color = color
+			building.Material = Enum.Material.SmoothPlastic
+			building.Parent = zoneFolder
+
+			-- Add window squares to some buildings
+			if buildingIndex % 3 == 0 then
+				for wy = 5, height - 5, 6 do
+					local window = Instance.new("Part")
+					window.Name = "Window"
+					window.Shape = Enum.PartType.Block
+					window.Size = Vector3.new(2, 2, 0.2)
+					window.Position = Vector3.new(bx, wy, northZ - 3.1)
+					window.Anchored = true
+					window.CanCollide = false
+					window.Color = Color3.fromRGB(255, 255, 255)
+					window.Material = Enum.Material.SmoothPlastic
+					window.Parent = zoneFolder
+				end
+			end
+		end
+
+		-- South edge (Z = centerZ - halfW = centerZ - 100, so Z = -200)
+		local southZ = centerZ - halfW - 4
+		for bx = centerX - halfW + 7, centerX + halfW - 7, 14 do
+			buildingIndex = buildingIndex + 1
+			local height = 20 + math.random() * 20
+			local width = 8 + math.random() * 6
+			local color = colors[((buildingIndex - 1) % #colors) + 1]
+
+			local building = Instance.new("Part")
+			building.Name = "Building_S_" .. buildingIndex
+			building.Shape = Enum.PartType.Block
+			building.Size = Vector3.new(width, height, 6)
+			building.Position = Vector3.new(bx, height / 2, southZ)
+			building.Anchored = true
+			building.CanCollide = false
+			building.Color = color
+			building.Material = Enum.Material.SmoothPlastic
+			building.Parent = zoneFolder
+
+			if buildingIndex % 4 == 0 then
+				for wy = 5, height - 5, 6 do
+					local window = Instance.new("Part")
+					window.Name = "Window"
+					window.Shape = Enum.PartType.Block
+					window.Size = Vector3.new(2, 2, 0.2)
+					window.Position = Vector3.new(bx, wy, southZ + 3.1)
+					window.Anchored = true
+					window.CanCollide = false
+					window.Color = Color3.fromRGB(255, 255, 255)
+					window.Material = Enum.Material.SmoothPlastic
+					window.Parent = zoneFolder
+				end
+			end
+		end
+
+		-- Outer edge: West side of zone 1, East side of zone 8
+		if zoneId == 1 then
+			local westX = centerX - halfW - 4
+			for bz = centerZ - halfW + 7, centerZ + halfW - 7, 14 do
+				buildingIndex = buildingIndex + 1
+				local height = 20 + math.random() * 20
+				local width = 8 + math.random() * 6
+				local color = colors[((buildingIndex - 1) % #colors) + 1]
+
+				local building = Instance.new("Part")
+				building.Name = "Building_W_" .. buildingIndex
+				building.Shape = Enum.PartType.Block
+				building.Size = Vector3.new(6, height, width)
+				building.Position = Vector3.new(westX, height / 2, bz)
+				building.Anchored = true
+				building.CanCollide = false
+				building.Color = color
+				building.Material = Enum.Material.SmoothPlastic
+				building.Parent = zoneFolder
+			end
+		end
+
+		if zoneId == 8 then
+			local eastX = centerX + halfW + 4
+			for bz = centerZ - halfW + 7, centerZ + halfW - 7, 14 do
+				buildingIndex = buildingIndex + 1
+				local height = 20 + math.random() * 20
+				local width = 8 + math.random() * 6
+				local color = colors[((buildingIndex - 1) % #colors) + 1]
+
+				local building = Instance.new("Part")
+				building.Name = "Building_E_" .. buildingIndex
+				building.Shape = Enum.PartType.Block
+				building.Size = Vector3.new(6, height, width)
+				building.Position = Vector3.new(eastX, height / 2, bz)
+				building.Anchored = true
+				building.CanCollide = false
+				building.Color = color
+				building.Material = Enum.Material.SmoothPlastic
+				building.Parent = zoneFolder
+			end
+		end
+	end
+
+	math.randomseed(os.time())
+end
 function ZoneService._spawnBarriers()
 	local workspace = game:GetService("Workspace")
 	local barrierFolder = workspace:FindFirstChild("Barriers")
