@@ -225,11 +225,25 @@ def build_workspace():
     """
     parts = []
 
-    # SpawnLocation
+    # Lobby Island floor (100x1x100 marble platform at X=-150, Z=-100)
+    parts.append(make_part_xml(
+        "LobbyFloor", "Part",
+        -150, 0, -100, 100, 1, 100,
+        220, 215, 200, material=784  # Marble
+    ))
+
+    # SpawnLocation on the lobby island
     parts.append(make_part_xml(
         "SpawnLocation", "SpawnLocation",
-        0, 2, 0, 12, 1, 12,
+        -150, 1, -100, 12, 1, 12,
         255, 255, 255, material=256
+    ))
+
+    # Lobby-to-Zone1 connecting path
+    parts.append(make_part_xml(
+        "LobbyToZonePath", "Part",
+        -75, 0, -100, 50, 1, 16,
+        200, 195, 180, material=256  # Cobblestone
     ))
 
     # Zone 1: Gruene Wiesen - large green baseplate (static scenery only)
