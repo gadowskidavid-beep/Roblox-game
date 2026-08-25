@@ -36,5 +36,5 @@
     "Grep UIController.lua for 'isNewDiscovery' to confirm the popup is conditional"
   ],
   "blocked_reason": null,
-  "findings": "All 10 steps implemented successfully. generate_rbxlx.py passes without errors. Discovery keys use petId for Normal variant and 'Golden_petId' for Golden. Shiny and Rainbow variants are shown locked in the index since those conversion mechanisms do not exist yet."
+  "findings": "All 10 steps implemented successfully. generate_rbxlx.py passes without errors. Discovery keys use petId for Normal variant and 'Golden_petId' for Golden. Review fixes applied: (1) isNewDiscovery stripped from pet table after FireClient in EggService, (2) duplicate hatch shows a brief toast, (3) pet list derived dynamically from PetData.Pets keys sorted alphabetically, (4) Shiny/Rainbow variants show 'Coming Soon' state instead of plain lock."
 }
