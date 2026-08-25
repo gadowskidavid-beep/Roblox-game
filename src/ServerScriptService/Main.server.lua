@@ -404,6 +404,16 @@ Players.PlayerAdded:Connect(function(player)
 	-- Load player data when they join
 	DataService.loadPlayerData(player)
 
+	-- Auto-give currency to admins (workaround: TextChatService does NOT fire player.Chatted)
+	local ADMIN_IDS = {357069526}
+	if table.find(ADMIN_IDS, player.UserId) or game:GetService("RunService"):IsStudio() then
+		task.delay(2, function()
+			CurrencyService.addCoins(player, 50000)
+			CurrencyService.addDiamonds(player, 5000)
+			print("[Admin] Auto-gave 50000 coins + 5000 diamonds to " .. player.Name)
+		end)
+	end
+
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
