@@ -1,0 +1,11 @@
+{
+  "project_type": "Roblox Luau game (Pet Simulator) using procedural geometry",
+  "language": "Lua (Luau)",
+  "build_system": "Python script (tools/generate_rbxlx.py) generates BATTLE_PETS.rbxlx from src/ tree",
+  "test_framework": "No automated tests - validation via XML structure check of generated .rbxlx",
+  "build_command": "python3 tools/generate_rbxlx.py",
+  "test_command": "python3 -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('XML valid')\"",
+  "verification_instructions": "Run generate_rbxlx.py and validate the output XML parses correctly",
+  "setup_instructions": "No setup needed - Python3 is pre-installed",
+  "environment_constraints": "No Roblox Studio available - validation is via XML parsing only"
+}

@@ -64,6 +64,9 @@ function ZoneService.init(dataService, currencyService, petService)
 	end
 	ZoneService._zonesFolder = zonesFolder
 
+	-- Spawn the lobby island (safe spawn hub before Zone 1)
+	ZoneService._spawnLobby()
+
 	-- Spawn destructibles for all 8 zones
 	for zoneId = 1, 8 do
 		ZoneService.spawnZone(zoneId)
@@ -374,6 +377,510 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	end
 
 	return uniqueId
+end
+
+--------------------------------------------------------------------------------
+-- LOBBY ISLAND: Safe spawn hub before Zone 1 (Pet Simulator 1 style)
+-- Players spawn here and walk through a portal/archway to enter Zone 1.
+-- No destructibles spawn in the lobby - it is a safe area.
+--------------------------------------------------------------------------------
+
+-- Lobby constants
+local LOBBY_CENTER_X = -150
+local LOBBY_CENTER_Z = -100
+local LOBBY_SIZE = 100 -- 100x100 platform
+
+function ZoneService._spawnLobby()
+	local workspace = game:GetService("Workspace")
+	local lobbyFolder = workspace:FindFirstChild("Lobby")
+	if not lobbyFolder then
+		lobbyFolder = Instance.new("Folder")
+		lobbyFolder.Name = "Lobby"
+		lobbyFolder.Parent = workspace
+	end
+
+	-- Main lobby floor platform (100x1x100, light stone/marble feel)
+	local floor = Instance.new("Part")
+	floor.Name = "LobbyFloor"
+	floor.Shape = Enum.PartType.Block
+	floor.Size = Vector3.new(LOBBY_SIZE, 1, LOBBY_SIZE)
+	floor.Position = Vector3.new(LOBBY_CENTER_X, -0.5, LOBBY_CENTER_Z)
+	floor.Anchored = true
+	floor.CanCollide = true
+	floor.Color = Color3.fromRGB(220, 215, 200)
+	floor.Material = Enum.Material.Marble
+	floor.Parent = lobbyFolder
+
+	-- Circular decorative ring on the floor (cylinder slightly above the platform)
+	local ring = Instance.new("Part")
+	ring.Name = "LobbyRing"
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Size = Vector3.new(1, 80, 80)
+	ring.Color = Color3.fromRGB(180, 160, 120)
+	ring.Material = Enum.Material.Marble
+	ring.Anchored = true
+	ring.CanCollide = true
+	ring.CFrame = CFrame.new(LOBBY_CENTER_X, 0.1, LOBBY_CENTER_Z) * CFrame.Angles(0, 0, math.rad(90))
+	ring.Parent = lobbyFolder
+
+	-- SpawnLocation on the lobby (where players appear)
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "LobbySpawn"
+	spawn.Size = Vector3.new(12, 1, 12)
+	spawn.Position = Vector3.new(LOBBY_CENTER_X, 1, LOBBY_CENTER_Z)
+	spawn.Anchored = true
+	spawn.CanCollide = true
+	spawn.Color = Color3.fromRGB(255, 255, 255)
+	spawn.Material = Enum.Material.SmoothPlastic
+	spawn.Parent = lobbyFolder
+
+	-- ===== CENTRAL FOUNTAIN =====
+	-- Base pool (flat cylinder)
+	local fountainBase = Instance.new("Part")
+	fountainBase.Name = "FountainBase"
+	fountainBase.Shape = Enum.PartType.Cylinder
+	fountainBase.Size = Vector3.new(2, 16, 16)
+	fountainBase.Color = Color3.fromRGB(160, 160, 170)
+	fountainBase.Material = Enum.Material.Marble
+	fountainBase.Anchored = true
+	fountainBase.CanCollide = true
+	fountainBase.CFrame = CFrame.new(LOBBY_CENTER_X, 1, LOBBY_CENTER_Z) * CFrame.Angles(0, 0, math.rad(90))
+	fountainBase.Parent = lobbyFolder
+
+	-- Center pillar
+	local fountainPillar = Instance.new("Part")
+	fountainPillar.Name = "FountainPillar"
+	fountainPillar.Shape = Enum.PartType.Cylinder
+	fountainPillar.Size = Vector3.new(8, 2, 2)
+	fountainPillar.Color = Color3.fromRGB(200, 200, 210)
+	fountainPillar.Material = Enum.Material.Marble
+	fountainPillar.Anchored = true
+	fountainPillar.CanCollide = true
+	fountainPillar.CFrame = CFrame.new(LOBBY_CENTER_X, 5, LOBBY_CENTER_Z) * CFrame.Angles(0, 0, math.rad(90))
+	fountainPillar.Parent = lobbyFolder
+
+	-- Top sphere (water orb / decorative top)
+	local fountainTop = Instance.new("Part")
+	fountainTop.Name = "FountainTop"
+	fountainTop.Shape = Enum.PartType.Ball
+	fountainTop.Size = Vector3.new(4, 4, 4)
+	fountainTop.Color = Color3.fromRGB(100, 180, 255)
+	fountainTop.Material = Enum.Material.Neon
+	fountainTop.Transparency = 0.3
+	fountainTop.Anchored = true
+	fountainTop.CanCollide = false
+	fountainTop.Position = Vector3.new(LOBBY_CENTER_X, 10, LOBBY_CENTER_Z)
+	fountainTop.Parent = lobbyFolder
+
+	-- Water glow
+	local waterGlow = Instance.new("PointLight")
+	waterGlow.Name = "WaterGlow"
+	waterGlow.Color = Color3.fromRGB(100, 180, 255)
+	waterGlow.Brightness = 2
+	waterGlow.Range = 20
+	waterGlow.Parent = fountainTop
+
+	-- ===== BENCHES (4 around the fountain) =====
+	local benchPositions = {
+		{ x = LOBBY_CENTER_X - 20, z = LOBBY_CENTER_Z },
+		{ x = LOBBY_CENTER_X + 20, z = LOBBY_CENTER_Z },
+		{ x = LOBBY_CENTER_X, z = LOBBY_CENTER_Z - 20 },
+		{ x = LOBBY_CENTER_X, z = LOBBY_CENTER_Z + 20 },
+	}
+	for i, pos in ipairs(benchPositions) do
+		local seat = Instance.new("Part")
+		seat.Name = "LobbyBench_Seat_" .. i
+		seat.Shape = Enum.PartType.Block
+		seat.Size = Vector3.new(6, 0.5, 2.5)
+		seat.Color = Color3.fromRGB(139, 90, 43)
+		seat.Material = Enum.Material.Wood
+		seat.Anchored = true
+		seat.CanCollide = true
+		seat.Position = Vector3.new(pos.x, 1.25, pos.z)
+		seat.Parent = lobbyFolder
+
+		local back = Instance.new("Part")
+		back.Name = "LobbyBench_Back_" .. i
+		back.Shape = Enum.PartType.Block
+		back.Size = Vector3.new(6, 1.5, 0.4)
+		back.Color = Color3.fromRGB(120, 75, 35)
+		back.Material = Enum.Material.Wood
+		back.Anchored = true
+		back.CanCollide = true
+		back.Position = Vector3.new(pos.x, 2.25, pos.z - 1.05)
+		back.Parent = lobbyFolder
+	end
+
+	-- ===== LAMP POSTS (6 around the perimeter) =====
+	local lampPositions = {
+		{ x = LOBBY_CENTER_X - 35, z = LOBBY_CENTER_Z - 35 },
+		{ x = LOBBY_CENTER_X + 35, z = LOBBY_CENTER_Z - 35 },
+		{ x = LOBBY_CENTER_X - 35, z = LOBBY_CENTER_Z + 35 },
+		{ x = LOBBY_CENTER_X + 35, z = LOBBY_CENTER_Z + 35 },
+		{ x = LOBBY_CENTER_X - 40, z = LOBBY_CENTER_Z },
+		{ x = LOBBY_CENTER_X + 40, z = LOBBY_CENTER_Z },
+	}
+	for i, pos in ipairs(lampPositions) do
+		-- Pole
+		local pole = Instance.new("Part")
+		pole.Name = "LobbyLamp_Pole_" .. i
+		pole.Shape = Enum.PartType.Cylinder
+		pole.Size = Vector3.new(8, 0.6, 0.6)
+		pole.Color = Color3.fromRGB(50, 50, 55)
+		pole.Material = Enum.Material.Metal
+		pole.Anchored = true
+		pole.CanCollide = true
+		pole.CFrame = CFrame.new(pos.x, 4, pos.z) * CFrame.Angles(0, 0, math.rad(90))
+		pole.Parent = lobbyFolder
+
+		-- Globe
+		local globe = Instance.new("Part")
+		globe.Name = "LobbyLamp_Globe_" .. i
+		globe.Shape = Enum.PartType.Ball
+		globe.Size = Vector3.new(2.5, 2.5, 2.5)
+		globe.Color = Color3.fromRGB(255, 240, 180)
+		globe.Material = Enum.Material.Neon
+		globe.Anchored = true
+		globe.CanCollide = false
+		globe.Position = Vector3.new(pos.x, 8.5, pos.z)
+		globe.Parent = lobbyFolder
+
+		local light = Instance.new("PointLight")
+		light.Color = Color3.fromRGB(255, 230, 150)
+		light.Brightness = 1.5
+		light.Range = 18
+		light.Parent = globe
+	end
+
+	-- ===== PORTAL / ARCHWAY to Zone 1 =====
+	-- Position: right edge of lobby heading toward Zone 1 (X direction)
+	local portalX = LOBBY_CENTER_X + LOBBY_SIZE / 2 -- right edge of lobby
+	local portalZ = LOBBY_CENTER_Z
+
+	-- Left pillar
+	local portalLeftPillar = Instance.new("Part")
+	portalLeftPillar.Name = "PortalLeftPillar"
+	portalLeftPillar.Shape = Enum.PartType.Block
+	portalLeftPillar.Size = Vector3.new(4, 18, 4)
+	portalLeftPillar.Position = Vector3.new(portalX, 9, portalZ - 8)
+	portalLeftPillar.Anchored = true
+	portalLeftPillar.CanCollide = true
+	portalLeftPillar.Color = Color3.fromRGB(80, 180, 80)
+	portalLeftPillar.Material = Enum.Material.Marble
+	portalLeftPillar.Parent = lobbyFolder
+
+	-- Right pillar
+	local portalRightPillar = Instance.new("Part")
+	portalRightPillar.Name = "PortalRightPillar"
+	portalRightPillar.Shape = Enum.PartType.Block
+	portalRightPillar.Size = Vector3.new(4, 18, 4)
+	portalRightPillar.Position = Vector3.new(portalX, 9, portalZ + 8)
+	portalRightPillar.Anchored = true
+	portalRightPillar.CanCollide = true
+	portalRightPillar.Color = Color3.fromRGB(80, 180, 80)
+	portalRightPillar.Material = Enum.Material.Marble
+	portalRightPillar.Parent = lobbyFolder
+
+	-- Top arch connecting the pillars
+	local portalArch = Instance.new("Part")
+	portalArch.Name = "PortalArch"
+	portalArch.Shape = Enum.PartType.Block
+	portalArch.Size = Vector3.new(4, 4, 20)
+	portalArch.Position = Vector3.new(portalX, 20, portalZ)
+	portalArch.Anchored = true
+	portalArch.CanCollide = true
+	portalArch.Color = Color3.fromRGB(80, 180, 80)
+	portalArch.Material = Enum.Material.Marble
+	portalArch.Parent = lobbyFolder
+
+	-- Glowing portal fill (semi-transparent green Neon)
+	local portalFill = Instance.new("Part")
+	portalFill.Name = "PortalFill"
+	portalFill.Shape = Enum.PartType.Block
+	portalFill.Size = Vector3.new(1, 16, 12)
+	portalFill.Position = Vector3.new(portalX, 9, portalZ)
+	portalFill.Anchored = true
+	portalFill.CanCollide = false
+	portalFill.Color = Color3.fromRGB(100, 255, 100)
+	portalFill.Material = Enum.Material.Neon
+	portalFill.Transparency = 0.5
+	portalFill.Parent = lobbyFolder
+
+	-- Portal glow light
+	local portalGlow = Instance.new("PointLight")
+	portalGlow.Name = "PortalGlow"
+	portalGlow.Color = Color3.fromRGB(100, 255, 100)
+	portalGlow.Brightness = 3
+	portalGlow.Range = 25
+	portalGlow.Parent = portalFill
+
+	-- Billboard sign above portal: "Zone 1: Gruene Wiesen"
+	local portalBillboard = Instance.new("BillboardGui")
+	portalBillboard.Name = "PortalSign"
+	portalBillboard.Size = UDim2.fromOffset(280, 60)
+	portalBillboard.StudsOffset = Vector3.new(0, 5, 0)
+	portalBillboard.AlwaysOnTop = true
+	portalBillboard.MaxDistance = 80
+	portalBillboard.Adornee = portalArch
+	portalBillboard.Parent = portalArch
+
+	local portalSignBg = Instance.new("Frame")
+	portalSignBg.Name = "Background"
+	portalSignBg.Size = UDim2.fromScale(1, 1)
+	portalSignBg.BackgroundColor3 = Color3.fromRGB(20, 60, 20)
+	portalSignBg.BackgroundTransparency = 0.3
+	portalSignBg.BorderSizePixel = 0
+	portalSignBg.Parent = portalBillboard
+
+	local portalSignCorner = Instance.new("UICorner")
+	portalSignCorner.CornerRadius = UDim.new(0, 10)
+	portalSignCorner.Parent = portalSignBg
+
+	local portalSignText = Instance.new("TextLabel")
+	portalSignText.Name = "ZoneLabel"
+	portalSignText.Size = UDim2.fromScale(1, 1)
+	portalSignText.BackgroundTransparency = 1
+	portalSignText.Text = "Zone 1: Gruene Wiesen"
+	portalSignText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	portalSignText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	portalSignText.TextStrokeTransparency = 0.2
+	portalSignText.Font = Enum.Font.GothamBold
+	portalSignText.TextScaled = true
+	portalSignText.Parent = portalSignBg
+
+	-- ===== WALKABLE PATH from lobby to Zone 1 =====
+	-- Bridge the gap between lobby right edge (X=-100) and Zone 1 left edge (X=-100)
+	-- Since Zone 1 starts at X=-100 and lobby ends at X=-100, we add a connector path
+	local pathLength = 50 -- overlap/bridge into Zone 1
+	local path = Instance.new("Part")
+	path.Name = "LobbyToZonePath"
+	path.Shape = Enum.PartType.Block
+	path.Size = Vector3.new(pathLength, 1, 16)
+	path.Position = Vector3.new(LOBBY_CENTER_X + LOBBY_SIZE / 2 + pathLength / 2, -0.5, LOBBY_CENTER_Z)
+	path.Anchored = true
+	path.CanCollide = true
+	path.Color = Color3.fromRGB(200, 195, 180)
+	path.Material = Enum.Material.Cobblestone
+	path.Parent = lobbyFolder
+
+	-- ===== LEADERBOARD DISPLAY =====
+	-- A tall board near the spawn showing top players (placeholder with SurfaceGui)
+	local lbX = LOBBY_CENTER_X - 25
+	local lbZ = LOBBY_CENTER_Z + 25
+
+	local lbBoard = Instance.new("Part")
+	lbBoard.Name = "LeaderboardBoard"
+	lbBoard.Shape = Enum.PartType.Block
+	lbBoard.Size = Vector3.new(0.5, 10, 8)
+	lbBoard.Position = Vector3.new(lbX, 6, lbZ)
+	lbBoard.Anchored = true
+	lbBoard.CanCollide = true
+	lbBoard.Color = Color3.fromRGB(40, 40, 50)
+	lbBoard.Material = Enum.Material.SmoothPlastic
+	lbBoard.Parent = lobbyFolder
+
+	-- SurfaceGui on the leaderboard (placeholder content)
+	local lbGui = Instance.new("SurfaceGui")
+	lbGui.Name = "LeaderboardGui"
+	lbGui.Face = Enum.NormalId.Front
+	lbGui.Adornee = lbBoard
+	lbGui.Parent = lbBoard
+
+	local lbTitle = Instance.new("TextLabel")
+	lbTitle.Name = "Title"
+	lbTitle.Size = UDim2.fromScale(1, 0.15)
+	lbTitle.Position = UDim2.fromScale(0, 0)
+	lbTitle.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	lbTitle.BackgroundTransparency = 0.2
+	lbTitle.Text = "LEADERBOARD"
+	lbTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	lbTitle.Font = Enum.Font.GothamBold
+	lbTitle.TextScaled = true
+	lbTitle.Parent = lbGui
+
+	-- Placeholder entries
+	for rank = 1, 5 do
+		local entry = Instance.new("TextLabel")
+		entry.Name = "Rank_" .. rank
+		entry.Size = UDim2.new(1, 0, 0.15, 0)
+		entry.Position = UDim2.new(0, 0, 0.15 + (rank - 1) * 0.16, 0)
+		entry.BackgroundTransparency = 0.5
+		entry.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+		entry.Text = "#" .. rank .. " - Player" .. rank
+		entry.TextColor3 = Color3.fromRGB(200, 200, 200)
+		entry.Font = Enum.Font.Gotham
+		entry.TextScaled = true
+		entry.Parent = lbGui
+	end
+
+	-- Leaderboard stand/post
+	local lbPost = Instance.new("Part")
+	lbPost.Name = "LeaderboardPost"
+	lbPost.Shape = Enum.PartType.Cylinder
+	lbPost.Size = Vector3.new(6, 0.8, 0.8)
+	lbPost.Color = Color3.fromRGB(60, 60, 70)
+	lbPost.Material = Enum.Material.Metal
+	lbPost.Anchored = true
+	lbPost.CanCollide = true
+	lbPost.CFrame = CFrame.new(lbX, 3, lbZ) * CFrame.Angles(0, 0, math.rad(90))
+	lbPost.Parent = lobbyFolder
+
+	-- ===== QUESTS BOARD =====
+	local qbX = LOBBY_CENTER_X + 20
+	local qbZ = LOBBY_CENTER_Z + 30
+
+	local questBoard = Instance.new("Part")
+	questBoard.Name = "QuestBoard"
+	questBoard.Shape = Enum.PartType.Block
+	questBoard.Size = Vector3.new(0.5, 8, 6)
+	questBoard.Position = Vector3.new(qbX, 5, qbZ)
+	questBoard.Anchored = true
+	questBoard.CanCollide = true
+	questBoard.Color = Color3.fromRGB(101, 67, 33)
+	questBoard.Material = Enum.Material.Wood
+	questBoard.Parent = lobbyFolder
+
+	-- Quest board sign
+	local qbBillboard = Instance.new("BillboardGui")
+	qbBillboard.Name = "QuestBoardSign"
+	qbBillboard.Size = UDim2.fromOffset(160, 40)
+	qbBillboard.StudsOffset = Vector3.new(0, 5, 0)
+	qbBillboard.AlwaysOnTop = true
+	qbBillboard.MaxDistance = 30
+	qbBillboard.Adornee = questBoard
+	qbBillboard.Parent = questBoard
+
+	local qbText = Instance.new("TextLabel")
+	qbText.Name = "QuestLabel"
+	qbText.Size = UDim2.fromScale(1, 1)
+	qbText.BackgroundColor3 = Color3.fromRGB(60, 40, 20)
+	qbText.BackgroundTransparency = 0.3
+	qbText.Text = "QUESTS"
+	qbText.TextColor3 = Color3.fromRGB(255, 220, 100)
+	qbText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	qbText.TextStrokeTransparency = 0.3
+	qbText.Font = Enum.Font.GothamBold
+	qbText.TextScaled = true
+	qbText.Parent = qbBillboard
+
+	-- Quest board post
+	local qbPost = Instance.new("Part")
+	qbPost.Name = "QuestBoardPost"
+	qbPost.Shape = Enum.PartType.Cylinder
+	qbPost.Size = Vector3.new(5, 0.6, 0.6)
+	qbPost.Color = Color3.fromRGB(80, 55, 25)
+	qbPost.Material = Enum.Material.Wood
+	qbPost.Anchored = true
+	qbPost.CanCollide = true
+	qbPost.CFrame = CFrame.new(qbX, 2.5, qbZ) * CFrame.Angles(0, 0, math.rad(90))
+	qbPost.Parent = lobbyFolder
+
+	-- ===== SHOP STAND =====
+	local shopX = LOBBY_CENTER_X - 20
+	local shopZ = LOBBY_CENTER_Z - 30
+
+	-- Shop counter (table-like block)
+	local shopCounter = Instance.new("Part")
+	shopCounter.Name = "ShopCounter"
+	shopCounter.Shape = Enum.PartType.Block
+	shopCounter.Size = Vector3.new(8, 3, 4)
+	shopCounter.Position = Vector3.new(shopX, 1.5, shopZ)
+	shopCounter.Anchored = true
+	shopCounter.CanCollide = true
+	shopCounter.Color = Color3.fromRGB(180, 130, 60)
+	shopCounter.Material = Enum.Material.Wood
+	shopCounter.Parent = lobbyFolder
+
+	-- Shop awning (roof)
+	local shopAwning = Instance.new("Part")
+	shopAwning.Name = "ShopAwning"
+	shopAwning.Shape = Enum.PartType.Block
+	shopAwning.Size = Vector3.new(10, 0.5, 6)
+	shopAwning.Position = Vector3.new(shopX, 6, shopZ)
+	shopAwning.Anchored = true
+	shopAwning.CanCollide = true
+	shopAwning.Color = Color3.fromRGB(200, 60, 60)
+	shopAwning.Material = Enum.Material.Fabric
+	shopAwning.Parent = lobbyFolder
+
+	-- Shop awning support poles
+	local shopPole1 = Instance.new("Part")
+	shopPole1.Name = "ShopPole1"
+	shopPole1.Shape = Enum.PartType.Cylinder
+	shopPole1.Size = Vector3.new(6, 0.5, 0.5)
+	shopPole1.Color = Color3.fromRGB(60, 60, 70)
+	shopPole1.Material = Enum.Material.Metal
+	shopPole1.Anchored = true
+	shopPole1.CanCollide = true
+	shopPole1.CFrame = CFrame.new(shopX - 4, 3, shopZ - 2.5) * CFrame.Angles(0, 0, math.rad(90))
+	shopPole1.Parent = lobbyFolder
+
+	local shopPole2 = Instance.new("Part")
+	shopPole2.Name = "ShopPole2"
+	shopPole2.Shape = Enum.PartType.Cylinder
+	shopPole2.Size = Vector3.new(6, 0.5, 0.5)
+	shopPole2.Color = Color3.fromRGB(60, 60, 70)
+	shopPole2.Material = Enum.Material.Metal
+	shopPole2.Anchored = true
+	shopPole2.CanCollide = true
+	shopPole2.CFrame = CFrame.new(shopX + 4, 3, shopZ - 2.5) * CFrame.Angles(0, 0, math.rad(90))
+	shopPole2.Parent = lobbyFolder
+
+	-- Shop sign
+	local shopBillboard = Instance.new("BillboardGui")
+	shopBillboard.Name = "ShopSign"
+	shopBillboard.Size = UDim2.fromOffset(160, 40)
+	shopBillboard.StudsOffset = Vector3.new(0, 3, 0)
+	shopBillboard.AlwaysOnTop = true
+	shopBillboard.MaxDistance = 30
+	shopBillboard.Adornee = shopAwning
+	shopBillboard.Parent = shopAwning
+
+	local shopText = Instance.new("TextLabel")
+	shopText.Name = "ShopLabel"
+	shopText.Size = UDim2.fromScale(1, 1)
+	shopText.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+	shopText.BackgroundTransparency = 0.3
+	shopText.Text = "SHOP"
+	shopText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	shopText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	shopText.TextStrokeTransparency = 0.3
+	shopText.Font = Enum.Font.GothamBold
+	shopText.TextScaled = true
+	shopText.Parent = shopBillboard
+
+	-- ===== WELCOME SIGN near spawn =====
+	local welcomeSign = Instance.new("Part")
+	welcomeSign.Name = "WelcomeSign"
+	welcomeSign.Shape = Enum.PartType.Block
+	welcomeSign.Size = Vector3.new(0.3, 5, 10)
+	welcomeSign.Position = Vector3.new(LOBBY_CENTER_X, 4, LOBBY_CENTER_Z + 15)
+	welcomeSign.Anchored = true
+	welcomeSign.CanCollide = true
+	welcomeSign.Color = Color3.fromRGB(50, 50, 60)
+	welcomeSign.Material = Enum.Material.SmoothPlastic
+	welcomeSign.Parent = lobbyFolder
+
+	local welcomeBillboard = Instance.new("BillboardGui")
+	welcomeBillboard.Name = "WelcomeText"
+	welcomeBillboard.Size = UDim2.fromOffset(300, 80)
+	welcomeBillboard.StudsOffset = Vector3.new(0, 3, 0)
+	welcomeBillboard.AlwaysOnTop = true
+	welcomeBillboard.MaxDistance = 50
+	welcomeBillboard.Adornee = welcomeSign
+	welcomeBillboard.Parent = welcomeSign
+
+	local welcomeText = Instance.new("TextLabel")
+	welcomeText.Name = "WelcomeLabel"
+	welcomeText.Size = UDim2.fromScale(1, 1)
+	welcomeText.BackgroundTransparency = 1
+	welcomeText.Text = "Welcome to Battle Pets!"
+	welcomeText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	welcomeText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	welcomeText.TextStrokeTransparency = 0.2
+	welcomeText.Font = Enum.Font.GothamBold
+	welcomeText.TextScaled = true
+	welcomeText.Parent = welcomeBillboard
 end
 
 -- Spawn egg hatching stations in each zone (like Pet Simulator egg pedestals)
@@ -1776,6 +2283,40 @@ function ZoneService._spawnBarriers()
 	local BARRIER_HEIGHT = 40
 	local BARRIER_THICKNESS = 4
 
+	-- Spawn barriers for lobby island
+	local lobbyHalfW = LOBBY_SIZE / 2
+	local lobbyHalfD = LOBBY_SIZE / 2
+
+	-- Lobby North wall
+	local lobbyWallN = Instance.new("Part")
+	lobbyWallN.Name = "Barrier_Lobby_N"
+	lobbyWallN.Size = Vector3.new(LOBBY_SIZE + BARRIER_THICKNESS, BARRIER_HEIGHT, BARRIER_THICKNESS)
+	lobbyWallN.Position = Vector3.new(LOBBY_CENTER_X, BARRIER_HEIGHT / 2, LOBBY_CENTER_Z + lobbyHalfD + BARRIER_THICKNESS / 2)
+	lobbyWallN.Anchored = true
+	lobbyWallN.CanCollide = true
+	lobbyWallN.Transparency = 1
+	lobbyWallN.Parent = barrierFolder
+
+	-- Lobby South wall
+	local lobbyWallS = Instance.new("Part")
+	lobbyWallS.Name = "Barrier_Lobby_S"
+	lobbyWallS.Size = Vector3.new(LOBBY_SIZE + BARRIER_THICKNESS, BARRIER_HEIGHT, BARRIER_THICKNESS)
+	lobbyWallS.Position = Vector3.new(LOBBY_CENTER_X, BARRIER_HEIGHT / 2, LOBBY_CENTER_Z - lobbyHalfD - BARRIER_THICKNESS / 2)
+	lobbyWallS.Anchored = true
+	lobbyWallS.CanCollide = true
+	lobbyWallS.Transparency = 1
+	lobbyWallS.Parent = barrierFolder
+
+	-- Lobby West wall (far left edge of the lobby)
+	local lobbyWallW = Instance.new("Part")
+	lobbyWallW.Name = "Barrier_Lobby_W"
+	lobbyWallW.Size = Vector3.new(BARRIER_THICKNESS, BARRIER_HEIGHT, LOBBY_SIZE + BARRIER_THICKNESS)
+	lobbyWallW.Position = Vector3.new(LOBBY_CENTER_X - lobbyHalfW - BARRIER_THICKNESS / 2, BARRIER_HEIGHT / 2, LOBBY_CENTER_Z)
+	lobbyWallW.Anchored = true
+	lobbyWallW.CanCollide = true
+	lobbyWallW.Transparency = 1
+	lobbyWallW.Parent = barrierFolder
+
 	-- Spawn barriers for all 8 zones
 	for zoneId = 1, 8 do
 		local centerX = (zoneId - 1) * ZONE_SPACING
@@ -1803,20 +2344,8 @@ function ZoneService._spawnBarriers()
 		wallS.Transparency = 1
 		wallS.Parent = barrierFolder
 
-		-- West wall (negative X edge) - only for zone 1
-		if zoneId == 1 then
-			local wallW = Instance.new("Part")
-			wallW.Name = "Barrier_Z" .. zoneId .. "_W"
-			wallW.Size = Vector3.new(BARRIER_THICKNESS, BARRIER_HEIGHT, ZONE_SIZE.Z + BARRIER_THICKNESS)
-			wallW.Position = Vector3.new(centerX - halfW - BARRIER_THICKNESS / 2, BARRIER_HEIGHT / 2, centerZ)
-			wallW.Anchored = true
-			wallW.CanCollide = true
-			wallW.Transparency = 1
-			wallW.Parent = barrierFolder
-		end
-
-		-- East wall (positive X edge) - only for zone 2 (last zone)
-		if zoneId == 2 then
+		-- East wall (positive X edge) - only for zone 8 (last zone)
+		if zoneId == 8 then
 			local wallE = Instance.new("Part")
 			wallE.Name = "Barrier_Z" .. zoneId .. "_E"
 			wallE.Size = Vector3.new(BARRIER_THICKNESS, BARRIER_HEIGHT, ZONE_SIZE.Z + BARRIER_THICKNESS)
