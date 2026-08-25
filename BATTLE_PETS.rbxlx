@@ -10388,247 +10388,242 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 end
 
 --------------------------------------------------------------------------------
--- Egg Hatch Animation: large egg appears, wobbles 2-3 times, breaks with
--- particle/light flash, pet revealed with rarity color/name, camera zoom (~3s)
+-- Egg Hatch Animation: full-screen UI overlay with a 2D egg that wobbles,
+-- cracks open with a flash, then reveals the pet name and rarity.
+-- Pure ScreenGui animation - no 3D Parts, no camera changes.
 --------------------------------------------------------------------------------
 function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	if not self._initialized then return end
-	if not eggPosition then return end
 
 	local rarity = resultPet and resultPet.rarity or "Common"
 	local petName = resultPet and resultPet.name or "Pet"
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
-	-- NO camera manipulation - camera stays in normal player-controlled mode
+	-- Create full-screen overlay ScreenGui
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "EggHatchOverlay"
+	screenGui.IgnoreGuiInset = true
+	screenGui.DisplayOrder = 50
+	screenGui.ResetOnSpawn = false
+	screenGui.Parent = self._playerGui
 
-	-- Create LARGE egg model (much bigger for visibility)
-	local egg = Instance.new("Part")
-	egg.Name = "HatchingEgg"
-	egg.Shape = Enum.PartType.Ball
-	egg.Size = Vector3.new(5, 7, 5)
-	egg.Position = eggPosition + Vector3.new(0, 4, 0)
-	egg.Anchored = true
-	egg.CanCollide = false
-	egg.Color = Color3.fromRGB(255, 245, 210)
-	egg.Material = Enum.Material.SmoothPlastic
-	egg.Parent = self._effectsFolder
+	-- Semi-transparent dark background overlay
+	local overlay = Instance.new("Frame")
+	overlay.Name = "DarkOverlay"
+	overlay.Size = UDim2.fromScale(1, 1)
+	overlay.Position = UDim2.fromScale(0, 0)
+	overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	overlay.BackgroundTransparency = 0.5
+	overlay.BorderSizePixel = 0
+	overlay.Parent = screenGui
 
-	-- Add a PointLight to the egg so it glows during animation
-	local eggLight = Instance.new("PointLight")
-	eggLight.Color = Color3.fromRGB(255, 255, 200)
-	eggLight.Brightness = 2
-	eggLight.Range = 12
-	eggLight.Parent = egg
+	-- Container frame to hold the egg (centered)
+	local eggContainer = Instance.new("Frame")
+	eggContainer.Name = "EggContainer"
+	eggContainer.Size = UDim2.fromOffset(120, 160)
+	eggContainer.Position = UDim2.fromScale(0.5, 0.5)
+	eggContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+	eggContainer.BackgroundTransparency = 1
+	eggContainer.Parent = overlay
 
-	-- Wobble animation: egg tilts left-right 3 times with increasing intensity
-	local basePos = egg.Position
-	task.spawn(function()
-		-- Wobble 1 (small)
-		local w1 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble1 = TweenService:Create(egg, w1, {
-			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(8)),
-		})
-		wobble1:Play()
-		wobble1.Completed:Wait()
-		task.wait(0.15)
+	-- Main egg shape: oval Frame with large UICorner (cream/white)
+	local eggFrame = Instance.new("Frame")
+	eggFrame.Name = "EggShape"
+	eggFrame.Size = UDim2.fromScale(1, 1)
+	eggFrame.Position = UDim2.fromScale(0, 0)
+	eggFrame.BackgroundColor3 = Color3.fromRGB(255, 248, 220)
+	eggFrame.BorderSizePixel = 0
+	eggFrame.Parent = eggContainer
 
-		-- Wobble 2 (medium)
-		local w2 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble2 = TweenService:Create(egg, w2, {
-			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(-12)),
-		})
-		wobble2:Play()
-		wobble2.Completed:Wait()
-		task.wait(0.15)
+	local eggCorner = Instance.new("UICorner")
+	eggCorner.CornerRadius = UDim.new(0.5, 0)
+	eggCorner.Parent = eggFrame
 
-		-- Wobble 3 (large)
-		local w3 = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble3 = TweenService:Create(egg, w3, {
-			CFrame = CFrame.new(basePos) * CFrame.Angles(0, 0, math.rad(15)),
-		})
-		wobble3:Play()
-		wobble3.Completed:Wait()
-		task.wait(0.1)
+	-- Egg outline stroke for definition
+	local eggStroke = Instance.new("UIStroke")
+	eggStroke.Thickness = 3
+	eggStroke.Color = Color3.fromRGB(210, 190, 140)
+	eggStroke.Parent = eggFrame
 
-		-- Crack phase: egg glows and expands slightly, changes to rarity color
-		local crackInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		local crackTween = TweenService:Create(egg, crackInfo, {
-			Color = rarityColor,
-			Size = Vector3.new(6, 8, 6),
-		})
-		local lightFlash = TweenService:Create(eggLight, crackInfo, {
-			Brightness = 8,
-			Range = 20,
-			Color = rarityColor,
-		})
-		crackTween:Play()
-		lightFlash:Play()
-		crackTween.Completed:Wait()
-
-		-- BREAK: destroy egg, spawn bright flash + particles
-		egg:Destroy()
-		self:_spawnLightFlash(basePos + Vector3.new(0, 4, 0), rarityColor)
-		self:_spawnBreakParticles(basePos + Vector3.new(0, 4, 0), rarityColor)
-
-		-- Reveal pet after a short delay
-		task.wait(0.4)
-		self:_showPetReveal(basePos + Vector3.new(0, 4, 0), petName, rarity, rarityColor)
-	end)
-end
-
--- Internal: bright expanding flash sphere when egg breaks
-function EffectsController:_spawnLightFlash(position, color)
-	local flash = Instance.new("Part")
-	flash.Name = "EggFlash"
-	flash.Shape = Enum.PartType.Ball
-	flash.Size = Vector3.new(2, 2, 2)
-	flash.Position = position
-	flash.Anchored = true
-	flash.CanCollide = false
-	flash.Color = color
-	flash.Material = Enum.Material.Neon
-	flash.Transparency = 0.2
-	flash.Parent = self._effectsFolder
-
-	-- PointLight for a bright burst
-	local flashLight = Instance.new("PointLight")
-	flashLight.Color = color
-	flashLight.Brightness = 10
-	flashLight.Range = 30
-	flashLight.Parent = flash
-
-	-- Expand and fade rapidly
-	local flashInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	local expandTween = TweenService:Create(flash, flashInfo, {
-		Size = Vector3.new(16, 16, 16),
-		Transparency = 1,
+	-- Inner gradient to give the egg a 3D shading feel
+	local eggGradient = Instance.new("UIGradient")
+	eggGradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+		ColorSequenceKeypoint.new(0.4, Color3.fromRGB(255, 248, 220)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(225, 210, 170)),
 	})
-	local lightFade = TweenService:Create(flashLight, flashInfo, {
-		Brightness = 0,
-	})
-	expandTween:Play()
-	lightFade:Play()
-	expandTween.Completed:Connect(function()
-		flash:Destroy()
-	end)
-end
+	eggGradient.Rotation = 180
+	eggGradient.Parent = eggFrame
 
--- Internal: spawn small Parts flying outward to simulate egg breaking
-function EffectsController:_spawnBreakParticles(position, color)
-	for i = 1, 16 do
-		local particle = Instance.new("Part")
-		particle.Name = "EggParticle"
-		particle.Size = Vector3.new(0.5, 0.5, 0.5)
-		particle.Shape = Enum.PartType.Ball
-		particle.Position = position
-		particle.Anchored = true
-		particle.CanCollide = false
-		particle.Color = color
-		particle.Material = Enum.Material.Neon
-		particle.Parent = self._effectsFolder
+	-- Speckle texture: small darker spots on the egg using nested Frames
+	local specklePositions = {
+		{0.25, 0.3}, {0.6, 0.2}, {0.4, 0.55}, {0.7, 0.5},
+		{0.3, 0.7}, {0.55, 0.75}, {0.2, 0.5}, {0.75, 0.35},
+	}
+	for _, pos in ipairs(specklePositions) do
+		local speckle = Instance.new("Frame")
+		speckle.Name = "Speckle"
+		speckle.Size = UDim2.fromOffset(6 + math.random(0, 4), 6 + math.random(0, 4))
+		speckle.Position = UDim2.fromScale(pos[1], pos[2])
+		speckle.AnchorPoint = Vector2.new(0.5, 0.5)
+		speckle.BackgroundColor3 = Color3.fromRGB(200, 175, 120)
+		speckle.BackgroundTransparency = 0.4
+		speckle.BorderSizePixel = 0
+		speckle.Parent = eggFrame
 
-		local angle = (i / 16) * math.pi * 2
-		local upAngle = math.random(20, 60) / 10
-		local distance = math.random(4, 8)
-		local direction = Vector3.new(
-			math.cos(angle) * distance,
-			upAngle,
-			math.sin(angle) * distance
-		)
-
-		local tweenInfo = TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		local tween = TweenService:Create(particle, tweenInfo, {
-			Position = position + direction,
-			Transparency = 1,
-			Size = Vector3.new(0.1, 0.1, 0.1),
-		})
-		tween:Play()
-		tween.Completed:Connect(function()
-			particle:Destroy()
-		end)
+		local speckleCorner = Instance.new("UICorner")
+		speckleCorner.CornerRadius = UDim.new(1, 0)
+		speckleCorner.Parent = speckle
 	end
-end
 
--- Internal: show pet model reveal with glow, name, and scale-in bounce
-function EffectsController:_showPetReveal(position, petName, rarity, rarityColor)
-	-- Pet model: sphere with glow
-	local petPart = Instance.new("Part")
-	petPart.Name = "RevealedPet"
-	petPart.Shape = Enum.PartType.Ball
-	petPart.Size = Vector3.new(0.1, 0.1, 0.1)
-	petPart.Position = position
-	petPart.Anchored = true
-	petPart.CanCollide = false
-	petPart.Color = rarityColor
-	petPart.Material = Enum.Material.SmoothPlastic
-	petPart.Parent = self._effectsFolder
+	-- Highlight shine on upper-left of the egg
+	local shine = Instance.new("Frame")
+	shine.Name = "Shine"
+	shine.Size = UDim2.fromOffset(20, 30)
+	shine.Position = UDim2.fromScale(0.25, 0.18)
+	shine.AnchorPoint = Vector2.new(0.5, 0.5)
+	shine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	shine.BackgroundTransparency = 0.5
+	shine.BorderSizePixel = 0
+	shine.Rotation = -15
+	shine.Parent = eggFrame
 
-	-- PointLight for glow
-	local light = Instance.new("PointLight")
-	light.Color = rarityColor
-	light.Brightness = 6
-	light.Range = 14
-	light.Parent = petPart
+	local shineCorner = Instance.new("UICorner")
+	shineCorner.CornerRadius = UDim.new(0.5, 0)
+	shineCorner.Parent = shine
 
-	-- Scale from 0 to full size with bounce (Back easing)
-	local revealInfo = TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-	local revealTween = TweenService:Create(petPart, revealInfo, {
-		Size = Vector3.new(3, 3, 3),
-	})
-	revealTween:Play()
+	-- White flash frame (used during break - starts invisible)
+	local whiteFlash = Instance.new("Frame")
+	whiteFlash.Name = "WhiteFlash"
+	whiteFlash.Size = UDim2.fromScale(1, 1)
+	whiteFlash.Position = UDim2.fromScale(0, 0)
+	whiteFlash.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	whiteFlash.BackgroundTransparency = 1
+	whiteFlash.BorderSizePixel = 0
+	whiteFlash.ZIndex = 5
+	whiteFlash.Parent = screenGui
 
-	-- Floating pet name and rarity text
-	local billboardGui = Instance.new("BillboardGui")
-	billboardGui.Name = "PetRevealLabel"
-	billboardGui.Size = UDim2.fromOffset(240, 80)
-	billboardGui.StudsOffset = Vector3.new(0, 3.5, 0)
-	billboardGui.AlwaysOnTop = true
-	billboardGui.Adornee = petPart
-	billboardGui.Parent = self._playerGui
+	-- Pet reveal labels (hidden initially)
+	local revealContainer = Instance.new("Frame")
+	revealContainer.Name = "RevealContainer"
+	revealContainer.Size = UDim2.fromScale(0.6, 0.3)
+	revealContainer.Position = UDim2.fromScale(0.5, 0.5)
+	revealContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+	revealContainer.BackgroundTransparency = 1
+	revealContainer.Visible = false
+	revealContainer.ZIndex = 6
+	revealContainer.Parent = screenGui
 
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "PetName"
-	nameLabel.Size = UDim2.fromScale(1, 0.6)
-	nameLabel.Position = UDim2.fromScale(0, 0)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = petName
-	nameLabel.TextColor3 = rarityColor
-	nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	nameLabel.TextStrokeTransparency = 0.2
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextScaled = true
-	nameLabel.Parent = billboardGui
+	local petNameLabel = Instance.new("TextLabel")
+	petNameLabel.Name = "PetNameLabel"
+	petNameLabel.Size = UDim2.fromScale(1, 0.55)
+	petNameLabel.Position = UDim2.fromScale(0, 0.1)
+	petNameLabel.BackgroundTransparency = 1
+	petNameLabel.Text = petName
+	petNameLabel.TextColor3 = rarityColor
+	petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	petNameLabel.TextStrokeTransparency = 0
+	petNameLabel.Font = Enum.Font.GothamBold
+	petNameLabel.TextScaled = true
+	petNameLabel.TextTransparency = 0
+	petNameLabel.ZIndex = 6
+	petNameLabel.Parent = revealContainer
 
 	local rarityLabel = Instance.new("TextLabel")
-	rarityLabel.Name = "RarityText"
-	rarityLabel.Size = UDim2.fromScale(1, 0.4)
-	rarityLabel.Position = UDim2.fromScale(0, 0.6)
+	rarityLabel.Name = "RarityLabel"
+	rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
+	rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
 	rarityLabel.BackgroundTransparency = 1
 	rarityLabel.Text = rarity
 	rarityLabel.TextColor3 = rarityColor
 	rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	rarityLabel.TextStrokeTransparency = 0.3
+	rarityLabel.TextStrokeTransparency = 0.2
 	rarityLabel.Font = Enum.Font.GothamBold
 	rarityLabel.TextScaled = true
-	rarityLabel.Parent = billboardGui
+	rarityLabel.TextTransparency = 0
+	rarityLabel.ZIndex = 6
+	rarityLabel.Parent = revealContainer
 
-	-- Fade out after 2.5 seconds
-	task.delay(2.5, function()
-		local fadeInfo = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		local fadePet = TweenService:Create(petPart, fadeInfo, { Transparency = 1 })
-		local fadeLight = TweenService:Create(light, fadeInfo, { Brightness = 0 })
-		local fadeName = TweenService:Create(nameLabel, fadeInfo, { TextTransparency = 1 })
-		local fadeRarity = TweenService:Create(rarityLabel, fadeInfo, { TextTransparency = 1 })
+	-- Animation sequence (runs in a coroutine)
+	task.spawn(function()
+		-- Phase 1: Wobble the egg (3 wobbles with increasing intensity)
+		-- Wobble 1 (small: 5 degrees)
+		local w1Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble1 = TweenService:Create(eggContainer, w1Info, { Rotation = 5 })
+		wobble1:Play()
+		wobble1.Completed:Wait()
+		task.wait(0.12)
 
-		fadePet:Play()
-		fadeLight:Play()
-		fadeName:Play()
-		fadeRarity:Play()
+		-- Wobble 2 (medium: 10 degrees)
+		local w2Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble2 = TweenService:Create(eggContainer, w2Info, { Rotation = -10 })
+		wobble2:Play()
+		wobble2.Completed:Wait()
+		task.wait(0.12)
 
-		fadePet.Completed:Connect(function()
-			petPart:Destroy()
-			billboardGui:Destroy()
-		end)
+		-- Wobble 3 (large: 15 degrees)
+		local w3Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+		local wobble3 = TweenService:Create(eggContainer, w3Info, { Rotation = 15 })
+		wobble3:Play()
+		wobble3.Completed:Wait()
+		task.wait(0.1)
+
+		-- Phase 2: Crack - flash egg to rarity color and scale up
+		local crackInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		TweenService:Create(eggFrame, crackInfo, {
+			BackgroundColor3 = rarityColor,
+		}):Play()
+		TweenService:Create(eggContainer, crackInfo, {
+			Size = UDim2.fromOffset(150, 200),
+		}):Play()
+		TweenService:Create(eggStroke, crackInfo, {
+			Color = rarityColor,
+		}):Play()
+		task.wait(0.25)
+
+		-- Phase 3: Break - full-screen white flash, hide egg
+		eggContainer.Visible = false
+		whiteFlash.BackgroundTransparency = 0
+
+		local flashFadeInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		TweenService:Create(whiteFlash, flashFadeInfo, {
+			BackgroundTransparency = 1,
+		}):Play()
+		task.wait(0.3)
+
+		-- Phase 4: Reveal - show pet name and rarity in rarity color
+		revealContainer.Visible = true
+
+		-- Scale-in bounce on reveal text
+		revealContainer.Size = UDim2.fromScale(0.3, 0.15)
+		local revealBounce = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		TweenService:Create(revealContainer, revealBounce, {
+			Size = UDim2.fromScale(0.6, 0.3),
+		}):Play()
+		task.wait(0.4)
+
+		-- Phase 5: Auto-dismiss after 2.5 seconds with fade out
+		task.wait(2.5)
+
+		local fadeOutInfo = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		TweenService:Create(overlay, fadeOutInfo, {
+			BackgroundTransparency = 1,
+		}):Play()
+		TweenService:Create(petNameLabel, fadeOutInfo, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
+		TweenService:Create(rarityLabel, fadeOutInfo, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
+
+		task.wait(0.7)
+
+		-- Cleanup
+		if screenGui and screenGui.Parent then
+			screenGui:Destroy()
+		end
 	end)
 end
 
