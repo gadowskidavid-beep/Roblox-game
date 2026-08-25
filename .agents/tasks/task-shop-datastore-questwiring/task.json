@@ -3,5 +3,24 @@
   "task_description": "Implement Shop System (items/boosts for diamonds), DataStore improvements (UpdateAsync, schemaVersion, deep merge), and wire up inactive quest/mastery bonuses (walkspeed, coin multiplier, egg luck).",
   "status": "in_progress",
   "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
-  "blocked_reason": null
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "python3 tools/generate_rbxlx.py exits 0. All Lua source compiles into valid rbxlx. No automated test suite exists for this project - verification is the build tool succeeding."
+  },
+  "review_fixes": {
+    "v1": {
+      "status": "completed",
+      "issues_fixed": [
+        "Lucky Potion buff now consumed during egg hatching (PetService queries ShopService.getShopMultiplier in both weightedRandomPet and variant roll)",
+        "Auto-Hatch now calls EggService.hatchFree to actually hatch the player's highest-zone egg server-side (free since buff already paid)",
+        "Extra Equip Slot purchase now enforced in getMaxEquipped (reads data.shopPurchases.extraEquipSlots)",
+        "Removed duplicate PlayerRemoving listener from ShopService.init (Main.server.lua already handles cleanup)",
+        "BetterLuck mastery now applied to Shiny/Rainbow variant roll in addition to pool weights"
+      ]
+    }
+  }
 }
