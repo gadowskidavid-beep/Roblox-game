@@ -147,23 +147,16 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 end
 
 --------------------------------------------------------------------------------
--- Egg Hatch Animation: full-screen UI overlay with a 2D egg that wobbles,
--- cracks open with a flash, then reveals the pet name and rarity.
+-- Egg Hatch Animation (split into two phases for smoother experience):
+--   startEggWobble()      - immediately shows overlay + egg + smooth infinite wobble
+--   completeEggHatch(pet) - cancels wobble, does intense shakes, flash, reveal
+--   showEggHatchAnimation - legacy fallback that calls both in sequence
+--
 -- Pure ScreenGui animation - no 3D Parts, no camera changes.
--- NOTE: eggPosition is unused (screen-space animation) but retained for API
--- compatibility with callers in Main.client.lua.
 --------------------------------------------------------------------------------
-function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
-	if not self._initialized then return end
 
-	-- Reentrancy guard: prevent stacking overlays from rapid successive hatch events
-	if self._isHatching then return end
-	self._isHatching = true
-
-	local rarity = resultPet and resultPet.rarity or "Common"
-	local petName = resultPet and resultPet.name or "Pet"
-	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
-
+-- Helper: create the egg overlay UI elements and return references table
+function EffectsController:_createEggUI()
 	-- Create full-screen overlay ScreenGui (unique name to avoid collision with UIController)
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "EffectsController_EggHatchAnim"
@@ -220,7 +213,7 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	eggGradient.Rotation = 180
 	eggGradient.Parent = eggFrame
 
-	-- Speckle texture: small darker spots on the egg using nested Frames
+	-- Speckle texture: 8 small darker spots on the egg using nested Frames
 	local specklePositions = {
 		{0.25, 0.3}, {0.6, 0.2}, {0.4, 0.55}, {0.7, 0.5},
 		{0.3, 0.7}, {0.55, 0.75}, {0.2, 0.5}, {0.75, 0.35},
@@ -268,73 +261,89 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 	whiteFlash.ZIndex = 5
 	whiteFlash.Parent = screenGui
 
-	-- Pet reveal labels (hidden initially)
-	local revealContainer = Instance.new("Frame")
-	revealContainer.Name = "RevealContainer"
-	revealContainer.Size = UDim2.fromScale(0.6, 0.3)
-	revealContainer.Position = UDim2.fromScale(0.5, 0.5)
-	revealContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-	revealContainer.BackgroundTransparency = 1
-	revealContainer.Visible = false
-	revealContainer.ZIndex = 6
-	revealContainer.Parent = screenGui
+	return {
+		screenGui = screenGui,
+		overlay = overlay,
+		eggContainer = eggContainer,
+		eggFrame = eggFrame,
+		eggStroke = eggStroke,
+		whiteFlash = whiteFlash,
+	}
+end
 
-	local petNameLabel = Instance.new("TextLabel")
-	petNameLabel.Name = "PetNameLabel"
-	petNameLabel.Size = UDim2.fromScale(1, 0.55)
-	petNameLabel.Position = UDim2.fromScale(0, 0.1)
-	petNameLabel.BackgroundTransparency = 1
-	petNameLabel.Text = petName
-	petNameLabel.TextColor3 = rarityColor
-	petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	petNameLabel.TextStrokeTransparency = 0
-	petNameLabel.Font = Enum.Font.GothamBold
-	petNameLabel.TextScaled = true
-	petNameLabel.TextTransparency = 0
-	petNameLabel.ZIndex = 6
-	petNameLabel.Parent = revealContainer
+--------------------------------------------------------------------------------
+-- startEggWobble: shows overlay + egg and starts a smooth infinite wobble.
+-- Called immediately when EggHatchStart fires so the player sees feedback right away.
+--------------------------------------------------------------------------------
+function EffectsController:startEggWobble()
+	if not self._initialized then return end
 
-	local rarityLabel = Instance.new("TextLabel")
-	rarityLabel.Name = "RarityLabel"
-	rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
-	rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
-	rarityLabel.BackgroundTransparency = 1
-	rarityLabel.Text = rarity
-	rarityLabel.TextColor3 = rarityColor
-	rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	rarityLabel.TextStrokeTransparency = 0.2
-	rarityLabel.Font = Enum.Font.GothamBold
-	rarityLabel.TextScaled = true
-	rarityLabel.TextTransparency = 0
-	rarityLabel.ZIndex = 6
-	rarityLabel.Parent = revealContainer
+	-- Reentrancy guard: prevent stacking overlays from rapid successive hatch events
+	if self._isHatching then return end
+	self._isHatching = true
 
-	-- Animation sequence (runs in a coroutine)
+	-- Create UI elements
+	local ui = self:_createEggUI()
+	self._hatchScreenGui = ui.screenGui
+	self._hatchOverlay = ui.overlay
+	self._hatchEggContainer = ui.eggContainer
+	self._hatchEggFrame = ui.eggFrame
+	self._hatchEggStroke = ui.eggStroke
+	self._hatchWhiteFlash = ui.whiteFlash
+
+	-- Start smooth infinite wobble tween (Sine in-out, reverses, repeats forever)
+	local wobbleInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+	local wobbleTween = TweenService:Create(ui.eggContainer, wobbleInfo, { Rotation = 12 })
+	wobbleTween:Play()
+	self._hatchWobbleTween = wobbleTween
+end
+
+--------------------------------------------------------------------------------
+-- completeEggHatch(petData): cancels the infinite wobble, plays intense shakes,
+-- flashes to rarity color, white screen flash, then reveals pet name + rarity
+-- with a bounce animation. Auto-dismisses after 2 seconds.
+--------------------------------------------------------------------------------
+function EffectsController:completeEggHatch(petData)
+	if not self._initialized then return end
+
+	local rarity = petData and petData.rarity or "Common"
+	local petName = petData and petData.name or "Pet"
+	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+
+	-- If wobble was never started (edge case), start the full UI now
+	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
+		self._isHatching = false
+		self:startEggWobble()
+	end
+
+	local screenGui = self._hatchScreenGui
+	local overlay = self._hatchOverlay
+	local eggContainer = self._hatchEggContainer
+	local eggFrame = self._hatchEggFrame
+	local eggStroke = self._hatchEggStroke
+	local whiteFlash = self._hatchWhiteFlash
+
+	-- Cancel the infinite wobble tween
+	if self._hatchWobbleTween then
+		self._hatchWobbleTween:Cancel()
+		self._hatchWobbleTween = nil
+	end
+	-- Reset rotation before intense shakes
+	eggContainer.Rotation = 0
+
+	-- Run the completion animation in a coroutine
 	task.spawn(function()
-		-- Phase 1: Wobble the egg (3 wobbles with increasing intensity)
-		-- Wobble 1 (small: 5 degrees)
-		local w1Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble1 = TweenService:Create(eggContainer, w1Info, { Rotation = 5 })
-		wobble1:Play()
-		wobble1.Completed:Wait()
-		task.wait(0.12)
+		-- Phase 1: Quick intense shakes (3 fast shakes with increasing intensity)
+		local shakeAngles = { 8, -14, 18 }
+		for _, angle in ipairs(shakeAngles) do
+			local shakeInfo = TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
+			local shakeTween = TweenService:Create(eggContainer, shakeInfo, { Rotation = angle })
+			shakeTween:Play()
+			shakeTween.Completed:Wait()
+		end
 
-		-- Wobble 2 (medium: 10 degrees)
-		local w2Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble2 = TweenService:Create(eggContainer, w2Info, { Rotation = -10 })
-		wobble2:Play()
-		wobble2.Completed:Wait()
-		task.wait(0.12)
-
-		-- Wobble 3 (large: 15 degrees)
-		local w3Info = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-		local wobble3 = TweenService:Create(eggContainer, w3Info, { Rotation = 15 })
-		wobble3:Play()
-		wobble3.Completed:Wait()
-		task.wait(0.1)
-
-		-- Phase 2: Crack - flash egg to rarity color and scale up
-		local crackInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		-- Phase 2: Flash egg to rarity color and scale up
+		local crackInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		TweenService:Create(eggFrame, crackInfo, {
 			BackgroundColor3 = rarityColor,
 		}):Play()
@@ -344,33 +353,69 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 		TweenService:Create(eggStroke, crackInfo, {
 			Color = rarityColor,
 		}):Play()
-		task.wait(0.25)
+		task.wait(0.2)
 
 		-- Phase 3: Break - full-screen white flash, hide egg
 		eggContainer.Visible = false
 		whiteFlash.BackgroundTransparency = 0
 
-		local flashFadeInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local flashFadeInfo = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		TweenService:Create(whiteFlash, flashFadeInfo, {
 			BackgroundTransparency = 1,
 		}):Play()
-		task.wait(0.3)
+		task.wait(0.25)
 
-		-- Phase 4: Reveal - show pet name and rarity in rarity color
-		revealContainer.Visible = true
-
-		-- Scale-in bounce on reveal text
+		-- Phase 4: Reveal pet name and rarity with bounce animation
+		local revealContainer = Instance.new("Frame")
+		revealContainer.Name = "RevealContainer"
 		revealContainer.Size = UDim2.fromScale(0.3, 0.15)
+		revealContainer.Position = UDim2.fromScale(0.5, 0.5)
+		revealContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+		revealContainer.BackgroundTransparency = 1
+		revealContainer.ZIndex = 6
+		revealContainer.Parent = screenGui
+
+		local petNameLabel = Instance.new("TextLabel")
+		petNameLabel.Name = "PetNameLabel"
+		petNameLabel.Size = UDim2.fromScale(1, 0.55)
+		petNameLabel.Position = UDim2.fromScale(0, 0.1)
+		petNameLabel.BackgroundTransparency = 1
+		petNameLabel.Text = petName
+		petNameLabel.TextColor3 = rarityColor
+		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		petNameLabel.TextStrokeTransparency = 0
+		petNameLabel.Font = Enum.Font.GothamBold
+		petNameLabel.TextScaled = true
+		petNameLabel.TextTransparency = 0
+		petNameLabel.ZIndex = 6
+		petNameLabel.Parent = revealContainer
+
+		local rarityLabel = Instance.new("TextLabel")
+		rarityLabel.Name = "RarityLabel"
+		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
+		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
+		rarityLabel.BackgroundTransparency = 1
+		rarityLabel.Text = rarity
+		rarityLabel.TextColor3 = rarityColor
+		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		rarityLabel.TextStrokeTransparency = 0.2
+		rarityLabel.Font = Enum.Font.GothamBold
+		rarityLabel.TextScaled = true
+		rarityLabel.TextTransparency = 0
+		rarityLabel.ZIndex = 6
+		rarityLabel.Parent = revealContainer
+
+		-- Bounce scale-in on reveal
 		local revealBounce = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		TweenService:Create(revealContainer, revealBounce, {
 			Size = UDim2.fromScale(0.6, 0.3),
 		}):Play()
 		task.wait(0.4)
 
-		-- Phase 5: Auto-dismiss after 2.5 seconds with fade out
-		task.wait(2.5)
+		-- Phase 5: Auto-dismiss after 2 seconds with fade out
+		task.wait(2)
 
-		local fadeOutInfo = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		local fadeOutInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		TweenService:Create(overlay, fadeOutInfo, {
 			BackgroundTransparency = 1,
 		}):Play()
@@ -383,13 +428,32 @@ function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
 			TextStrokeTransparency = 1,
 		}):Play()
 
-		task.wait(0.7)
+		task.wait(0.6)
 
 		-- Cleanup
 		if screenGui and screenGui.Parent then
 			screenGui:Destroy()
 		end
+		self._hatchScreenGui = nil
+		self._hatchOverlay = nil
+		self._hatchEggContainer = nil
+		self._hatchEggFrame = nil
+		self._hatchEggStroke = nil
+		self._hatchWhiteFlash = nil
+		self._hatchWobbleTween = nil
 		self._isHatching = false
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- showEggHatchAnimation: legacy fallback that calls both phases in sequence.
+-- Retained for API compatibility. eggPosition is unused (screen-space animation).
+--------------------------------------------------------------------------------
+function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
+	self:startEggWobble()
+	-- Small delay to let wobble play before completing
+	task.delay(1.0, function()
+		self:completeEggHatch(resultPet)
 	end)
 end
 
