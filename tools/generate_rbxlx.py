@@ -242,49 +242,49 @@ def build_workspace():
     # Zone 2: Stadt - gray baseplate (static scenery only)
     parts.append(make_part_xml(
         "Zone2_Stadt", "Part",
-        250, 0, -100, 200, 2, 200,
+        200, 0, -100, 200, 2, 200,
         128, 128, 140, material=768
     ))
 
     # Zone 3: Strand - sandy baseplate
     parts.append(make_part_xml(
         "Zone3_Strand", "Part",
-        500, 0, -100, 200, 2, 200,
+        400, 0, -100, 200, 2, 200,
         237, 201, 136, material=1024
     ))
 
     # Zone 4: Wueste - desert baseplate
     parts.append(make_part_xml(
         "Zone4_Wueste", "Part",
-        750, 0, -100, 200, 2, 200,
+        600, 0, -100, 200, 2, 200,
         210, 180, 100, material=1024
     ))
 
     # Zone 5: Eiswelt - icy baseplate
     parts.append(make_part_xml(
         "Zone5_Eiswelt", "Part",
-        1000, 0, -100, 200, 2, 200,
+        800, 0, -100, 200, 2, 200,
         200, 230, 255, material=1024
     ))
 
     # Zone 6: Vulkan - volcanic baseplate
     parts.append(make_part_xml(
         "Zone6_Vulkan", "Part",
-        1250, 0, -100, 200, 2, 200,
+        1000, 0, -100, 200, 2, 200,
         80, 30, 10, material=768
     ))
 
     # Zone 7: Himmel - heavenly baseplate
     parts.append(make_part_xml(
         "Zone7_Himmel", "Part",
-        1500, 0, -100, 200, 2, 200,
+        1200, 0, -100, 200, 2, 200,
         255, 255, 220, material=1024
     ))
 
     # Zone 8: Weltraum - space baseplate
     parts.append(make_part_xml(
         "Zone8_Weltraum", "Part",
-        1750, 0, -100, 200, 2, 200,
+        1400, 0, -100, 200, 2, 200,
         20, 10, 40, material=768
     ))
 
@@ -297,7 +297,7 @@ def build_workspace():
 
     # Zone Gates between adjacent zones (large archway style)
     # Gates exist between zone 1->2, 2->3, 3->4, ..., 7->8
-    ZONE_SPACING = 250
+    ZONE_SPACING = 200
     pillar_h = 20
     pillar_w = 4
     opening_w = 20  # space between pillars
