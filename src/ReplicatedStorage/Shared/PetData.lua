@@ -123,4 +123,7 @@ PetData.Eggs = {
 	},
 }
 
+-- Variant definitions (all possible variants for each pet)
+PetData.Variants = {"Normal", "Golden", "Shiny", "Rainbow"}
+
 return PetData

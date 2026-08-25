@@ -66,6 +66,7 @@ local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
 local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
+local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -273,7 +274,7 @@ EggHatchResult.OnClientEvent:Connect(function(petData)
 	-- Delay the UIController modal until after the EffectsController animation
 	-- finishes (~4s total: shakes + crack + flash + reveal + auto-dismiss)
 	task.delay(4, function()
-		uiController:showEggHatch(petData)
+		uiController:showEggHatch(petData, petData and petData.isNewDiscovery)
 	end)
 end)
 

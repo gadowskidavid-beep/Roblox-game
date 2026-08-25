@@ -1,0 +1,7 @@
+{
+  "task_id": "task-pet-index",
+  "task_description": "Add discoveredPets tracking so the NEW PET popup only shows for first-time discoveries, plus a Pet Index/Collection Book UI showing all pets in all variants (Normal, Golden, Shiny, Rainbow)",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null
+}

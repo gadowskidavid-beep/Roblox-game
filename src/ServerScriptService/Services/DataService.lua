@@ -71,6 +71,8 @@ local function getDefaultData()
 		-- Mastery system
 		masteryPoints = 0,
 		masteryBuffs = {},
+		-- Pet discovery tracking (collection book)
+		discoveredPets = {},
 	}
 end
 
@@ -214,6 +216,7 @@ function DataService.getClientData(player)
 		campaignProgress = deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,
 		masteryBuffs = deepCopy(data.masteryBuffs),
+		discoveredPets = deepCopy(data.discoveredPets or {}),
 	}
 
 	return clientData

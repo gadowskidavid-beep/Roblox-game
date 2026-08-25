@@ -89,6 +89,7 @@ local remoteFunctions = {
 	"GetMasteryState",
 	"ConvertToGoldenPet",
 	"AssignPetTarget",
+	"GetDiscoveredPets",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -391,6 +392,18 @@ getRemoteFunction("AssignPetTarget").OnServerInvoke = function(player, petInstan
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
+end
+
+-- GetDiscoveredPets (returns player's discovered pets table)
+getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return {}
+	end
+	local data = DataService.getPlayerData(player)
+	if not data then
+		return {}
+	end
+	return data.discoveredPets or {}
 end
 
 ----------------------------------------------
