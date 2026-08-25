@@ -719,36 +719,35 @@ function EffectsController:showLevelUpCelebration(newLevel)
 end
 
 --------------------------------------------------------------------------------
--- Crit Button: a single BillboardGui button that appears on a destructible
--- after clicking it. The button is a golden circle with lightning icon that
--- orbits the destructible via StudsOffset animation. Only 1 button per
--- destructible at a time. Clicking the button triggers crit (2x damage).
+-- Crit Button: a single STATIC BillboardGui button (Fortnite-style weak point)
+-- that appears on a destructible after clicking it. The button is a golden
+-- circle with a crosshair icon, fixed in position on the destructible surface.
+-- Only 1 crit button exists globally at a time (spawning a new one removes the
+-- previous one). Clicking the button triggers crit (2x damage).
 -- Button disappears after 2 seconds if not clicked.
--- Returns a callback function that the caller should use to connect to the
--- button's Activated event for firing crit damage.
 --------------------------------------------------------------------------------
 function EffectsController:spawnCritButton(destructiblePart, destructibleId, onCritClicked)
 	if not self._initialized then return end
 	if not destructiblePart or not destructiblePart:IsA("BasePart") then return end
 
-	-- Remove any existing crit button on this destructible
-	self:removeCritButton(destructibleId)
+	-- Only 1 crit button globally at a time: remove any existing one
+	self:_removeGlobalCritButton()
 
-	-- Create BillboardGui attached to the destructible
+	-- Create BillboardGui attached to the destructible (static position)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "CritButton_" .. destructibleId
-	billboardGui.Size = UDim2.fromOffset(60, 60)
-	billboardGui.StudsOffset = Vector3.new(3, 2, 0)
+	billboardGui.Size = UDim2.fromOffset(50, 50)
+	billboardGui.StudsOffset = Vector3.new(0, 1, 0) -- centered slightly above the destructible
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = destructiblePart
 	billboardGui.Parent = self._playerGui
 
-	-- Create the circular button (golden ring with lightning icon)
+	-- Create the circular button (golden ring with crosshair icon)
 	local button = Instance.new("TextButton")
 	button.Name = "CritBtn"
 	button.Size = UDim2.fromScale(1, 1)
 	button.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-	button.BackgroundTransparency = 0.1
+	button.BackgroundTransparency = 0.15
 	button.Text = "\226\154\161" -- lightning bolt unicode
 	button.TextColor3 = Color3.fromRGB(255, 255, 255)
 	button.TextStrokeColor3 = Color3.fromRGB(180, 100, 0)
@@ -763,7 +762,7 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = button
 
-	-- Add glowing stroke
+	-- Add glowing stroke (subtle glow instead of pulse animation)
 	local stroke = Instance.new("UIStroke")
 	stroke.Name = "GlowStroke"
 	stroke.Thickness = 3
@@ -771,47 +770,7 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	stroke.Transparency = 0.2
 	stroke.Parent = button
 
-	-- Pulse animation on the button (scale oscillation for attention)
-	local pulseUp = TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
-	TweenService:Create(billboardGui, pulseUp, {
-		Size = UDim2.fromOffset(70, 70),
-	}):Play()
-
-	-- Orbit animation: move StudsOffset around the destructible over time
-	local startTime = tick()
-	local startAngle = math.random() * math.pi * 2
-	local orbitRadius = 3 + math.random() * 2 -- 3-5 studs offset
-	local orbitSpeed = 1.5 + math.random() * 1.0 -- radians per second
-	local orbitDirection = (math.random() > 0.5) and 1 or -1
-	local verticalCenter = 2 + math.random() * 1 -- 2-3 studs above center
-
-	local orbitConnection
-	orbitConnection = RunService.Heartbeat:Connect(function(dt)
-		if not billboardGui or not billboardGui.Parent then
-			if orbitConnection then
-				orbitConnection:Disconnect()
-			end
-			return
-		end
-
-		-- Check if destructible still exists
-		if not destructiblePart or not destructiblePart.Parent then
-			if orbitConnection then
-				orbitConnection:Disconnect()
-			end
-			billboardGui:Destroy()
-			self._critButtons[destructibleId] = nil
-			return
-		end
-
-		local elapsed = tick() - startTime
-		local angle = startAngle + elapsed * orbitSpeed * orbitDirection
-		local offsetX = math.cos(angle) * orbitRadius
-		local offsetZ = math.sin(angle) * orbitRadius
-		local offsetY = verticalCenter + math.sin(elapsed * 2.5) * 0.5
-
-		billboardGui.StudsOffset = Vector3.new(offsetX, offsetY, offsetZ)
-	end)
+	-- No pulse animation, no orbit - button is completely static (Fortnite weak point style)
 
 	-- Handle button click: fire crit
 	local clicked = false
@@ -819,17 +778,13 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 		if clicked then return end
 		clicked = true
 
-		-- Disconnect orbit
-		if orbitConnection then
-			orbitConnection:Disconnect()
-		end
-
 		-- Show crit hit visual effect
 		self:showCritButtonHitEffect(destructiblePart)
 
 		-- Remove the button
 		billboardGui:Destroy()
 		self._critButtons[destructibleId] = nil
+		self._globalCritButtonId = nil
 
 		-- Fire the crit callback
 		if onCritClicked then
@@ -841,11 +796,6 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 	task.delay(2, function()
 		if clicked then return end
 		if not billboardGui or not billboardGui.Parent then return end
-
-		-- Disconnect orbit
-		if orbitConnection then
-			orbitConnection:Disconnect()
-		end
 
 		-- Fade out
 		local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
@@ -863,14 +813,36 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 				billboardGui:Destroy()
 			end
 			self._critButtons[destructibleId] = nil
+			if self._globalCritButtonId == destructibleId then
+				self._globalCritButtonId = nil
+			end
 		end)
 	end)
 
-	-- Store reference for cleanup
+	-- Store reference for cleanup (only one globally)
 	if not self._critButtons then
 		self._critButtons = {}
 	end
 	self._critButtons[destructibleId] = billboardGui
+	self._globalCritButtonId = destructibleId
+end
+
+--------------------------------------------------------------------------------
+-- Remove the single global crit button (ensures only 1 exists at a time)
+--------------------------------------------------------------------------------
+function EffectsController:_removeGlobalCritButton()
+	if not self._critButtons then
+		self._critButtons = {}
+		return
+	end
+	-- Remove any existing crit button (there should only be one globally)
+	for id, gui in pairs(self._critButtons) do
+		if gui and gui.Parent then
+			gui:Destroy()
+		end
+		self._critButtons[id] = nil
+	end
+	self._globalCritButtonId = nil
 end
 
 --------------------------------------------------------------------------------
@@ -886,6 +858,9 @@ function EffectsController:removeCritButton(destructibleId)
 		existing:Destroy()
 	end
 	self._critButtons[destructibleId] = nil
+	if self._globalCritButtonId == destructibleId then
+		self._globalCritButtonId = nil
+	end
 end
 
 --------------------------------------------------------------------------------

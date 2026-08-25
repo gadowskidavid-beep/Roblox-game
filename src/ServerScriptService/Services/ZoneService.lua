@@ -39,9 +39,9 @@ local CRIT_ATTACK_COOLDOWN = 0.2 -- seconds between crit attacks per player
 local CRIT_WINDOW_DURATION = 3 -- seconds a crit window stays active after click attack
 local MAX_ATTACK_DISTANCE = 50 -- maximum studs between player and destructible
 
--- Zone position offsets (each zone is spaced apart)
+-- Zone position offsets (each zone is spaced apart - no gap between zones)
 local ZONE_SIZE = Vector3.new(200, 0, 200)
-local ZONE_SPACING = 250
+local ZONE_SPACING = 200
 
 -- How many destructibles to spawn per zone (distributed randomly)
 local DESTRUCTIBLES_PER_ZONE = 20
