@@ -87,11 +87,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000020">
+	<Item class="ServerScriptService" referent="RBX00000021">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX0000001F">
+			<Item class="Script" referent="RBX00000020">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -116,6 +116,7 @@ local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local DailyRewardService = require(script.Parent.Services.DailyRewardService)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -161,6 +162,7 @@ local remoteEvents = {
 	"QuestProgressUpdated",
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
+	"DailyRewardAvailable",
 }
 
 for _, eventName in ipairs(remoteEvents) do
@@ -192,6 +194,8 @@ local remoteFunctions = {
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
 	"GetShopBuffs",
+	"ClaimDailyReward",
+	"GetDailyRewardStatus",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -231,6 +235,9 @@ ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 
 CampaignService.init(DataService, CurrencyService, PetService)
+
+-- Initialize daily reward service
+DailyRewardService.init(DataService, CurrencyService, EggService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
@@ -578,6 +585,25 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	return ShopService.getActiveBuffs(player)
 end
 
+-- ClaimDailyReward (5 second cooldown)
+getRemoteFunction("ClaimDailyReward").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return { success = false, reason = "Invalid player" }
+	end
+	if not canCall(player, "ClaimDailyReward", 5) then
+		return { success = false, reason = "Please wait before claiming again" }
+	end
+	return DailyRewardService.claimDailyReward(player)
+end
+
+-- GetDailyRewardStatus
+getRemoteFunction("GetDailyRewardStatus").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return { currentDay = 0, canClaim = false, nextClaimTime = 0, rewards = {} }
+	end
+	return DailyRewardService.getDailyRewardStatus(player)
+end
+
 ----------------------------------------------
 -- Player Lifecycle
 ----------------------------------------------
@@ -631,6 +657,22 @@ Players.PlayerAdded:Connect(function(player)
 	if data then
 		QuestService.setStat(player, "reachLevel", data.level or 1)
 	end
+
+	-- Check if daily reward is available and notify client
+	task.delay(2, function()
+		if player and player:IsA("Player") and player.Parent then
+			local status = DailyRewardService.getDailyRewardStatus(player)
+			if status and status.canClaim then
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				if remotes then
+					local dailyEvent = remotes:FindFirstChild("DailyRewardAvailable")
+					if dailyEvent then
+						dailyEvent:FireClient(player)
+					end
+				end
+			end
+		end
+	end)
 
 	----------------------------------------------
 	-- Admin Chat Commands (game owner only)
@@ -836,7 +878,7 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX0000001E">
+			<Item class="Folder" referent="RBX0000001F">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
@@ -925,6 +967,11 @@ local function getDefaultData()
 		-- Shop purchases (permanent effects)
 		shopPurchases = {
 			extraEquipSlots = 0,
+		},
+		-- Daily rewards tracking
+		dailyRewards = {
+			lastClaimTimestamp = 0,
+			currentDay = 0,
 		},
 	}
 end
@@ -1100,6 +1147,7 @@ function DataService.getClientData(player)
 		masteryBuffs = deepCopy(data.masteryBuffs),
 		discoveredPets = deepCopy(data.discoveredPets or {}),
 		shopPurchases = deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
+		dailyRewards = deepCopy(data.dailyRewards or { lastClaimTimestamp = 0, currentDay = 0 }),
 	}
 
 	return clientData
@@ -5971,17 +6019,236 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
+				<Item class="ModuleScript" referent="RBX0000001E">
+					<Properties>
+						<string name="Name">DailyRewardService</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	DailyRewardService.lua - Server-authoritative Daily Rewards system
+	7-day reward cycle with UTC day boundary validation.
+	Prevents double-claiming and resets streak after 2+ missed days.
+]]
+
+local DailyRewardService = {}
+
+-- Service references (set during init)
+DailyRewardService._dataService = nil
+DailyRewardService._currencyService = nil
+DailyRewardService._eggService = nil
+
+-- Constants
+local SECONDS_PER_DAY = 86400
+
+-- 7-day reward cycle definition
+local REWARDS = {
+	[1] = { type = "Coins", amount = 500, description = "500 Coins" },
+	[2] = { type = "Diamonds", amount = 50, description = "50 Diamonds" },
+	[3] = { type = "Boost", boostType = "2xCoins", duration = 1800, description = "2x Coins Boost (30 min)" },
+	[4] = { type = "Coins", amount = 1000, description = "1000 Coins" },
+	[5] = { type = "FreeEgg", eggType = "PremiumEgg", description = "Free Egg Hatch" },
+	[6] = { type = "Diamonds", amount = 100, description = "100 Diamonds" },
+	[7] = { type = "Special", rewards = {
+		{ type = "Coins", amount = 5000 },
+		{ type = "Diamonds", amount = 500 },
+	}, description = "5000 Coins + 500 Diamonds" },
+}
+
+-- Helper: get UTC day number from a timestamp
+local function getUTCDay(timestamp)
+	return math.floor(timestamp / SECONDS_PER_DAY)
+end
+
+-- Initialize with service references
+function DailyRewardService.init(dataService, currencyService, eggService)
+	DailyRewardService._dataService = dataService
+	DailyRewardService._currencyService = currencyService
+	DailyRewardService._eggService = eggService
+end
+
+-- Award a single reward to a player
+local function awardReward(player, rewardDef)
+	if not rewardDef then return end
+
+	if rewardDef.type == "Coins" then
+		if DailyRewardService._currencyService then
+			DailyRewardService._currencyService.addCoins(player, rewardDef.amount)
+		end
+	elseif rewardDef.type == "Diamonds" then
+		if DailyRewardService._currencyService then
+			DailyRewardService._currencyService.addDiamonds(player, rewardDef.amount)
+		end
+	elseif rewardDef.type == "Boost" then
+		-- Boost rewards are noted in the response; client can display a message.
+		-- In a full implementation this would activate a timed buff via ShopService.
+		-- For now, grant bonus coins as a placeholder for the boost value.
+		if DailyRewardService._currencyService then
+			DailyRewardService._currencyService.addCoins(player, 250)
+		end
+	elseif rewardDef.type == "FreeEgg" then
+		if DailyRewardService._eggService then
+			DailyRewardService._eggService.hatchFree(player, rewardDef.eggType)
+		end
+	elseif rewardDef.type == "Special" then
+		-- Special rewards contain multiple sub-rewards
+		if rewardDef.rewards then
+			for _, subReward in ipairs(rewardDef.rewards) do
+				awardReward(player, subReward)
+			end
+		end
+	end
+end
+
+-- Claim the daily reward for a player
+-- Returns { success, day, reward, nextClaimTime } or { success=false, reason }
+function DailyRewardService.claimDailyReward(player)
+	if not player or not player:IsA("Player") then
+		return { success = false, reason = "Invalid player" }
+	end
+
+	local dataService = DailyRewardService._dataService
+	if not dataService then
+		return { success = false, reason = "Service not initialized" }
+	end
+
+	local data = dataService.getPlayerData(player)
+	if not data then
+		return { success = false, reason = "No player data" }
+	end
+
+	-- Ensure dailyRewards field exists (backward compat with old saves)
+	if not data.dailyRewards then
+		data.dailyRewards = { lastClaimTimestamp = 0, currentDay = 0 }
+	end
+
+	local now = os.time()
+	local currentUTCDay = getUTCDay(now)
+	local lastClaimUTCDay = getUTCDay(data.dailyRewards.lastClaimTimestamp)
+
+	-- Check if already claimed today
+	if data.dailyRewards.lastClaimTimestamp > 0 and currentUTCDay == lastClaimUTCDay then
+		return { success = false, reason = "Already claimed today" }
+	end
+
+	-- Calculate streak: if more than 1 day was missed (gap of 2+ days), reset to day 1
+	local daysSinceLastClaim = currentUTCDay - lastClaimUTCDay
+	local currentDay = data.dailyRewards.currentDay
+
+	if data.dailyRewards.lastClaimTimestamp == 0 then
+		-- First time claiming ever
+		currentDay = 1
+	elseif daysSinceLastClaim >= 2 then
+		-- Missed 2+ days, reset streak
+		currentDay = 1
+	else
+		-- Normal progression (exactly 1 day passed)
+		currentDay = currentDay + 1
+		if currentDay > 7 then
+			currentDay = 1
+		end
+	end
+
+	-- Get the reward for this day
+	local rewardDef = REWARDS[currentDay]
+	if not rewardDef then
+		return { success = false, reason = "Invalid reward day" }
+	end
+
+	-- Award the reward
+	awardReward(player, rewardDef)
+
+	-- Update player data
+	data.dailyRewards.lastClaimTimestamp = now
+	data.dailyRewards.currentDay = currentDay
+
+	-- Calculate next claim time (start of next UTC day)
+	local nextDayStart = (currentUTCDay + 1) * SECONDS_PER_DAY
+
+	return {
+		success = true,
+		day = currentDay,
+		reward = rewardDef,
+		nextClaimTime = nextDayStart,
+	}
+end
+
+-- Get the daily reward status for a player (used by client UI)
+-- Returns { currentDay, canClaim, nextClaimTime, rewards }
+function DailyRewardService.getDailyRewardStatus(player)
+	if not player or not player:IsA("Player") then
+		return { currentDay = 0, canClaim = false, nextClaimTime = 0, rewards = REWARDS }
+	end
+
+	local dataService = DailyRewardService._dataService
+	if not dataService then
+		return { currentDay = 0, canClaim = false, nextClaimTime = 0, rewards = REWARDS }
+	end
+
+	local data = dataService.getPlayerData(player)
+	if not data then
+		return { currentDay = 0, canClaim = false, nextClaimTime = 0, rewards = REWARDS }
+	end
+
+	-- Ensure dailyRewards field exists
+	if not data.dailyRewards then
+		data.dailyRewards = { lastClaimTimestamp = 0, currentDay = 0 }
+	end
+
+	local now = os.time()
+	local currentUTCDay = getUTCDay(now)
+	local lastClaimUTCDay = getUTCDay(data.dailyRewards.lastClaimTimestamp)
+
+	-- Determine if player can claim
+	local canClaim = false
+	if data.dailyRewards.lastClaimTimestamp == 0 then
+		-- Never claimed before
+		canClaim = true
+	elseif currentUTCDay > lastClaimUTCDay then
+		-- A new UTC day has started since last claim
+		canClaim = true
+	end
+
+	-- Determine the day that would be claimed next
+	local nextDay = data.dailyRewards.currentDay
+	if canClaim then
+		local daysSinceLastClaim = currentUTCDay - lastClaimUTCDay
+		if data.dailyRewards.lastClaimTimestamp == 0 then
+			nextDay = 1
+		elseif daysSinceLastClaim >= 2 then
+			nextDay = 1
+		else
+			nextDay = data.dailyRewards.currentDay + 1
+			if nextDay > 7 then
+				nextDay = 1
+			end
+		end
+	end
+
+	-- Calculate next claim time
+	local nextClaimTime = (currentUTCDay + 1) * SECONDS_PER_DAY
+
+	return {
+		currentDay = nextDay,
+		canClaim = canClaim,
+		nextClaimTime = nextClaimTime,
+		rewards = REWARDS,
+	}
+end
+
+return DailyRewardService
+]]></ProtectedString>
+					</Properties>
+				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX00000028">
+	<Item class="StarterPlayer" referent="RBX00000029">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000027">
+		<Item class="StarterPlayerScripts" referent="RBX00000028">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000026">
+				<Item class="LocalScript" referent="RBX00000027">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -6057,6 +6324,8 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
+local ClaimDailyReward = Remotes:WaitForChild("ClaimDailyReward")
+local GetDailyRewardStatus = Remotes:WaitForChild("GetDailyRewardStatus")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -6074,6 +6343,7 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
+local DailyRewardAvailable = Remotes:WaitForChild("DailyRewardAvailable")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -6308,6 +6578,20 @@ end)
 
 ShopBuffsUpdated.OnClientEvent:Connect(function(buffs)
 	uiController:updateShopBuffs(buffs)
+end)
+
+-- Daily Reward popup on login
+DailyRewardAvailable.OnClientEvent:Connect(function()
+	task.spawn(function()
+		local status = GetDailyRewardStatus:InvokeServer()
+		if status and status.canClaim then
+			uiController:showDailyRewardPopup(status, function()
+				-- Claim callback
+				local result = ClaimDailyReward:InvokeServer()
+				return result
+			end)
+		end
+	end)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")
@@ -6595,7 +6879,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000021">
+				<Item class="ModuleScript" referent="RBX00000022">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9062,11 +9346,286 @@ function UIController:cleanup()
 	self._screens = {}
 end
 
+--------------------------------------------------------------------------------
+-- DAILY REWARD POPUP
+--------------------------------------------------------------------------------
+function UIController:showDailyRewardPopup(status, claimCallback)
+	if not self._playerGui then return end
+	if not status then return end
+
+	-- Remove existing popup if any
+	local existing = self._playerGui:FindFirstChild("DailyRewardPopup")
+	if existing then existing:Destroy() end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "DailyRewardPopup"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Parent = self._playerGui
+
+	-- Dark overlay background
+	local bg = Instance.new("Frame")
+	bg.Name = "Background"
+	bg.Size = UDim2.fromScale(1, 1)
+	bg.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	bg.BackgroundTransparency = 0.5
+	bg.BorderSizePixel = 0
+	bg.Parent = screenGui
+
+	-- Main panel
+	local panel = Instance.new("Frame")
+	panel.Name = "Panel"
+	panel.Size = UDim2.fromScale(0.55, 0.55)
+	panel.Position = UDim2.fromScale(0.225, 0.225)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = bg
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 16)
+	panelCorner.Parent = panel
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = Color3.fromRGB(255, 180, 0)
+	panelStroke.Parent = panel
+
+	-- Title
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.fromScale(0.6, 0.1)
+	title.Position = UDim2.fromScale(0.2, 0.02)
+	title.BackgroundTransparency = 1
+	title.Text = "DAILY REWARDS"
+	title.TextColor3 = Color3.fromRGB(255, 200, 0)
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+
+	-- Close button
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(36, 36)
+	closeBtn.Position = UDim2.new(1, -46, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 20
+	closeBtn.Parent = panel
+
+	local closeBtnCorner = Instance.new("UICorner")
+	closeBtnCorner.CornerRadius = UDim.new(1, 0)
+	closeBtnCorner.Parent = closeBtn
+
+	closeBtn.MouseButton1Click:Connect(function()
+		screenGui:Destroy()
+	end)
+
+	-- 7-day slots container
+	local slotsFrame = Instance.new("Frame")
+	slotsFrame.Name = "SlotsFrame"
+	slotsFrame.Size = UDim2.fromScale(0.92, 0.5)
+	slotsFrame.Position = UDim2.fromScale(0.04, 0.14)
+	slotsFrame.BackgroundTransparency = 1
+	slotsFrame.Parent = panel
+
+	local slotsLayout = Instance.new("UIListLayout")
+	slotsLayout.FillDirection = Enum.FillDirection.Horizontal
+	slotsLayout.Padding = UDim.new(0, 6)
+	slotsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	slotsLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	slotsLayout.Parent = slotsFrame
+
+	-- Reward descriptions for display
+	local rewards = status.rewards or {}
+	local currentDay = status.currentDay or 1
+
+	-- Day slot colors
+	local dayColors = {
+		Color3.fromRGB(255, 220, 0),   -- Day 1: Gold (Coins)
+		Color3.fromRGB(0, 200, 255),   -- Day 2: Cyan (Diamonds)
+		Color3.fromRGB(0, 220, 100),   -- Day 3: Green (Boost)
+		Color3.fromRGB(255, 220, 0),   -- Day 4: Gold (Coins)
+		Color3.fromRGB(255, 100, 200), -- Day 5: Pink (Free Egg)
+		Color3.fromRGB(0, 200, 255),   -- Day 6: Cyan (Diamonds)
+		Color3.fromRGB(255, 150, 0),   -- Day 7: Orange (Special)
+	}
+
+	for day = 1, 7 do
+		local rewardDef = rewards[day]
+		local isCurrentDay = (day == currentDay)
+		local isPastDay = (day < currentDay) or (currentDay == 0)
+		local dayColor = dayColors[day] or Color3.fromRGB(200, 200, 200)
+
+		local slot = Instance.new("Frame")
+		slot.Name = "Day" .. tostring(day)
+		slot.Size = UDim2.fromScale(0.13, 0.95)
+		slot.BackgroundColor3 = isCurrentDay and Color3.fromRGB(50, 60, 110) or Color3.fromRGB(25, 32, 60)
+		slot.BorderSizePixel = 0
+		slot.Parent = slotsFrame
+
+		local slotCorner = Instance.new("UICorner")
+		slotCorner.CornerRadius = UDim.new(0, 10)
+		slotCorner.Parent = slot
+
+		local slotStroke = Instance.new("UIStroke")
+		slotStroke.Thickness = isCurrentDay and 3 or 2
+		slotStroke.Color = isCurrentDay and dayColor or Color3.fromRGB(60, 70, 100)
+		slotStroke.Parent = slot
+
+		-- Day number label
+		local dayLabel = Instance.new("TextLabel")
+		dayLabel.Name = "DayLabel"
+		dayLabel.Size = UDim2.fromScale(0.9, 0.18)
+		dayLabel.Position = UDim2.fromScale(0.05, 0.02)
+		dayLabel.BackgroundTransparency = 1
+		dayLabel.Text = "Day " .. tostring(day)
+		dayLabel.TextColor3 = isCurrentDay and dayColor or Color3.fromRGB(150, 150, 170)
+		dayLabel.Font = Enum.Font.GothamBold
+		dayLabel.TextScaled = true
+		dayLabel.Parent = slot
+
+		-- Reward icon (simple colored circle)
+		local rewardIcon = Instance.new("Frame")
+		rewardIcon.Name = "RewardIcon"
+		rewardIcon.Size = UDim2.fromScale(0.5, 0.28)
+		rewardIcon.Position = UDim2.fromScale(0.25, 0.22)
+		rewardIcon.BackgroundColor3 = isCurrentDay and dayColor or Color3.fromRGB(60, 70, 100)
+		rewardIcon.Parent = slot
+
+		local iconCorner = Instance.new("UICorner")
+		iconCorner.CornerRadius = UDim.new(1, 0)
+		iconCorner.Parent = rewardIcon
+
+		-- Reward icon letter
+		local iconLetter = ""
+		if rewardDef then
+			if rewardDef.type == "Coins" then iconLetter = "$"
+			elseif rewardDef.type == "Diamonds" then iconLetter = "D"
+			elseif rewardDef.type == "Boost" then iconLetter = "2x"
+			elseif rewardDef.type == "FreeEgg" then iconLetter = "E"
+			elseif rewardDef.type == "Special" then iconLetter = "!"
+			end
+		end
+
+		local iconText = Instance.new("TextLabel")
+		iconText.Size = UDim2.fromScale(1, 1)
+		iconText.BackgroundTransparency = 1
+		iconText.Text = iconLetter
+		iconText.TextColor3 = COLORS.White
+		iconText.Font = Enum.Font.GothamBold
+		iconText.TextScaled = true
+		iconText.Parent = rewardIcon
+
+		-- Reward description
+		local descText = rewardDef and rewardDef.description or ""
+		local descLabel = Instance.new("TextLabel")
+		descLabel.Name = "Description"
+		descLabel.Size = UDim2.fromScale(0.9, 0.3)
+		descLabel.Position = UDim2.fromScale(0.05, 0.55)
+		descLabel.BackgroundTransparency = 1
+		descLabel.Text = descText
+		descLabel.TextColor3 = isCurrentDay and COLORS.White or Color3.fromRGB(140, 140, 160)
+		descLabel.Font = Enum.Font.Gotham
+		descLabel.TextScaled = true
+		descLabel.TextWrapped = true
+		descLabel.Parent = slot
+
+		-- Checkmark for past days or highlight for current
+		if isPastDay and currentDay > 0 and day < currentDay then
+			local checkLabel = Instance.new("TextLabel")
+			checkLabel.Size = UDim2.fromScale(0.5, 0.15)
+			checkLabel.Position = UDim2.fromScale(0.25, 0.85)
+			checkLabel.BackgroundTransparency = 1
+			checkLabel.Text = "OK"
+			checkLabel.TextColor3 = Color3.fromRGB(0, 200, 80)
+			checkLabel.Font = Enum.Font.GothamBold
+			checkLabel.TextScaled = true
+			checkLabel.Parent = slot
+		end
+	end
+
+	-- Claim button
+	local claimBtn = Instance.new("TextButton")
+	claimBtn.Name = "ClaimBtn"
+	claimBtn.Size = UDim2.fromScale(0.35, 0.14)
+	claimBtn.Position = UDim2.fromScale(0.325, 0.72)
+	claimBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 80)
+	claimBtn.Text = "Claim!"
+	claimBtn.TextColor3 = COLORS.White
+	claimBtn.Font = Enum.Font.GothamBold
+	claimBtn.TextScaled = true
+	claimBtn.Parent = panel
+
+	local claimCorner = Instance.new("UICorner")
+	claimCorner.CornerRadius = UDim.new(0, 12)
+	claimCorner.Parent = claimBtn
+
+	local claimStroke = Instance.new("UIStroke")
+	claimStroke.Thickness = 3
+	claimStroke.Color = Color3.fromRGB(0, 150, 60)
+	claimStroke.Parent = claimBtn
+
+	-- Hover effect
+	claimBtn.MouseEnter:Connect(function()
+		TweenService:Create(claimBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.37, 0.15),
+		}):Play()
+	end)
+	claimBtn.MouseLeave:Connect(function()
+		TweenService:Create(claimBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.35, 0.14),
+		}):Play()
+	end)
+
+	-- Result label (shown after claim)
+	local resultLabel = Instance.new("TextLabel")
+	resultLabel.Name = "ResultLabel"
+	resultLabel.Size = UDim2.fromScale(0.8, 0.1)
+	resultLabel.Position = UDim2.fromScale(0.1, 0.88)
+	resultLabel.BackgroundTransparency = 1
+	resultLabel.Text = ""
+	resultLabel.TextColor3 = COLORS.White
+	resultLabel.Font = Enum.Font.GothamBold
+	resultLabel.TextScaled = true
+	resultLabel.Parent = panel
+
+	claimBtn.MouseButton1Click:Connect(function()
+		-- Disable button during request
+		claimBtn.Text = "..."
+		claimBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+
+		if claimCallback then
+			local result = claimCallback()
+			if result and result.success then
+				local rewardDesc = result.reward and result.reward.description or "Reward"
+				resultLabel.Text = "Day " .. tostring(result.day) .. ": " .. rewardDesc .. " claimed!"
+				resultLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+				claimBtn.Visible = false
+			else
+				local reason = result and result.reason or "Failed to claim"
+				resultLabel.Text = reason
+				resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+				claimBtn.Text = "Claim!"
+				claimBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 80)
+			end
+		end
+
+		-- Auto-close after successful claim
+		task.delay(3, function()
+			if screenGui and screenGui.Parent then
+				screenGui:Destroy()
+			end
+		end)
+	end)
+end
+
 return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000022">
+				<Item class="ModuleScript" referent="RBX00000023">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10136,7 +10695,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000023">
+				<Item class="ModuleScript" referent="RBX00000024">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11043,7 +11602,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000024">
+				<Item class="ModuleScript" referent="RBX00000025">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -12225,7 +12784,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000025">
+				<Item class="ModuleScript" referent="RBX00000026">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -13578,7 +14137,7 @@ return MasteryData
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX00000029">
+	<Item class="StarterGui" referent="RBX0000002A">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -13613,7 +14172,7 @@ return MasteryData
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000002A">
+	<Item class="SoundService" referent="RBX0000002B">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

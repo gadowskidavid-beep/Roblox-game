@@ -2461,4 +2461,279 @@ function UIController:cleanup()
 	self._screens = {}
 end
 
+--------------------------------------------------------------------------------
+-- DAILY REWARD POPUP
+--------------------------------------------------------------------------------
+function UIController:showDailyRewardPopup(status, claimCallback)
+	if not self._playerGui then return end
+	if not status then return end
+
+	-- Remove existing popup if any
+	local existing = self._playerGui:FindFirstChild("DailyRewardPopup")
+	if existing then existing:Destroy() end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "DailyRewardPopup"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Parent = self._playerGui
+
+	-- Dark overlay background
+	local bg = Instance.new("Frame")
+	bg.Name = "Background"
+	bg.Size = UDim2.fromScale(1, 1)
+	bg.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	bg.BackgroundTransparency = 0.5
+	bg.BorderSizePixel = 0
+	bg.Parent = screenGui
+
+	-- Main panel
+	local panel = Instance.new("Frame")
+	panel.Name = "Panel"
+	panel.Size = UDim2.fromScale(0.55, 0.55)
+	panel.Position = UDim2.fromScale(0.225, 0.225)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = bg
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 16)
+	panelCorner.Parent = panel
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = Color3.fromRGB(255, 180, 0)
+	panelStroke.Parent = panel
+
+	-- Title
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.fromScale(0.6, 0.1)
+	title.Position = UDim2.fromScale(0.2, 0.02)
+	title.BackgroundTransparency = 1
+	title.Text = "DAILY REWARDS"
+	title.TextColor3 = Color3.fromRGB(255, 200, 0)
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+
+	-- Close button
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(36, 36)
+	closeBtn.Position = UDim2.new(1, -46, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 20
+	closeBtn.Parent = panel
+
+	local closeBtnCorner = Instance.new("UICorner")
+	closeBtnCorner.CornerRadius = UDim.new(1, 0)
+	closeBtnCorner.Parent = closeBtn
+
+	closeBtn.MouseButton1Click:Connect(function()
+		screenGui:Destroy()
+	end)
+
+	-- 7-day slots container
+	local slotsFrame = Instance.new("Frame")
+	slotsFrame.Name = "SlotsFrame"
+	slotsFrame.Size = UDim2.fromScale(0.92, 0.5)
+	slotsFrame.Position = UDim2.fromScale(0.04, 0.14)
+	slotsFrame.BackgroundTransparency = 1
+	slotsFrame.Parent = panel
+
+	local slotsLayout = Instance.new("UIListLayout")
+	slotsLayout.FillDirection = Enum.FillDirection.Horizontal
+	slotsLayout.Padding = UDim.new(0, 6)
+	slotsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	slotsLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	slotsLayout.Parent = slotsFrame
+
+	-- Reward descriptions for display
+	local rewards = status.rewards or {}
+	local currentDay = status.currentDay or 1
+
+	-- Day slot colors
+	local dayColors = {
+		Color3.fromRGB(255, 220, 0),   -- Day 1: Gold (Coins)
+		Color3.fromRGB(0, 200, 255),   -- Day 2: Cyan (Diamonds)
+		Color3.fromRGB(0, 220, 100),   -- Day 3: Green (Boost)
+		Color3.fromRGB(255, 220, 0),   -- Day 4: Gold (Coins)
+		Color3.fromRGB(255, 100, 200), -- Day 5: Pink (Free Egg)
+		Color3.fromRGB(0, 200, 255),   -- Day 6: Cyan (Diamonds)
+		Color3.fromRGB(255, 150, 0),   -- Day 7: Orange (Special)
+	}
+
+	for day = 1, 7 do
+		local rewardDef = rewards[day]
+		local isCurrentDay = (day == currentDay)
+		local isPastDay = (day < currentDay) or (currentDay == 0)
+		local dayColor = dayColors[day] or Color3.fromRGB(200, 200, 200)
+
+		local slot = Instance.new("Frame")
+		slot.Name = "Day" .. tostring(day)
+		slot.Size = UDim2.fromScale(0.13, 0.95)
+		slot.BackgroundColor3 = isCurrentDay and Color3.fromRGB(50, 60, 110) or Color3.fromRGB(25, 32, 60)
+		slot.BorderSizePixel = 0
+		slot.Parent = slotsFrame
+
+		local slotCorner = Instance.new("UICorner")
+		slotCorner.CornerRadius = UDim.new(0, 10)
+		slotCorner.Parent = slot
+
+		local slotStroke = Instance.new("UIStroke")
+		slotStroke.Thickness = isCurrentDay and 3 or 2
+		slotStroke.Color = isCurrentDay and dayColor or Color3.fromRGB(60, 70, 100)
+		slotStroke.Parent = slot
+
+		-- Day number label
+		local dayLabel = Instance.new("TextLabel")
+		dayLabel.Name = "DayLabel"
+		dayLabel.Size = UDim2.fromScale(0.9, 0.18)
+		dayLabel.Position = UDim2.fromScale(0.05, 0.02)
+		dayLabel.BackgroundTransparency = 1
+		dayLabel.Text = "Day " .. tostring(day)
+		dayLabel.TextColor3 = isCurrentDay and dayColor or Color3.fromRGB(150, 150, 170)
+		dayLabel.Font = Enum.Font.GothamBold
+		dayLabel.TextScaled = true
+		dayLabel.Parent = slot
+
+		-- Reward icon (simple colored circle)
+		local rewardIcon = Instance.new("Frame")
+		rewardIcon.Name = "RewardIcon"
+		rewardIcon.Size = UDim2.fromScale(0.5, 0.28)
+		rewardIcon.Position = UDim2.fromScale(0.25, 0.22)
+		rewardIcon.BackgroundColor3 = isCurrentDay and dayColor or Color3.fromRGB(60, 70, 100)
+		rewardIcon.Parent = slot
+
+		local iconCorner = Instance.new("UICorner")
+		iconCorner.CornerRadius = UDim.new(1, 0)
+		iconCorner.Parent = rewardIcon
+
+		-- Reward icon letter
+		local iconLetter = ""
+		if rewardDef then
+			if rewardDef.type == "Coins" then iconLetter = "$"
+			elseif rewardDef.type == "Diamonds" then iconLetter = "D"
+			elseif rewardDef.type == "Boost" then iconLetter = "2x"
+			elseif rewardDef.type == "FreeEgg" then iconLetter = "E"
+			elseif rewardDef.type == "Special" then iconLetter = "!"
+			end
+		end
+
+		local iconText = Instance.new("TextLabel")
+		iconText.Size = UDim2.fromScale(1, 1)
+		iconText.BackgroundTransparency = 1
+		iconText.Text = iconLetter
+		iconText.TextColor3 = COLORS.White
+		iconText.Font = Enum.Font.GothamBold
+		iconText.TextScaled = true
+		iconText.Parent = rewardIcon
+
+		-- Reward description
+		local descText = rewardDef and rewardDef.description or ""
+		local descLabel = Instance.new("TextLabel")
+		descLabel.Name = "Description"
+		descLabel.Size = UDim2.fromScale(0.9, 0.3)
+		descLabel.Position = UDim2.fromScale(0.05, 0.55)
+		descLabel.BackgroundTransparency = 1
+		descLabel.Text = descText
+		descLabel.TextColor3 = isCurrentDay and COLORS.White or Color3.fromRGB(140, 140, 160)
+		descLabel.Font = Enum.Font.Gotham
+		descLabel.TextScaled = true
+		descLabel.TextWrapped = true
+		descLabel.Parent = slot
+
+		-- Checkmark for past days or highlight for current
+		if isPastDay and currentDay > 0 and day < currentDay then
+			local checkLabel = Instance.new("TextLabel")
+			checkLabel.Size = UDim2.fromScale(0.5, 0.15)
+			checkLabel.Position = UDim2.fromScale(0.25, 0.85)
+			checkLabel.BackgroundTransparency = 1
+			checkLabel.Text = "OK"
+			checkLabel.TextColor3 = Color3.fromRGB(0, 200, 80)
+			checkLabel.Font = Enum.Font.GothamBold
+			checkLabel.TextScaled = true
+			checkLabel.Parent = slot
+		end
+	end
+
+	-- Claim button
+	local claimBtn = Instance.new("TextButton")
+	claimBtn.Name = "ClaimBtn"
+	claimBtn.Size = UDim2.fromScale(0.35, 0.14)
+	claimBtn.Position = UDim2.fromScale(0.325, 0.72)
+	claimBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 80)
+	claimBtn.Text = "Claim!"
+	claimBtn.TextColor3 = COLORS.White
+	claimBtn.Font = Enum.Font.GothamBold
+	claimBtn.TextScaled = true
+	claimBtn.Parent = panel
+
+	local claimCorner = Instance.new("UICorner")
+	claimCorner.CornerRadius = UDim.new(0, 12)
+	claimCorner.Parent = claimBtn
+
+	local claimStroke = Instance.new("UIStroke")
+	claimStroke.Thickness = 3
+	claimStroke.Color = Color3.fromRGB(0, 150, 60)
+	claimStroke.Parent = claimBtn
+
+	-- Hover effect
+	claimBtn.MouseEnter:Connect(function()
+		TweenService:Create(claimBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.37, 0.15),
+		}):Play()
+	end)
+	claimBtn.MouseLeave:Connect(function()
+		TweenService:Create(claimBtn, TweenInfo.new(0.1), {
+			Size = UDim2.fromScale(0.35, 0.14),
+		}):Play()
+	end)
+
+	-- Result label (shown after claim)
+	local resultLabel = Instance.new("TextLabel")
+	resultLabel.Name = "ResultLabel"
+	resultLabel.Size = UDim2.fromScale(0.8, 0.1)
+	resultLabel.Position = UDim2.fromScale(0.1, 0.88)
+	resultLabel.BackgroundTransparency = 1
+	resultLabel.Text = ""
+	resultLabel.TextColor3 = COLORS.White
+	resultLabel.Font = Enum.Font.GothamBold
+	resultLabel.TextScaled = true
+	resultLabel.Parent = panel
+
+	claimBtn.MouseButton1Click:Connect(function()
+		-- Disable button during request
+		claimBtn.Text = "..."
+		claimBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+
+		if claimCallback then
+			local result = claimCallback()
+			if result and result.success then
+				local rewardDesc = result.reward and result.reward.description or "Reward"
+				resultLabel.Text = "Day " .. tostring(result.day) .. ": " .. rewardDesc .. " claimed!"
+				resultLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+				claimBtn.Visible = false
+			else
+				local reason = result and result.reason or "Failed to claim"
+				resultLabel.Text = reason
+				resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+				claimBtn.Text = "Claim!"
+				claimBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 80)
+			end
+		end
+
+		-- Auto-close after successful claim
+		task.delay(3, function()
+			if screenGui and screenGui.Parent then
+				screenGui:Destroy()
+			end
+		end)
+	end)
+end
+
 return UIController

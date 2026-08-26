@@ -69,6 +69,8 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
+local ClaimDailyReward = Remotes:WaitForChild("ClaimDailyReward")
+local GetDailyRewardStatus = Remotes:WaitForChild("GetDailyRewardStatus")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -86,6 +88,7 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
+local DailyRewardAvailable = Remotes:WaitForChild("DailyRewardAvailable")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -320,6 +323,20 @@ end)
 
 ShopBuffsUpdated.OnClientEvent:Connect(function(buffs)
 	uiController:updateShopBuffs(buffs)
+end)
+
+-- Daily Reward popup on login
+DailyRewardAvailable.OnClientEvent:Connect(function()
+	task.spawn(function()
+		local status = GetDailyRewardStatus:InvokeServer()
+		if status and status.canClaim then
+			uiController:showDailyRewardPopup(status, function()
+				-- Claim callback
+				local result = ClaimDailyReward:InvokeServer()
+				return result
+			end)
+		end
+	end)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")

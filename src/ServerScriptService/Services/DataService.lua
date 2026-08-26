@@ -80,6 +80,11 @@ local function getDefaultData()
 		shopPurchases = {
 			extraEquipSlots = 0,
 		},
+		-- Daily rewards tracking
+		dailyRewards = {
+			lastClaimTimestamp = 0,
+			currentDay = 0,
+		},
 	}
 end
 
@@ -254,6 +259,7 @@ function DataService.getClientData(player)
 		masteryBuffs = deepCopy(data.masteryBuffs),
 		discoveredPets = deepCopy(data.discoveredPets or {}),
 		shopPurchases = deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
+		dailyRewards = deepCopy(data.dailyRewards or { lastClaimTimestamp = 0, currentDay = 0 }),
 	}
 
 	return clientData

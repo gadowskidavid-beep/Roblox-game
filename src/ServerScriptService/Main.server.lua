@@ -18,6 +18,7 @@ local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local DailyRewardService = require(script.Parent.Services.DailyRewardService)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -63,6 +64,7 @@ local remoteEvents = {
 	"QuestProgressUpdated",
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
+	"DailyRewardAvailable",
 }
 
 for _, eventName in ipairs(remoteEvents) do
@@ -94,6 +96,8 @@ local remoteFunctions = {
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
 	"GetShopBuffs",
+	"ClaimDailyReward",
+	"GetDailyRewardStatus",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -133,6 +137,9 @@ ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 
 CampaignService.init(DataService, CurrencyService, PetService)
+
+-- Initialize daily reward service
+DailyRewardService.init(DataService, CurrencyService, EggService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
@@ -480,6 +487,25 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	return ShopService.getActiveBuffs(player)
 end
 
+-- ClaimDailyReward (5 second cooldown)
+getRemoteFunction("ClaimDailyReward").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return { success = false, reason = "Invalid player" }
+	end
+	if not canCall(player, "ClaimDailyReward", 5) then
+		return { success = false, reason = "Please wait before claiming again" }
+	end
+	return DailyRewardService.claimDailyReward(player)
+end
+
+-- GetDailyRewardStatus
+getRemoteFunction("GetDailyRewardStatus").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return { currentDay = 0, canClaim = false, nextClaimTime = 0, rewards = {} }
+	end
+	return DailyRewardService.getDailyRewardStatus(player)
+end
+
 ----------------------------------------------
 -- Player Lifecycle
 ----------------------------------------------
@@ -533,6 +559,22 @@ Players.PlayerAdded:Connect(function(player)
 	if data then
 		QuestService.setStat(player, "reachLevel", data.level or 1)
 	end
+
+	-- Check if daily reward is available and notify client
+	task.delay(2, function()
+		if player and player:IsA("Player") and player.Parent then
+			local status = DailyRewardService.getDailyRewardStatus(player)
+			if status and status.canClaim then
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				if remotes then
+					local dailyEvent = remotes:FindFirstChild("DailyRewardAvailable")
+					if dailyEvent then
+						dailyEvent:FireClient(player)
+					end
+				end
+			end
+		end
+	end)
 
 	----------------------------------------------
 	-- Admin Chat Commands (game owner only)
