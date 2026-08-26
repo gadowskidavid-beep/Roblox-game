@@ -9,6 +9,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
+local Config = require(game.ReplicatedStorage.Shared.Config)
 
 local ShopService = {}
 
@@ -44,7 +45,7 @@ ShopService.Items = {
 	},
 	AutoHatch = {
 		displayName = "Auto-Hatch",
-		description = "Auto-hatch eggs for 10 minutes",
+		description = "Automatically buys your highest unlocked egg for 10 minutes",
 		cost = 500,
 		currency = "diamonds",
 		buffType = "autoHatch",
@@ -54,7 +55,7 @@ ShopService.Items = {
 	},
 	ExtraEquipSlot = {
 		displayName = "Extra Equip Slot",
-		description = "Permanently equip +1 pet",
+		description = "Permanently equip +1 pet (maximum 5 purchases)",
 		cost = 1000,
 		currency = "diamonds",
 		buffType = "equipSlot",
@@ -71,7 +72,7 @@ function ShopService.init(dataService, currencyService)
 	-- Start auto-hatch loop
 	task.spawn(function()
 		while true do
-			task.wait(3)
+			task.wait(Config.AutoHatchInterval or 3)
 			ShopService._processAutoHatch()
 		end
 	end)
@@ -98,6 +99,15 @@ function ShopService.purchaseItem(player, itemId)
 		return false, "No player data"
 	end
 
+	-- Validate permanent purchase limits before charging the player.
+	if itemId == "ExtraEquipSlot" then
+		local purchases = data.shopPurchases and data.shopPurchases.extraEquipSlots or 0
+		local maxPurchases = Config.MaxExtraEquipSlots or 5
+		if purchases >= maxPurchases then
+			return false, "Maximum extra equip slots reached (" .. tostring(maxPurchases) .. ")"
+		end
+	end
+
 	-- Deduct currency
 	local success = ShopService._currencyService.removeDiamonds(player, itemDef.cost)
 	if not success then
@@ -110,7 +120,11 @@ function ShopService.purchaseItem(player, itemId)
 		if not data.shopPurchases then
 			data.shopPurchases = { extraEquipSlots = 0 }
 		end
-		data.shopPurchases.extraEquipSlots = (data.shopPurchases.extraEquipSlots or 0) + 1
+		data.shopPurchases.extraEquipSlots = math.clamp(
+			(data.shopPurchases.extraEquipSlots or 0) + 1,
+			0,
+			Config.MaxExtraEquipSlots or 5
+		)
 	else
 		-- Timed buff
 		local userId = player.UserId
@@ -215,10 +229,11 @@ function ShopService._processAutoHatch()
 								break
 							end
 						end
-						-- Hatch the egg for free (cost already paid via buff purchase)
+						-- Auto-hatch is automation, not a free-egg faucet: every hatch
+						-- uses the normal server-authoritative coin price and inventory limit.
 						if targetEgg then
 							task.spawn(function()
-								ShopService._eggService.hatchFree(player, targetEgg)
+								ShopService._eggService.purchaseAndHatch(player, targetEgg)
 							end)
 						end
 					end

@@ -20,32 +20,7 @@
       }
     },
     "Workspace": {
-      "$className": "Workspace",
-      "SpawnPlatform": {
-        "$className": "Part",
-        "$properties": {
-          "Name": "SpawnPlatform",
-          "Size": [40, 2, 40],
-          "Position": [0, 1, 0],
-          "Anchored": true,
-          "Color": [0.298, 0.6, 0],
-          "Material": "Grass",
-          "TopSurface": "Smooth",
-          "BottomSurface": "Smooth"
-        }
-      },
-      "SpawnLocation": {
-        "$className": "SpawnLocation",
-        "$properties": {
-          "Name": "SpawnLocation",
-          "Size": [6, 1, 6],
-          "Position": [0, 2.5, 0],
-          "Anchored": true,
-          "Color": [1, 1, 1],
-          "TopSurface": "Smooth",
-          "BottomSurface": "Smooth"
-        }
-      }
+      "$className": "Workspace"
     },
     "Lighting": {
       "$className": "Lighting",

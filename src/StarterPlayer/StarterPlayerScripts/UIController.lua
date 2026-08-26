@@ -70,6 +70,7 @@ function UIController.new()
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
+	self._inventoryTitle = nil
 	self._upgradeData = {}
 	self._equippedPets = {}
 	self._equippedBar = nil
@@ -427,6 +428,7 @@ function UIController:_createPetInventory()
 	title.Font = Enum.Font.GothamBold
 	title.TextScaled = true
 	title.Parent = mainFrame
+	self._inventoryTitle = title
 
 	local closeBtn = Instance.new("TextButton")
 	closeBtn.Name = "CloseBtn"
@@ -547,7 +549,23 @@ function UIController:_createPetInventory()
 		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
 	end)
 
+	self:_updateInventoryTitle()
 	self:_refreshPetGrid()
+end
+
+function UIController:_updateInventoryTitle()
+	if not self._inventoryTitle then return end
+	local bonus = 0
+	local level = self._upgradeData.ExtraSlots or 0
+	local quest = QuestData.Quests.ExtraSlots
+	if quest and level > 0 and quest.levels[level] then
+		bonus = quest.levels[level].bonus or 0
+	end
+	local capacity = math.min(
+		(Config.MaxPetInventoryBase or 100) + bonus,
+		Config.MaxPetInventoryAbsolute or 250
+	)
+	self._inventoryTitle.Text = "My Pets  " .. tostring(#self._petInventoryData) .. "/" .. tostring(capacity)
 end
 
 function UIController:_refreshPetGrid()
@@ -779,6 +797,11 @@ function UIController:_showGoldenConversionConfirm()
 			if petUniqueId == selId then
 				if pet.golden then
 					self:_showGoldenError("Cannot use golden pets!")
+					return
+				end
+				local variant = pet.variant or "Normal"
+				if variant ~= "Normal" then
+					self:_showGoldenError("Only normal pets can become Golden!")
 					return
 				end
 				if pet.equipped then
@@ -1729,8 +1752,8 @@ function UIController:_refreshShopGrid()
 	local shopItems = {
 		{ id = "LuckyPotion", name = "Lucky Potion", icon = "L", description = "2x egg luck for 5 min", cost = 100, color = Color3.fromRGB(0, 220, 100), durationText = "5 min" },
 		{ id = "SpeedPotion", name = "Speed Potion", icon = "S", description = "2x walkspeed for 5 min", cost = 50, color = Color3.fromRGB(0, 180, 255), durationText = "5 min" },
-		{ id = "AutoHatch", name = "Auto-Hatch", icon = "A", description = "Auto-hatch eggs for 10 min", cost = 500, color = Color3.fromRGB(255, 150, 0), durationText = "10 min" },
-		{ id = "ExtraEquipSlot", name = "Extra Equip Slot", icon = "+", description = "Permanently equip +1 pet", cost = 1000, color = Color3.fromRGB(255, 80, 200), durationText = "Permanent" },
+		{ id = "AutoHatch", name = "Auto-Hatch", icon = "A", description = "Automatically buys eggs for 10 min", cost = 500, color = Color3.fromRGB(255, 150, 0), durationText = "10 min" },
+		{ id = "ExtraEquipSlot", name = "Extra Equip Slot", icon = "+", description = "Permanently equip +1 pet (max 5)", cost = 1000, color = Color3.fromRGB(255, 80, 200), durationText = "Permanent" },
 	}
 
 	local activeBuffs = self._shopBuffs or {}
@@ -2163,6 +2186,7 @@ end
 
 function UIController:updatePetInventory(pets)
 	self._petInventoryData = pets or {}
+	self:_updateInventoryTitle()
 	self:_refreshPetGrid()
 end
 
@@ -2191,6 +2215,7 @@ end
 
 function UIController:updateUpgrades(upgrades)
 	self._upgradeData = upgrades or {}
+	self:_updateInventoryTitle()
 	self:_refreshQuestGrid()
 end
 

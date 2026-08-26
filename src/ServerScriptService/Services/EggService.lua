@@ -50,6 +50,11 @@ function EggService.purchaseAndHatch(player, eggType)
 			return nil, "No player data"
 		end
 
+		local hasSpace, capacityError = EggService._petService.canAddPet(player)
+		if not hasSpace then
+			return nil, capacityError
+		end
+
 		-- Validate player has unlocked the required zone for this egg
 		local zoneRequired = eggDef.zone
 		local zoneUnlocked = false
@@ -145,6 +150,11 @@ function EggService.hatchFree(player, eggType)
 		local data = EggService._dataService.getPlayerData(player)
 		if not data then
 			return nil, "No player data"
+		end
+
+		local hasSpace, capacityError = EggService._petService.canAddPet(player)
+		if not hasSpace then
+			return nil, capacityError
 		end
 
 		-- Validate player has unlocked the required zone for this egg

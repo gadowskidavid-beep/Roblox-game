@@ -84,6 +84,31 @@ local function weightedRandomPet(petPool, player)
 	return adjustedPool[#adjustedPool].petId
 end
 
+-- Get the server-authoritative inventory capacity for a player.
+function PetService.getMaxInventory(player)
+	local bonus = 0
+	if PetService._upgradeService then
+		bonus = PetService._upgradeService.getUpgradeBonus(player, "ExtraSlots") or 0
+	end
+	return math.clamp(
+		(Config.MaxPetInventoryBase or 100) + bonus,
+		Config.MaxPetInventoryBase or 100,
+		Config.MaxPetInventoryAbsolute or 250
+	)
+end
+
+function PetService.canAddPet(player)
+	local data = PetService._dataService.getPlayerData(player)
+	if not data or type(data.pets) ~= "table" then
+		return false, "No player data"
+	end
+	local capacity = PetService.getMaxInventory(player)
+	if #data.pets >= capacity then
+		return false, "Pet inventory full (" .. tostring(capacity) .. ")"
+	end
+	return true
+end
+
 -- Hatch an egg and return the new pet
 -- If skipCostDeduction is true, assumes cost was already deducted by the caller (EggService)
 function PetService.hatchEgg(player, eggType, skipCostDeduction)
@@ -100,6 +125,11 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
 		return nil, "No player data"
+	end
+
+	local hasSpace, capacityError = PetService.canAddPet(player)
+	if not hasSpace then
+		return nil, capacityError
 	end
 
 	-- Get egg cost from config based on zone
@@ -213,9 +243,9 @@ local function getMaxEquipped(player)
 	local extraSlots = 0
 	local data = PetService._dataService.getPlayerData(player)
 	if data and data.shopPurchases then
-		extraSlots = data.shopPurchases.extraEquipSlots or 0
+		extraSlots = math.clamp(data.shopPurchases.extraEquipSlots or 0, 0, Config.MaxExtraEquipSlots or 5)
 	end
-	return base + (bonus or 0) + extraSlots
+	return math.min(base + (bonus or 0) + extraSlots, Config.MaxEquippedPetsAbsolute or 12)
 end
 
 -- Equip a pet by instance ID
@@ -503,6 +533,11 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			return nil, "Cannot sacrifice a golden pet"
 		end
 
+		local variant = foundPet.variant or "Normal"
+		if variant ~= "Normal" then
+			return nil, "Only normal pets can be converted; keep Shiny and Rainbow pets safe"
+		end
+
 		if foundPet.equipped then
 			return nil, "Unequip pet before converting: " .. tostring(foundPet.name)
 		end
@@ -566,6 +601,7 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 				name = "Golden " .. petDef.name,
 				rarity = petDef.rarity,
 				damage = petDef.baseDamage * 2,
+				variant = "Golden",
 				golden = true,
 				equipped = false,
 			}

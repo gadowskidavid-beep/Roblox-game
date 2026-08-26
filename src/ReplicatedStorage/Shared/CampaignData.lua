@@ -59,6 +59,19 @@ CampaignData.Regions = {
 	[8] = "Cosmic Void",
 }
 
+-- Bosses award one real egg from their region. Claim state is persisted separately,
+-- so old profiles and players with a full inventory can claim it on a later replay.
+CampaignData.RegionRewardEggs = {
+	[1] = "BasicEgg",
+	[2] = "PremiumEgg",
+	[3] = "StrandEgg",
+	[4] = "WuesteEgg",
+	[5] = "EisweltEgg",
+	[6] = "VulkanEgg",
+	[7] = "HimmelEgg",
+	[8] = "WeltraumEgg",
+}
+
 -- Helper to compute the scale factor for a given level
 local function getScaleFactor(level)
 	return 1 + (level - 1) * 0.15
@@ -136,9 +149,9 @@ for region = 1, 8 do
 			Diamonds = math.floor(5 * scale * region),
 		}
 
-		-- Boss levels give special egg rewards
+		-- Boss levels give a one-time regional egg reward.
 		if isBoss then
-			rewards.SpecialEgg = true
+			rewards.SpecialEgg = CampaignData.RegionRewardEggs[region]
 			rewards.Coins = rewards.Coins * 3
 			rewards.Diamonds = rewards.Diamonds * 3
 		end

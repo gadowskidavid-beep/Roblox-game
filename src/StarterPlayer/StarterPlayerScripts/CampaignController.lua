@@ -743,7 +743,15 @@ function CampaignController:onVictory(rewards)
 			rewardsText = rewardsText .. "Diamonds: +" .. tostring(rewards.Diamonds) .. "\n"
 		end
 		if rewards.SpecialEgg then
-			rewardsText = rewardsText .. "Special Egg Earned!\n"
+			if rewards.SpecialPet then
+				rewardsText = rewardsText .. "Boss Egg: " .. tostring(rewards.SpecialPet) .. "!\n"
+			elseif rewards.SpecialEggPending then
+				rewardsText = rewardsText .. "Boss Egg pending: make inventory space and replay.\n"
+			elseif rewards.SpecialEggAlreadyClaimed then
+				rewardsText = rewardsText .. "Boss Egg already claimed.\n"
+			else
+				rewardsText = rewardsText .. "Regional Boss Egg earned!\n"
+			end
 		end
 	end
 

@@ -8,6 +8,16 @@ local Config = {}
 -- General
 Config.GameName = "Battle Pets"
 Config.DataStoreName = "BattlePets_v1"
+Config.AutoSaveInterval = 60
+Config.SessionLockTimeout = 180
+
+-- Hard limits protect DataStore size, rendering cost, and combat balance.
+Config.MaxPetInventoryBase = 100
+Config.MaxPetInventoryAbsolute = 250
+Config.MaxExtraEquipSlots = 5
+Config.MaxEquippedPetsAbsolute = 12
+Config.AutoHatchInterval = 3
+Config.DestructibleReplicationDistance = 300
 
 -- Currency types
 Config.Currencies = {

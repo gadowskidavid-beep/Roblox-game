@@ -1,33 +1,32 @@
 --[[
-	DataService.lua - Player data persistence service
-	Handles save/load with DataStoreService, caching, and auto-save.
-	Falls back to memory-only (session) storage when DataStore is unavailable
-	(e.g. unpublished places or Studio testing).
+	DataService.lua - Conflict-safe player data persistence
+	Uses versioned migrations, atomic session locks, retries, autosave heartbeats,
+	and parallel shutdown saves. Studio falls back to memory-only data when API
+	access is unavailable; production never overwrites a profile after load failure.
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
-
-local SCHEMA_VERSION = 2
+local DataSchema = require(script.Parent.DataSchema)
 
 local DataService = {}
 
--- In-memory cache of player data
+local MAX_RETRIES = 3
+local AUTOSAVE_INTERVAL = Config.AutoSaveInterval or 60
+local SESSION_LOCK_TIMEOUT = Config.SessionLockTimeout or 180
+local SHUTDOWN_TIMEOUT = 25
+local SESSION_ID = game.JobId ~= "" and game.JobId or ("studio_" .. HttpService:GenerateGUID(false))
+
 DataService._cache = {}
-
--- Track whether a player's data loaded successfully (prevents overwriting real saves with defaults)
 DataService._canSave = {}
-
--- Flag: if true, DataStore is unavailable and we operate in memory-only mode
+DataService._saving = {}
 DataService._useMemoryOnly = false
 
--- DataStore reference (may be nil if unavailable)
 local dataStore = nil
-
--- Attempt to acquire DataStore handle safely
 local dsSuccess, dsResult = pcall(function()
 	return DataStoreService:GetDataStore(Config.DataStoreName)
 end)
@@ -36,267 +35,281 @@ if dsSuccess then
 	dataStore = dsResult
 else
 	DataService._useMemoryOnly = true
-	warn("[DataService] DataStore unavailable - running in memory-only mode (session data will not persist). Reason: " .. tostring(dsResult))
-	print("[Battle Pets] Memory-only mode - publish game to enable saving")
+	warn("[DataService] DataStore unavailable; using session-only data: " .. tostring(dsResult))
 end
 
--- Default player data schema
-local function getDefaultData()
-	local starterPet = {
-		id = "starter_pet_1",
-		petId = "Buddy",
-		name = "Buddy",
-		rarity = "Common",
-		damage = 1,
-		equipped = true,
-	}
+local function profileKey(userId)
+	return "Player_" .. tostring(userId)
+end
 
+local function newSessionMetadata()
 	return {
-		schemaVersion = SCHEMA_VERSION,
-		coins = 0,
-		diamonds = 0,
-		xp = 0,
-		level = 1,
-		pets = { starterPet },
-		unlockedZones = {1},
-		campaignProgress = {},
-		upgrades = {},
-		equippedPets = { "starter_pet_1" },
-		-- Quest progress tracking
-		questStats = {
-			destroyDestructibles = 0,
-			hatchEggs = 0,
-			earnCoins = 0,
-			playtime = 0,
-			reachLevel = 0,
-			goldenPetsConverted = 0,
-		},
-		-- Mastery system
-		masteryPoints = 0,
-		masteryBuffs = {},
-		-- Pet discovery tracking (collection book)
-		discoveredPets = {},
-		-- Shop purchases (permanent effects)
-		shopPurchases = {
-			extraEquipSlots = 0,
-		},
+		id = SESSION_ID,
+		placeId = game.PlaceId,
+		updatedAt = os.time(),
 	}
 end
 
--- Deep copy a table
-local function deepCopy(original)
-	local copy = {}
-	for key, value in pairs(original) do
-		if type(value) == "table" then
-			copy[key] = deepCopy(value)
-		else
-			copy[key] = value
-		end
+local function isForeignActiveSession(session)
+	if type(session) ~= "table" or type(session.id) ~= "string" then
+		return false
 	end
-	return copy
+	if session.id == SESSION_ID then
+		return false
+	end
+	local updatedAt = type(session.updatedAt) == "number" and session.updatedAt or 0
+	return os.time() - updatedAt < SESSION_LOCK_TIMEOUT
 end
 
--- Deep merge defaults into existing data (recurse into nested tables)
--- Only fills in missing keys; never overwrites existing player values.
-local function deepMerge(data, defaults)
-	for key, defaultValue in pairs(defaults) do
-		if data[key] == nil then
-			-- Field missing entirely, copy the default
-			if type(defaultValue) == "table" then
-				data[key] = deepCopy(defaultValue)
-			else
-				data[key] = defaultValue
-			end
-		elseif type(defaultValue) == "table" and type(data[key]) == "table" then
-			-- Both are tables, recurse to fill missing sub-keys
-			deepMerge(data[key], defaultValue)
-		end
-	end
+local function ownsStoredSession(storedData)
+	return type(storedData) == "table"
+		and type(storedData._session) == "table"
+		and storedData._session.id == SESSION_ID
 end
 
--- Load player data from DataStore with retry logic
-function DataService.loadPlayerData(player)
-	if not player or not player:IsA("Player") then
+local function waitForCurrentSave(userId)
+	local deadline = os.clock() + 10
+	while DataService._saving[userId] and os.clock() < deadline do
+		task.wait(0.05)
+	end
+	return not DataService._saving[userId]
+end
+
+local function useStudioFallback(player)
+	if not RunService:IsStudio() then
 		return nil
 	end
+	DataService._useMemoryOnly = true
+	local data = DataSchema.getDefaultData()
+	DataService._cache[player.UserId] = data
+	DataService._canSave[player.UserId] = false
+	warn("[DataService] Studio API access unavailable; switched to memory-only mode")
+	return data
+end
 
-	-- Memory-only mode: just give defaults immediately
-	if DataService._useMemoryOnly then
-		DataService._cache[player.UserId] = getDefaultData()
-		DataService._canSave[player.UserId] = false
-		print("[Battle Pets] Memory-only mode - publish game to enable saving")
+-- Atomically loads and locks a profile. A live lock from another server is never overwritten.
+function DataService.loadPlayerData(player)
+	if not player or not player:IsA("Player") then
+		return nil, "Invalid player"
+	end
+
+	if DataService._cache[player.UserId] then
 		return DataService._cache[player.UserId]
 	end
 
-	local key = "Player_" .. tostring(player.UserId)
-	local MAX_RETRIES = 3
-	local success, data = false, nil
+	if DataService._useMemoryOnly then
+		local data = DataSchema.getDefaultData()
+		DataService._cache[player.UserId] = data
+		DataService._canSave[player.UserId] = false
+		return data
+	end
+
+	local key = profileKey(player.UserId)
+	local loadedData = nil
+	local lockConflict = nil
+	local lastError = nil
 
 	for attempt = 1, MAX_RETRIES do
-		success, data = pcall(function()
-			return dataStore:GetAsync(key)
+		local success, result = pcall(function()
+			return dataStore:UpdateAsync(key, function(storedData)
+				local existingSession = type(storedData) == "table" and storedData._session or nil
+				if isForeignActiveSession(existingSession) then
+					lockConflict = existingSession
+					return nil
+				end
+
+				local migrated = DataSchema.migrate(storedData)
+				migrated._session = newSessionMetadata()
+				return migrated
+			end)
 		end)
-		if success then
+
+		if success and type(result) == "table" and result._session and result._session.id == SESSION_ID then
+			loadedData = result
 			break
 		end
+		if lockConflict then
+			break
+		end
+		lastError = result
 		if attempt < MAX_RETRIES then
-			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
+			task.wait(2 ^ attempt)
 		end
 	end
 
-	if success and data then
-		-- Deep merge with defaults (handles new fields and nested sub-fields added after save)
-		local defaults = getDefaultData()
-		deepMerge(data, defaults)
-		-- Stamp current schema version
-		data.schemaVersion = SCHEMA_VERSION
-		DataService._cache[player.UserId] = data
+	if loadedData then
+		DataService._cache[player.UserId] = loadedData
 		DataService._canSave[player.UserId] = true
-	elseif success and not data then
-		-- No existing save, new player - safe to save defaults
-		DataService._cache[player.UserId] = getDefaultData()
-		DataService._canSave[player.UserId] = true
-	else
-		-- Load failed after all retries - use defaults but do NOT allow saving
-		DataService._cache[player.UserId] = getDefaultData()
-		DataService._canSave[player.UserId] = false
-		warn("[DataService] Failed to load data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(data))
+		return loadedData
 	end
 
-	return DataService._cache[player.UserId]
+	DataService._canSave[player.UserId] = false
+	if lockConflict then
+		local message = "Your data is still active on another server. Please wait a moment and rejoin."
+		warn("[DataService] Refused concurrent session for " .. player.Name)
+		return nil, message
+	end
+
+	local fallback = useStudioFallback(player)
+	if fallback then
+		return fallback
+	end
+
+	warn("[DataService] Failed to load " .. player.Name .. ": " .. tostring(lastError))
+	return nil, "Your data could not be loaded safely. Please rejoin later."
 end
 
--- Save player data to DataStore
-function DataService.savePlayerData(player)
+-- Saves only while this server still owns the profile lock.
+-- releaseLock is used on leave/shutdown so a new server can load immediately.
+function DataService.savePlayerData(player, releaseLock)
 	if not player or not player:IsA("Player") then
-		return false
+		return false, "Invalid player"
 	end
-
-	-- Guard: skip save in memory-only mode
 	if DataService._useMemoryOnly then
-		return false
+		return false, "Memory-only mode"
 	end
-
-	-- Guard: do not save if initial load failed (prevents overwriting real data with defaults)
 	if not DataService._canSave[player.UserId] then
-		warn("[DataService] Skipping save for " .. player.Name .. " - initial load failed")
-		return false
+		return false, "Profile is not saveable"
+	end
+	if not waitForCurrentSave(player.UserId) then
+		return false, "Save already in progress"
 	end
 
 	local data = DataService._cache[player.UserId]
 	if not data then
-		return false
+		return false, "No cached data"
 	end
 
-	local key = "Player_" .. tostring(player.UserId)
-	local MAX_RETRIES = 3
-	local success, err = false, nil
+	DataService._saving[player.UserId] = true
+	local key = profileKey(player.UserId)
+	local snapshot = DataSchema.cloneForPersistence(data)
+	local sessionLost = false
+	local lastError = nil
+	local saved = false
 
 	for attempt = 1, MAX_RETRIES do
-		success, err = pcall(function()
-			dataStore:UpdateAsync(key, function(oldData)
-				return data
+		local success, result = pcall(function()
+			return dataStore:UpdateAsync(key, function(storedData)
+				if not ownsStoredSession(storedData) then
+					sessionLost = true
+					return nil
+				end
+
+				if releaseLock then
+					snapshot._session = nil
+				else
+					snapshot._session = newSessionMetadata()
+				end
+				return snapshot
 			end)
 		end)
-		if success then
+
+		if success and not sessionLost and type(result) == "table" then
+			saved = true
+			if not releaseLock then
+				data._session = DataSchema.deepCopy(snapshot._session)
+			end
 			break
 		end
+		if sessionLost then
+			break
+		end
+		lastError = result
 		if attempt < MAX_RETRIES then
-			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
+			task.wait(2 ^ attempt)
 		end
 	end
 
-	if not success then
-		warn("[DataService] Failed to save data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(err))
-	end
+	DataService._saving[player.UserId] = nil
 
-	return success
+	if sessionLost then
+		DataService._canSave[player.UserId] = false
+		warn("[DataService] Session ownership lost for " .. player.Name .. "; refusing stale save")
+		return false, "Session ownership lost"
+	end
+	if not saved then
+		warn("[DataService] Failed to save " .. player.Name .. ": " .. tostring(lastError))
+		return false, tostring(lastError)
+	end
+	return true
 end
 
--- Get cached player data (does not hit DataStore)
 function DataService.getPlayerData(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
-	local data = DataService._cache[player.UserId]
-	if data then
-		-- Include computed xpNeeded for client XP bar
-		data.xpNeeded = (data.level or 1) * 100
-	end
-	return data
+	return DataService._cache[player.UserId]
 end
 
--- Get a sanitized COPY of player data for client consumption
--- Returns only client-relevant fields; never exposes the cache reference directly
 function DataService.getClientData(player)
-	if not player or not player:IsA("Player") then
-		return nil
-	end
-	local data = DataService._cache[player.UserId]
+	local data = DataService.getPlayerData(player)
 	if not data then
 		return nil
 	end
 
-	-- Build a clean copy with only client-relevant fields
-	local clientData = {
+	return {
 		coins = data.coins,
 		diamonds = data.diamonds,
-		pets = deepCopy(data.pets),
+		pets = DataSchema.deepCopy(data.pets),
 		level = data.level,
 		xp = data.xp,
 		xpNeeded = (data.level or 1) * 100,
-		equippedPets = deepCopy(data.equippedPets),
-		unlockedZones = deepCopy(data.unlockedZones),
-		upgrades = deepCopy(data.upgrades),
-		questStats = deepCopy(data.questStats),
-		campaignProgress = deepCopy(data.campaignProgress),
+		equippedPets = DataSchema.deepCopy(data.equippedPets),
+		unlockedZones = DataSchema.deepCopy(data.unlockedZones),
+		upgrades = DataSchema.deepCopy(data.upgrades),
+		questStats = DataSchema.deepCopy(data.questStats),
+		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,
-		masteryBuffs = deepCopy(data.masteryBuffs),
-		discoveredPets = deepCopy(data.discoveredPets or {}),
-		shopPurchases = deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
+		masteryBuffs = DataSchema.deepCopy(data.masteryBuffs),
+		discoveredPets = DataSchema.deepCopy(data.discoveredPets or {}),
+		shopPurchases = DataSchema.deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
 	}
-
-	return clientData
 end
 
--- Called when player leaves - save and cleanup
 function DataService.onPlayerRemoving(player)
-	DataService.savePlayerData(player)
+	DataService.savePlayerData(player, true)
 	DataService._cache[player.UserId] = nil
 	DataService._canSave[player.UserId] = nil
+	DataService._saving[player.UserId] = nil
 end
 
--- Periodic auto-save for all online players (every 60 seconds)
 function DataService.startAutoSave()
-	-- No need to auto-save in memory-only mode
 	if DataService._useMemoryOnly then
 		return
 	end
 
 	task.spawn(function()
 		while true do
-			task.wait(60)
+			task.wait(AUTOSAVE_INTERVAL)
 			for _, player in ipairs(Players:GetPlayers()) do
-				if DataService._cache[player.UserId] then
-					DataService.savePlayerData(player)
+				if DataService._cache[player.UserId] and not DataService._saving[player.UserId] then
+					task.spawn(DataService.savePlayerData, player, false)
 				end
 			end
 		end
 	end)
 end
 
--- Bind to server shutdown: save all players before the server exits
 function DataService.bindToClose()
-	-- No need to bind in memory-only mode
 	if DataService._useMemoryOnly then
 		return
 	end
 
 	game:BindToClose(function()
+		local pending = 0
 		for _, player in ipairs(Players:GetPlayers()) do
 			if DataService._cache[player.UserId] then
-				DataService.savePlayerData(player)
+				pending = pending + 1
+				task.spawn(function()
+					DataService.savePlayerData(player, true)
+					pending = pending - 1
+				end)
 			end
+		end
+
+		local deadline = os.clock() + SHUTDOWN_TIMEOUT
+		while pending > 0 and os.clock() < deadline do
+			task.wait(0.1)
 		end
 	end)
 end

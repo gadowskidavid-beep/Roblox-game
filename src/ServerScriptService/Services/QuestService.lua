@@ -69,19 +69,20 @@ function QuestService._checkQuestCompletions(player, data)
 
 	for questId, questDef in pairs(QuestData.Quests) do
 		local statType = questDef.requirement.type
-		local currentLevel = data.upgrades[questId] or 0
 		local maxLevel = #questDef.levels
+		local currentLevel = math.clamp(math.floor(tonumber(data.upgrades[questId]) or 0), 0, maxLevel)
 
-		-- Check if current stat meets any unachieved level requirement
-		if currentLevel < maxLevel then
-			local currentStat = data.questStats[statType] or 0
+		-- Award every milestone already covered by the current stat. This matters for
+		-- migrated profiles and large one-shot progress gains.
+		local currentStat = data.questStats[statType] or 0
+		while currentLevel < maxLevel do
 			local requiredForNext = questDef.levelRequirements[currentLevel + 1]
-
-			if currentStat >= requiredForNext then
-				-- Award the upgrade level
-				data.upgrades[questId] = currentLevel + 1
-				upgradesChanged = true
+			if not requiredForNext or currentStat < requiredForNext then
+				break
 			end
+			currentLevel = currentLevel + 1
+			data.upgrades[questId] = currentLevel
+			upgradesChanged = true
 		end
 	end
 
