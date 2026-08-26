@@ -31,5 +31,5 @@
     "Review _purchaseShopItem for button feedback pattern"
   ],
   "blocked_reason": null,
-  "findings": "All changes implemented successfully. No build/test step available (Roblox Luau project). Verified via manual code review and grep that: (1) source param flows EggService->ShopService->Main.client.lua, (2) per-item rate limit key uses itemId, (3) _refreshPetGrid groups by composite key with quantity badge, (4) _purchaseShopItem shows button feedback, (5) _showAutoHatchToast displays brief toast for auto-hatched pets."
+  "findings": "All changes implemented successfully. No build/test step available (Roblox Luau project). Verified via manual code review and grep that: (1) source param flows EggService->ShopService->Main.client.lua, (2) per-item rate limit key uses itemId, (3) _refreshPetGrid groups by composite key with quantity badge, (4) _purchaseShopItem shows button feedback with buyBtn.Active=false during InvokeServer, (5) showAutoHatchToast is now a public method (no underscore prefix) called correctly from Main.client.lua, (6) hatchFree also accepts and passes source parameter through events."
 }
