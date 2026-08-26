@@ -219,6 +219,33 @@ ZoneUnlocked.OnClientEvent:Connect(function(zoneId, gatePosition)
 	if gatePosition then
 		effectsController:showZoneUnlock(gatePosition)
 	end
+	-- Also hide the barrier on unlock (same as HideGateBarrier)
+	local gatesFolder = workspace:FindFirstChild("ZoneGates")
+	if gatesFolder then
+		local gateModel = gatesFolder:FindFirstChild("ZoneGateModel_" .. tostring(zoneId))
+		if gateModel then
+			local barrierPart = gateModel:FindFirstChild("GateBarrier_" .. tostring(zoneId))
+			if barrierPart then
+				barrierPart.Transparency = 1
+			end
+		end
+	end
+end)
+
+-- HideGateBarrier: server tells this client to hide a specific zone gate barrier
+-- This is fired per-player on character spawn for already-unlocked zones
+local HideGateBarrier = Remotes:WaitForChild("HideGateBarrier")
+HideGateBarrier.OnClientEvent:Connect(function(zoneId)
+	local gatesFolder = workspace:FindFirstChild("ZoneGates")
+	if gatesFolder then
+		local gateModel = gatesFolder:FindFirstChild("ZoneGateModel_" .. tostring(zoneId))
+		if gateModel then
+			local barrierPart = gateModel:FindFirstChild("GateBarrier_" .. tostring(zoneId))
+			if barrierPart then
+				barrierPart.Transparency = 1
+			end
+		end
+	end
 end)
 
 DestructibleDamaged.OnClientEvent:Connect(function(destructibleId, currentHP, maxHP, damage)

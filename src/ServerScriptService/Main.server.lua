@@ -50,6 +50,7 @@ local remoteEvents = {
 	"PetEquipped",
 	"PetUnequipped",
 	"ZoneUnlocked",
+	"HideGateBarrier",
 	"DestructibleDamaged",
 	"DestructibleDestroyed",
 	"EggHatchStart",
