@@ -464,7 +464,7 @@ def build_server_script_service():
     service_names = [
         "DataService", "CurrencyService", "PetService",
         "UpgradeService", "ZoneService", "CampaignService", "EggService",
-        "QuestService", "MasteryService"
+        "QuestService", "MasteryService", "ShopService"
     ]
     service_scripts = []
     for svc_name in service_names:
