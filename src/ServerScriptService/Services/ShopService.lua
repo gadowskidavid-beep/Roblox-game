@@ -233,7 +233,7 @@ function ShopService._processAutoHatch()
 						-- uses the normal server-authoritative coin price and inventory limit.
 						if targetEgg then
 							task.spawn(function()
-								ShopService._eggService.purchaseAndHatch(player, targetEgg)
+								ShopService._eggService.purchaseAndHatch(player, targetEgg, "auto")
 							end)
 						end
 					end

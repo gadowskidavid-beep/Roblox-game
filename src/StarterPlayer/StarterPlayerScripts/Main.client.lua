@@ -321,7 +321,12 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
 	end
 end)
 
-EggHatchStart.OnClientEvent:Connect(function(eggType)
+EggHatchStart.OnClientEvent:Connect(function(eggType, source)
+	-- If source is "auto" (from ShopService auto-hatch), skip the full-screen animation
+	if source == "auto" then
+		return
+	end
+
 	local hatchPosition = nil
 	if player.Character then
 		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
@@ -337,7 +342,14 @@ EggHatchStart.OnClientEvent:Connect(function(eggType)
 	effectsController:startEggWobble()
 end)
 
-EggHatchResult.OnClientEvent:Connect(function(petData)
+EggHatchResult.OnClientEvent:Connect(function(petData, source)
+	-- If source is "auto" (from ShopService auto-hatch), show a small toast instead
+	-- of the full-screen hatch animation that would block the shop UI.
+	if source == "auto" then
+		uiController:_showAutoHatchToast(petData)
+		return
+	end
+
 	effectsController._lastHatchPosition = nil
 
 	-- Complete the egg hatch animation (cancels wobble, does shakes + reveal)

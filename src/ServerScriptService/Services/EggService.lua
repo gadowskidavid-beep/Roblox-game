@@ -26,7 +26,10 @@ function EggService.init(dataService, currencyService, petService)
 end
 
 -- Purchase and hatch an egg (full flow with animation delay)
-function EggService.purchaseAndHatch(player, eggType)
+-- source: "manual" (default) or "auto" - passed to client events so the client
+-- can decide whether to show a full-screen animation or a small toast.
+function EggService.purchaseAndHatch(player, eggType, source)
+	source = source or "manual"
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
@@ -82,7 +85,7 @@ function EggService.purchaseAndHatch(player, eggType)
 		if remotes then
 			local event = remotes:FindFirstChild("EggHatchStart")
 			if event then
-				event:FireClient(player, eggType)
+				event:FireClient(player, eggType, source)
 			end
 		end
 
@@ -103,7 +106,7 @@ function EggService.purchaseAndHatch(player, eggType)
 		if remotes then
 			local event = remotes:FindFirstChild("EggHatchResult")
 			if event then
-				event:FireClient(player, newPet)
+				event:FireClient(player, newPet, source)
 			end
 		end
 

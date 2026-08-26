@@ -1,0 +1,35 @@
+{
+  "id": "FEAT-001",
+  "type": "fix",
+  "description": "Fix all three bugs (auto-hatch animation blocking shop, shared rate-limit key, no button feedback) and add pet inventory stacking feature",
+  "status": "in_progress",
+  "steps": [
+    "1. EggService.lua - Add optional 'source' parameter to purchaseAndHatch(player, eggType, source). Default source to 'manual'. Pass source as third argument in both EggHatchStart:FireClient(player, eggType, source) and EggHatchResult:FireClient(player, newPet, source).",
+    "2. ShopService.lua - In _processAutoHatch(), change the call from ShopService._eggService.purchaseAndHatch(player, targetEgg) to ShopService._eggService.purchaseAndHatch(player, targetEgg, 'auto').",
+    "3. Main.server.lua - In the PurchaseShopItem handler, change the rate limit key from 'PurchaseShopItem' (shared for all items) to 'PurchaseShopItem:' .. itemId (per-item cooldown). Keep the 2-second cooldown value.",
+    "4. Main.client.lua - Modify the EggHatchStart handler to accept (eggType, source). If source == 'auto', do NOT call effectsController:startEggWobble(). Modify the EggHatchResult handler to accept (petData, source). If source == 'auto', skip effectsController:completeEggHatch(petData) and skip the 4-second delayed uiController:showEggHatch modal. Instead show a brief toast via a new effectsController method or inline: display 'Auto-Hatch: [petName]!' text near bottom of screen for 2.5 seconds (similar to the existing _showHatchToast pattern in UIController, but call it directly e.g. uiController:_showAutoHatchToast(petData)).",
+    "5. UIController.lua - Add _showAutoHatchToast(petData) method: creates a small ScreenGui with text 'Auto-Hatch: [petName]!' positioned at bottom-center (UDim2.fromScale(0.35, 0.88)), dark bg, colored border matching rarity, auto-destroys after 2.5s.",
+    "6. UIController.lua - Modify _purchaseShopItem(itemId): (a) find the clicked BuyBtn by traversing self._screens.ShopScreen MainFrame ShopGrid for the card named 'ShopItem_'..itemId and its BuyBtn child, (b) set button text to '...' and disable (Active = false or just set text), (c) call InvokeServer, (d) on return restore text and re-enable, (e) if not success, call self:_showGoldenError(err or 'Purchase failed!') to show the red toast.",
+    "7. UIController.lua - Rewrite _refreshPetGrid() to group pets by a composite key of (petId .. '_' .. (variant or 'Normal') .. '_' .. tostring(golden or false)). For each group: create one card showing pet name, rarity, variant info, and a quantity badge (top-right corner, white text on semi-transparent black background showing 'x' .. count). In non-multi-select mode: equip/unequip button operates on the first unequipped pet in the group (for equip) or first equipped pet (for unequip). In multi-select mode: clicking 'Select' picks one individual pet from the group (the first unselected one), and the card shows how many are selected from that group. The card's display should include damage from the first pet in the group.",
+    "8. UIController.lua - In the stacked _refreshPetGrid, ensure that when count == 1 the badge is hidden (no 'x1' shown), preserving the original single-card look. The badge frame should use: Size = UDim2.fromOffset(36, 22), Position = UDim2.new(1, -40, 0, 4), BackgroundColor3 = Color3.fromRGB(0,0,0), BackgroundTransparency = 0.4, with white bold text."
+  ],
+  "acceptance_criteria": [
+    "EggService.purchaseAndHatch accepts a third 'source' parameter and passes it through EggHatchStart and EggHatchResult events",
+    "ShopService._processAutoHatch passes 'auto' as source to purchaseAndHatch",
+    "Main.server.lua PurchaseShopItem rate limit key includes the itemId making different items independently purchasable",
+    "Main.client.lua EggHatchStart handler skips startEggWobble when source is 'auto'",
+    "Main.client.lua EggHatchResult handler skips completeEggHatch and modal when source is 'auto', shows toast instead",
+    "UIController._purchaseShopItem shows '...' during server call and shows error toast on failure",
+    "UIController._refreshPetGrid groups identical pets and shows quantity badge for stacks > 1",
+    "Multi-select mode still allows selecting individual pets from a stack"
+  ],
+  "verification": [
+    "Read all modified files and confirm no Luau syntax errors (balanced do/end, function/end, if/then/end blocks)",
+    "Grep for the new 'source' parameter flowing through EggService -> ShopService -> Main.client.lua",
+    "Grep for per-item rate limit key pattern in Main.server.lua",
+    "Review _refreshPetGrid for grouping logic and badge creation",
+    "Review _purchaseShopItem for button feedback pattern"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

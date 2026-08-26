@@ -592,11 +592,32 @@ function UIController:_refreshPetGrid()
 		end
 	end
 
+	-- Group pets by composite key: petId_variant_golden
+	local groups = {}
+	local groupOrder = {}
 	for i, petData in ipairs(self._petInventoryData) do
+		local groupKey = tostring(petData.petId) .. "_" .. tostring(petData.variant or "Normal") .. "_" .. tostring(petData.golden or false)
+		if not groups[groupKey] then
+			groups[groupKey] = { pets = {}, key = groupKey, firstPet = petData, layoutOrder = i }
+			table.insert(groupOrder, groupKey)
+		end
+		table.insert(groups[groupKey].pets, petData)
+	end
+
+	-- Sort groups by original layout order (first pet's index in the inventory)
+	table.sort(groupOrder, function(a, b)
+		return groups[a].layoutOrder < groups[b].layoutOrder
+	end)
+
+	for cardIndex, groupKey in ipairs(groupOrder) do
+		local group = groups[groupKey]
+		local petData = group.firstPet
+		local petCount = #group.pets
+
 		local card = Instance.new("Frame")
-		card.Name = "PetCard_" .. i
+		card.Name = "PetCard_" .. cardIndex
 		card.BackgroundColor3 = COLORS.DarkBg
-		card.LayoutOrder = i
+		card.LayoutOrder = cardIndex
 		card.Parent = scrollFrame
 
 		local cardCorner = Instance.new("UICorner")
@@ -642,15 +663,52 @@ function UIController:_refreshPetGrid()
 		dmgLabel.TextScaled = true
 		dmgLabel.Parent = card
 
-		local petUniqueId = petData.uniqueId or petData.id
+		-- Quantity badge (only shown if count > 1)
+		if petCount > 1 then
+			local badge = Instance.new("Frame")
+			badge.Name = "QuantityBadge"
+			badge.Size = UDim2.fromOffset(36, 22)
+			badge.Position = UDim2.new(1, -40, 0, 4)
+			badge.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			badge.BackgroundTransparency = 0.4
+			badge.BorderSizePixel = 0
+			badge.Parent = card
+
+			local badgeCorner = Instance.new("UICorner")
+			badgeCorner.CornerRadius = UDim.new(0, 6)
+			badgeCorner.Parent = badge
+
+			local badgeLabel = Instance.new("TextLabel")
+			badgeLabel.Name = "CountLabel"
+			badgeLabel.Size = UDim2.fromScale(1, 1)
+			badgeLabel.BackgroundTransparency = 1
+			badgeLabel.Text = "x" .. tostring(petCount)
+			badgeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+			badgeLabel.Font = Enum.Font.GothamBold
+			badgeLabel.TextScaled = true
+			badgeLabel.Parent = badge
+		end
+
 		if self._multiSelectMode then
-			local isSelected = self._selectedPets[petUniqueId] ~= nil
+			-- Count how many pets from this group are selected
+			local selectedFromGroup = 0
+			for _, pet in ipairs(group.pets) do
+				local petUniqueId = pet.uniqueId or pet.id
+				if self._selectedPets[petUniqueId] then
+					selectedFromGroup = selectedFromGroup + 1
+				end
+			end
+
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
 			selectBox.Position = UDim2.fromScale(0.1, 0.75)
-			selectBox.BackgroundColor3 = isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110)
-			selectBox.Text = isSelected and "Selected" or "Select"
+			selectBox.BackgroundColor3 = (selectedFromGroup > 0) and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110)
+			if selectedFromGroup > 0 then
+				selectBox.Text = tostring(selectedFromGroup) .. " selected"
+			else
+				selectBox.Text = "Select"
+			end
 			selectBox.TextColor3 = COLORS.White
 			selectBox.Font = Enum.Font.GothamBold
 			selectBox.TextScaled = true
@@ -660,17 +718,37 @@ function UIController:_refreshPetGrid()
 			selectCorner.CornerRadius = UDim.new(0, 6)
 			selectCorner.Parent = selectBox
 
-			local petId = petUniqueId
 			selectBox.MouseButton1Click:Connect(function()
-				if self._selectedPets[petId] then
-					self._selectedPets[petId] = nil
-				else
-					self._selectedPets[petId] = true
+				-- Pick the first unselected pet from the group, or deselect the last selected one
+				local allSelected = true
+				for _, pet in ipairs(group.pets) do
+					local petUniqueId = pet.uniqueId or pet.id
+					if not self._selectedPets[petUniqueId] then
+						allSelected = false
+						self._selectedPets[petUniqueId] = true
+						break
+					end
+				end
+				-- If all are selected, deselect the last one
+				if allSelected and #group.pets > 0 then
+					local lastPet = group.pets[#group.pets]
+					local lastId = lastPet.uniqueId or lastPet.id
+					self._selectedPets[lastId] = nil
 				end
 				self:_refreshPetGrid()
 			end)
 		else
-			local isEquipped = self:_isPetEquipped(petUniqueId)
+			-- Check if any pet in the group is equipped
+			local equippedPetInGroup = nil
+			for _, pet in ipairs(group.pets) do
+				local petUniqueId = pet.uniqueId or pet.id
+				if self:_isPetEquipped(petUniqueId) then
+					equippedPetInGroup = pet
+					break
+				end
+			end
+			local isEquipped = equippedPetInGroup ~= nil
+
 			local equipBtn = Instance.new("TextButton")
 			equipBtn.Name = "EquipBtn"
 			equipBtn.Size = UDim2.fromScale(0.8, 0.16)
@@ -686,11 +764,15 @@ function UIController:_refreshPetGrid()
 			equipCorner.CornerRadius = UDim.new(0, 6)
 			equipCorner.Parent = equipBtn
 
-			local petId = petUniqueId
 			equipBtn.MouseButton1Click:Connect(function()
 				if isEquipped then
+					-- Unequip the first equipped pet in the group
+					local petId = equippedPetInGroup.uniqueId or equippedPetInGroup.id
 					self:_unequipPet(petId)
 				else
+					-- Equip the first pet in the group
+					local firstPet = group.pets[1]
+					local petId = firstPet.uniqueId or firstPet.id
 					self:_equipPet(petId)
 				end
 			end)
@@ -1889,14 +1971,45 @@ function UIController:_refreshShopGrid()
 end
 
 function UIController:_purchaseShopItem(itemId)
-	if self._remotes then
-		local remote = self._remotes:FindFirstChild("PurchaseShopItem")
-		if remote then
-			local success, err = remote:InvokeServer(itemId)
-			if not success and err then
-				print("[UIController] Shop purchase failed: " .. tostring(err))
+	if not self._remotes then return end
+
+	local remote = self._remotes:FindFirstChild("PurchaseShopItem")
+	if not remote then return end
+
+	-- Find the buy button to show visual feedback
+	local buyBtn = nil
+	local originalText = nil
+	local shopScreen = self._screens.ShopScreen
+	if shopScreen then
+		local mainFrame = shopScreen:FindFirstChild("MainFrame")
+		if mainFrame then
+			local shopGrid = mainFrame:FindFirstChild("ShopGrid")
+			if shopGrid then
+				local card = shopGrid:FindFirstChild("ShopItem_" .. itemId)
+				if card then
+					buyBtn = card:FindFirstChild("BuyBtn")
+				end
 			end
 		end
+	end
+
+	-- Show loading state on button
+	if buyBtn then
+		originalText = buyBtn.Text
+		buyBtn.Text = "..."
+	end
+
+	-- Invoke server
+	local success, err = remote:InvokeServer(itemId)
+
+	-- Restore button text
+	if buyBtn then
+		buyBtn.Text = originalText or "Buy"
+	end
+
+	-- Show error toast on failure
+	if not success and err then
+		self:_showGoldenError(err)
 	end
 end
 
@@ -2261,6 +2374,46 @@ function UIController:_showHatchToast(petData)
 	label.TextScaled = true
 
 	-- Fade out and destroy after 2.5 seconds
+	task.delay(2.5, function()
+		if toast and toast.Parent then
+			toast:Destroy()
+		end
+	end)
+end
+
+function UIController:_showAutoHatchToast(petData)
+	if not self._playerGui then return end
+
+	local toast = Instance.new("ScreenGui")
+	toast.Name = "AutoHatchToast"
+	toast.ResetOnSpawn = false
+	toast.Parent = self._playerGui
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(0.3, 0.06)
+	label.Position = UDim2.fromScale(0.35, 0.88)
+	label.BackgroundColor3 = COLORS.DarkBg
+	label.BackgroundTransparency = 0.15
+	label.BorderSizePixel = 0
+	label.Parent = toast
+
+	local labelCorner = Instance.new("UICorner")
+	labelCorner.CornerRadius = UDim.new(0, 10)
+	labelCorner.Parent = label
+
+	local rarityColor = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
+	local labelStroke = Instance.new("UIStroke")
+	labelStroke.Thickness = 2
+	labelStroke.Color = rarityColor
+	labelStroke.Parent = label
+
+	local petName = petData and petData.name or "Pet"
+	label.Text = "Auto-Hatch: " .. petName .. "!"
+	label.TextColor3 = COLORS.White
+	label.Font = Enum.Font.GothamBold
+	label.TextScaled = true
+
+	-- Auto-destroy after 2.5 seconds
 	task.delay(2.5, function()
 		if toast and toast.Parent then
 			toast:Destroy()

@@ -481,16 +481,16 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	return data.discoveredPets or {}
 end
 
--- PurchaseShopItem (2 second cooldown)
+-- PurchaseShopItem (2 second cooldown per item)
 getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if not canCall(player, "PurchaseShopItem", 2) then
-		return false, "Please wait before purchasing again"
-	end
 	if type(itemId) ~= "string" then
 		return false, "Invalid item ID parameter"
+	end
+	if not canCall(player, "PurchaseShopItem:" .. itemId, 2) then
+		return false, "Please wait before purchasing again"
 	end
 	local success, msg = ShopService.purchaseItem(player, itemId)
 	-- Refresh walkspeed in case Speed Potion was purchased
