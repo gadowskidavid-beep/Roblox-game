@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "fix",
   "description": "P1 Bug Fix #3: Remove duplicate world geometry (static zone baseplates/gates in generate_rbxlx.py collide with runtime-spawned zones from ZoneService). P1 Bug Fix #4: Egg prompt connection deduplication in Main.client.lua.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Step 1 - Remove static zone baseplates from generate_rbxlx.py build_workspace(): Remove all Zone1_GrueneWiesen through Zone8_Weltraum Part entries. Remove all ZoneGate entries (ZoneGate2 through ZoneGate8 with LeftPillar, RightPillar, TopArch, Barrier). Keep ONLY: LobbyFloor, SpawnLocation, LobbyToZonePath, CampaignPortal, Terrain, Camera. The runtime ZoneService.init() already creates all zone grounds via spawnZone() and all gates via _spawnZoneGates().",
     "Step 2 - Egg prompt deduplication in Main.client.lua: In the onCharacterAdded function, the connectEggPrompts() local function connects ProximityPrompt.Triggered events but never disconnects old ones on respawn. Fix: (a) Add a module-level table '_eggPromptConnections = {}' before onCharacterAdded. (b) At the start of connectEggPrompts(), disconnect and clear all existing connections in _eggPromptConnections. (c) Store each new Triggered:Connect() return value in _eggPromptConnections. (d) Remove the 'task.delay(2, connectEggPrompts)' redundant second call since we already connect on CharacterAdded. OR keep it but with the disconnect guard it will be safe either way.",
@@ -25,5 +25,5 @@
     "Grep for '_eggPromptConnections' in Main.client.lua - should be found"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Used python3 instead of python due to pyenv config. Build generates valid XML (435KB). ZoneGate only appears in a comment now. The task.delay(2, connectEggPrompts) was kept since the disconnect guard makes repeated calls safe."
 }

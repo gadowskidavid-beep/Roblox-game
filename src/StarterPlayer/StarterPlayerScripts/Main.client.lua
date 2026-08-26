@@ -526,6 +526,9 @@ end)
 --------------------------------------------------------------------------------
 -- CHARACTER SETUP (campaign portal, egg stations, ProximityPrompt)
 --------------------------------------------------------------------------------
+-- Track egg prompt connections so we can disconnect them on respawn to avoid duplicates
+local _eggPromptConnections = {}
+
 local function onCharacterAdded(character)
 	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 
@@ -559,6 +562,14 @@ local function onCharacterAdded(character)
 	-- ProximityPrompt interaction for egg stations (E-key)
 	-- This is the primary egg interaction method: directly invokes HatchEgg on server
 	local function connectEggPrompts()
+		-- Disconnect any previous prompt connections to avoid duplicate handlers on respawn
+		for _, conn in ipairs(_eggPromptConnections) do
+			if conn and conn.Connected then
+				conn:Disconnect()
+			end
+		end
+		table.clear(_eggPromptConnections)
+
 		local stationsFolder = workspace:FindFirstChild("EggStations")
 		if not stationsFolder then return end
 		for _, obj in ipairs(stationsFolder:GetChildren()) do
@@ -566,13 +577,14 @@ local function onCharacterAdded(character)
 				local prompt = obj:FindFirstChild("HatchPrompt")
 				local promptTag = obj:FindFirstChild("PromptEggType")
 				if prompt and promptTag then
-					prompt.Triggered:Connect(function(triggerPlayer)
+					local conn = prompt.Triggered:Connect(function(triggerPlayer)
 						if triggerPlayer == player then
 							-- Directly invoke HatchEgg on server (validates cost server-side)
 							local eggType = promptTag.Value
 							HatchEgg:InvokeServer(eggType)
 						end
 					end)
+					table.insert(_eggPromptConnections, conn)
 				end
 			end
 		end
