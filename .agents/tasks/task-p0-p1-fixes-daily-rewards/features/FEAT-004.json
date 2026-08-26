@@ -2,7 +2,7 @@
   "id": "FEAT-004",
   "type": "chore",
   "description": "Final step: Regenerate BATTLE_PETS.rbxlx with all changes, validate XML, verify all new sources are embedded, and commit everything.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Step 1 - Run python tools/generate_rbxlx.py from the project root to regenerate BATTLE_PETS.rbxlx with all source changes.",
     "Step 2 - Validate XML well-formedness: python -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('XML valid')\"",
@@ -25,5 +25,5 @@
     "Run: git log --oneline -1"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "BATTLE_PETS.rbxlx was already regenerated in prior feature commits (FEAT-001, FEAT-002, FEAT-003 each ran generate_rbxlx.py). Re-running confirmed identical output - all sources embedded correctly. XML validates. DailyRewardService (28 refs), _critTokens (6 refs), _eggPromptConnections (4 refs) all present. Zone1_GrueneWiesen (0 refs) confirms no duplicate geometry."
 }
