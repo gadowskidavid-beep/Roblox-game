@@ -1993,18 +1993,20 @@ function UIController:_purchaseShopItem(itemId)
 		end
 	end
 
-	-- Show loading state on button
+	-- Show loading state on button and disable to prevent double-clicks
 	if buyBtn then
 		originalText = buyBtn.Text
 		buyBtn.Text = "..."
+		buyBtn.Active = false
 	end
 
 	-- Invoke server
 	local success, err = remote:InvokeServer(itemId)
 
-	-- Restore button text
+	-- Restore button text and re-enable
 	if buyBtn then
 		buyBtn.Text = originalText or "Buy"
+		buyBtn.Active = true
 	end
 
 	-- Show error toast on failure
@@ -2381,7 +2383,7 @@ function UIController:_showHatchToast(petData)
 	end)
 end
 
-function UIController:_showAutoHatchToast(petData)
+function UIController:showAutoHatchToast(petData)
 	if not self._playerGui then return end
 
 	local toast = Instance.new("ScreenGui")

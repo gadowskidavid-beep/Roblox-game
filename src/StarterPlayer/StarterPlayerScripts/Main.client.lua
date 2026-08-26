@@ -346,7 +346,7 @@ EggHatchResult.OnClientEvent:Connect(function(petData, source)
 	-- If source is "auto" (from ShopService auto-hatch), show a small toast instead
 	-- of the full-screen hatch animation that would block the shop UI.
 	if source == "auto" then
-		uiController:_showAutoHatchToast(petData)
+		uiController:showAutoHatchToast(petData)
 		return
 	end
 
