@@ -2,7 +2,7 @@
   "id": "FEAT-003",
   "type": "feat",
   "description": "New Feature: Daily Rewards System (7-day cycle) with server-authoritative validation, DataStore persistence, and client UI popup.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Step 1 - Create src/ServerScriptService/Services/DailyRewardService.lua: A new ModuleScript service following the same pattern as other services (singleton table, .init() function). Implementation: (a) DailyRewardService._dataService reference. (b) init(dataService) stores the reference. (c) REWARDS table defining the 7-day cycle: Day1={type='Coins',amount=500}, Day2={type='Diamonds',amount=50}, Day3={type='Boost',boostType='2xCoins',duration=1800}, Day4={type='Coins',amount=1000}, Day5={type='FreeEgg',eggType='PremiumEgg'}, Day6={type='Diamonds',amount=100}, Day7={type='Special',rewards={{type='Coins',amount=5000},{type='Diamonds',amount=500}}}. (d) claimDailyReward(player) function: gets player data, checks data.dailyRewards.lastClaimTimestamp and data.dailyRewards.currentDay. Uses os.time() and calculates UTC day boundaries. If a new UTC day has passed since last claim, allows claim. Increments currentDay (wraps back to 1 after 7). If more than 2 days missed, resets streak to day 1. Awards the reward. Returns {success=true, day=N, reward=rewardDef, nextClaimTime=timestamp}. (e) getDailyRewardStatus(player) function: returns {currentDay, canClaim, nextClaimTime, rewards=REWARDS} for the UI. (f) _awardReward(player, rewardDef) helper that calls CurrencyService.addCoins/addDiamonds or EggService for free hatch.",
     "Step 2 - Add dailyRewards field to DataService.lua default data schema: Add to getDefaultData(): dailyRewards = { lastClaimTimestamp = 0, currentDay = 0 }. Also add it to the getClientData() function so clients can read their daily reward status.",
@@ -36,5 +36,5 @@
     "Grep for 'DailyReward' in Main.client.lua"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "EggService uses hatchFree (not hatchEggFree) for free hatches. Python build uses python3 (not python). FEAT-004 can skip regeneration since .rbxlx is already up to date."
 }
