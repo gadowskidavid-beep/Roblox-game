@@ -1327,6 +1327,42 @@ function ZoneService._spawnZoneGates()
 			return player
 		end
 
+		-- Debounce table to prevent rapid-fire teleports per player
+		local teleportDebounce = {}
+
+		-- Helper: teleport a player's character past the gate (15 studs into the next zone)
+		local function teleportPlayerThrough(player)
+			local character = player.Character
+			if not character then return end
+			local hrp = character:FindFirstChild("HumanoidRootPart")
+			if not hrp then return end
+
+			-- Determine which side the player is on and teleport them to the other side
+			local playerX = hrp.Position.X
+			local teleportOffset = 15
+			local targetX
+			if playerX < gateX then
+				-- Player is on the previous zone side, teleport INTO the next zone
+				targetX = gateX + teleportOffset
+			else
+				-- Player is on the next zone side, teleport BACK to the previous zone
+				targetX = gateX - teleportOffset
+			end
+
+			hrp.CFrame = CFrame.new(targetX, hrp.Position.Y, hrp.Position.Z)
+		end
+
+		-- Helper: fire HideGateBarrier to client so barrier becomes invisible for that player only
+		local function hideBarrierForPlayer(player)
+			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+			if remotes then
+				local hideEvent = remotes:FindFirstChild("HideGateBarrier")
+				if hideEvent then
+					hideEvent:FireClient(player, gateZone)
+				end
+			end
+		end
+
 		barrier.Touched:Connect(function(hit)
 			local player = getPlayerFromHit(hit)
 			if not player then return end
@@ -1344,23 +1380,35 @@ function ZoneService._spawnZoneGates()
 			end
 
 			if alreadyUnlocked then
-				-- Remove the visual barrier and the physical blocker
-				barrier.Transparency = 1
-				if blocker and blocker.Parent then
-					blocker:Destroy()
-				end
+				-- Debounce: prevent rapid teleport spam
+				local userId = player.UserId
+				if teleportDebounce[userId] then return end
+				teleportDebounce[userId] = true
+				task.delay(1, function()
+					teleportDebounce[userId] = nil
+				end)
+
+				-- Teleport player through the gate and hide barrier on their client
+				teleportPlayerThrough(player)
+				hideBarrierForPlayer(player)
 				return
 			end
 
-			-- Try to unlock the zone
+			-- Try to unlock the zone (player has enough coins)
 			local success, err = ZoneService.unlockZone(player, gateZone)
 			if success then
-				-- Remove the barrier (make invisible) and destroy the blocker
 				local barrierPosition = barrier.Position
-				barrier.Transparency = 1
-				if blocker and blocker.Parent then
-					blocker:Destroy()
-				end
+
+				-- Debounce teleport
+				local userId = player.UserId
+				teleportDebounce[userId] = true
+				task.delay(1, function()
+					teleportDebounce[userId] = nil
+				end)
+
+				-- Teleport the player through and hide barrier on their client
+				teleportPlayerThrough(player)
+				hideBarrierForPlayer(player)
 
 				-- Fire zone unlock effect with gate position for particle/flash effect
 				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -1416,12 +1464,6 @@ function ZoneService._spawnZoneGates()
 				task.delay(2, function()
 					particlePart:Destroy()
 				end)
-
-				-- Update billboard to show "UNLOCKED" text
-				nameLabel.Text = zoneDef.name .. " - UNLOCKED!"
-				nameLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-				priceLabel.Text = "Welcome!"
-				priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
 			end
 		end)
 
@@ -1443,22 +1485,35 @@ function ZoneService._spawnZoneGates()
 			end
 
 			if alreadyUnlocked then
-				-- Player already owns this zone - remove barrier and blocker
-				barrier.Transparency = 1
-				if blocker and blocker.Parent then
-					blocker:Destroy()
-				end
+				-- Debounce: prevent rapid teleport spam
+				local userId = player.UserId
+				if teleportDebounce[userId] then return end
+				teleportDebounce[userId] = true
+				task.delay(1, function()
+					teleportDebounce[userId] = nil
+				end)
+
+				-- Player already owns this zone - teleport them through and hide barrier
+				teleportPlayerThrough(player)
+				hideBarrierForPlayer(player)
 				return
 			end
 
-			-- Try to unlock the zone
+			-- Try to unlock the zone (player has enough coins)
 			local success, err = ZoneService.unlockZone(player, gateZone)
 			if success then
 				local barrierPosition = barrier.Position
-				barrier.Transparency = 1
-				if blocker and blocker.Parent then
-					blocker:Destroy()
-				end
+
+				-- Debounce teleport
+				local userId = player.UserId
+				teleportDebounce[userId] = true
+				task.delay(1, function()
+					teleportDebounce[userId] = nil
+				end)
+
+				-- Teleport the player through and hide barrier on their client
+				teleportPlayerThrough(player)
+				hideBarrierForPlayer(player)
 
 				-- Fire zone unlock effect
 				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -1468,19 +1523,13 @@ function ZoneService._spawnZoneGates()
 						event:FireClient(player, gateZone, barrierPosition)
 					end
 				end
-
-				-- Update billboard to show "UNLOCKED" text
-				nameLabel.Text = zoneDef.name .. " - UNLOCKED!"
-				nameLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-				priceLabel.Text = "Welcome!"
-				priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
 			end
 		end)
 	end
 
-	-- Proactive barrier removal: when a player spawns, remove blockers for zones
-	-- they have already unlocked. This prevents the "can see UNLOCKED but can't walk
-	-- through" issue caused by unreliable Touched event firing.
+	-- Per-player barrier visibility: when a player spawns, tell their client to hide
+	-- barriers for zones they have already unlocked. The physical blocker stays for
+	-- everyone - players who own the zone are teleported through on touch.
 	game:GetService("Players").PlayerAdded:Connect(function(player)
 		player.CharacterAdded:Connect(function()
 			-- Small delay to ensure DataService has loaded the player data
@@ -1488,27 +1537,15 @@ function ZoneService._spawnZoneGates()
 				local data = ZoneService._dataService.getPlayerData(player)
 				if not data then return end
 
-				local workspace = game:GetService("Workspace")
-				local gatesFolder = workspace:FindFirstChild("ZoneGates")
-				if not gatesFolder then return end
+				local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+				if not remotes then return end
+				local hideEvent = remotes:FindFirstChild("HideGateBarrier")
+				if not hideEvent then return end
 
 				for _, unlockedZoneId in ipairs(data.unlockedZones) do
-					-- Find and remove blockers for this zone
-					for _, gateModel in ipairs(gatesFolder:GetChildren()) do
-						if gateModel:IsA("Model") then
-							for _, part in ipairs(gateModel:GetChildren()) do
-								if part:IsA("BasePart") then
-									local tag = part:FindFirstChild("GateZoneId")
-									if tag and tag.Value == unlockedZoneId then
-										if part.Name:find("GateBlocker_") then
-											part:Destroy()
-										elseif part.Name:find("GateBarrier_") then
-											part.Transparency = 1
-										end
-									end
-								end
-							end
-						end
+					-- Tell the client to hide the barrier for this zone
+					if unlockedZoneId ~= 1 then -- Zone 1 has no gate
+						hideEvent:FireClient(player, unlockedZoneId)
 					end
 				end
 			end)
