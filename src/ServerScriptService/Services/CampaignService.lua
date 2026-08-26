@@ -104,7 +104,7 @@ function CampaignService.startLevel(player, levelNum)
 	local battleState = {
 		levelNum = levelNum,
 		levelDef = levelDef,
-		energy = Config.Campaign.MaxEnergy,
+		energy = math.max(0, Config.Campaign.MaxEnergy - (levelDef.energyCost or 0)),
 		maxEnergy = Config.Campaign.MaxEnergy,
 		energyRegenRate = Config.Campaign.EnergyRegenRate,
 		playerBaseHP = Config.Campaign.BaseHealth,
@@ -446,21 +446,20 @@ function CampaignService._onVictory(userId, battle)
 		return
 	end
 
+	local rewardsForClient = {}
+	for key, value in pairs(battle.levelDef.rewards) do
+		rewardsForClient[key] = value
+	end
+
 	local data = CampaignService._dataService.getPlayerData(player)
 	if data then
-		-- Record level completion
-		local alreadyCompleted = false
-		for _, completedLevel in ipairs(data.campaignProgress) do
-			if completedLevel == battle.levelNum then
-				alreadyCompleted = true
-				break
-			end
-		end
+		local alreadyCompleted = table.find(data.campaignProgress, battle.levelNum) ~= nil
 		if not alreadyCompleted then
 			table.insert(data.campaignProgress, battle.levelNum)
+			table.sort(data.campaignProgress)
 		end
 
-		-- Award rewards
+		-- Currency remains replayable; the boss egg is a one-time persistent claim.
 		local rewards = battle.levelDef.rewards
 		if rewards.Coins then
 			CampaignService._currencyService.addCoins(player, rewards.Coins)
@@ -468,18 +467,35 @@ function CampaignService._onVictory(userId, battle)
 		if rewards.Diamonds then
 			CampaignService._currencyService.addDiamonds(player, rewards.Diamonds)
 		end
+
+		if rewards.SpecialEgg then
+			data.campaignBossRewards = data.campaignBossRewards or {}
+			local claimKey = tostring(battle.levelNum)
+			if not data.campaignBossRewards[claimKey] then
+				local rewardPet, rewardError = CampaignService._petService.hatchEgg(player, rewards.SpecialEgg, true)
+				if rewardPet then
+					data.campaignBossRewards[claimKey] = true
+					rewardsForClient.SpecialPet = rewardPet.name
+					rewardsForClient.SpecialEggClaimed = true
+					rewardPet.isNewDiscovery = nil
+				else
+					rewardsForClient.SpecialEggPending = true
+					rewardsForClient.SpecialEggError = rewardError or "Reward could not be claimed"
+				end
+			else
+				rewardsForClient.SpecialEggAlreadyClaimed = true
+			end
+		end
 	end
 
-	-- Fire victory event
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("CampaignVictory")
 		if event then
-			event:FireClient(player, battle.levelNum, battle.levelDef.rewards)
+			event:FireClient(player, battle.levelNum, rewardsForClient)
 		end
 	end
 
-	-- Cleanup
 	CampaignService._activeBattles[userId] = nil
 end
 

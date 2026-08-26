@@ -4,6 +4,7 @@
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ZoneData = require(game.ReplicatedStorage.Shared.ZoneData)
@@ -64,8 +65,9 @@ function ZoneService.init(dataService, currencyService, petService)
 	end
 	ZoneService._zonesFolder = zonesFolder
 
-	-- Spawn the lobby island (safe spawn hub before Zone 1)
+	-- Create the complete runtime world from one authoritative source.
 	ZoneService._spawnLobby()
+	ZoneService._spawnCampaignPortal()
 
 	-- Spawn destructibles for all 8 zones
 	for zoneId = 1, 8 do
@@ -350,6 +352,7 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 		hp = dDef.hp,
 		maxHp = dDef.hp,
 		drops = dDef.drops,
+		contributors = {},
 		part = mainPart,
 		model = model,
 		position = mainPart.Position,
@@ -1576,6 +1579,11 @@ function ZoneService.unlockZone(player, zoneId)
 		end
 	end
 
+	-- Progression is strictly sequential; clients cannot skip directly to later eggs.
+	if zoneId > 1 and not table.find(data.unlockedZones, zoneId - 1) then
+		return false, "Unlock zone " .. tostring(zoneId - 1) .. " first"
+	end
+
 	-- Validate cost
 	local cost = Config.ZoneGateCosts[zoneId]
 	if not cost then
@@ -1590,8 +1598,9 @@ function ZoneService.unlockZone(player, zoneId)
 		end
 	end
 
-	-- Add zone to player unlocked list
+	-- Add zone to player unlocked list in stable order.
 	table.insert(data.unlockedZones, zoneId)
+	table.sort(data.unlockedZones)
 
 	-- Fire client event
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -1664,6 +1673,133 @@ function ZoneService.onPlayerRemoving(player)
 		ZoneService._critCooldowns[userId] = nil
 		ZoneService._critWindows[userId] = nil
 		ZoneService._petTargets[userId] = nil
+	end
+end
+
+local function recordContribution(destructible, player, damage)
+	local appliedDamage = math.max(0, math.min(damage, destructible.hp))
+	destructible.contributors = destructible.contributors or {}
+	destructible.contributors[player.UserId] = (destructible.contributors[player.UserId] or 0) + appliedDamage
+	return appliedDamage
+end
+
+local function allocateProportionally(totalAmount, contributors, totalContribution)
+	local allocations = {}
+	if totalAmount <= 0 or totalContribution <= 0 or #contributors == 0 then
+		return allocations
+	end
+
+	local allocated = 0
+	local topContributor = contributors[1]
+	for _, entry in ipairs(contributors) do
+		if entry.damage > topContributor.damage then
+			topContributor = entry
+		end
+		local share = math.floor(totalAmount * (entry.damage / totalContribution))
+		allocations[entry.userId] = share
+		allocated = allocated + share
+	end
+	allocations[topContributor.userId] = (allocations[topContributor.userId] or 0) + (totalAmount - allocated)
+	return allocations
+end
+
+-- Split rewards by actual damage contribution instead of giving everything to the
+-- last hitter. Disconnected contributors are excluded and their share is reallocated.
+function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedDrops)
+	local contributors = {}
+	local totalContribution = 0
+	for userId, damage in pairs(destructible.contributors or {}) do
+		local contributor = Players:GetPlayerByUserId(userId)
+		if contributor and damage > 0 then
+			table.insert(contributors, { userId = userId, player = contributor, damage = damage })
+			totalContribution = totalContribution + damage
+		end
+	end
+
+	if #contributors == 0 and fallbackPlayer then
+		contributors = { { userId = fallbackPlayer.UserId, player = fallbackPlayer, damage = 1 } }
+		totalContribution = 1
+	end
+
+	local coinAllocations = allocateProportionally(resolvedDrops.Coins or 0, contributors, totalContribution)
+	local diamondAllocations = allocateProportionally(resolvedDrops.Diamonds or 0, contributors, totalContribution)
+	local xpAllocations = allocateProportionally(destructible.zoneId * 5, contributors, totalContribution)
+	local rewardsByUserId = {}
+
+	for _, entry in ipairs(contributors) do
+		local player = entry.player
+		local playerRewards = { Coins = 0, Diamonds = 0 }
+		local coinShare = coinAllocations[entry.userId] or 0
+		if coinShare > 0 then
+			local success, actualCoins = ZoneService._currencyService.addCoins(player, coinShare)
+			if success then
+				playerRewards.Coins = actualCoins or coinShare
+				if ZoneService._questService then
+					ZoneService._questService.incrementStat(player, "earnCoins", playerRewards.Coins)
+				end
+			end
+		end
+
+		local diamondShare = diamondAllocations[entry.userId] or 0
+		if diamondShare > 0 then
+			local success, actualDiamonds = ZoneService._currencyService.addDiamonds(player, diamondShare)
+			if success then
+				playerRewards.Diamonds = actualDiamonds or diamondShare
+			end
+		end
+
+		local xpShare = xpAllocations[entry.userId] or 0
+		if xpShare > 0 then
+			ZoneService._awardXP(player, xpShare)
+		end
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+		rewardsByUserId[entry.userId] = playerRewards
+	end
+
+	return rewardsByUserId
+end
+
+local function isPlayerNearPosition(player, position)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then return false end
+	return (root.Position - position).Magnitude <= (Config.DestructibleReplicationDistance or 300)
+end
+
+function ZoneService._fireDamageNearby(destructibleId, destructible, damage)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("DestructibleDamaged")
+	if not event then return end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if isPlayerNearPosition(player, destructible.position) then
+			event:FireClient(player, destructibleId, destructible.hp, destructible.maxHp, damage)
+		end
+	end
+end
+
+function ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("DestructibleDestroyed")
+	if not event then return end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if isPlayerNearPosition(player, destructible.position) then
+			event:FireClient(player, destructibleId, rewardsByUserId[player.UserId] or {})
+		end
+	end
+end
+
+function ZoneService._clearDestroyedTargetState(destructibleId)
+	for _, targets in pairs(ZoneService._petTargets) do
+		for petId, targetId in pairs(targets) do
+			if targetId == destructibleId then
+				targets[petId] = nil
+			end
+		end
+	end
+	for _, windows in pairs(ZoneService._critWindows) do
+		windows[destructibleId] = nil
 	end
 end
 
@@ -1742,8 +1878,9 @@ function ZoneService.attackDestructible(player, destructibleId)
 		totalDamage = totalDamage + ZoneService._petService.getPetDamage(pet, player)
 	end
 
-	-- Apply damage
-	destructible.hp = destructible.hp - totalDamage
+	-- Apply only remaining HP as contribution so overkill cannot steal reward share.
+	local appliedDamage = recordContribution(destructible, player, totalDamage)
+	destructible.hp = destructible.hp - appliedDamage
 
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 
@@ -1761,35 +1898,11 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Award drops
-		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
-			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
-		end
-		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
-			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
-		end
+		-- Split currency, XP, and quest credit by contribution.
+		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
 
-		-- Award XP for destroying a destructible
-		local xpReward = destructible.zoneId * 5
-		ZoneService._awardXP(player, xpReward)
-
-		-- Track quest progress: destructible destroyed
-		if ZoneService._questService then
-			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
-		end
-
-		-- Track coins earned for quest progress
-		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
-			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
-		end
-
-		-- Fire destroyed event to all clients so everyone sees the destruction
-		if remotes then
-			local event = remotes:FindFirstChild("DestructibleDestroyed")
-			if event then
-				event:FireAllClients(destructibleId, resolvedDrops)
-			end
-		end
+		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
+		ZoneService._clearDestroyedTargetState(destructibleId)
 
 		-- Remove model (or part) from workspace
 		if destructible.model and destructible.model.Parent then
@@ -1823,13 +1936,7 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		-- Fire damaged event to all clients so everyone sees HP changes
-		if remotes then
-			local event = remotes:FindFirstChild("DestructibleDamaged")
-			if event then
-				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, totalDamage)
-			end
-		end
+		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
 
 	return true, nil
@@ -1898,8 +2005,9 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 	end
 	ZoneService._critWindows[userId][destructibleId] = os.clock() + CRIT_WINDOW_DURATION
 
-	-- Apply damage
-	destructible.hp = destructible.hp - clickDamage
+	-- Apply damage and record fair-share contribution.
+	local appliedDamage = recordContribution(destructible, player, clickDamage)
+	destructible.hp = destructible.hp - appliedDamage
 
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 
@@ -1917,33 +2025,11 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Award drops
-		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
-			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
-		end
-		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
-			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
-		end
+		-- Split currency, XP, and quest credit by contribution.
+		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
 
-		-- Award XP
-		local xpReward = destructible.zoneId * 5
-		ZoneService._awardXP(player, xpReward)
-
-		-- Track quest progress
-		if ZoneService._questService then
-			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
-		end
-		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
-			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
-		end
-
-		-- Fire destroyed event
-		if remotes then
-			local event = remotes:FindFirstChild("DestructibleDestroyed")
-			if event then
-				event:FireAllClients(destructibleId, resolvedDrops)
-			end
-		end
+		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
+		ZoneService._clearDestroyedTargetState(destructibleId)
 
 		-- Remove model from workspace
 		if destructible.model and destructible.model.Parent then
@@ -1974,13 +2060,7 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		-- Fire damaged event with click damage
-		if remotes then
-			local event = remotes:FindFirstChild("DestructibleDamaged")
-			if event then
-				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, clickDamage)
-			end
-		end
+		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
 
 	return true, nil
@@ -2057,8 +2137,9 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 	-- Crit deals 2 damage
 	local critDamage = 2
 
-	-- Apply damage
-	destructible.hp = destructible.hp - critDamage
+	-- Apply damage and record fair-share contribution.
+	local appliedDamage = recordContribution(destructible, player, critDamage)
+	destructible.hp = destructible.hp - appliedDamage
 
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 
@@ -2076,33 +2157,11 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Award drops
-		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
-			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
-		end
-		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
-			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
-		end
+		-- Split currency, XP, and quest credit by contribution.
+		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
 
-		-- Award XP
-		local xpReward = destructible.zoneId * 5
-		ZoneService._awardXP(player, xpReward)
-
-		-- Track quest progress
-		if ZoneService._questService then
-			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
-		end
-		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
-			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
-		end
-
-		-- Fire destroyed event
-		if remotes then
-			local event = remotes:FindFirstChild("DestructibleDestroyed")
-			if event then
-				event:FireAllClients(destructibleId, resolvedDrops)
-			end
-		end
+		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
+		ZoneService._clearDestroyedTargetState(destructibleId)
 
 		-- Remove model from workspace
 		if destructible.model and destructible.model.Parent then
@@ -2138,13 +2197,7 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		-- Fire damaged event with crit damage
-		if remotes then
-			local event = remotes:FindFirstChild("DestructibleDamaged")
-			if event then
-				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, critDamage)
-			end
-		end
+		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
 
 	return true, nil

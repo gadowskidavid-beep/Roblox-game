@@ -74,7 +74,7 @@ function CurrencyService.addCoins(player, amount)
 		end
 	end
 
-	return true
+	return true, finalAmount
 end
 
 -- Remove coins from player (no bonuses applied to deductions)
@@ -139,7 +139,7 @@ function CurrencyService.addDiamonds(player, amount)
 		end
 	end
 
-	return true
+	return true, finalAmount
 end
 
 -- Remove diamonds from player

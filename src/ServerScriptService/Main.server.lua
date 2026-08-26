@@ -24,6 +24,7 @@ local ShopService = require(script.Parent.Services.ShopService)
 ----------------------------------------------
 
 local rateLimits = {}
+local burstLimits = {}
 local function canCall(player, action, cooldown)
 	rateLimits[player.UserId] = rateLimits[player.UserId] or {}
 	local now = os.clock()
@@ -33,6 +34,25 @@ local function canCall(player, action, cooldown)
 	end
 	rateLimits[player.UserId][action] = now
 	return true
+end
+
+local function canCallBurst(player, action, maxCalls, windowSeconds)
+	burstLimits[player.UserId] = burstLimits[player.UserId] or {}
+	local now = os.clock()
+	local bucket = burstLimits[player.UserId][action]
+	if not bucket or now - bucket.startedAt >= windowSeconds then
+		burstLimits[player.UserId][action] = { startedAt = now, count = 1 }
+		return true
+	end
+	if bucket.count >= maxCalls then
+		return false
+	end
+	bucket.count = bucket.count + 1
+	return true
+end
+
+local function isValidIdentifier(value)
+	return type(value) == "string" and #value > 0 and #value <= 64
 end
 
 ----------------------------------------------
@@ -182,6 +202,13 @@ getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
+	if not canCall(player, "GetPlayerData", 0.2) then
+		return nil
+	end
+	local deadline = os.clock() + 15
+	while player.Parent and not DataService.getPlayerData(player) and os.clock() < deadline do
+		task.wait(0.1)
+	end
 	return DataService.getClientData(player)
 end
 
@@ -298,6 +325,7 @@ getRemoteFunction("GetQuestProgress").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
+	if not canCall(player, "GetQuestProgress", 0.25) then return {} end
 	return QuestService.getQuestProgress(player)
 end
 
@@ -325,6 +353,7 @@ getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
+	if not canCall(player, "GetMasteryState", 0.25) then return {} end
 	return MasteryService.getMasteryState(player)
 end
 
@@ -390,7 +419,7 @@ getRemoteFunction("AttackDestructible").OnServerInvoke = function(player, destru
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if type(destructibleId) ~= "string" then
+	if not isValidIdentifier(destructibleId) then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.attackDestructible(player, destructibleId)
@@ -401,7 +430,7 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if type(destructibleId) ~= "string" then
+	if not isValidIdentifier(destructibleId) then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.clickAttackDestructible(player, destructibleId)
@@ -415,7 +444,7 @@ getRemoteFunction("CritAttackDestructible").OnServerInvoke = function(player, de
 	if not canCall(player, "CritAttackDestructible", 0.2) then
 		return false, "Please wait before crit attacking again"
 	end
-	if type(destructibleId) ~= "string" then
+	if not isValidIdentifier(destructibleId) then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.critAttackDestructible(player, destructibleId)
@@ -426,11 +455,14 @@ getRemoteFunction("AssignPetTarget").OnServerInvoke = function(player, petInstan
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if type(petInstanceId) ~= "string" then
+	if not canCallBurst(player, "AssignPetTarget", 30, 1) then
+		return false, "Too many target changes"
+	end
+	if not isValidIdentifier(petInstanceId) then
 		return false, "Invalid pet ID parameter"
 	end
-	-- destructibleId can be nil (clearing target) or string
-	if destructibleId ~= nil and type(destructibleId) ~= "string" then
+	-- destructibleId can be nil (clearing target) or a bounded identifier.
+	if destructibleId ~= nil and not isValidIdentifier(destructibleId) then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
@@ -441,6 +473,7 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
+	if not canCall(player, "GetDiscoveredPets", 0.25) then return {} end
 	local data = DataService.getPlayerData(player)
 	if not data then
 		return {}
@@ -472,6 +505,7 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
+	if not canCall(player, "GetShopBuffs", 0.25) then return {} end
 	return ShopService.getActiveBuffs(player)
 end
 
@@ -483,8 +517,12 @@ end
 local _sessionJoinTimes = {}
 
 Players.PlayerAdded:Connect(function(player)
-	-- Load player data when they join
-	DataService.loadPlayerData(player)
+	-- Acquire the player's profile before any gameplay system can mutate it.
+	local loadedData, loadError = DataService.loadPlayerData(player)
+	if not loadedData then
+		player:Kick(loadError or "Your data could not be loaded safely. Please rejoin.")
+		return
+	end
 
 	-- Auto-give currency to admins (workaround: TextChatService does NOT fire player.Chatted)
 	local ADMIN_IDS = {357069526}
@@ -564,7 +602,7 @@ Players.PlayerAdded:Connect(function(player)
 				if remotes then
 					local xpEvent = remotes:FindFirstChild("XPUpdated")
 					if xpEvent then
-						xpEvent:FireClient(player, pData.xp or 0, level)
+						xpEvent:FireClient(player, level, pData.xp or 0, level * 100)
 					end
 				end
 				-- Update leaderstats
@@ -611,6 +649,7 @@ Players.PlayerRemoving:Connect(function(player)
 
 	-- Cleanup rate limits
 	rateLimits[player.UserId] = nil
+	burstLimits[player.UserId] = nil
 
 	-- Cleanup ShopService player state (active buffs)
 	ShopService._activeBuffs[player.UserId] = nil
@@ -627,7 +666,11 @@ end)
 -- Handle players who joined before script loaded
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(function()
-		DataService.loadPlayerData(player)
+		local loadedData, loadError = DataService.loadPlayerData(player)
+		if not loadedData then
+			player:Kick(loadError or "Your data could not be loaded safely. Please rejoin.")
+			return
+		end
 		_sessionJoinTimes[player.UserId] = os.time()
 
 		-- Create leaderstats for already-connected players

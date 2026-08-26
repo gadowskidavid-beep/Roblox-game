@@ -1,0 +1,57 @@
+name: Luau Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Selene Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-selene-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-selene-
+
+      - name: Install selene
+        run: cargo install selene --locked
+
+      - name: Run selene on src/
+        run: selene src/
+
+  test:
+    name: Luau Tests (optional)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if luau CLI is available
+        id: check-luau
+        run: |
+          if command -v luau &> /dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "luau CLI not found - skipping tests"
+          fi
+
+      - name: Run tests
+        if: steps.check-luau.outputs.available == 'true'
+        run: luau tests/run_tests.lua

@@ -127,24 +127,66 @@ local function buildEquippedListFromData(data)
 	return list
 end
 
--- Helper: find a Part in workspace.Zones that has a DestructibleId StringValue matching the given ID
-local function resolveDestructiblePart(destructibleId)
-	local zonesFolder = workspace:FindFirstChild("Zones")
-	if not zonesFolder then return nil end
-	for _, obj in ipairs(zonesFolder:GetDescendants()) do
-		if obj:IsA("BasePart") then
-			local idValue = obj:FindFirstChild("DestructibleId")
-			if idValue and idValue.Value == destructibleId then
-				return obj
-			end
-		end
+-- O(1) destructible lookup shared with PetController. The index follows runtime
+-- spawns/respawns and avoids a GetDescendants scan on every hit or heartbeat.
+local destructibleIndex = {}
+
+local function indexDestructibleDescendant(obj)
+	local part = nil
+	local idValue = nil
+	if obj:IsA("BasePart") then
+		part = obj
+		idValue = obj:FindFirstChild("DestructibleId")
+	elseif obj:IsA("StringValue") and obj.Name == "DestructibleId" and obj.Parent and obj.Parent:IsA("BasePart") then
+		part = obj.Parent
+		idValue = obj
 	end
+	if part and idValue and idValue.Value ~= "" then
+		destructibleIndex[idValue.Value] = part
+	end
+end
+
+local function removeDestructibleDescendant(obj)
+	if obj:IsA("StringValue") and obj.Name == "DestructibleId" then
+		destructibleIndex[obj.Value] = nil
+	elseif obj:IsA("BasePart") then
+		local idValue = obj:FindFirstChild("DestructibleId")
+		if idValue then destructibleIndex[idValue.Value] = nil end
+	end
+end
+
+local function attachDestructibleIndex(zonesFolder)
+	for _, obj in ipairs(zonesFolder:GetDescendants()) do
+		indexDestructibleDescendant(obj)
+	end
+	zonesFolder.DescendantAdded:Connect(indexDestructibleDescendant)
+	zonesFolder.DescendantRemoving:Connect(removeDestructibleDescendant)
+end
+
+local zonesFolder = workspace:FindFirstChild("Zones")
+if zonesFolder then
+	attachDestructibleIndex(zonesFolder)
+else
+	workspace.ChildAdded:Connect(function(child)
+		if child.Name == "Zones" then
+			attachDestructibleIndex(child)
+		end
+	end)
+end
+
+local function resolveDestructiblePart(destructibleId)
+	local part = destructibleIndex[destructibleId]
+	if part and part.Parent then
+		return part
+	end
+	destructibleIndex[destructibleId] = nil
 	return nil
 end
 
 -- Initialize all controllers
 effectsController:init()
 petController:init(Remotes)
+petController:setDestructibleIndex(destructibleIndex)
 campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
 musicController:init()
