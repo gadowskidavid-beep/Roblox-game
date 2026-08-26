@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "fix",
   "description": "Fix all three bugs (auto-hatch animation blocking shop, shared rate-limit key, no button feedback) and add pet inventory stacking feature",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "1. EggService.lua - Add optional 'source' parameter to purchaseAndHatch(player, eggType, source). Default source to 'manual'. Pass source as third argument in both EggHatchStart:FireClient(player, eggType, source) and EggHatchResult:FireClient(player, newPet, source).",
     "2. ShopService.lua - In _processAutoHatch(), change the call from ShopService._eggService.purchaseAndHatch(player, targetEgg) to ShopService._eggService.purchaseAndHatch(player, targetEgg, 'auto').",
@@ -31,5 +31,5 @@
     "Review _purchaseShopItem for button feedback pattern"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All changes implemented successfully. No build/test step available (Roblox Luau project). Verified via manual code review and grep that: (1) source param flows EggService->ShopService->Main.client.lua, (2) per-item rate limit key uses itemId, (3) _refreshPetGrid groups by composite key with quantity badge, (4) _purchaseShopItem shows button feedback, (5) _showAutoHatchToast displays brief toast for auto-hatched pets."
 }
