@@ -1,7 +1,14 @@
 {
   "task_id": "task-p0-p1-fixes-daily-rewards",
   "task_description": "Fix P0 bugs (pet targeting end-to-end, crit QTE tokenization), P1 bugs (world duplication, egg prompt deduplication), and implement Daily Rewards system (7-day cycle). Regenerate .rbxlx after all changes.",
-  "status": "in_progress",
+  "status": "completed",
   "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
-  "blocked_reason": null
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "python3 tools/generate_rbxlx.py produces valid 454KB .rbxlx. XML parse validates cleanly. All new sources embedded (DailyRewardService=28refs, _critTokens=6refs, _eggPromptConnections=4refs). No duplicate zone geometry (Zone1_GrueneWiesen=0refs). Semantic review: APPROVED with 4 non-blocking notes."
+  }
 }
