@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-002",
+  "type": "fix",
+  "description": "P1 Bug Fix #3: Remove duplicate world geometry (static zone baseplates/gates in generate_rbxlx.py collide with runtime-spawned zones from ZoneService). P1 Bug Fix #4: Egg prompt connection deduplication in Main.client.lua.",
+  "status": "pending",
+  "steps": [
+    "Step 1 - Remove static zone baseplates from generate_rbxlx.py build_workspace(): Remove all Zone1_GrueneWiesen through Zone8_Weltraum Part entries. Remove all ZoneGate entries (ZoneGate2 through ZoneGate8 with LeftPillar, RightPillar, TopArch, Barrier). Keep ONLY: LobbyFloor, SpawnLocation, LobbyToZonePath, CampaignPortal, Terrain, Camera. The runtime ZoneService.init() already creates all zone grounds via spawnZone() and all gates via _spawnZoneGates().",
+    "Step 2 - Egg prompt deduplication in Main.client.lua: In the onCharacterAdded function, the connectEggPrompts() local function connects ProximityPrompt.Triggered events but never disconnects old ones on respawn. Fix: (a) Add a module-level table '_eggPromptConnections = {}' before onCharacterAdded. (b) At the start of connectEggPrompts(), disconnect and clear all existing connections in _eggPromptConnections. (c) Store each new Triggered:Connect() return value in _eggPromptConnections. (d) Remove the 'task.delay(2, connectEggPrompts)' redundant second call since we already connect on CharacterAdded. OR keep it but with the disconnect guard it will be safe either way.",
+    "Step 3 - Verify ZoneService lobby spawn is still functional: ZoneService._spawnLobby() creates the lobby floor, spawn location, fountain, benches, lamps, portal, path, leaderboard, quest board, shop stand, welcome sign. The generate_rbxlx.py still creates a minimal LobbyFloor + SpawnLocation + LobbyToZonePath (static fallback). These may slightly overlap with ZoneService's runtime lobby but since they are at the same position, it is acceptable (ZoneService creates them in a 'Lobby' folder while the static ones are direct Workspace children). If there is clear overlap, remove the static Lobby parts from generate_rbxlx.py too and rely fully on ZoneService._spawnLobby()."
+  ],
+  "acceptance_criteria": [
+    "generate_rbxlx.py build_workspace() no longer creates Zone1-Zone8 baseplates",
+    "generate_rbxlx.py build_workspace() no longer creates ZoneGate2-ZoneGate8 parts",
+    "generate_rbxlx.py still creates LobbyFloor, SpawnLocation, LobbyToZonePath, CampaignPortal, Terrain, Camera",
+    "Main.client.lua connectEggPrompts disconnects old connections before creating new ones",
+    "No duplicate ProximityPrompt handlers accumulate on respawn",
+    "python tools/generate_rbxlx.py succeeds",
+    "Generated .rbxlx is valid XML"
+  ],
+  "verification": [
+    "Run: python tools/generate_rbxlx.py",
+    "Run: python -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('XML valid')\"",
+    "Grep for 'Zone1_GrueneWiesen' in tools/generate_rbxlx.py - should NOT be found",
+    "Grep for 'ZoneGate' in tools/generate_rbxlx.py - should NOT be found",
+    "Grep for '_eggPromptConnections' in Main.client.lua - should be found"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

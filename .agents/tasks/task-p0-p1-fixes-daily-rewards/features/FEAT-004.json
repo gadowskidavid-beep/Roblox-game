@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-004",
+  "type": "chore",
+  "description": "Final step: Regenerate BATTLE_PETS.rbxlx with all changes, validate XML, verify all new sources are embedded, and commit everything.",
+  "status": "pending",
+  "steps": [
+    "Step 1 - Run python tools/generate_rbxlx.py from the project root to regenerate BATTLE_PETS.rbxlx with all source changes.",
+    "Step 2 - Validate XML well-formedness: python -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('XML valid')\"",
+    "Step 3 - Verify that DailyRewardService source appears in the .rbxlx: grep for 'DailyRewardService' in the .rbxlx file.",
+    "Step 4 - Verify that _critTokens/critToken logic appears in the .rbxlx (embedded ZoneService source).",
+    "Step 5 - Verify that _eggPromptConnections appears in the .rbxlx (embedded Main.client source).",
+    "Step 6 - Check git diff to confirm all expected changes are present. Stage and commit with a clear message like 'feat: P0/P1 bug fixes + daily rewards system'."
+  ],
+  "acceptance_criteria": [
+    "python tools/generate_rbxlx.py runs without errors",
+    "BATTLE_PETS.rbxlx passes XML validation",
+    "All new Lua source files are embedded in the .rbxlx",
+    "Git commit created with all changes"
+  ],
+  "verification": [
+    "Run: python tools/generate_rbxlx.py",
+    "Run: python -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('XML valid')\"",
+    "Run: grep -l 'DailyRewardService' BATTLE_PETS.rbxlx",
+    "Run: grep -l '_critTokens' BATTLE_PETS.rbxlx",
+    "Run: git log --oneline -1"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

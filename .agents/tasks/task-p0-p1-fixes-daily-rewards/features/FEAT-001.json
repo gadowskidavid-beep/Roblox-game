@@ -1,0 +1,34 @@
+{
+  "id": "FEAT-001",
+  "type": "fix",
+  "description": "P0 Bug Fix #1: Pet targeting end-to-end and P0 Bug Fix #2: Crit QTE tokenization. These are the two highest priority bugs that must be fixed together since they share ZoneService attack code paths.",
+  "status": "completed",
+  "steps": [
+    "Step 1 - Crit Token System in ZoneService.lua: (a) Add a _critTokens table: [userId] = { [destructibleId] = token_string }. (b) In clickAttackDestructible(), after setting the crit window, generate a unique token (HttpService:GenerateGUID), store it in _critTokens[userId][destructibleId], and RETURN the token as part of the success response (return true, token). (c) In critAttackDestructible(), add a third parameter 'critToken'. Validate that the provided token matches _critTokens[userId][destructibleId]. If it matches, consume it (set to nil) and proceed with crit damage. If it does not match or is missing, reject the crit. Remove the old crit window time-based check OR keep it as secondary validation but the token is primary.",
+    "Step 2 - Update Main.server.lua CritAttackDestructible handler: The CritAttackDestructible RemoteFunction handler currently only passes (player, destructibleId). Update it to also pass a third argument 'critToken' from the client: function(player, destructibleId, critToken) and pass it through to ZoneService.critAttackDestructible(player, destructibleId, critToken).",
+    "Step 3 - Update Main.client.lua to receive and use the crit token: (a) In the fireClickDamage function, ClickAttackDestructible:InvokeServer() returns (success, token). Capture this token. (b) Pass the token into effectsController:spawnCritButton() as an additional parameter. (c) In the crit button callback, pass the token to CritAttackDestructible:InvokeServer(target.destructibleId, token). (d) If the server returns false (rejected), do NOT show the crit success visual - show nothing or a fail indicator.",
+    "Step 4 - Update EffectsController.lua spawnCritButton: Add a 'critToken' parameter that gets passed through to the onCritClicked callback (or just let Main.client.lua closure capture it - either works). Reduce the button timeout from 3 seconds to 2 seconds to match the ~2 second server crit window duration.",
+    "Step 5 - Verify PetController.lua AssignPetTarget calls: The PetController already calls self._assignPetTarget:InvokeServer(uniqueId, destructibleId) in sendPetToAttack() and clears with InvokeServer(petId, nil). Verify this is working correctly in all code paths: (a) sendPetToAttack - calls assign when target changes, (b) auto-attack loop - calls assign when clearing, (c) cancelAllAttacks/clearManualTarget/cleanup - all call clear. The PetController already has this implemented. Confirm no changes needed here.",
+    "Step 6 - Rate-limit AssignPetTarget on server: In Main.server.lua, add rate limiting to the AssignPetTarget handler (0.1 second cooldown per player) using the existing canCall() pattern to prevent spam.",
+    "Step 7 - Validate that ZoneService.attackDestructible properly requires _petTargets assignment: It already checks 'Only count pets that are assigned to THIS target' via playerTargets. Confirm this is correct."
+  ],
+  "acceptance_criteria": [
+    "ClickAttackDestructible returns a crit token (string) on success",
+    "CritAttackDestructible requires a valid token and consumes it on use (one-shot)",
+    "CritAttackDestructible rejects requests with invalid/missing/already-used tokens",
+    "AssignPetTarget has rate limiting (0.1s cooldown)",
+    "Crit button timeout is 2 seconds (matching server window)",
+    "Code compiles cleanly (no syntax errors detectable by static analysis)",
+    "python tools/generate_rbxlx.py succeeds"
+  ],
+  "verification": [
+    "Run: python tools/generate_rbxlx.py",
+    "Run: python -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('XML valid')\"",
+    "Grep for 'critToken' in ZoneService.lua to confirm token parameter exists",
+    "Grep for '_critTokens' in ZoneService.lua to confirm token storage exists",
+    "Grep for 'critToken' in Main.server.lua to confirm it passes the token",
+    "Grep for 'critToken' in Main.client.lua to confirm client captures and sends token"
+  ],
+  "blocked_reason": null,
+  "findings": "Build uses python3 (not python). generate_rbxlx.py succeeds and XML validates. CRIT_WINDOW_DURATION changed from 3 to 2 seconds in ZoneService to match the 2-second client timeout. Token system uses HttpService:GenerateGUID for unique token generation."
+}

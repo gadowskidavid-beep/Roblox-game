@@ -405,22 +405,25 @@ local function fireClickDamage(target)
 	if (now - lastClickDamageTime) < CLICK_COOLDOWN then return end
 	lastClickDamageTime = now
 
-	-- Fire click attack to server (always 1 damage)
-	ClickAttackDestructible:InvokeServer(target.destructibleId)
+	-- Fire click attack to server (always 1 damage); returns (success, critToken)
+	local success, critToken = ClickAttackDestructible:InvokeServer(target.destructibleId)
 
 	-- Spawn a crit button only if there is NOT already one active
 	-- Prevents spammy rapid spawn/destroy cycles on every click
-	if target.part and target.part.Parent and not effectsController:hasCritButtonActive() then
+	if success and critToken and target.part and target.part.Parent and not effectsController:hasCritButtonActive() then
 		effectsController:spawnCritButton(target.part, target.destructibleId, function()
-			-- Crit button was clicked: fire crit attack to server
-			CritAttackDestructible:InvokeServer(target.destructibleId)
+			-- Crit button was clicked: fire crit attack to server with the token
+			local critSuccess = CritAttackDestructible:InvokeServer(target.destructibleId, critToken)
 
-			-- Show crit visual feedback
-			effectsController:playCritSound(target.part.Position)
+			-- Only show crit success visual if server accepted the crit
+			if critSuccess then
+				-- Show crit visual feedback
+				effectsController:playCritSound(target.part.Position)
 
-			-- Show gold "CRIT! 2" popup
-			local critPos = target.part.Position + Vector3.new(0, 2, 0)
-			petController:showDamageText(critPos, 2, true)
+				-- Show gold "CRIT! 2" popup
+				local critPos = target.part.Position + Vector3.new(0, 2, 0)
+				petController:showDamageText(critPos, 2, true)
+			end
 		end)
 	end
 

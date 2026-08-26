@@ -896,8 +896,8 @@ function EffectsController:spawnCritButton(destructiblePart, destructibleId, onC
 		end
 	end)
 
-	-- Timeout: disappear after 3 seconds if not clicked
-	task.delay(3, function()
+	-- Timeout: disappear after 2 seconds if not clicked
+	task.delay(2, function()
 		if clicked then return end
 		if not billboardGui or not billboardGui.Parent then return end
 

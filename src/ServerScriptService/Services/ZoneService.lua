@@ -29,6 +29,11 @@ ZoneService._critCooldowns = {} -- [userId] = last crit attack time (os.clock)
 -- Crit window tracking: [userId] = { [destructibleId] = expiry time (os.clock) }
 ZoneService._critWindows = {}
 
+-- Crit token tracking: [userId] = { [destructibleId] = token_string }
+-- A unique token is generated on each successful click attack and must be presented
+-- for a crit attack to be accepted. Tokens are single-use (consumed on validation).
+ZoneService._critTokens = {}
+
 -- Pet target assignments: [userId] = { [petInstanceId] = destructibleId }
 ZoneService._petTargets = {}
 
@@ -36,7 +41,7 @@ ZoneService._petTargets = {}
 local ATTACK_COOLDOWN = 0.5 -- seconds between pet attacks per player
 local CLICK_ATTACK_COOLDOWN = 0.2 -- seconds between click attacks per player
 local CRIT_ATTACK_COOLDOWN = 0.2 -- seconds between crit attacks per player
-local CRIT_WINDOW_DURATION = 3 -- seconds a crit window stays active after click attack
+local CRIT_WINDOW_DURATION = 2 -- seconds a crit window stays active after click attack
 local MAX_ATTACK_DISTANCE = 50 -- maximum studs between player and destructible
 
 -- Zone position offsets (each zone is spaced apart - no gap between zones)
@@ -1626,6 +1631,7 @@ function ZoneService.onPlayerRemoving(player)
 		ZoneService._clickCooldowns[userId] = nil
 		ZoneService._critCooldowns[userId] = nil
 		ZoneService._critWindows[userId] = nil
+		ZoneService._critTokens[userId] = nil
 		ZoneService._petTargets[userId] = nil
 	end
 end
@@ -1861,6 +1867,14 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 	end
 	ZoneService._critWindows[userId][destructibleId] = os.clock() + CRIT_WINDOW_DURATION
 
+	-- Generate a unique crit token for this click (one-shot, must be presented for crit)
+	if not ZoneService._critTokens[userId] then
+		ZoneService._critTokens[userId] = {}
+	end
+	local HttpService = game:GetService("HttpService")
+	local critToken = HttpService:GenerateGUID(false)
+	ZoneService._critTokens[userId][destructibleId] = critToken
+
 	-- Apply damage
 	destructible.hp = destructible.hp - clickDamage
 
@@ -1946,11 +1960,11 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 		end
 	end
 
-	return true, nil
+	return true, critToken
 end
 
 -- Crit-attack a destructible (player clicked a crit circle, deals 2 damage if crit window active)
-function ZoneService.critAttackDestructible(player, destructibleId)
+function ZoneService.critAttackDestructible(player, destructibleId, critToken)
 	if not player or type(destructibleId) ~= "string" then
 		return false, "Invalid parameters"
 	end
@@ -1985,14 +1999,29 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 		return false, "Too far from destructible"
 	end
 
-	-- Validate crit window is active for this player and destructible
+	-- Validate crit token (primary validation - must match stored token)
+	if type(critToken) ~= "string" or critToken == "" then
+		return false, "Invalid crit token"
+	end
+	local playerCritTokens = ZoneService._critTokens[userId]
+	if not playerCritTokens then
+		return false, "No crit token active"
+	end
+	local storedToken = playerCritTokens[destructibleId]
+	if not storedToken or storedToken ~= critToken then
+		return false, "Crit token mismatch"
+	end
+	-- Consume the token immediately (one-shot)
+	playerCritTokens[destructibleId] = nil
+
+	-- Secondary validation: also check crit window timing
 	local playerCritWindows = ZoneService._critWindows[userId]
 	if not playerCritWindows then
 		return false, "No crit window active"
 	end
 	local critExpiry = playerCritWindows[destructibleId]
 	if not critExpiry or now > critExpiry then
-		-- Crit window expired or never existed
+		-- Crit window expired
 		playerCritWindows[destructibleId] = nil
 		return false, "Crit window expired"
 	end

@@ -1,0 +1,40 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "New Feature: Daily Rewards System (7-day cycle) with server-authoritative validation, DataStore persistence, and client UI popup.",
+  "status": "pending",
+  "steps": [
+    "Step 1 - Create src/ServerScriptService/Services/DailyRewardService.lua: A new ModuleScript service following the same pattern as other services (singleton table, .init() function). Implementation: (a) DailyRewardService._dataService reference. (b) init(dataService) stores the reference. (c) REWARDS table defining the 7-day cycle: Day1={type='Coins',amount=500}, Day2={type='Diamonds',amount=50}, Day3={type='Boost',boostType='2xCoins',duration=1800}, Day4={type='Coins',amount=1000}, Day5={type='FreeEgg',eggType='PremiumEgg'}, Day6={type='Diamonds',amount=100}, Day7={type='Special',rewards={{type='Coins',amount=5000},{type='Diamonds',amount=500}}}. (d) claimDailyReward(player) function: gets player data, checks data.dailyRewards.lastClaimTimestamp and data.dailyRewards.currentDay. Uses os.time() and calculates UTC day boundaries. If a new UTC day has passed since last claim, allows claim. Increments currentDay (wraps back to 1 after 7). If more than 2 days missed, resets streak to day 1. Awards the reward. Returns {success=true, day=N, reward=rewardDef, nextClaimTime=timestamp}. (e) getDailyRewardStatus(player) function: returns {currentDay, canClaim, nextClaimTime, rewards=REWARDS} for the UI. (f) _awardReward(player, rewardDef) helper that calls CurrencyService.addCoins/addDiamonds or EggService for free hatch.",
+    "Step 2 - Add dailyRewards field to DataService.lua default data schema: Add to getDefaultData(): dailyRewards = { lastClaimTimestamp = 0, currentDay = 0 }. Also add it to the getClientData() function so clients can read their daily reward status.",
+    "Step 3 - Wire DailyRewardService in Main.server.lua: (a) Require DailyRewardService. (b) Call DailyRewardService.init(DataService, CurrencyService, EggService) after other services. (c) Add 'ClaimDailyReward' and 'GetDailyRewardStatus' to the remoteFunctions list. (d) Wire handlers: ClaimDailyReward calls DailyRewardService.claimDailyReward(player) with 5s cooldown. GetDailyRewardStatus calls DailyRewardService.getDailyRewardStatus(player). (e) Add a 'DailyRewardAvailable' RemoteEvent that fires to client on join if they can claim.",
+    "Step 4 - Add DailyRewardService to generate_rbxlx.py: Add 'DailyRewardService' to the service_names list in build_server_script_service().",
+    "Step 5 - Client UI for Daily Rewards in Main.client.lua: (a) Add WaitForChild refs for ClaimDailyReward RemoteFunction and GetDailyRewardStatus RemoteFunction and DailyRewardAvailable RemoteEvent. (b) On DailyRewardAvailable event or on initial load, call GetDailyRewardStatus. If canClaim is true, show a popup via uiController:showDailyRewardPopup(status). (c) The popup shows all 7 days with the current day highlighted, a 'Claim' button. On claim click, invoke ClaimDailyReward. On success, show reward animation and close popup.",
+    "Step 6 - Add showDailyRewardPopup to UIController.lua: Create a ScreenGui with a Frame showing 7 day slots (icons/labels for each day's reward), highlight the current claimable day, dim already-claimed days. Include a 'Claim!' button that fires the callback. Show reward name/amount. Close button. Auto-show on login when reward is available."
+  ],
+  "acceptance_criteria": [
+    "DailyRewardService.lua exists in src/ServerScriptService/Services/",
+    "claimDailyReward validates UTC day boundaries and prevents double-claiming",
+    "Streak resets after 2+ missed days",
+    "7-day cycle wraps correctly (day 7 -> day 1)",
+    "DataService default schema includes dailyRewards field",
+    "Main.server.lua requires and initializes DailyRewardService",
+    "ClaimDailyReward and GetDailyRewardStatus RemoteFunctions are created and wired",
+    "DailyRewardAvailable RemoteEvent is created",
+    "generate_rbxlx.py includes DailyRewardService in service_names",
+    "Client shows daily reward popup on login when claimable",
+    "python tools/generate_rbxlx.py succeeds",
+    "Generated .rbxlx is valid XML"
+  ],
+  "verification": [
+    "Run: python tools/generate_rbxlx.py",
+    "Run: python -c \"import xml.etree.ElementTree as ET; ET.parse('BATTLE_PETS.rbxlx'); print('XML valid')\"",
+    "Verify file exists: src/ServerScriptService/Services/DailyRewardService.lua",
+    "Grep for 'DailyRewardService' in Main.server.lua",
+    "Grep for 'DailyRewardService' in generate_rbxlx.py",
+    "Grep for 'dailyRewards' in DataService.lua",
+    "Grep for 'ClaimDailyReward' in Main.server.lua",
+    "Grep for 'DailyReward' in Main.client.lua"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

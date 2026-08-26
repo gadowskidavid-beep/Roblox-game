@@ -407,7 +407,7 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 end
 
 -- CritAttackDestructible (player clicked a crit circle - deals 2 damage if crit window active)
-getRemoteFunction("CritAttackDestructible").OnServerInvoke = function(player, destructibleId)
+getRemoteFunction("CritAttackDestructible").OnServerInvoke = function(player, destructibleId, critToken)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
@@ -417,13 +417,19 @@ getRemoteFunction("CritAttackDestructible").OnServerInvoke = function(player, de
 	if type(destructibleId) ~= "string" then
 		return false, "Invalid destructible ID parameter"
 	end
-	return ZoneService.critAttackDestructible(player, destructibleId)
+	if critToken ~= nil and type(critToken) ~= "string" then
+		return false, "Invalid crit token parameter"
+	end
+	return ZoneService.critAttackDestructible(player, destructibleId, critToken)
 end
 
 -- AssignPetTarget (client tells server which pet targets which destructible)
 getRemoteFunction("AssignPetTarget").OnServerInvoke = function(player, petInstanceId, destructibleId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not canCall(player, "AssignPetTarget", 0.1) then
+		return false, "Please wait before assigning again"
 	end
 	if type(petInstanceId) ~= "string" then
 		return false, "Invalid pet ID parameter"
