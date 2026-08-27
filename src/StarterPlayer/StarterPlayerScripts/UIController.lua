@@ -16,6 +16,7 @@
 ]]
 
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -25,6 +26,7 @@ local PetData = require(Shared:WaitForChild("PetData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
+local ShopData = require(Shared:WaitForChild("ShopData"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -142,8 +144,24 @@ function UIController.new()
 	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
 	-- Pet index (collection book) state
 	self._discoveredPets = {}
-	-- Shop buffs state
+	-- Shop state and live countdown UI
 	self._shopBuffs = {}
+	self._shopState = {
+		buffs = {},
+		purchases = { extraEquipSlots = 0 },
+		maxExtraEquipSlots = ShopData.Items.ExtraEquipSlot.maxPurchases or 5,
+	}
+	self._shopBuffExpiry = {}
+	self._shopCards = {}
+	self._shopDiamondLabel = nil
+	self._shopFeedbackLabel = nil
+	self._shopFeedbackToken = 0
+	self._shopPurchaseInFlight = nil
+	self._shopTimerConnection = nil
+	self._shopConnections = {}
+	self._screenAnimationTokens = {}
+	self._screenStates = {}
+	self._screenRestingPositions = {}
 	-- New pet discovery toast queue
 	self._discoveryToastQueue = {}
 	self._discoveryToastActive = false
@@ -2260,105 +2278,378 @@ function UIController:unlockZone(zoneId)
 end
 
 --------------------------------------------------------------------------------
--- SHOP SCREEN (Diamond potions and permanent purchases)
+-- SHOP SCREEN (Pet Simulator-style potion shop)
 --------------------------------------------------------------------------------
+local function shopColor(rgb)
+	return Color3.fromRGB(rgb[1] or 255, rgb[2] or 255, rgb[3] or 255)
+end
+
+local function addShopCorner(instance, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = instance
+	return corner
+end
+
+local function addShopStroke(instance, color, thickness)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color
+	stroke.Thickness = thickness
+	stroke.Parent = instance
+	return stroke
+end
+
+local function formatShopTime(seconds)
+	seconds = math.max(0, math.ceil(tonumber(seconds) or 0))
+	return string.format("%02d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+function UIController:_createShopItemArt(parent, item)
+	local color = shopColor(item.color)
+	local accent = shopColor(item.accentColor)
+	local art = Instance.new("Frame")
+	art.Name = "ItemArt"
+	art.Size = UDim2.fromScale(0.29, 0.62)
+	art.Position = UDim2.fromScale(0.035, 0.18)
+	art.BackgroundTransparency = 1
+	art.Parent = parent
+
+	if item.artType == "potion" then
+		local glow = Instance.new("Frame")
+		glow.Name = "Glow"
+		glow.AnchorPoint = Vector2.new(0.5, 0.5)
+		glow.Size = UDim2.fromScale(0.9, 0.72)
+		glow.Position = UDim2.fromScale(0.5, 0.58)
+		glow.BackgroundColor3 = accent
+		glow.BackgroundTransparency = 0.68
+		glow.Parent = art
+		addShopCorner(glow, 999)
+
+		local bottle = Instance.new("Frame")
+		bottle.Name = "Bottle"
+		bottle.AnchorPoint = Vector2.new(0.5, 1)
+		bottle.Size = UDim2.fromScale(0.62, 0.62)
+		bottle.Position = UDim2.fromScale(0.5, 0.92)
+		bottle.BackgroundColor3 = color
+		bottle.Parent = art
+		addShopCorner(bottle, 18)
+		addShopStroke(bottle, Color3.fromRGB(255, 255, 255), 3)
+
+		local gradient = Instance.new("UIGradient")
+		gradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, accent),
+			ColorSequenceKeypoint.new(1, color),
+		})
+		gradient.Rotation = 25
+		gradient.Parent = bottle
+
+		local shine = Instance.new("Frame")
+		shine.Size = UDim2.fromScale(0.14, 0.56)
+		shine.Position = UDim2.fromScale(0.16, 0.18)
+		shine.BackgroundColor3 = COLORS.White
+		shine.BackgroundTransparency = 0.38
+		shine.Parent = bottle
+		addShopCorner(shine, 999)
+
+		local neck = Instance.new("Frame")
+		neck.Name = "Neck"
+		neck.AnchorPoint = Vector2.new(0.5, 1)
+		neck.Size = UDim2.fromScale(0.3, 0.24)
+		neck.Position = UDim2.fromScale(0.5, 0.36)
+		neck.BackgroundColor3 = accent
+		neck.Parent = art
+		addShopCorner(neck, 6)
+		addShopStroke(neck, COLORS.White, 2)
+
+		local cork = Instance.new("Frame")
+		cork.Name = "Cork"
+		cork.AnchorPoint = Vector2.new(0.5, 1)
+		cork.Size = UDim2.fromScale(0.4, 0.13)
+		cork.Position = UDim2.fromScale(0.5, 0.17)
+		cork.BackgroundColor3 = Color3.fromRGB(132, 82, 48)
+		cork.Parent = art
+		addShopCorner(cork, 5)
+		addShopStroke(cork, Color3.fromRGB(88, 50, 30), 2)
+	elseif item.artType == "egg" then
+		local egg = Instance.new("Frame")
+		egg.Name = "Egg"
+		egg.AnchorPoint = Vector2.new(0.5, 0.5)
+		egg.Size = UDim2.fromScale(0.66, 0.78)
+		egg.Position = UDim2.fromScale(0.5, 0.54)
+		egg.BackgroundColor3 = accent
+		egg.Parent = art
+		addShopCorner(egg, 999)
+		addShopStroke(egg, COLORS.White, 3)
+
+		local spotPositions = {
+			{ 0.20, 0.28, 0.24 },
+			{ 0.58, 0.18, 0.19 },
+			{ 0.50, 0.56, 0.28 },
+			{ 0.16, 0.68, 0.17 },
+		}
+		for index, spotData in ipairs(spotPositions) do
+			local spot = Instance.new("Frame")
+			spot.Name = "Spot" .. tostring(index)
+			spot.Size = UDim2.fromScale(spotData[3], spotData[3])
+			spot.Position = UDim2.fromScale(spotData[1], spotData[2])
+			spot.BackgroundColor3 = color
+			spot.Rotation = index * 13
+			spot.Parent = egg
+			addShopCorner(spot, 999)
+		end
+	else
+		local pawColor = color
+		local pad = Instance.new("Frame")
+		pad.Name = "PawPad"
+		pad.AnchorPoint = Vector2.new(0.5, 0.5)
+		pad.Size = UDim2.fromScale(0.55, 0.42)
+		pad.Position = UDim2.fromScale(0.42, 0.64)
+		pad.BackgroundColor3 = pawColor
+		pad.Rotation = -8
+		pad.Parent = art
+		addShopCorner(pad, 999)
+		addShopStroke(pad, COLORS.White, 2)
+
+		local toes = {
+			{ 0.12, 0.22 }, { 0.36, 0.08 }, { 0.62, 0.12 }, { 0.78, 0.32 },
+		}
+		for index, position in ipairs(toes) do
+			local toe = Instance.new("Frame")
+			toe.Name = "Toe" .. tostring(index)
+			toe.Size = UDim2.fromScale(0.23, 0.23)
+			toe.Position = UDim2.fromScale(position[1], position[2])
+			toe.BackgroundColor3 = pawColor
+			toe.Parent = art
+			addShopCorner(toe, 999)
+			addShopStroke(toe, COLORS.White, 2)
+		end
+
+		local plus = Instance.new("TextLabel")
+		plus.Name = "Plus"
+		plus.AnchorPoint = Vector2.new(0.5, 0.5)
+		plus.Size = UDim2.fromScale(0.45, 0.45)
+		plus.Position = UDim2.fromScale(0.76, 0.72)
+		plus.BackgroundColor3 = accent
+		plus.Text = "+"
+		plus.TextColor3 = Color3.fromRGB(120, 35, 90)
+		plus.Font = Enum.Font.GothamBlack
+		plus.TextScaled = true
+		plus.Parent = art
+		addShopCorner(plus, 999)
+		addShopStroke(plus, COLORS.White, 3)
+	end
+end
+
 function UIController:_createShopScreen()
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "ShopScreen"
 	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = true
+	screenGui.DisplayOrder = 60
 	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	screenGui.Enabled = false
 	screenGui.Parent = self._playerGui
 	self._screens.ShopScreen = screenGui
 
+	local backdrop = Instance.new("Frame")
+	backdrop.Name = "Backdrop"
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.BackgroundColor3 = Color3.fromRGB(12, 20, 36)
+	backdrop.BackgroundTransparency = 0.28
+	backdrop.BorderSizePixel = 0
+	backdrop.Active = true
+	backdrop.Parent = screenGui
+
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Name = "MainFrame"
-	mainFrame.Size = UDim2.fromScale(0.7, 0.7)
-	mainFrame.Position = UDim2.fromScale(0.15, 0.15)
-	mainFrame.BackgroundColor3 = COLORS.Background
+	mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	mainFrame.Size = UDim2.fromScale(0.92, 0.88)
+	mainFrame.Position = UDim2.fromScale(0.5, 0.5)
+	mainFrame.BackgroundColor3 = Color3.fromRGB(64, 218, 77)
 	mainFrame.BorderSizePixel = 0
 	mainFrame.Parent = screenGui
+	addShopCorner(mainFrame, 26)
+	addShopStroke(mainFrame, Color3.fromRGB(26, 145, 45), 6)
 
-	local mainCorner = Instance.new("UICorner")
-	mainCorner.CornerRadius = UDim.new(0, 16)
-	mainCorner.Parent = mainFrame
+	local sizeConstraint = Instance.new("UISizeConstraint")
+	sizeConstraint.MaxSize = Vector2.new(980, 760)
+	sizeConstraint.Parent = mainFrame
 
-	local mainStroke = Instance.new("UIStroke")
-	mainStroke.Thickness = 5
-	mainStroke.Color = COLORS.NavShop
-	mainStroke.Parent = mainFrame
+	local innerPanel = Instance.new("Frame")
+	innerPanel.Name = "InnerPanel"
+	innerPanel.Size = UDim2.new(1, -22, 1, -22)
+	innerPanel.Position = UDim2.fromOffset(11, 11)
+	innerPanel.BackgroundColor3 = Color3.fromRGB(250, 255, 247)
+	innerPanel.BorderSizePixel = 0
+	innerPanel.ClipsDescendants = true
+	innerPanel.Parent = mainFrame
+	addShopCorner(innerPanel, 20)
+
+	local headerGlow = Instance.new("Frame")
+	headerGlow.Name = "HeaderGlow"
+	headerGlow.Size = UDim2.new(1, 0, 0, 108)
+	headerGlow.BackgroundColor3 = Color3.fromRGB(221, 255, 209)
+	headerGlow.BorderSizePixel = 0
+	headerGlow.Parent = innerPanel
 
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
-	title.Size = UDim2.fromScale(0.4, 0.08)
-	title.Position = UDim2.fromScale(0.3, 0.01)
+	title.Size = UDim2.new(0.58, 0, 0, 58)
+	title.Position = UDim2.new(0.21, 0, 0, 12)
 	title.BackgroundTransparency = 1
-	title.Text = "SHOP"
-	title.TextColor3 = COLORS.NavShop
-	title.Font = Enum.Font.GothamBold
+	title.Text = "POTION SHOP"
+	title.TextColor3 = Color3.fromRGB(49, 201, 65)
+	title.Font = Enum.Font.GothamBlack
 	title.TextScaled = true
-	title.Parent = mainFrame
+	title.Parent = innerPanel
+	addShopStroke(title, Color3.fromRGB(19, 104, 38), 2)
 
 	local subtitle = Instance.new("TextLabel")
 	subtitle.Name = "Subtitle"
-	subtitle.Size = UDim2.fromScale(0.6, 0.04)
-	subtitle.Position = UDim2.fromScale(0.2, 0.085)
+	subtitle.Size = UDim2.new(0.56, 0, 0, 25)
+	subtitle.Position = UDim2.new(0.22, 0, 0, 67)
 	subtitle.BackgroundTransparency = 1
-	subtitle.Text = "Spend diamonds on powerful buffs!"
-	subtitle.TextColor3 = Color3.fromRGB(180, 180, 200)
-	subtitle.Font = Enum.Font.Gotham
+	subtitle.Text = "POWER UP YOUR TEAM!"
+	subtitle.TextColor3 = Color3.fromRGB(76, 124, 83)
+	subtitle.Font = Enum.Font.GothamBold
 	subtitle.TextScaled = true
-	subtitle.Parent = mainFrame
+	subtitle.Parent = innerPanel
 
 	local closeBtn = Instance.new("TextButton")
 	closeBtn.Name = "CloseBtn"
-	closeBtn.Size = UDim2.fromOffset(44, 44)
-	closeBtn.Position = UDim2.new(1, -54, 0, 10)
-	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.AnchorPoint = Vector2.new(1, 0)
+	closeBtn.Size = UDim2.fromOffset(52, 52)
+	closeBtn.Position = UDim2.new(1, -14, 0, 14)
+	closeBtn.BackgroundColor3 = Color3.fromRGB(239, 63, 73)
 	closeBtn.Text = "X"
 	closeBtn.TextColor3 = COLORS.White
-	closeBtn.Font = Enum.Font.GothamBold
-	closeBtn.TextSize = 24
-	closeBtn.Parent = mainFrame
-
-	local closeBtnCorner = Instance.new("UICorner")
-	closeBtnCorner.CornerRadius = UDim.new(1, 0)
-	closeBtnCorner.Parent = closeBtn
-
-	closeBtn.MouseButton1Click:Connect(function()
-		self:toggleScreen("ShopScreen")
+	closeBtn.Font = Enum.Font.GothamBlack
+	closeBtn.TextSize = 27
+	closeBtn.AutoButtonColor = false
+	closeBtn.Parent = innerPanel
+	addShopCorner(closeBtn, 999)
+	addShopStroke(closeBtn, Color3.fromRGB(150, 25, 40), 4)
+	closeBtn.Activated:Connect(function()
+		self:closeScreen("ShopScreen")
 	end)
+
+	local diamondPill = Instance.new("Frame")
+	diamondPill.Name = "DiamondPill"
+	diamondPill.Size = UDim2.fromOffset(176, 42)
+	diamondPill.Position = UDim2.fromOffset(20, 74)
+	diamondPill.BackgroundColor3 = Color3.fromRGB(22, 67, 105)
+	diamondPill.Parent = innerPanel
+	addShopCorner(diamondPill, 999)
+	addShopStroke(diamondPill, Color3.fromRGB(35, 188, 231), 3)
+
+	local diamondIcon = Instance.new("TextLabel")
+	diamondIcon.Name = "DiamondIcon"
+	diamondIcon.Size = UDim2.fromOffset(36, 36)
+	diamondIcon.Position = UDim2.fromOffset(4, 3)
+	diamondIcon.BackgroundTransparency = 1
+	diamondIcon.Text = "◆"
+	diamondIcon.TextColor3 = Color3.fromRGB(80, 230, 255)
+	diamondIcon.Font = Enum.Font.GothamBlack
+	diamondIcon.TextSize = 28
+	diamondIcon.Parent = diamondPill
+
+	local diamondLabel = Instance.new("TextLabel")
+	diamondLabel.Name = "DiamondBalance"
+	diamondLabel.Size = UDim2.new(1, -43, 1, 0)
+	diamondLabel.Position = UDim2.fromOffset(40, 0)
+	diamondLabel.BackgroundTransparency = 1
+	diamondLabel.Text = tostring(self._diamonds)
+	diamondLabel.TextColor3 = COLORS.White
+	diamondLabel.Font = Enum.Font.GothamBlack
+	diamondLabel.TextSize = 20
+	diamondLabel.TextXAlignment = Enum.TextXAlignment.Left
+	diamondLabel.Parent = diamondPill
+	self._shopDiamondLabel = diamondLabel
+
+	local feedback = Instance.new("TextLabel")
+	feedback.Name = "Feedback"
+	feedback.AnchorPoint = Vector2.new(0.5, 0)
+	feedback.Size = UDim2.new(0.52, 0, 0, 30)
+	feedback.Position = UDim2.new(0.5, 0, 0, 82)
+	feedback.BackgroundTransparency = 1
+	feedback.Text = ""
+	feedback.TextColor3 = Color3.fromRGB(40, 145, 60)
+	feedback.Font = Enum.Font.GothamBold
+	feedback.TextScaled = true
+	feedback.Parent = innerPanel
+	self._shopFeedbackLabel = feedback
 
 	local scrollFrame = Instance.new("ScrollingFrame")
 	scrollFrame.Name = "ShopGrid"
-	scrollFrame.Size = UDim2.fromScale(0.94, 0.76)
-	scrollFrame.Position = UDim2.fromScale(0.03, 0.14)
-	scrollFrame.BackgroundTransparency = 1
-	scrollFrame.ScrollBarThickness = 8
-	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(0, 150, 255)
-	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
-	scrollFrame.Parent = mainFrame
+	scrollFrame.Size = UDim2.new(1, -32, 1, -132)
+	scrollFrame.Position = UDim2.fromOffset(16, 122)
+	scrollFrame.BackgroundColor3 = Color3.fromRGB(235, 247, 232)
+	scrollFrame.BackgroundTransparency = 0.2
+	scrollFrame.BorderSizePixel = 0
+	scrollFrame.ScrollBarThickness = 9
+	scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(57, 200, 72)
+	scrollFrame.CanvasSize = UDim2.fromOffset(0, 0)
+	scrollFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+	scrollFrame.Parent = innerPanel
+	addShopCorner(scrollFrame, 14)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 8)
+	padding.PaddingBottom = UDim.new(0, 8)
+	padding.PaddingLeft = UDim.new(0, 7)
+	padding.PaddingRight = UDim.new(0, 7)
+	padding.Parent = scrollFrame
 
 	local gridLayout = Instance.new("UIGridLayout")
 	gridLayout.Name = "GridLayout"
-	gridLayout.CellSize = UDim2.fromOffset(220, 200)
-	gridLayout.CellPadding = UDim2.fromOffset(12, 12)
+	gridLayout.CellSize = UDim2.fromOffset(360, 220)
+	gridLayout.CellPadding = UDim2.fromOffset(14, 14)
+	gridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	gridLayout.Parent = scrollFrame
 
-	gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
-	end)
+	local function updateGridLayout()
+		-- AbsoluteSize already reflects the current safe viewport. Subtract the
+		-- grid padding and scrollbar instead of imposing a width floor that can
+		-- create unreachable horizontal overflow on narrow phones.
+		local availableWidth = math.max(1, scrollFrame.AbsoluteSize.X - 25)
+		local columns = availableWidth < 590 and 1 or 2
+		local gap = 14
+		local cellWidth = math.max(1, math.floor((availableWidth - gap * (columns - 1)) / columns))
+		local cellHeight
+		if columns == 1 then
+			cellHeight = math.clamp(math.floor(cellWidth * 0.62), 180, 265)
+		else
+			cellHeight = math.clamp(math.floor(cellWidth * 0.61), 185, 245)
+		end
+		gridLayout.FillDirectionMaxCells = columns
+		gridLayout.CellSize = UDim2.fromOffset(cellWidth, cellHeight)
+	end
+
+	table.insert(self._shopConnections, scrollFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateGridLayout))
+	table.insert(self._shopConnections, gridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 16)
+	end))
+	task.defer(updateGridLayout)
 
 	self:_refreshShopGrid()
+
+	local elapsed = 0
+	self._shopTimerConnection = RunService.Heartbeat:Connect(function(deltaTime)
+		elapsed += deltaTime
+		if elapsed >= 0.25 then
+			elapsed = 0
+			self:_updateShopCardStates()
+		end
+	end)
 end
 
 function UIController:_refreshShopGrid()
 	local screenGui = self._screens.ShopScreen
 	if not screenGui then return end
 	local mainFrame = screenGui:FindFirstChild("MainFrame")
-	if not mainFrame then return end
-	local scrollFrame = mainFrame:FindFirstChild("ShopGrid")
+	local innerPanel = mainFrame and mainFrame:FindFirstChild("InnerPanel")
+	local scrollFrame = innerPanel and innerPanel:FindFirstChild("ShopGrid")
 	if not scrollFrame then return end
 
 	for _, child in ipairs(scrollFrame:GetChildren()) do
@@ -2366,162 +2657,298 @@ function UIController:_refreshShopGrid()
 			child:Destroy()
 		end
 	end
+	self._shopCards = {}
 
-	-- Shop items definition (client-side display data)
-	local shopItems = {
-		{ id = "LuckyPotion", name = "Lucky Potion", icon = "L", description = "2x egg luck for 5 min", cost = 100, color = Color3.fromRGB(0, 220, 100), durationText = "5 min" },
-		{ id = "SpeedPotion", name = "Speed Potion", icon = "S", description = "2x walkspeed for 5 min", cost = 50, color = Color3.fromRGB(0, 180, 255), durationText = "5 min" },
-		{ id = "AutoHatch", name = "Auto-Hatch", icon = "A", description = "Automatically buys eggs for 10 min", cost = 500, color = Color3.fromRGB(255, 150, 0), durationText = "10 min" },
-		{ id = "ExtraEquipSlot", name = "Extra Equip Slot", icon = "+", description = "Permanently equip +1 pet (max 5)", cost = 1000, color = Color3.fromRGB(255, 80, 200), durationText = "Permanent" },
-	}
+	for order, itemId in ipairs(ShopData.Order) do
+		local item = ShopData.Items[itemId]
+		if item then
+			local color = shopColor(item.color)
+			local accent = shopColor(item.accentColor)
+			local card = Instance.new("Frame")
+			card.Name = "ShopItem_" .. itemId
+			card.BackgroundColor3 = Color3.fromRGB(
+				math.floor(244 + color.R * 11),
+				math.floor(244 + color.G * 11),
+				math.floor(244 + color.B * 11)
+			)
+			card.BorderSizePixel = 0
+			card.LayoutOrder = order
+			card.Parent = scrollFrame
+			addShopCorner(card, 18)
+			local cardStroke = addShopStroke(card, color, 4)
 
-	local activeBuffs = self._shopBuffs or {}
+			local topBand = Instance.new("Frame")
+			topBand.Name = "TopBand"
+			topBand.Size = UDim2.new(1, 0, 0, 12)
+			topBand.BackgroundColor3 = color
+			topBand.BorderSizePixel = 0
+			topBand.Parent = card
+			addShopCorner(topBand, 18)
 
-	for order, item in ipairs(shopItems) do
-		local card = Instance.new("Frame")
-		card.Name = "ShopItem_" .. item.id
-		card.BackgroundColor3 = Color3.fromRGB(
-			math.floor(item.color.R * 255 * 0.2 + 25),
-			math.floor(item.color.G * 255 * 0.2 + 25),
-			math.floor(item.color.B * 255 * 0.2 + 40)
-		)
-		card.LayoutOrder = order
-		card.Parent = scrollFrame
+			self:_createShopItemArt(card, item)
 
-		local cardCorner = Instance.new("UICorner")
-		cardCorner.CornerRadius = UDim.new(0, 12)
-		cardCorner.Parent = card
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.Name = "ItemName"
+			nameLabel.Size = UDim2.fromScale(0.62, 0.19)
+			nameLabel.Position = UDim2.fromScale(0.34, 0.08)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Text = string.upper(item.displayName)
+			nameLabel.TextColor3 = Color3.fromRGB(41, 54, 74)
+			nameLabel.Font = Enum.Font.GothamBlack
+			nameLabel.TextScaled = true
+			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+			nameLabel.Parent = card
 
-		local cardStroke = Instance.new("UIStroke")
-		cardStroke.Thickness = 3
-		cardStroke.Color = item.color
-		cardStroke.Parent = card
+			local nameSize = Instance.new("UITextSizeConstraint")
+			nameSize.MinTextSize = 12
+			nameSize.MaxTextSize = 22
+			nameSize.Parent = nameLabel
 
-		-- Icon
-		local iconLabel = Instance.new("TextLabel")
-		iconLabel.Name = "Icon"
-		iconLabel.Size = UDim2.fromScale(0.35, 0.22)
-		iconLabel.Position = UDim2.fromScale(0.325, 0.02)
-		iconLabel.BackgroundTransparency = 1
-		iconLabel.Text = item.icon
-		iconLabel.TextColor3 = item.color
-		iconLabel.Font = Enum.Font.GothamBold
-		iconLabel.TextScaled = true
-		iconLabel.Parent = card
+			local description = Instance.new("TextLabel")
+			description.Name = "Description"
+			description.Size = UDim2.fromScale(0.61, 0.25)
+			description.Position = UDim2.fromScale(0.34, 0.27)
+			description.BackgroundTransparency = 1
+			description.Text = item.description
+			description.TextColor3 = Color3.fromRGB(80, 91, 108)
+			description.Font = Enum.Font.GothamMedium
+			description.TextSize = 14
+			description.TextWrapped = true
+			description.TextXAlignment = Enum.TextXAlignment.Left
+			description.TextYAlignment = Enum.TextYAlignment.Top
+			description.Parent = card
 
-		-- Item name
-		local nameLabel = Instance.new("TextLabel")
-		nameLabel.Name = "ItemName"
-		nameLabel.Size = UDim2.fromScale(0.9, 0.12)
-		nameLabel.Position = UDim2.fromScale(0.05, 0.25)
-		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = item.name
-		nameLabel.TextColor3 = COLORS.White
-		nameLabel.Font = Enum.Font.GothamBold
-		nameLabel.TextScaled = true
-		nameLabel.Parent = card
+			local statusLabel = Instance.new("TextLabel")
+			statusLabel.Name = "Status"
+			statusLabel.Size = UDim2.fromScale(0.61, 0.13)
+			statusLabel.Position = UDim2.fromScale(0.34, 0.52)
+			statusLabel.BackgroundColor3 = accent
+			statusLabel.BackgroundTransparency = 0.12
+			statusLabel.TextColor3 = Color3.fromRGB(55, 65, 75)
+			statusLabel.Font = Enum.Font.GothamBold
+			statusLabel.TextScaled = true
+			statusLabel.Parent = card
+			addShopCorner(statusLabel, 999)
+			local statusSize = Instance.new("UITextSizeConstraint")
+			statusSize.MinTextSize = 10
+			statusSize.MaxTextSize = 15
+			statusSize.Parent = statusLabel
 
-		-- Description
-		local descLabel = Instance.new("TextLabel")
-		descLabel.Name = "Description"
-		descLabel.Size = UDim2.fromScale(0.9, 0.1)
-		descLabel.Position = UDim2.fromScale(0.05, 0.38)
-		descLabel.BackgroundTransparency = 1
-		descLabel.Text = item.description
-		descLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
-		descLabel.Font = Enum.Font.Gotham
-		descLabel.TextScaled = true
-		descLabel.Parent = card
+			local buyBtn = Instance.new("TextButton")
+			buyBtn.Name = "BuyBtn"
+			buyBtn.Size = UDim2.fromScale(0.61, 0.22)
+			buyBtn.Position = UDim2.fromScale(0.34, 0.71)
+			buyBtn.BackgroundColor3 = color
+			buyBtn.Text = "◆ " .. tostring(item.cost)
+			buyBtn.TextColor3 = COLORS.White
+			buyBtn.Font = Enum.Font.GothamBlack
+			buyBtn.TextScaled = true
+			buyBtn.AutoButtonColor = false
+			buyBtn.Parent = card
+			addShopCorner(buyBtn, 12)
+			local buyStroke = addShopStroke(buyBtn, color:Lerp(Color3.new(0, 0, 0), 0.35), 3)
+			local buySize = Instance.new("UITextSizeConstraint")
+			buySize.MinTextSize = 13
+			buySize.MaxTextSize = 21
+			buySize.Parent = buyBtn
 
-		-- Duration label
-		local durationLabel = Instance.new("TextLabel")
-		durationLabel.Name = "Duration"
-		durationLabel.Size = UDim2.fromScale(0.9, 0.09)
-		durationLabel.Position = UDim2.fromScale(0.05, 0.49)
-		durationLabel.BackgroundTransparency = 1
-		durationLabel.Text = item.durationText
-		durationLabel.TextColor3 = item.color
-		durationLabel.Font = Enum.Font.GothamBold
-		durationLabel.TextScaled = true
-		durationLabel.Parent = card
+			buyBtn.Activated:Connect(function()
+				self:_purchaseShopItem(itemId)
+			end)
 
-		-- Active buff indicator (if applicable)
-		local buffKey = nil
-		if item.id == "LuckyPotion" then buffKey = "luck"
-		elseif item.id == "SpeedPotion" then buffKey = "speed"
-		elseif item.id == "AutoHatch" then buffKey = "autoHatch"
+			self._shopCards[itemId] = {
+				button = buyBtn,
+				buttonStroke = buyStroke,
+				cardStroke = cardStroke,
+				status = statusLabel,
+				color = color,
+				accent = accent,
+			}
 		end
-
-		if buffKey and activeBuffs[buffKey] then
-			local remaining = activeBuffs[buffKey]
-			local mins = math.floor(remaining / 60)
-			local secs = remaining % 60
-			local activeLabel = Instance.new("TextLabel")
-			activeLabel.Name = "ActiveLabel"
-			activeLabel.Size = UDim2.fromScale(0.9, 0.09)
-			activeLabel.Position = UDim2.fromScale(0.05, 0.59)
-			activeLabel.BackgroundTransparency = 1
-			activeLabel.Text = "ACTIVE: " .. tostring(mins) .. "m " .. tostring(secs) .. "s"
-			activeLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
-			activeLabel.Font = Enum.Font.GothamBold
-			activeLabel.TextScaled = true
-			activeLabel.Parent = card
-		end
-
-		-- Buy button
-		local buyBtn = Instance.new("TextButton")
-		buyBtn.Name = "BuyBtn"
-		buyBtn.Size = UDim2.fromScale(0.7, 0.17)
-		buyBtn.Position = UDim2.fromScale(0.15, 0.78)
-		buyBtn.BackgroundColor3 = COLORS.NavShop
-		buyBtn.Text = tostring(item.cost) .. " Diamonds"
-		buyBtn.TextColor3 = COLORS.White
-		buyBtn.Font = Enum.Font.GothamBold
-		buyBtn.TextScaled = true
-		buyBtn.Parent = card
-
-		local buyCorner = Instance.new("UICorner")
-		buyCorner.CornerRadius = UDim.new(0, 8)
-		buyCorner.Parent = buyBtn
-
-		local buyStroke = Instance.new("UIStroke")
-		buyStroke.Thickness = 2
-		buyStroke.Color = Color3.fromRGB(0, 100, 200)
-		buyStroke.Parent = buyBtn
-
-		local itemId = item.id
-		buyBtn.MouseButton1Click:Connect(function()
-			self:_purchaseShopItem(itemId)
-		end)
-
-		buyBtn.MouseEnter:Connect(function()
-			TweenService:Create(buyBtn, TweenInfo.new(0.1), {
-				Size = UDim2.fromScale(0.74, 0.18),
-			}):Play()
-		end)
-		buyBtn.MouseLeave:Connect(function()
-			TweenService:Create(buyBtn, TweenInfo.new(0.1), {
-				Size = UDim2.fromScale(0.7, 0.17),
-			}):Play()
-		end)
 	end
+
+	self:_updateShopCardStates()
 end
 
-function UIController:_purchaseShopItem(itemId)
-	if self._remotes then
-		local remote = self._remotes:FindFirstChild("PurchaseShopItem")
-		if remote then
-			local success, err = remote:InvokeServer(itemId)
-			if not success and err then
-				print("[UIController] Shop purchase failed: " .. tostring(err))
+function UIController:_updateShopCardStates()
+	if self._shopDiamondLabel then
+		self._shopDiamondLabel.Text = tostring(self._diamonds)
+	end
+
+	local now = os.clock()
+	local purchases = self._shopState.purchases or {}
+	local ownedSlots = tonumber(purchases.extraEquipSlots) or 0
+	local maxSlots = tonumber(self._shopState.maxExtraEquipSlots)
+		or ShopData.Items.ExtraEquipSlot.maxPurchases
+		or 5
+
+	for itemId, card in pairs(self._shopCards) do
+		local item = ShopData.Items[itemId]
+		if item and card.button and card.button.Parent then
+			local isMaxed = item.permanent and ownedSlots >= maxSlots
+			local isPurchasing = self._shopPurchaseInFlight ~= nil
+			local isAffordable = self._diamonds >= item.cost
+			local enabled = not isMaxed and not isPurchasing and isAffordable
+
+			if item.permanent then
+				if isMaxed then
+					card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • MAXED"
+					card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
+				else
+					card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • PERMANENT"
+					card.status.TextColor3 = Color3.fromRGB(88, 52, 78)
+				end
+			else
+				local expiry = self._shopBuffExpiry[item.buffType]
+				local remaining = expiry and math.max(0, expiry - now) or 0
+				if remaining > 0 then
+					card.status.Text = "ACTIVE • " .. formatShopTime(remaining)
+					card.status.TextColor3 = Color3.fromRGB(20, 115, 48)
+				else
+					self._shopBuffExpiry[item.buffType] = nil
+					self._shopState.buffs[item.buffType] = nil
+					card.status.Text = item.durationLabel
+					card.status.TextColor3 = Color3.fromRGB(55, 65, 75)
+				end
+			end
+
+			if self._shopPurchaseInFlight == itemId then
+				card.button.Text = "PURCHASING..."
+			elseif isMaxed then
+				card.button.Text = "MAXED"
+			elseif not isAffordable then
+				card.button.Text = "NEED ◆ " .. tostring(item.cost)
+			else
+				card.button.Text = "BUY • ◆ " .. tostring(item.cost)
+			end
+
+			card.button.Active = enabled
+			card.button.Selectable = enabled
+			if enabled then
+				card.button.BackgroundColor3 = card.color
+				card.button.TextColor3 = COLORS.White
+				card.buttonStroke.Color = card.color:Lerp(Color3.new(0, 0, 0), 0.35)
+				card.cardStroke.Transparency = 0
+			else
+				card.button.BackgroundColor3 = Color3.fromRGB(160, 166, 174)
+				card.button.TextColor3 = Color3.fromRGB(235, 238, 240)
+				card.buttonStroke.Color = Color3.fromRGB(112, 117, 124)
+				card.cardStroke.Transparency = isMaxed and 0.45 or 0.2
 			end
 		end
 	end
 end
 
-function UIController:updateShopBuffs(buffs)
-	self._shopBuffs = buffs or {}
-	self:_refreshShopGrid()
+function UIController:_setShopFeedback(message, color)
+	self._shopFeedbackToken += 1
+	local token = self._shopFeedbackToken
+	if self._shopFeedbackLabel then
+		self._shopFeedbackLabel.Text = message or ""
+		self._shopFeedbackLabel.TextColor3 = color or Color3.fromRGB(40, 145, 60)
+	end
+	if message and message ~= "" then
+		task.delay(3, function()
+			if token == self._shopFeedbackToken and self._shopFeedbackLabel then
+				self._shopFeedbackLabel.Text = ""
+			end
+		end)
+	end
+end
+
+function UIController:_applyShopState(payload)
+	payload = type(payload) == "table" and payload or {}
+	local isFullState = type(payload.buffs) == "table" or type(payload.purchases) == "table"
+	local buffs = isFullState and (payload.buffs or {}) or payload
+	local purchases = isFullState and (payload.purchases or {}) or {}
+	local maxSlots = tonumber(payload.maxExtraEquipSlots)
+		or ShopData.Items.ExtraEquipSlot.maxPurchases
+		or 5
+	local ownedSlots = math.clamp(math.floor(tonumber(purchases.extraEquipSlots) or 0), 0, maxSlots)
+
+	local normalizedBuffs = {}
+	local now = os.clock()
+	for _, itemId in ipairs(ShopData.Order) do
+		local item = ShopData.Items[itemId]
+		if item and not item.permanent and item.buffType then
+			local remaining = math.max(0, tonumber(buffs[item.buffType]) or 0)
+			if remaining > 0 then
+				normalizedBuffs[item.buffType] = remaining
+				self._shopBuffExpiry[item.buffType] = now + remaining
+			else
+				self._shopBuffExpiry[item.buffType] = nil
+			end
+		end
+	end
+
+	self._shopBuffs = normalizedBuffs
+	self._shopState = {
+		buffs = normalizedBuffs,
+		purchases = { extraEquipSlots = ownedSlots },
+		maxExtraEquipSlots = maxSlots,
+	}
+	self:_updateShopCardStates()
+end
+
+function UIController:_refreshShopStateFromServer()
+	if not self._remotes then return end
+	local remote = self._remotes:FindFirstChild("GetShopBuffs")
+	if not remote then return end
+	task.spawn(function()
+		local ok, state = pcall(function()
+			return remote:InvokeServer()
+		end)
+		if ok and state then
+			self:_applyShopState(state)
+		elseif not ok then
+			self:_setShopFeedback("Could not load shop: " .. tostring(state), COLORS.ButtonRed)
+		end
+	end)
+end
+
+function UIController:_purchaseShopItem(itemId)
+	local item = ShopData.Items[itemId]
+	if not item or self._shopPurchaseInFlight then return end
+	if self._diamonds < item.cost then
+		self:_setShopFeedback("You need more diamonds!", COLORS.ButtonRed)
+		return
+	end
+	if item.permanent then
+		local owned = tonumber(self._shopState.purchases.extraEquipSlots) or 0
+		if owned >= (tonumber(self._shopState.maxExtraEquipSlots) or item.maxPurchases or 5) then
+			self:_setShopFeedback("Extra Equip Slot is already maxed!", COLORS.ButtonRed)
+			return
+		end
+	end
+	if not self._remotes then return end
+	local remote = self._remotes:FindFirstChild("PurchaseShopItem")
+	if not remote then
+		self:_setShopFeedback("Shop is unavailable right now.", COLORS.ButtonRed)
+		return
+	end
+
+	self._shopPurchaseInFlight = itemId
+	self:_updateShopCardStates()
+	task.spawn(function()
+		local ok, success, err, state = pcall(function()
+			return remote:InvokeServer(itemId)
+		end)
+		self._shopPurchaseInFlight = nil
+		if not ok then
+			self:_setShopFeedback("Purchase failed: " .. tostring(success), COLORS.ButtonRed)
+		elseif success then
+			if state then
+				self:_applyShopState(state)
+			end
+			self:_setShopFeedback(item.displayName .. " purchased!", Color3.fromRGB(35, 160, 62))
+		else
+			self:_setShopFeedback(tostring(err or "Purchase failed."), COLORS.ButtonRed)
+		end
+		self:_updateShopCardStates()
+	end)
+end
+
+function UIController:updateShopBuffs(state)
+	self:_applyShopState(state)
 end
 
 function UIController:_hatchEgg(eggType)
@@ -2803,6 +3230,10 @@ function UIController:updateCurrency(coins, diamonds)
 	if self._diamondLabel then
 		self._diamondLabel.Text = tostring(self._diamonds)
 	end
+	if self._shopDiamondLabel then
+		self._shopDiamondLabel.Text = tostring(self._diamonds)
+	end
+	self:_updateShopCardStates()
 	self:_updateEggShortfall()
 	self:_updateZoneProgress()
 end
@@ -3131,100 +3562,142 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	end)
 end
 
-function UIController:toggleScreen(screenName)
+function UIController:_refreshScreenData(screenName)
+	if not self._remotes then return end
+	if screenName == "QuestWindow" then
+		local remote = self._remotes:FindFirstChild("GetQuestProgress")
+		if remote then
+			task.spawn(function()
+				local progress = remote:InvokeServer()
+				if progress then
+					self._questProgress = progress
+					self:_refreshQuestGrid()
+				end
+			end)
+		end
+	elseif screenName == "MasteryWindow" then
+		local remote = self._remotes:FindFirstChild("GetMasteryState")
+		if remote then
+			task.spawn(function()
+				local state = remote:InvokeServer()
+				if state then
+					self._masteryState = state
+					self:_refreshMasteryGrid()
+				end
+			end)
+		end
+	elseif screenName == "PetIndex" then
+		local remote = self._remotes:FindFirstChild("GetDiscoveredPets")
+		if remote then
+			task.spawn(function()
+				local discovered = remote:InvokeServer()
+				if discovered then
+					self._discoveredPets = discovered
+					self:_refreshPetIndex()
+				end
+			end)
+		end
+	elseif screenName == "ShopScreen" then
+		self:_refreshShopStateFromServer()
+	end
+end
+
+function UIController:openScreen(screenName)
 	local screen = self._screens[screenName]
-	if screen then
-		if screen.Enabled then
-			-- Slide out animation then disable
-			local mainFrame = screen:FindFirstChild("MainFrame") or screen:FindFirstChild("EggPrompt")
-			if mainFrame then
-				local slideOutInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-				local originalPos = mainFrame.Position
-				TweenService:Create(mainFrame, slideOutInfo, {
-					Position = UDim2.new(originalPos.X.Scale, originalPos.X.Offset, 1.2, 0),
-				}):Play()
-				task.delay(0.25, function()
-					if screen and screen.Parent then
-						screen.Enabled = false
-						mainFrame.Position = originalPos
-					end
-				end)
-			else
-				screen.Enabled = false
-			end
-		else
-			-- Close other screens first
-			for name, otherScreen in pairs(self._screens) do
-				if name ~= screenName and name ~= "MainHUD" then
-					otherScreen.Enabled = false
-				end
-			end
+	if not screen then return end
 
-			-- Enable and slide in from below
-			screen.Enabled = true
-			local mainFrame = screen:FindFirstChild("MainFrame") or screen:FindFirstChild("EggPrompt")
-			if mainFrame then
-				local targetPos = mainFrame.Position
-				mainFrame.Position = UDim2.new(targetPos.X.Scale, targetPos.X.Offset, 1.2, 0)
-				local slideInInfo = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-				TweenService:Create(mainFrame, slideInInfo, {
-					Position = targetPos,
-				}):Play()
-			end
+	local currentState = self._screenStates[screenName]
+	-- Opening an already-visible, non-closing screen is idempotent. The shop may
+	-- still refresh its state, but repeated prompt triggers never close it.
+	if screen.Enabled and currentState ~= "closing" then
+		if screenName == "ShopScreen" then
+			self:_refreshScreenData(screenName)
+		end
+		return
+	end
 
-			-- Refresh quest progress when opening quest window
-			if screenName == "QuestWindow" and self._remotes then
-				local remote = self._remotes:FindFirstChild("GetQuestProgress")
-				if remote then
-					task.spawn(function()
-						local progress = remote:InvokeServer()
-						if progress then
-							self._questProgress = progress
-							self:_refreshQuestGrid()
-						end
-					end)
-				end
-			end
-			-- Refresh mastery state when opening mastery window
-			if screenName == "MasteryWindow" and self._remotes then
-				local remote = self._remotes:FindFirstChild("GetMasteryState")
-				if remote then
-					task.spawn(function()
-						local state = remote:InvokeServer()
-						if state then
-							self._masteryState = state
-							self:_refreshMasteryGrid()
-						end
-					end)
-				end
-			end
-			-- Refresh discovered pets when opening pet index
-			if screenName == "PetIndex" and self._remotes then
-				local remote = self._remotes:FindFirstChild("GetDiscoveredPets")
-				if remote then
-					task.spawn(function()
-						local discovered = remote:InvokeServer()
-						if discovered then
-							self._discoveredPets = discovered
-							self:_refreshPetIndex()
-						end
-					end)
-				end
-			end
-			-- Refresh shop buffs when opening shop screen
-			if screenName == "ShopScreen" and self._remotes then
-				local remote = self._remotes:FindFirstChild("GetShopBuffs")
-				if remote then
-					task.spawn(function()
-						local buffs = remote:InvokeServer()
-						if buffs then
-							self._shopBuffs = buffs
-							self:_refreshShopGrid()
-						end
-					end)
-				end
+	for name, otherScreen in pairs(self._screens) do
+		if name ~= screenName and name ~= "MainHUD" then
+			self._screenAnimationTokens[name] = (self._screenAnimationTokens[name] or 0) + 1
+			self._screenStates[name] = "closed"
+			otherScreen.Enabled = false
+			local otherFrame = otherScreen:FindFirstChild("MainFrame") or otherScreen:FindFirstChild("EggPrompt")
+			local otherRestingPosition = self._screenRestingPositions[name]
+			if otherFrame and otherRestingPosition then
+				otherFrame.Position = otherRestingPosition
 			end
 		end
+	end
+
+	local mainFrame = screen:FindFirstChild("MainFrame") or screen:FindFirstChild("EggPrompt")
+	if mainFrame and not self._screenRestingPositions[screenName] then
+		self._screenRestingPositions[screenName] = mainFrame.Position
+	end
+	local targetPos = self._screenRestingPositions[screenName]
+	local token = (self._screenAnimationTokens[screenName] or 0) + 1
+	self._screenAnimationTokens[screenName] = token
+	self._screenStates[screenName] = "opening"
+	screen.Enabled = true
+
+	if mainFrame and targetPos then
+		-- A fresh open starts below the viewport; reopening during a close starts
+		-- from the tween's current position and cancels the pending disable token.
+		if currentState ~= "closing" then
+			mainFrame.Position = UDim2.new(targetPos.X.Scale, targetPos.X.Offset, 1.2, 0)
+		end
+		TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Position = targetPos,
+		}):Play()
+	end
+	task.delay(0.3, function()
+		if self._screenAnimationTokens[screenName] == token and screen.Parent then
+			self._screenStates[screenName] = "open"
+			if mainFrame and targetPos then
+				mainFrame.Position = targetPos
+			end
+		end
+	end)
+	self:_refreshScreenData(screenName)
+end
+
+function UIController:closeScreen(screenName)
+	local screen = self._screens[screenName]
+	if not screen or not screen.Enabled or self._screenStates[screenName] == "closing" then return end
+
+	local mainFrame = screen:FindFirstChild("MainFrame") or screen:FindFirstChild("EggPrompt")
+	if mainFrame and not self._screenRestingPositions[screenName] then
+		self._screenRestingPositions[screenName] = mainFrame.Position
+	end
+	local targetPos = self._screenRestingPositions[screenName]
+	local token = (self._screenAnimationTokens[screenName] or 0) + 1
+	self._screenAnimationTokens[screenName] = token
+	self._screenStates[screenName] = "closing"
+
+	if not mainFrame or not targetPos then
+		screen.Enabled = false
+		self._screenStates[screenName] = "closed"
+		return
+	end
+
+	TweenService:Create(mainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		Position = UDim2.new(targetPos.X.Scale, targetPos.X.Offset, 1.2, 0),
+	}):Play()
+	task.delay(0.25, function()
+		if self._screenAnimationTokens[screenName] == token and screen.Parent then
+			screen.Enabled = false
+			mainFrame.Position = targetPos
+			self._screenStates[screenName] = "closed"
+		end
+	end)
+end
+
+function UIController:toggleScreen(screenName)
+	local screen = self._screens[screenName]
+	if not screen then return end
+	if screen.Enabled then
+		self:closeScreen(screenName)
+	else
+		self:openScreen(screenName)
 	end
 end
 
@@ -3241,6 +3714,20 @@ function UIController:updateXP(level, xp, xpNeeded)
 end
 
 function UIController:cleanup()
+	if self._shopTimerConnection then
+		self._shopTimerConnection:Disconnect()
+		self._shopTimerConnection = nil
+	end
+	for _, connection in ipairs(self._shopConnections) do
+		connection:Disconnect()
+	end
+	self._shopConnections = {}
+	self._shopCards = {}
+	self._shopDiamondLabel = nil
+	self._shopFeedbackLabel = nil
+	self._screenAnimationTokens = {}
+	self._screenStates = {}
+	self._screenRestingPositions = {}
 	for _, screen in pairs(self._screens) do
 		screen:Destroy()
 	end

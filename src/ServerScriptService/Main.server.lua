@@ -161,6 +161,7 @@ if not zoneInitSucceeded then
 end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
+ZoneService.setShopService(ShopService)
 
 CampaignService.init(DataService, CurrencyService, PetService)
 
@@ -197,6 +198,8 @@ local function applyWalkSpeedBuffs(player)
 	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
 	humanoid.WalkSpeed = finalSpeed
 end
+
+ShopService.setWalkSpeedRefreshCallback(applyWalkSpeedBuffs)
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -516,21 +519,23 @@ getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
 	if type(itemId) ~= "string" then
 		return false, "Invalid item ID parameter"
 	end
-	local success, msg = ShopService.purchaseItem(player, itemId)
+	local success, msg, state = ShopService.purchaseItem(player, itemId)
 	-- Refresh walkspeed in case Speed Potion was purchased
 	if success then
 		applyWalkSpeedBuffs(player)
 	end
-	return success, msg
+	return success, msg, state
 end
 
--- GetShopBuffs (returns active buffs for the player)
+-- GetShopBuffs is a legacy remote name; it now returns the full shop state.
 getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
-		return {}
+		return nil
 	end
-	if not canCall(player, "GetShopBuffs", 0.25) then return {} end
-	return ShopService.getActiveBuffs(player)
+	if not canCall(player, "GetShopBuffs", 0.25) then
+		return nil
+	end
+	return ShopService.getShopState(player)
 end
 
 ----------------------------------------------

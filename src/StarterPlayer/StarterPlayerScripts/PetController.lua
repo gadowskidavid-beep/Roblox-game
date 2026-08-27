@@ -724,7 +724,7 @@ end
 -- destructibleId: string ID of the destructible
 -- destructiblePart: optional Part reference for tween target position
 -- The pet moves SLOWLY to the destructible and STAYS THERE bouncing until the
--- destructible is destroyed or the player moves >60 studs away.
+-- destructible is destroyed or the player moves >50 studs away.
 -- Pet hovers ~1 stud beside the destructible (offset so it is not inside it).
 --------------------------------------------------------------------------------
 function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePart, onAssigned)
@@ -803,7 +803,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			local APPROACH_SPEED = 1.5 -- very slow lerp speed (walking)
 			local BOUNCE_SPEED = 3.0 -- oscillation speed when stationed
 			local BOUNCE_HEIGHT = 0.3 -- how much it bobs up and down
-			local MAX_PLAYER_DIST = 60 -- return threshold
+			local MAX_PLAYER_DIST = 50 -- match the server attack/return threshold
 
 			-- Phase 1: Slow approach to the destructible
 			while self._attackingPets[uniqueId] == destructibleId
@@ -1177,7 +1177,7 @@ function PetController:_updateAssignedPetAttacks(now)
 			local part = targetInfo.part
 			local targetIsValid = part and part.Parent ~= nil
 			if targetIsValid and rootPart then
-				targetIsValid = (rootPart.Position - part.Position).Magnitude <= 60
+				targetIsValid = (rootPart.Position - part.Position).Magnitude <= 50
 			end
 
 			if not targetIsValid then
