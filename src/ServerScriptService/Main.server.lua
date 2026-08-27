@@ -99,6 +99,7 @@ local remoteFunctions = {
 	"UnequipPet",
 	"DeletePet",
 	"DeletePets",
+	"SetPetFavorite",
 	"UnlockZone",
 	"PurchaseUpgrade",
 	"GetPlayerData",
@@ -268,7 +269,7 @@ getRemoteFunction("DeletePet").OnServerInvoke = function(player, petInstanceId)
 	return PetService.deletePet(player, petInstanceId)
 end
 
--- DeletePets (bulk delete, 1 second cooldown, max 100 pets)
+-- DeletePets (bulk delete, 1 second cooldown, bounded by inventory capacity)
 getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
@@ -279,8 +280,8 @@ getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds
 	if type(petInstanceIds) ~= "table" then
 		return false, "Invalid pet IDs parameter"
 	end
-	-- Bulk delete size limit
-	if #petInstanceIds > 100 then
+	-- Bulk delete size limit is bounded by the server-authoritative inventory capacity.
+	if #petInstanceIds > PetService.getMaxInventory(player) then
 		return false, "Too many pets"
 	end
 	-- Validate each ID is a string
@@ -290,6 +291,20 @@ getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds
 		end
 	end
 	return PetService.deletePets(player, petInstanceIds)
+end
+
+-- SetPetFavorite (idempotent favorite state, 0.25 second cooldown)
+getRemoteFunction("SetPetFavorite").OnServerInvoke = function(player, petInstanceId, isFavorite)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "SetPetFavorite", 0.25) then
+		return false, "Please wait before changing favorites again"
+	end
+	if not isValidIdentifier(petInstanceId) or type(isFavorite) ~= "boolean" then
+		return false, "Invalid favorite parameters"
+	end
+	return PetService.setPetFavorite(player, petInstanceId, isFavorite)
 end
 
 -- UnlockZone (2 second cooldown)

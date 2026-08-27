@@ -24,6 +24,7 @@ local Config = require(Shared:WaitForChild("Config"))
 local PetData = require(Shared:WaitForChild("PetData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
+local ZoneData = require(Shared:WaitForChild("ZoneData"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -59,6 +60,53 @@ local RARITY_COLORS = {
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
 
+local VARIANT_COLORS = {
+	Normal = Color3.fromRGB(160, 170, 190),
+	Golden = Color3.fromRGB(255, 200, 0),
+	Shiny = Color3.fromRGB(80, 230, 255),
+	Rainbow = Color3.fromRGB(255, 100, 210),
+}
+
+local PET_SORT_MODES = { "Default", "Rarity", "Variant", "Damage" }
+local PET_VARIANT_FILTERS = { "All", "Normal", "Golden", "Shiny", "Rainbow" }
+local RARITY_RANK = {
+	Common = 1,
+	Uncommon = 2,
+	Rare = 3,
+	Epic = 4,
+	Legendary = 5,
+}
+local VARIANT_RANK = {
+	Normal = 1,
+	Golden = 2,
+	Shiny = 3,
+	Rainbow = 4,
+}
+
+local function resolvePetVariant(petData)
+	if petData.golden == true then return "Golden" end
+	local variant = petData.variant
+	if VARIANT_RANK[variant] then return variant end
+	return "Normal"
+end
+
+local function getPetDamage(petData)
+	return tonumber(petData.damage) or tonumber(petData.baseDamage) or 0
+end
+
+local function normalizeZoneId(zoneId)
+	local numericZoneId = tonumber(zoneId)
+	if not numericZoneId
+		or numericZoneId ~= numericZoneId
+		or numericZoneId == math.huge
+		or numericZoneId == -math.huge
+		or numericZoneId % 1 ~= 0
+		or not ZoneData.Zones[numericZoneId] then
+		return nil
+	end
+	return numericZoneId
+end
+
 function UIController.new()
 	local self = setmetatable({}, UIController)
 	self._remotes = nil
@@ -67,15 +115,26 @@ function UIController.new()
 	self._screens = {}
 	self._coinLabel = nil
 	self._diamondLabel = nil
+	self._eggShortfallLabel = nil
+	self._zoneProgressLabel = nil
+	self._coins = 0
+	self._diamonds = 0
+	self._unlockedZones = { [1] = true }
+	self._selectedEggType = nil
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
 	self._inventoryTitle = nil
+	self._petSortMode = "Default"
+	self._petVariantFilter = "All"
+	self._petSortButton = nil
+	self._petVariantFilterButton = nil
 	self._upgradeData = {}
 	self._equippedPets = {}
 	self._equippedBar = nil
 	self._multiSelectMode = false
 	self._selectedPets = {}
+	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
 	-- Quest and mastery state
@@ -85,6 +144,15 @@ function UIController.new()
 	self._discoveredPets = {}
 	-- Shop buffs state
 	self._shopBuffs = {}
+	-- New pet discovery toast queue
+	self._discoveryToastQueue = {}
+	self._discoveryToastActive = false
+	self._activeDiscoveryToast = nil
+	-- Lightweight onboarding hint state
+	self._onboardingCard = nil
+	self._onboardingTitle = nil
+	self._onboardingText = nil
+	self._onboardingArrow = nil
 	return self
 end
 
@@ -98,6 +166,16 @@ function UIController:init(remotes, playerData)
 
 	-- Apply initial player data
 	if playerData then
+		self._coins = tonumber(playerData.coins) or 0
+		self._diamonds = tonumber(playerData.diamonds) or 0
+		self._unlockedZones = {}
+		for _, zoneId in ipairs(playerData.unlockedZones or { 1 }) do
+			local numericZoneId = normalizeZoneId(zoneId)
+			if numericZoneId then
+				self._unlockedZones[numericZoneId] = true
+			end
+		end
+		self._unlockedZones[1] = true
 		self._petInventoryData = playerData.pets or {}
 		self._equippedPets = playerData.equippedPets or {}
 		self._upgradeData = playerData.upgrades or {}
@@ -141,17 +219,128 @@ function UIController:_createMainHUD(playerData)
 
 	-- ===== BOTTOM-RIGHT: Navigation Buttons =====
 	self:_createNavButtons(screenGui)
+
+	-- ===== NON-BLOCKING ONBOARDING HINT =====
+	self:_createOnboardingHint(screenGui)
+end
+
+function UIController:_createOnboardingHint(parent)
+	local card = Instance.new("Frame")
+	card.Name = "OnboardingHint"
+	card.Size = UDim2.new(0.3, 0, 0, 82)
+	card.Position = UDim2.fromScale(0.02, 0.16)
+	card.BackgroundColor3 = COLORS.DarkBg
+	card.BackgroundTransparency = 0.08
+	card.BorderSizePixel = 0
+	card.Visible = false
+	card.Active = false
+	card.Parent = parent
+	self._onboardingCard = card
+
+	local sizeConstraint = Instance.new("UISizeConstraint")
+	sizeConstraint.MinSize = Vector2.new(190, 82)
+	sizeConstraint.MaxSize = Vector2.new(360, 82)
+	sizeConstraint.Parent = card
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = card
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 3
+	stroke.Color = COLORS.CoinYellow
+	stroke.Parent = card
+
+	local title = Instance.new("TextLabel")
+	title.Name = "StepTitle"
+	title.Size = UDim2.new(1, -16, 0, 24)
+	title.Position = UDim2.fromOffset(8, 6)
+	title.BackgroundTransparency = 1
+	title.TextColor3 = COLORS.CoinYellow
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Active = false
+	title.Parent = card
+	self._onboardingTitle = title
+
+	local instruction = Instance.new("TextLabel")
+	instruction.Name = "Instruction"
+	instruction.Size = UDim2.new(1, -16, 0, 42)
+	instruction.Position = UDim2.fromOffset(8, 32)
+	instruction.BackgroundTransparency = 1
+	instruction.TextColor3 = COLORS.White
+	instruction.TextXAlignment = Enum.TextXAlignment.Left
+	instruction.TextYAlignment = Enum.TextYAlignment.Top
+	instruction.Font = Enum.Font.GothamBold
+	instruction.TextScaled = true
+	instruction.TextWrapped = true
+	instruction.Active = false
+	instruction.Parent = card
+	self._onboardingText = instruction
+
+	local arrow = Instance.new("BillboardGui")
+	arrow.Name = "OnboardingWorldArrow"
+	arrow.Size = UDim2.fromOffset(120, 70)
+	arrow.StudsOffset = Vector3.new(0, 5, 0)
+	arrow.AlwaysOnTop = true
+	arrow.Enabled = false
+	arrow.Parent = self._playerGui
+	self._onboardingArrow = arrow
+
+	local arrowText = Instance.new("TextLabel")
+	arrowText.Size = UDim2.fromScale(1, 1)
+	arrowText.BackgroundTransparency = 1
+	arrowText.Text = "GO HERE\n▼"
+	arrowText.TextColor3 = COLORS.CoinYellow
+	arrowText.TextStrokeColor3 = COLORS.DarkBg
+	arrowText.TextStrokeTransparency = 0
+	arrowText.Font = Enum.Font.GothamBold
+	arrowText.TextScaled = true
+	arrowText.TextWrapped = true
+	arrowText.Active = false
+	arrowText.Parent = arrow
+end
+
+function UIController:setOnboardingHint(stepNumber, totalSteps, instruction, targetPart)
+	if not self._onboardingCard then return end
+
+	self._onboardingTitle.Text = "GETTING STARTED  " .. tostring(stepNumber) .. "/" .. tostring(totalSteps)
+	self._onboardingText.Text = instruction
+	self._onboardingCard.Visible = true
+
+	local hasTarget = targetPart and targetPart:IsA("BasePart") and targetPart.Parent ~= nil
+	if self._onboardingArrow then
+		self._onboardingArrow.Adornee = hasTarget and targetPart or nil
+		self._onboardingArrow.Enabled = hasTarget == true
+	end
+end
+
+function UIController:clearOnboardingHint()
+	if self._onboardingCard then
+		self._onboardingCard.Visible = false
+	end
+	if self._onboardingArrow then
+		self._onboardingArrow.Enabled = false
+		self._onboardingArrow.Adornee = nil
+	end
 end
 
 function UIController:_createCurrencyDisplay(parent, playerData)
 	local frame = Instance.new("Frame")
 	frame.Name = "CurrencyDisplay"
-	frame.Size = UDim2.fromScale(0.18, 0.12)
-	frame.Position = UDim2.fromScale(0.8, 0.02)
+	frame.AnchorPoint = Vector2.new(1, 0)
+	frame.Size = UDim2.new(0.3, 0, 0, 140)
+	frame.Position = UDim2.fromScale(0.98, 0.02)
 	frame.BackgroundColor3 = COLORS.Background
 	frame.BackgroundTransparency = 0.3
 	frame.BorderSizePixel = 0
 	frame.Parent = parent
+
+	local sizeConstraint = Instance.new("UISizeConstraint")
+	sizeConstraint.MinSize = Vector2.new(210, 140)
+	sizeConstraint.MaxSize = Vector2.new(340, 140)
+	sizeConstraint.Parent = frame
 
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 12)
@@ -246,6 +435,56 @@ function UIController:_createCurrencyDisplay(parent, playerData)
 	diamondLabel.TextScaled = true
 	diamondLabel.Parent = diamondRow
 	self._diamondLabel = diamondLabel
+
+	-- Distance to the next hatch for the selected or latest unlocked egg
+	local eggShortfallLabel = Instance.new("TextLabel")
+	eggShortfallLabel.Name = "EggShortfall"
+	eggShortfallLabel.Size = UDim2.new(1, 0, 0, 34)
+	eggShortfallLabel.BackgroundColor3 = COLORS.DarkBg
+	eggShortfallLabel.BackgroundTransparency = 0.25
+	eggShortfallLabel.BorderSizePixel = 0
+	eggShortfallLabel.TextColor3 = COLORS.White
+	eggShortfallLabel.Font = Enum.Font.GothamBold
+	eggShortfallLabel.TextScaled = true
+	eggShortfallLabel.TextWrapped = true
+	eggShortfallLabel.Parent = frame
+
+	local eggShortfallCorner = Instance.new("UICorner")
+	eggShortfallCorner.CornerRadius = UDim.new(0, 8)
+	eggShortfallCorner.Parent = eggShortfallLabel
+
+	local eggShortfallPadding = Instance.new("UIPadding")
+	eggShortfallPadding.PaddingLeft = UDim.new(0, 5)
+	eggShortfallPadding.PaddingRight = UDim.new(0, 5)
+	eggShortfallPadding.Parent = eggShortfallLabel
+
+	self._eggShortfallLabel = eggShortfallLabel
+	self:_updateEggShortfall()
+
+	-- Live progress toward the first zone that has not been unlocked yet
+	local zoneProgressLabel = Instance.new("TextLabel")
+	zoneProgressLabel.Name = "ZoneProgress"
+	zoneProgressLabel.Size = UDim2.new(1, 0, 0, 34)
+	zoneProgressLabel.BackgroundColor3 = COLORS.DarkBg
+	zoneProgressLabel.BackgroundTransparency = 0.25
+	zoneProgressLabel.BorderSizePixel = 0
+	zoneProgressLabel.TextColor3 = COLORS.White
+	zoneProgressLabel.Font = Enum.Font.GothamBold
+	zoneProgressLabel.TextScaled = true
+	zoneProgressLabel.TextWrapped = true
+	zoneProgressLabel.Parent = frame
+
+	local zoneProgressCorner = Instance.new("UICorner")
+	zoneProgressCorner.CornerRadius = UDim.new(0, 8)
+	zoneProgressCorner.Parent = zoneProgressLabel
+
+	local zoneProgressPadding = Instance.new("UIPadding")
+	zoneProgressPadding.PaddingLeft = UDim.new(0, 5)
+	zoneProgressPadding.PaddingRight = UDim.new(0, 5)
+	zoneProgressPadding.Parent = zoneProgressLabel
+
+	self._zoneProgressLabel = zoneProgressLabel
+	self:_updateZoneProgress()
 end
 
 function UIController:_createXPBar(parent, playerData)
@@ -472,6 +711,64 @@ function UIController:_createPetInventory()
 		self:_refreshPetGrid()
 	end)
 
+	local toolbar = Instance.new("Frame")
+	toolbar.Name = "InventoryToolbar"
+	toolbar.Size = UDim2.fromScale(0.58, 0.06)
+	toolbar.Position = UDim2.fromScale(0.21, 0.095)
+	toolbar.BackgroundTransparency = 1
+	toolbar.Parent = mainFrame
+
+	local toolbarLayout = Instance.new("UIListLayout")
+	toolbarLayout.FillDirection = Enum.FillDirection.Horizontal
+	toolbarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	toolbarLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	toolbarLayout.Padding = UDim.new(0.03, 0)
+	toolbarLayout.Parent = toolbar
+
+	local sortBtn = Instance.new("TextButton")
+	sortBtn.Name = "SortButton"
+	sortBtn.Size = UDim2.fromScale(0.46, 1)
+	sortBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 150)
+	sortBtn.Text = "Sort: " .. self._petSortMode
+	sortBtn.TextColor3 = COLORS.White
+	sortBtn.Font = Enum.Font.GothamBold
+	sortBtn.TextScaled = true
+	sortBtn.Parent = toolbar
+	self._petSortButton = sortBtn
+
+	local sortCorner = Instance.new("UICorner")
+	sortCorner.CornerRadius = UDim.new(0, 8)
+	sortCorner.Parent = sortBtn
+
+	sortBtn.MouseButton1Click:Connect(function()
+		local currentIndex = table.find(PET_SORT_MODES, self._petSortMode) or 1
+		self._petSortMode = PET_SORT_MODES[(currentIndex % #PET_SORT_MODES) + 1]
+		sortBtn.Text = "Sort: " .. self._petSortMode
+		self:_refreshPetGrid()
+	end)
+
+	local filterBtn = Instance.new("TextButton")
+	filterBtn.Name = "VariantFilterButton"
+	filterBtn.Size = UDim2.fromScale(0.46, 1)
+	filterBtn.BackgroundColor3 = Color3.fromRGB(90, 70, 145)
+	filterBtn.Text = "Variant: " .. self._petVariantFilter
+	filterBtn.TextColor3 = COLORS.White
+	filterBtn.Font = Enum.Font.GothamBold
+	filterBtn.TextScaled = true
+	filterBtn.Parent = toolbar
+	self._petVariantFilterButton = filterBtn
+
+	local filterCorner = Instance.new("UICorner")
+	filterCorner.CornerRadius = UDim.new(0, 8)
+	filterCorner.Parent = filterBtn
+
+	filterBtn.MouseButton1Click:Connect(function()
+		local currentIndex = table.find(PET_VARIANT_FILTERS, self._petVariantFilter) or 1
+		self._petVariantFilter = PET_VARIANT_FILTERS[(currentIndex % #PET_VARIANT_FILTERS) + 1]
+		filterBtn.Text = "Variant: " .. self._petVariantFilter
+		self:_refreshPetGrid()
+	end)
+
 	local deleteBtn = Instance.new("TextButton")
 	deleteBtn.Name = "DeleteSelectedBtn"
 	deleteBtn.Size = UDim2.fromScale(0.15, 0.06)
@@ -529,10 +826,30 @@ function UIController:_createPetInventory()
 		}):Play()
 	end)
 
+	local duplicatesBtn = Instance.new("TextButton")
+	duplicatesBtn.Name = "SelectDuplicatesBtn"
+	duplicatesBtn.Size = UDim2.fromScale(0.2, 0.06)
+	duplicatesBtn.Position = UDim2.fromScale(0.35, 0.92)
+	duplicatesBtn.BackgroundColor3 = Color3.fromRGB(70, 130, 200)
+	duplicatesBtn.Text = "Select All Duplicates"
+	duplicatesBtn.TextColor3 = COLORS.White
+	duplicatesBtn.Font = Enum.Font.GothamBold
+	duplicatesBtn.TextScaled = true
+	duplicatesBtn.Visible = false
+	duplicatesBtn.Parent = mainFrame
+
+	local duplicatesCorner = Instance.new("UICorner")
+	duplicatesCorner.CornerRadius = UDim.new(0, 8)
+	duplicatesCorner.Parent = duplicatesBtn
+
+	duplicatesBtn.MouseButton1Click:Connect(function()
+		self:_selectDuplicatePets()
+	end)
+
 	local scrollFrame = Instance.new("ScrollingFrame")
 	scrollFrame.Name = "PetGrid"
-	scrollFrame.Size = UDim2.fromScale(0.94, 0.78)
-	scrollFrame.Position = UDim2.fromScale(0.03, 0.1)
+	scrollFrame.Size = UDim2.fromScale(0.94, 0.69)
+	scrollFrame.Position = UDim2.fromScale(0.03, 0.17)
 	scrollFrame.BackgroundTransparency = 1
 	scrollFrame.ScrollBarThickness = 0
 	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
@@ -568,6 +885,110 @@ function UIController:_updateInventoryTitle()
 	self._inventoryTitle.Text = "My Pets  " .. tostring(#self._petInventoryData) .. "/" .. tostring(capacity)
 end
 
+function UIController:_buildPetDisplayList()
+	local displayPets = {}
+	for sourceIndex, petData in ipairs(self._petInventoryData) do
+		local variant = resolvePetVariant(petData)
+		if self._petVariantFilter == "All" or variant == self._petVariantFilter then
+			table.insert(displayPets, {
+				pet = petData,
+				sourceIndex = sourceIndex,
+				variant = variant,
+			})
+		end
+	end
+
+	if self._petSortMode == "Default" then
+		return displayPets
+	end
+
+	table.sort(displayPets, function(a, b)
+		local petA = a.pet
+		local petB = b.pet
+		local rarityA = RARITY_RANK[petA.rarity] or 0
+		local rarityB = RARITY_RANK[petB.rarity] or 0
+		local variantA = VARIANT_RANK[a.variant] or 0
+		local variantB = VARIANT_RANK[b.variant] or 0
+		local damageA = getPetDamage(petA)
+		local damageB = getPetDamage(petB)
+
+		if self._petSortMode == "Rarity" and rarityA ~= rarityB then
+			return rarityA > rarityB
+		elseif self._petSortMode == "Variant" and variantA ~= variantB then
+			return variantA > variantB
+		elseif self._petSortMode == "Damage" and damageA ~= damageB then
+			return damageA > damageB
+		end
+
+		if self._petSortMode ~= "Rarity" and rarityA ~= rarityB then
+			return rarityA > rarityB
+		end
+		if self._petSortMode ~= "Variant" and variantA ~= variantB then
+			return variantA > variantB
+		end
+		if self._petSortMode ~= "Damage" and damageA ~= damageB then
+			return damageA > damageB
+		end
+
+		local nameA = string.lower(tostring(petA.petId or petA.name or ""))
+		local nameB = string.lower(tostring(petB.petId or petB.name or ""))
+		if nameA ~= nameB then return nameA < nameB end
+
+		local idA = tostring(petA.uniqueId or petA.id or "")
+		local idB = tostring(petB.uniqueId or petB.id or "")
+		if idA ~= idB then return idA < idB end
+		return a.sourceIndex < b.sourceIndex
+	end)
+
+	return displayPets
+end
+
+function UIController:_selectDuplicatePets()
+	if not self._multiSelectMode then return end
+
+	local groupCounts = {}
+	local keepers = {}
+	for sourceIndex, petData in ipairs(self._petInventoryData) do
+		local petType = petData.petId
+		local petId = petData.uniqueId or petData.id
+		if type(petType) == "string" and petType ~= "" and type(petId) == "string" and petId ~= "" then
+			groupCounts[petType] = (groupCounts[petType] or 0) + 1
+			local candidate = {
+				pet = petData,
+				id = petId,
+				damage = getPetDamage(petData),
+				variantRank = VARIANT_RANK[resolvePetVariant(petData)] or 0,
+				sourceIndex = sourceIndex,
+			}
+			local keeper = keepers[petType]
+			if not keeper
+				or candidate.damage > keeper.damage
+				or (candidate.damage == keeper.damage and candidate.variantRank > keeper.variantRank)
+				or (candidate.damage == keeper.damage and candidate.variantRank == keeper.variantRank
+					and candidate.id < keeper.id)
+				or (candidate.damage == keeper.damage and candidate.variantRank == keeper.variantRank
+					and candidate.id == keeper.id and candidate.sourceIndex < keeper.sourceIndex) then
+				keepers[petType] = candidate
+			end
+		end
+	end
+
+	local selectedPets = {}
+	for _, petData in ipairs(self._petInventoryData) do
+		local petType = petData.petId
+		local petId = petData.uniqueId or petData.id
+		local keeper = petType and keepers[petType]
+		if type(petType) == "string" and groupCounts[petType] and groupCounts[petType] > 1
+			and petId and keeper and petId ~= keeper.id
+			and petData.favorite ~= true then
+			selectedPets[petId] = true
+		end
+	end
+
+	self._selectedPets = selectedPets
+	self:_refreshPetGrid()
+end
+
 function UIController:_refreshPetGrid()
 	local screenGui = self._screens.PetInventory
 	if not screenGui then return end
@@ -586,17 +1007,24 @@ function UIController:_refreshPetGrid()
 		goldenBtn.Visible = self._multiSelectMode
 	end
 
+	local duplicatesBtn = mainFrame:FindFirstChild("SelectDuplicatesBtn")
+	if duplicatesBtn then
+		duplicatesBtn.Visible = self._multiSelectMode
+	end
+
 	for _, child in ipairs(scrollFrame:GetChildren()) do
 		if child:IsA("Frame") then
 			child:Destroy()
 		end
 	end
 
-	for i, petData in ipairs(self._petInventoryData) do
+	local displayPets = self:_buildPetDisplayList()
+	for displayIndex, entry in ipairs(displayPets) do
+		local petData = entry.pet
 		local card = Instance.new("Frame")
-		card.Name = "PetCard_" .. i
+		card.Name = "PetCard_" .. tostring(petData.uniqueId or petData.id or displayIndex)
 		card.BackgroundColor3 = COLORS.DarkBg
-		card.LayoutOrder = i
+		card.LayoutOrder = displayIndex
 		card.Parent = scrollFrame
 
 		local cardCorner = Instance.new("UICorner")
@@ -643,17 +1071,42 @@ function UIController:_refreshPetGrid()
 		dmgLabel.Parent = card
 
 		local petUniqueId = petData.uniqueId or petData.id
+		local isFavorite = petData.favorite == true
+		local favoriteBtn = Instance.new("TextButton")
+		favoriteBtn.Name = "FavoriteBtn"
+		favoriteBtn.Size = UDim2.fromScale(0.24, 0.2)
+		favoriteBtn.Position = UDim2.fromScale(0.73, 0.02)
+		favoriteBtn.BackgroundTransparency = 1
+		favoriteBtn.Text = isFavorite and "★" or "☆"
+		favoriteBtn.TextColor3 = isFavorite and COLORS.CoinYellow or COLORS.White
+		favoriteBtn.TextStrokeColor3 = COLORS.DarkBg
+		favoriteBtn.TextStrokeTransparency = 0.25
+		favoriteBtn.Font = Enum.Font.GothamBold
+		favoriteBtn.TextScaled = true
+		favoriteBtn.ZIndex = 2
+		favoriteBtn.Active = petUniqueId ~= nil and not self._favoriteRequests[petUniqueId]
+		favoriteBtn.AutoButtonColor = favoriteBtn.Active
+		favoriteBtn.Parent = card
+
+		favoriteBtn.MouseButton1Click:Connect(function()
+			if not petUniqueId or self._favoriteRequests[petUniqueId] then return end
+			self:_setPetFavorite(petUniqueId, not isFavorite)
+		end)
+
 		if self._multiSelectMode then
-			local isSelected = self._selectedPets[petUniqueId] ~= nil
+			local isSelected = not isFavorite and self._selectedPets[petUniqueId] ~= nil
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
 			selectBox.Position = UDim2.fromScale(0.1, 0.75)
-			selectBox.BackgroundColor3 = isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110)
-			selectBox.Text = isSelected and "Selected" or "Select"
+			selectBox.BackgroundColor3 = isFavorite and Color3.fromRGB(150, 120, 35)
+				or (isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110))
+			selectBox.Text = isFavorite and "Favorite" or (isSelected and "Selected" or "Select")
 			selectBox.TextColor3 = COLORS.White
 			selectBox.Font = Enum.Font.GothamBold
 			selectBox.TextScaled = true
+			selectBox.Active = not isFavorite
+			selectBox.AutoButtonColor = not isFavorite
 			selectBox.Parent = card
 
 			local selectCorner = Instance.new("UICorner")
@@ -662,6 +1115,7 @@ function UIController:_refreshPetGrid()
 
 			local petId = petUniqueId
 			selectBox.MouseButton1Click:Connect(function()
+				if isFavorite or not petId then return end
 				if self._selectedPets[petId] then
 					self._selectedPets[petId] = nil
 				else
@@ -707,6 +1161,40 @@ function UIController:_refreshPetGrid()
 			end)
 		end
 	end
+end
+
+function UIController:_setPetFavorite(uniqueId, isFavorite)
+	if not self._remotes or self._favoriteRequests[uniqueId] then return end
+	local remote = self._remotes:FindFirstChild("SetPetFavorite")
+	if not remote then return end
+
+	local wasSelected = self._selectedPets[uniqueId] ~= nil
+	self._favoriteRequests[uniqueId] = true
+	if isFavorite then
+		self._selectedPets[uniqueId] = nil
+	end
+	self:_refreshPetGrid()
+
+	local invoked, success, err = pcall(function()
+		return remote:InvokeServer(uniqueId, isFavorite)
+	end)
+	self._favoriteRequests[uniqueId] = nil
+	if invoked and success then
+		for _, petData in ipairs(self._petInventoryData) do
+			local petId = petData.uniqueId or petData.id
+			if petId == uniqueId then
+				petData.favorite = isFavorite
+				break
+			end
+		end
+	else
+		if wasSelected then
+			self._selectedPets[uniqueId] = true
+		end
+		local message = invoked and err or success
+		self:_showGoldenError(message or "Could not update favorite")
+	end
+	self:_refreshPetGrid()
 end
 
 function UIController:_isPetEquipped(uniqueId)
@@ -767,10 +1255,14 @@ function UIController:_deleteSelectedPets()
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("DeletePets")
 		if remote then
-			remote:InvokeServer(ids)
+			local success, err = remote:InvokeServer(ids)
+			if success then
+				self._selectedPets = {}
+			else
+				self:_showGoldenError(err or "Could not delete selected pets")
+			end
 		end
 	end
-	self._selectedPets = {}
 end
 
 --------------------------------------------------------------------------------
@@ -795,6 +1287,10 @@ function UIController:_showGoldenConversionConfirm()
 		for _, pet in ipairs(self._petInventoryData) do
 			local petUniqueId = pet.uniqueId or pet.id
 			if petUniqueId == selId then
+				if pet.favorite == true then
+					self:_showGoldenError("Favorite pets are protected!")
+					return
+				end
 				if pet.golden then
 					self:_showGoldenError("Cannot use golden pets!")
 					return
@@ -1034,6 +1530,9 @@ function UIController:_convertToGolden(petInstanceIds, resultLabel, overlay)
 			local goldenName = result.goldenPet and result.goldenPet.name or "Golden Pet"
 			resultLabel.Text = "SUCCESS! Got " .. goldenName .. "!"
 			resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		end
+		if result.goldenPet and result.isNewDiscovery == true then
+			self:enqueueDiscoveryToast(result.goldenPet)
 		end
 	else
 		if resultLabel then
@@ -1636,8 +2135,128 @@ function UIController:_createShopWindow()
 	self._screens.ShopWindow = screenGui
 end
 
+local function formatWholeNumber(value)
+	local formatted = tostring(math.max(0, math.floor(tonumber(value) or 0)))
+	while true do
+		local replacements
+		formatted, replacements = string.gsub(formatted, "^(%d+)(%d%d%d)", "%1.%2")
+		if replacements == 0 then
+			return formatted
+		end
+	end
+end
+
+function UIController:_resolveNextZone()
+	for zoneId, zoneDef in ipairs(ZoneData.Zones) do
+		if not self._unlockedZones[zoneId] then
+			return zoneId, zoneDef
+		end
+	end
+	return nil, nil
+end
+
+function UIController:_updateZoneProgress()
+	if not self._zoneProgressLabel then return end
+
+	local zoneId, zoneDef = self:_resolveNextZone()
+	if not zoneDef then
+		self._zoneProgressLabel.Text = "All zones unlocked!"
+		self._zoneProgressLabel.TextColor3 = COLORS.ButtonGreen
+		return
+	end
+
+	local cost = math.max(0, tonumber(zoneDef.unlockCost) or 0)
+	local progress = math.min(math.max(0, self._coins), cost)
+	local missing = math.max(0, cost - self._coins)
+	local progressText = "Zone " .. tostring(zoneId) .. ": "
+		.. formatWholeNumber(progress) .. " / " .. formatWholeNumber(cost) .. " Coins"
+
+	local remainingText = formatWholeNumber(missing) .. " Coins remaining"
+	if missing > 0 then
+		self._zoneProgressLabel.Text = progressText .. "\n" .. remainingText
+		self._zoneProgressLabel.TextColor3 = COLORS.White
+	else
+		self._zoneProgressLabel.Text = progressText .. "\n" .. remainingText .. " - READY!"
+		self._zoneProgressLabel.TextColor3 = COLORS.ButtonGreen
+	end
+end
+
+function UIController:_resolveTargetEgg()
+	local selectedEgg = self._selectedEggType and PetData.Eggs[self._selectedEggType]
+	if selectedEgg and self._unlockedZones[selectedEgg.zone] then
+		return self._selectedEggType, selectedEgg
+	end
+
+	local targetEggType = nil
+	local targetEgg = nil
+	for eggType, eggDef in pairs(PetData.Eggs) do
+		if self._unlockedZones[eggDef.zone]
+			and (not targetEgg
+				or eggDef.zone > targetEgg.zone
+				or (eggDef.zone == targetEgg.zone and eggType < targetEggType)) then
+			targetEggType = eggType
+			targetEgg = eggDef
+		end
+	end
+	return targetEggType, targetEgg
+end
+
+function UIController:_updateEggShortfall()
+	if not self._eggShortfallLabel then return end
+
+	local _, eggDef = self:_resolveTargetEgg()
+	local cost = eggDef and Config.EggCosts[eggDef.zone]
+	if not eggDef or not cost then
+		self._eggShortfallLabel.Text = "Egg progress unavailable"
+		self._eggShortfallLabel.TextColor3 = COLORS.White
+		return
+	end
+
+	local missing = {}
+	if cost.Coins then
+		local missingCoins = math.max(0, cost.Coins - self._coins)
+		if missingCoins > 0 then
+			table.insert(missing, tostring(missingCoins) .. " Coins")
+		end
+	end
+	if cost.Diamonds then
+		local missingDiamonds = math.max(0, cost.Diamonds - self._diamonds)
+		if missingDiamonds > 0 then
+			table.insert(missing, tostring(missingDiamonds) .. " Diamonds")
+		end
+	end
+
+	if #missing == 0 then
+		self._eggShortfallLabel.Text = eggDef.name .. ": READY TO HATCH!"
+		self._eggShortfallLabel.TextColor3 = COLORS.ButtonGreen
+	else
+		self._eggShortfallLabel.Text = eggDef.name .. ": Need " .. table.concat(missing, " + ")
+		self._eggShortfallLabel.TextColor3 = COLORS.White
+	end
+end
+
 function UIController:showEggStationPrompt(eggType)
-	-- No-op: E-key ProximityPrompt handles hatching directly
+	local eggDef = PetData.Eggs[eggType]
+	if not eggDef or not self._unlockedZones[eggDef.zone] then return end
+
+	self._selectedEggType = eggType
+	self:_updateEggShortfall()
+end
+
+function UIController:hideEggStationPrompt(eggType)
+	if self._selectedEggType ~= eggType then return end
+
+	self._selectedEggType = nil
+	self:_updateEggShortfall()
+end
+
+function UIController:unlockZone(zoneId)
+	zoneId = normalizeZoneId(zoneId)
+	if not zoneId then return end
+
+	self._unlockedZones[zoneId] = true
+	self:_updateEggShortfall()
+	self:_updateZoneProgress()
 end
 
 --------------------------------------------------------------------------------
@@ -2176,16 +2795,36 @@ end
 --------------------------------------------------------------------------------
 
 function UIController:updateCurrency(coins, diamonds)
+	self._coins = tonumber(coins) or 0
+	self._diamonds = tonumber(diamonds) or 0
 	if self._coinLabel then
-		self._coinLabel.Text = tostring(coins or 0)
+		self._coinLabel.Text = tostring(self._coins)
 	end
 	if self._diamondLabel then
-		self._diamondLabel.Text = tostring(diamonds or 0)
+		self._diamondLabel.Text = tostring(self._diamonds)
 	end
+	self:_updateEggShortfall()
+	self:_updateZoneProgress()
 end
 
 function UIController:updatePetInventory(pets)
 	self._petInventoryData = pets or {}
+
+	-- Drop stale or newly protected selections while preserving valid selections
+	-- across sorting and filtering refreshes.
+	local selectableIds = {}
+	for _, petData in ipairs(self._petInventoryData) do
+		local id = petData.uniqueId or petData.id
+		if id and petData.favorite ~= true then
+			selectableIds[id] = true
+		end
+	end
+	for id in pairs(self._selectedPets) do
+		if not selectableIds[id] then
+			self._selectedPets[id] = nil
+		end
+	end
+
 	self:_updateInventoryTitle()
 	self:_refreshPetGrid()
 end
@@ -2227,6 +2866,128 @@ end
 function UIController:updateMastery(masteryState)
 	self._masteryState = masteryState or { masteryPoints = 0, level = 1, buffs = {} }
 	self:_refreshMasteryGrid()
+end
+
+--------------------------------------------------------------------------------
+-- NEW PET DISCOVERY TOASTS
+--------------------------------------------------------------------------------
+function UIController:enqueueDiscoveryToast(petData)
+	if not self._playerGui or type(petData) ~= "table" then return end
+
+	local variant = petData.variant or (petData.golden and "Golden") or "Normal"
+	table.insert(self._discoveryToastQueue, {
+		name = petData.name or "Pet",
+		rarity = petData.rarity or "Common",
+		variant = variant,
+	})
+	self:_showNextDiscoveryToast()
+end
+
+function UIController:_showNextDiscoveryToast()
+	if self._discoveryToastActive or not self._playerGui then return end
+
+	local petData = table.remove(self._discoveryToastQueue, 1)
+	if not petData then return end
+	self._discoveryToastActive = true
+
+	local toast = Instance.new("ScreenGui")
+	toast.Name = "DiscoveryToast"
+	toast.ResetOnSpawn = false
+	toast.DisplayOrder = 100
+	toast.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	toast.Parent = self._playerGui
+	self._activeDiscoveryToast = toast
+
+	local card = Instance.new("Frame")
+	card.Name = "Card"
+	card.Size = UDim2.fromScale(0.38, 0.11)
+	card.Position = UDim2.fromScale(0.31, -0.13)
+	card.BackgroundColor3 = COLORS.DarkBg
+	card.BackgroundTransparency = 0.08
+	card.BorderSizePixel = 0
+	card.Parent = toast
+
+	local cardCorner = Instance.new("UICorner")
+	cardCorner.CornerRadius = UDim.new(0, 14)
+	cardCorner.Parent = card
+
+	local cardStroke = Instance.new("UIStroke")
+	cardStroke.Thickness = 3
+	cardStroke.Color = RARITY_COLORS[petData.rarity] or RARITY_COLORS.Common
+	cardStroke.Parent = card
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.fromScale(0.68, 0.35)
+	title.Position = UDim2.fromScale(0.05, 0.08)
+	title.BackgroundTransparency = 1
+	title.Text = "NEW PET DISCOVERED!"
+	title.TextColor3 = COLORS.CoinYellow
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = card
+
+	local petName = Instance.new("TextLabel")
+	petName.Name = "PetName"
+	petName.Size = UDim2.fromScale(0.68, 0.38)
+	petName.Position = UDim2.fromScale(0.05, 0.5)
+	petName.BackgroundTransparency = 1
+	petName.Text = petData.name
+	petName.TextColor3 = RARITY_COLORS[petData.rarity] or COLORS.White
+	petName.Font = Enum.Font.GothamBold
+	petName.TextScaled = true
+	petName.TextXAlignment = Enum.TextXAlignment.Left
+	petName.Parent = card
+
+	local variantColor = VARIANT_COLORS[petData.variant] or VARIANT_COLORS.Normal
+	local variantBadge = Instance.new("TextLabel")
+	variantBadge.Name = "VariantBadge"
+	variantBadge.Size = UDim2.fromScale(0.22, 0.42)
+	variantBadge.Position = UDim2.fromScale(0.74, 0.29)
+	variantBadge.BackgroundColor3 = variantColor
+	variantBadge.BorderSizePixel = 0
+	variantBadge.Text = string.upper(petData.variant)
+	variantBadge.TextColor3 = COLORS.DarkBg
+	variantBadge.Font = Enum.Font.GothamBold
+	variantBadge.TextScaled = true
+	variantBadge.Parent = card
+
+	local badgeCorner = Instance.new("UICorner")
+	badgeCorner.CornerRadius = UDim.new(0, 9)
+	badgeCorner.Parent = variantBadge
+
+	local badgePadding = Instance.new("UIPadding")
+	badgePadding.PaddingLeft = UDim.new(0, 5)
+	badgePadding.PaddingRight = UDim.new(0, 5)
+	badgePadding.Parent = variantBadge
+
+	TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Position = UDim2.fromScale(0.31, 0.05),
+	}):Play()
+
+	-- Keep exactly one discovery toast visible at a time, then advance the queue.
+	task.delay(2.75, function()
+		if self._activeDiscoveryToast ~= toast then return end
+		if not toast.Parent or not card.Parent then
+			self._activeDiscoveryToast = nil
+			self._discoveryToastActive = false
+			self:_showNextDiscoveryToast()
+			return
+		end
+
+		local hideTween = TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+			Position = UDim2.fromScale(0.31, -0.13),
+		})
+		hideTween.Completed:Connect(function()
+			if self._activeDiscoveryToast ~= toast then return end
+			toast:Destroy()
+			self._activeDiscoveryToast = nil
+			self._discoveryToastActive = false
+			self:_showNextDiscoveryToast()
+		end)
+		hideTween:Play()
+	end)
 end
 
 function UIController:_showHatchToast(petData)
@@ -2484,6 +3245,19 @@ function UIController:cleanup()
 		screen:Destroy()
 	end
 	self._screens = {}
+	self._discoveryToastQueue = {}
+	if self._activeDiscoveryToast then
+		self._activeDiscoveryToast:Destroy()
+	end
+	self._activeDiscoveryToast = nil
+	self._discoveryToastActive = false
+	if self._onboardingArrow then
+		self._onboardingArrow:Destroy()
+	end
+	self._onboardingCard = nil
+	self._onboardingTitle = nil
+	self._onboardingText = nil
+	self._onboardingArrow = nil
 end
 
 return UIController

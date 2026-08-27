@@ -199,6 +199,7 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		rarity = petDef.rarity,
 		damage = petDamage,
 		variant = variant,
+		favorite = false,
 		equipped = false,
 	}
 
@@ -358,6 +359,37 @@ function PetService.unequipPet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
+local function fireInventoryUpdate(player, pets)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if not remotes then return end
+	local event = remotes:FindFirstChild("PetInventoryUpdated")
+	if event then
+		event:FireClient(player, pets)
+	end
+end
+
+-- Set a pet's favorite state by instance ID.
+function PetService.setPetFavorite(player, petInstanceId, isFavorite)
+	if not player or type(petInstanceId) ~= "string" or type(isFavorite) ~= "boolean" then
+		return false, "Invalid parameters"
+	end
+
+	local data = PetService._dataService.getPlayerData(player)
+	if not data then
+		return false, "No player data"
+	end
+
+	for _, pet in ipairs(data.pets) do
+		if pet.id == petInstanceId then
+			pet.favorite = isFavorite
+			fireInventoryUpdate(player, data.pets)
+			return true, nil
+		end
+	end
+
+	return false, "Pet not found in inventory"
+end
+
 -- Delete a single pet by instance ID
 function PetService.deletePet(player, petInstanceId)
 	if not player or type(petInstanceId) ~= "string" then
@@ -371,6 +403,10 @@ function PetService.deletePet(player, petInstanceId)
 
 	for i, pet in ipairs(data.pets) do
 		if pet.id == petInstanceId then
+			if pet.favorite == true then
+				return false, "Favorited pets cannot be deleted"
+			end
+
 			-- Unequip if equipped
 			if pet.equipped then
 				for j, id in ipairs(data.equippedPets) do
@@ -382,14 +418,7 @@ function PetService.deletePet(player, petInstanceId)
 			end
 			table.remove(data.pets, i)
 
-			-- Fire inventory update
-			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-			if remotes then
-				local event = remotes:FindFirstChild("PetInventoryUpdated")
-				if event then
-					event:FireClient(player, data.pets)
-				end
-			end
+			fireInventoryUpdate(player, data.pets)
 
 			return true, nil
 		end
@@ -404,24 +433,45 @@ function PetService.deletePets(player, petInstanceIds)
 		return false, "Invalid parameters"
 	end
 
+	local count = #petInstanceIds
+	if count < 1 or count > (Config.MaxPetInventoryAbsolute or 250) then
+		return false, "Invalid number of pets"
+	end
+
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
 		return false, "No player data"
 	end
 
-	-- Validate all IDs exist and belong to player
-	local idsToDelete = {}
-	for _, id in ipairs(petInstanceIds) do
-		if type(id) == "string" then
-			idsToDelete[id] = true
-		end
+	-- Preflight the entire request before mutating anything, so a protected or
+	-- stale ID cannot cause a partial delete.
+	local petById = {}
+	for _, pet in ipairs(data.pets) do
+		petById[pet.id] = pet
 	end
 
-	-- Remove pets from inventory (iterate in reverse to safely remove)
+	local idsToDelete = {}
+	for _, id in ipairs(petInstanceIds) do
+		if type(id) ~= "string" or id == "" then
+			return false, "Invalid pet ID in list"
+		end
+		if idsToDelete[id] then
+			return false, "Duplicate pet ID in list"
+		end
+		local pet = petById[id]
+		if not pet then
+			return false, "Pet not found in inventory: " .. tostring(id)
+		end
+		if pet.favorite == true then
+			return false, "Favorited pets cannot be deleted"
+		end
+		idsToDelete[id] = true
+	end
+
+	-- Remove pets from inventory (iterate in reverse to safely remove).
 	for i = #data.pets, 1, -1 do
 		local pet = data.pets[i]
 		if idsToDelete[pet.id] then
-			-- Unequip if equipped
 			if pet.equipped then
 				for j, id in ipairs(data.equippedPets) do
 					if id == pet.id then
@@ -434,15 +484,7 @@ function PetService.deletePets(player, petInstanceIds)
 		end
 	end
 
-	-- Fire inventory update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("PetInventoryUpdated")
-		if event then
-			event:FireClient(player, data.pets)
-		end
-	end
-
+	fireInventoryUpdate(player, data.pets)
 	return true, nil
 end
 
@@ -492,7 +534,7 @@ local GOLDEN_CHANCES = {
 
 -- Convert pets into a golden pet (multi-pet sacrifice with chance)
 -- petInstanceIds: table of 1-7 pet instance IDs (all must be same petId/type)
--- Returns: { success = bool, goldenPet = pet|nil, chance = number }
+-- Returns: { success = bool, goldenPet = pet|nil, chance = number, isNewDiscovery = bool }
 function PetService.convertToGoldenPet(player, petInstanceIds)
 	if not player or type(petInstanceIds) ~= "table" then
 		return nil, "Invalid parameters"
@@ -529,6 +571,10 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			return nil, "Pet not found in inventory: " .. tostring(instanceId)
 		end
 
+		if foundPet.favorite == true then
+			return nil, "Favorited pets cannot be sacrificed"
+		end
+
 		if foundPet.golden then
 			return nil, "Cannot sacrifice a golden pet"
 		end
@@ -561,6 +607,11 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 		idSet[instanceId] = true
 	end
 
+	local petDef = PetData.Pets[requiredPetId]
+	if not petDef then
+		return nil, "Invalid pet type"
+	end
+
 	-- Calculate chance
 	local chance = GOLDEN_CHANCES[count] or 0.13
 
@@ -590,31 +641,31 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 	end
 
 	local goldenPet = nil
+	local isNewDiscovery = false
 
 	if success then
 		-- Create a new golden pet based on the sacrificed type
-		local petDef = PetData.Pets[requiredPetId]
-		if petDef then
-			goldenPet = {
-				id = HttpService:GenerateGUID(false),
-				petId = requiredPetId,
-				name = "Golden " .. petDef.name,
-				rarity = petDef.rarity,
-				damage = petDef.baseDamage * 2,
-				variant = "Golden",
-				golden = true,
-				equipped = false,
-			}
-			table.insert(data.pets, goldenPet)
+		goldenPet = {
+			id = HttpService:GenerateGUID(false),
+			petId = requiredPetId,
+			name = "Golden " .. petDef.name,
+			rarity = petDef.rarity,
+			damage = petDef.baseDamage * 2,
+			variant = "Golden",
+			golden = true,
+			favorite = false,
+			equipped = false,
+		}
+		table.insert(data.pets, goldenPet)
 
-			-- Track golden discovery (collection book)
-			local goldenKey = "Golden_" .. requiredPetId
-			if not data.discoveredPets then
-				data.discoveredPets = {}
-			end
-			if not data.discoveredPets[goldenKey] then
-				data.discoveredPets[goldenKey] = true
-			end
+		-- Track golden discovery (collection book)
+		local goldenKey = "Golden_" .. requiredPetId
+		if not data.discoveredPets then
+			data.discoveredPets = {}
+		end
+		if not data.discoveredPets[goldenKey] then
+			data.discoveredPets[goldenKey] = true
+			isNewDiscovery = true
 		end
 	end
 
@@ -627,7 +678,12 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 		end
 	end
 
-	return { success = success, goldenPet = goldenPet, chance = chance }, nil
+	return {
+		success = success,
+		goldenPet = goldenPet,
+		chance = chance,
+		isNewDiscovery = isNewDiscovery,
+	}, nil
 end
 
 return PetService
