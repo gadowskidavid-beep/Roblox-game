@@ -21,6 +21,14 @@ local SESSION_LOCK_TIMEOUT = Config.SessionLockTimeout or 180
 local SHUTDOWN_TIMEOUT = 25
 local SESSION_ID = game.JobId ~= "" and game.JobId or ("studio_" .. HttpService:GenerateGUID(false))
 
+-- Download-only test build. This branch intentionally grants a read-only Studio
+-- session enough progress to exercise every node in the imported test tree.
+-- The guard prevents the boost from ever activating on a published live server.
+local DOWNLOAD_TEST_BUILD = true
+local DOWNLOAD_TEST_LEVEL = 100
+local DOWNLOAD_TEST_MASTERY_POINTS = 120
+local IS_DOWNLOAD_TEST_SESSION = DOWNLOAD_TEST_BUILD and RunService:IsStudio()
+
 DataService._cache = {}
 DataService._canSave = {}
 DataService._saving = {}
@@ -40,6 +48,56 @@ end
 
 local function profileKey(userId)
 	return "Player_" .. tostring(userId)
+end
+
+local function applyDownloadTestBoost(data)
+	data = DataSchema.migrate(data)
+	data.level = DOWNLOAD_TEST_LEVEL
+	data.xp = 0
+	data.masteryPoints = math.max(
+		math.floor(tonumber(data.masteryPoints) or 0),
+		DOWNLOAD_TEST_MASTERY_POINTS
+	)
+	-- A read-only test copy never owns or releases a production session lock.
+	data._session = nil
+	return data
+end
+
+local function loadDownloadTestData(player)
+	local storedData = nil
+	local lastError = nil
+
+	if not DataService._useMemoryOnly and dataStore then
+		local key = profileKey(player.UserId)
+		for attempt = 1, MAX_RETRIES do
+			local success, result = pcall(function()
+				return dataStore:GetAsync(key)
+			end)
+			if success then
+				storedData = result
+				lastError = nil
+				break
+			end
+			lastError = result
+			if attempt < MAX_RETRIES then
+				task.wait(2 ^ attempt)
+			end
+		end
+	end
+
+	if lastError then
+		warn("[DataService] Test build could not read Studio data; using safe defaults: " .. tostring(lastError))
+	end
+
+	local data = applyDownloadTestBoost(storedData)
+	DataService._cache[player.UserId] = data
+	DataService._canSave[player.UserId] = false
+	print(
+		"[DataService] Read-only test boost active for " .. player.Name
+			.. ": Level " .. tostring(DOWNLOAD_TEST_LEVEL)
+			.. ", " .. tostring(data.masteryPoints) .. " Mastery Points"
+	)
+	return data
 end
 
 local function newSessionMetadata()
@@ -95,6 +153,10 @@ function DataService.loadPlayerData(player)
 
 	if DataService._cache[player.UserId] then
 		return DataService._cache[player.UserId]
+	end
+
+	if IS_DOWNLOAD_TEST_SESSION then
+		return loadDownloadTestData(player)
 	end
 
 	if DataService._useMemoryOnly then
@@ -164,6 +226,9 @@ end
 function DataService.savePlayerData(player, releaseLock)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if IS_DOWNLOAD_TEST_SESSION then
+		return false, "Read-only download test session"
 	end
 	if DataService._useMemoryOnly then
 		return false, "Memory-only mode"
@@ -274,7 +339,7 @@ function DataService.onPlayerRemoving(player)
 end
 
 function DataService.startAutoSave()
-	if DataService._useMemoryOnly then
+	if IS_DOWNLOAD_TEST_SESSION or DataService._useMemoryOnly then
 		return
 	end
 
@@ -291,7 +356,7 @@ function DataService.startAutoSave()
 end
 
 function DataService.bindToClose()
-	if DataService._useMemoryOnly then
+	if IS_DOWNLOAD_TEST_SESSION or DataService._useMemoryOnly then
 		return
 	end
 

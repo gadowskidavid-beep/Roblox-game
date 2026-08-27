@@ -2180,15 +2180,46 @@ local TEST_TREE_BUFF_ORDER = {
 	"FasterRunning",
 }
 
+local TEST_TREE_TIERS = {
+	{ roman = "I", firstLevel = 1, lastLevel = 3 },
+	{ roman = "II", firstLevel = 4, lastLevel = 7 },
+	{ roman = "III", firstLevel = 8, lastLevel = 10 },
+}
+
 local TEST_TREE_POSITIONS = {
-	MoreCoins = Vector2.new(260, 205),
-	MoreDiamonds = Vector2.new(840, 205),
-	BetterLuck = Vector2.new(260, 605),
-	FasterRunning = Vector2.new(840, 605),
+	MoreCoins = {
+		Vector2.new(420, 330),
+		Vector2.new(310, 210),
+		Vector2.new(155, 245),
+	},
+	MoreDiamonds = {
+		Vector2.new(680, 330),
+		Vector2.new(790, 210),
+		Vector2.new(945, 245),
+	},
+	BetterLuck = {
+		Vector2.new(420, 480),
+		Vector2.new(310, 600),
+		Vector2.new(155, 565),
+	},
+	FasterRunning = {
+		Vector2.new(680, 480),
+		Vector2.new(790, 600),
+		Vector2.new(945, 565),
+	},
+}
+
+local TEST_TREE_SYMBOLS = {
+	MoreCoins = "$",
+	MoreDiamonds = "◆",
+	BetterLuck = "★",
+	FasterRunning = ">>",
 }
 
 local TEST_TREE_ROOT_POSITION = Vector2.new(550, 405)
 local TEST_TREE_CANVAS_SIZE = Vector2.new(1100, 810)
+local TEST_TREE_BLUE = Color3.fromRGB(55, 163, 255)
+local TEST_TREE_BLUE_BRIGHT = Color3.fromRGB(104, 207, 255)
 
 local function addTestTreeCorner(instance, radius)
 	local corner = Instance.new("UICorner")
@@ -2208,7 +2239,7 @@ end
 local function createTestTreeConnector(parent, fromPosition, toPosition)
 	local delta = toPosition - fromPosition
 	local connector = Instance.new("Frame")
-	connector.Name = "Connector"
+	connector.Name = "BranchSegment"
 	connector.AnchorPoint = Vector2.new(0.5, 0.5)
 	connector.Size = UDim2.fromOffset(delta.Magnitude, 8)
 	connector.Position = UDim2.fromOffset(
@@ -2216,32 +2247,53 @@ local function createTestTreeConnector(parent, fromPosition, toPosition)
 		(fromPosition.Y + toPosition.Y) / 2
 	)
 	connector.Rotation = math.deg(math.atan2(delta.Y, delta.X))
-	connector.BackgroundColor3 = Color3.fromRGB(86, 104, 146)
+	connector.BackgroundColor3 = TEST_TREE_BLUE
+	connector.BackgroundTransparency = 0.12
 	connector.BorderSizePixel = 0
 	connector.ZIndex = 1
 	connector.Parent = parent
 	addTestTreeCorner(connector, 999)
 
-	local glow = Instance.new("Frame")
-	glow.Name = "Glow"
-	glow.AnchorPoint = Vector2.new(0.5, 0.5)
-	glow.Size = UDim2.new(1, 0, 0, 3)
-	glow.Position = UDim2.fromScale(0.5, 0.5)
-	glow.BackgroundColor3 = Color3.fromRGB(132, 245, 191)
-	glow.BorderSizePixel = 0
-	glow.Parent = connector
-	addTestTreeCorner(glow, 999)
+	local core = Instance.new("Frame")
+	core.Name = "Core"
+	core.AnchorPoint = Vector2.new(0.5, 0.5)
+	core.Size = UDim2.new(1, -6, 0, 3)
+	core.Position = UDim2.fromScale(0.5, 0.5)
+	core.BackgroundColor3 = Color3.fromRGB(10, 25, 57)
+	core.BorderSizePixel = 0
+	core.Parent = connector
+	addTestTreeCorner(core, 999)
 end
 
-function UIController:_createTestTreeNode(parent, buffId, position)
-	local buffDef = MasteryData.Buffs[buffId]
-	if not buffDef then return end
+local function createTestTreeHexLayers(parent, size, center, fillColor, outlineColor, zIndex)
+	local layers = {}
+	for index, rotation in ipairs({ 30, 90, 150 }) do
+		local shape = Instance.new("Frame")
+		shape.Name = "HexLayer" .. tostring(index)
+		shape.AnchorPoint = Vector2.new(0.5, 0.5)
+		shape.Size = UDim2.fromOffset(size.X, size.Y)
+		shape.Position = UDim2.fromOffset(center.X, center.Y)
+		shape.BackgroundColor3 = fillColor
+		shape.BorderSizePixel = 0
+		shape.Rotation = rotation
+		shape.ZIndex = zIndex
+		shape.Parent = parent
+		addTestTreeCorner(shape, 13)
+		local stroke = addTestTreeStroke(shape, outlineColor, 3)
+		table.insert(layers, { shape = shape, stroke = stroke })
+	end
+	return layers
+end
 
-	local color = Color3.fromRGB(buffDef.color[1], buffDef.color[2], buffDef.color[3])
+function UIController:_createTestTreeNode(parent, buffId, tierIndex, position)
+	local buffDef = MasteryData.Buffs[buffId]
+	local tier = TEST_TREE_TIERS[tierIndex]
+	if not buffDef or not tier then return end
+
 	local node = Instance.new("Frame")
-	node.Name = "TreeNode_" .. buffId
+	node.Name = "TreeNode_" .. buffId .. "_Tier" .. tostring(tierIndex)
 	node.AnchorPoint = Vector2.new(0.5, 0.5)
-	node.Size = UDim2.fromOffset(200, 178)
+	node.Size = UDim2.fromOffset(170, 150)
 	node.Position = UDim2.fromOffset(position.X, position.Y)
 	node.BackgroundTransparency = 1
 	node.ZIndex = 4
@@ -2254,88 +2306,82 @@ function UIController:_createTestTreeNode(parent, buffId, position)
 
 	local shadow = Instance.new("Frame")
 	shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-	shadow.Size = UDim2.fromOffset(148, 132)
-	shadow.Position = UDim2.fromOffset(103, 94)
-	shadow.BackgroundColor3 = Color3.fromRGB(10, 16, 35)
-	shadow.BackgroundTransparency = 0.25
+	shadow.Size = UDim2.fromOffset(116, 98)
+	shadow.Position = UDim2.fromOffset(88, 78)
+	shadow.BackgroundColor3 = Color3.fromRGB(2, 8, 22)
+	shadow.BackgroundTransparency = 0.22
 	shadow.Rotation = 30
 	shadow.BorderSizePixel = 0
 	shadow.ZIndex = 3
 	shadow.Parent = node
-	addTestTreeCorner(shadow, 20)
+	addTestTreeCorner(shadow, 15)
 
-	local shapes = {}
-	for index, rotation in ipairs({ 30, 90, 150 }) do
-		local shape = Instance.new("Frame")
-		shape.Name = "HexLayer" .. tostring(index)
-		shape.AnchorPoint = Vector2.new(0.5, 0.5)
-		shape.Size = UDim2.fromOffset(136, 118)
-		shape.Position = UDim2.fromOffset(100, 86)
-		shape.BackgroundColor3 = color
-		shape.BorderSizePixel = 0
-		shape.Rotation = rotation
-		shape.ZIndex = 4
-		shape.Parent = node
-		addTestTreeCorner(shape, 18)
-		table.insert(shapes, shape)
-	end
+	local hexLayers = createTestTreeHexLayers(
+		node,
+		Vector2.new(112, 94),
+		Vector2.new(85, 72),
+		Color3.fromRGB(13, 27, 59),
+		TEST_TREE_BLUE,
+		4
+	)
 
-	local icon = Instance.new("TextLabel")
-	icon.Name = "Icon"
-	icon.Size = UDim2.fromOffset(58, 52)
-	icon.Position = UDim2.fromOffset(71, 13)
-	icon.BackgroundTransparency = 1
-	icon.Text = buffDef.icon
-	icon.TextColor3 = COLORS.White
-	icon.Font = Enum.Font.GothamBlack
-	icon.TextScaled = true
-	icon.ZIndex = 6
-	icon.Parent = node
+	local identityLabel = Instance.new("TextLabel")
+	identityLabel.Name = "BuffIdentity"
+	identityLabel.Size = UDim2.fromOffset(142, 24)
+	identityLabel.Position = UDim2.fromOffset(14, 11)
+	identityLabel.BackgroundTransparency = 1
+	identityLabel.Text = (TEST_TREE_SYMBOLS[buffId] or "•") .. " " .. string.upper(buffDef.displayName)
+	identityLabel.TextColor3 = Color3.fromRGB(215, 237, 255)
+	identityLabel.Font = Enum.Font.GothamBlack
+	identityLabel.TextScaled = true
+	identityLabel.TextWrapped = true
+	identityLabel.ZIndex = 6
+	identityLabel.Parent = node
+	local identitySize = Instance.new("UITextSizeConstraint")
+	identitySize.MinTextSize = 8
+	identitySize.MaxTextSize = 13
+	identitySize.Parent = identityLabel
 
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "BuffName"
-	nameLabel.Size = UDim2.fromOffset(164, 32)
-	nameLabel.Position = UDim2.fromOffset(18, 64)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = string.upper(buffDef.displayName)
-	nameLabel.TextColor3 = COLORS.White
-	nameLabel.Font = Enum.Font.GothamBlack
-	nameLabel.TextScaled = true
-	nameLabel.TextWrapped = true
-	nameLabel.ZIndex = 6
-	nameLabel.Parent = node
-	local nameSize = Instance.new("UITextSizeConstraint")
-	nameSize.MinTextSize = 10
-	nameSize.MaxTextSize = 18
-	nameSize.Parent = nameLabel
+	local tierLabel = Instance.new("TextLabel")
+	tierLabel.Name = "TierLabel"
+	tierLabel.Size = UDim2.fromOffset(120, 32)
+	tierLabel.Position = UDim2.fromOffset(25, 37)
+	tierLabel.BackgroundTransparency = 1
+	tierLabel.Text = "TIER " .. tier.roman
+	tierLabel.TextColor3 = COLORS.White
+	tierLabel.Font = Enum.Font.GothamBlack
+	tierLabel.TextSize = 23
+	tierLabel.ZIndex = 6
+	tierLabel.Parent = node
 
-	local levelLabel = Instance.new("TextLabel")
-	levelLabel.Name = "Level"
-	levelLabel.Size = UDim2.fromOffset(154, 22)
-	levelLabel.Position = UDim2.fromOffset(23, 96)
-	levelLabel.BackgroundTransparency = 1
-	levelLabel.TextColor3 = Color3.fromRGB(229, 238, 255)
-	levelLabel.Font = Enum.Font.GothamBold
-	levelLabel.TextSize = 14
-	levelLabel.ZIndex = 6
-	levelLabel.Parent = node
+	local rangeLabel = Instance.new("TextLabel")
+	rangeLabel.Name = "LevelRange"
+	rangeLabel.Size = UDim2.fromOffset(126, 19)
+	rangeLabel.Position = UDim2.fromOffset(22, 69)
+	rangeLabel.BackgroundTransparency = 1
+	rangeLabel.Text = "LEVELS " .. tostring(tier.firstLevel) .. "-" .. tostring(tier.lastLevel)
+	rangeLabel.TextColor3 = Color3.fromRGB(163, 199, 232)
+	rangeLabel.Font = Enum.Font.GothamBold
+	rangeLabel.TextSize = 12
+	rangeLabel.ZIndex = 6
+	rangeLabel.Parent = node
 
-	local actionLabel = Instance.new("TextLabel")
-	actionLabel.Name = "ActionLabel"
-	actionLabel.Size = UDim2.fromOffset(156, 34)
-	actionLabel.Position = UDim2.fromOffset(22, 120)
-	actionLabel.BackgroundColor3 = Color3.fromRGB(30, 42, 76)
-	actionLabel.TextColor3 = COLORS.White
-	actionLabel.Font = Enum.Font.GothamBlack
-	actionLabel.TextScaled = true
-	actionLabel.ZIndex = 7
-	actionLabel.Parent = node
-	addTestTreeCorner(actionLabel, 999)
-	addTestTreeStroke(actionLabel, COLORS.White, 2)
-	local actionSize = Instance.new("UITextSizeConstraint")
-	actionSize.MinTextSize = 10
-	actionSize.MaxTextSize = 15
-	actionSize.Parent = actionLabel
+	local statusLabel = Instance.new("TextLabel")
+	statusLabel.Name = "StatusBadge"
+	statusLabel.Size = UDim2.fromOffset(126, 27)
+	statusLabel.Position = UDim2.fromOffset(22, 94)
+	statusLabel.BackgroundColor3 = Color3.fromRGB(25, 68, 112)
+	statusLabel.TextColor3 = COLORS.White
+	statusLabel.Font = Enum.Font.GothamBlack
+	statusLabel.TextScaled = true
+	statusLabel.ZIndex = 7
+	statusLabel.Parent = node
+	addTestTreeCorner(statusLabel, 999)
+	local statusStroke = addTestTreeStroke(statusLabel, TEST_TREE_BLUE_BRIGHT, 2)
+	local statusSize = Instance.new("UITextSizeConstraint")
+	statusSize.MinTextSize = 9
+	statusSize.MaxTextSize = 13
+	statusSize.Parent = statusLabel
 
 	local hitButton = Instance.new("TextButton")
 	hitButton.Name = "HitButton"
@@ -2345,24 +2391,38 @@ function UIController:_createTestTreeNode(parent, buffId, position)
 	hitButton.AutoButtonColor = false
 	hitButton.ZIndex = 8
 	hitButton.Parent = node
+
+	local nodeRecord = {
+		buffId = buffId,
+		tierIndex = tierIndex,
+		firstLevel = tier.firstLevel,
+		lastLevel = tier.lastLevel,
+		hitButton = hitButton,
+		hoverScale = scale,
+		hexLayers = hexLayers,
+		statusLabel = statusLabel,
+		statusStroke = statusStroke,
+		isActionable = false,
+	}
+	table.insert(self._testTreeNodes, nodeRecord)
+
 	hitButton.Activated:Connect(function()
-		self:_purchaseTestTreeBuff(buffId)
+		if nodeRecord.isActionable then
+			self:_purchaseTestTreeBuff(buffId, tierIndex)
+		end
 	end)
 	hitButton.MouseEnter:Connect(function()
+		if not nodeRecord.isActionable then return end
 		TweenService:Create(scale, TweenInfo.new(0.12), { Scale = 1.06 }):Play()
-		self:_setTestTreeFeedback(buffDef.description, color)
+		self:_setTestTreeFeedback(
+			buffDef.displayName .. " • Tier " .. tier.roman .. " • Levels "
+				.. tostring(tier.firstLevel) .. "-" .. tostring(tier.lastLevel),
+			TEST_TREE_BLUE_BRIGHT
+		)
 	end)
 	hitButton.MouseLeave:Connect(function()
 		TweenService:Create(scale, TweenInfo.new(0.12), { Scale = 1 }):Play()
 	end)
-
-	self._testTreeNodes[buffId] = {
-		button = hitButton,
-		shapes = shapes,
-		levelLabel = levelLabel,
-		actionLabel = actionLabel,
-		baseColor = color,
-	}
 end
 
 function UIController:_createTestUpgradeTree()
@@ -2379,8 +2439,8 @@ function UIController:_createTestUpgradeTree()
 	local backdrop = Instance.new("Frame")
 	backdrop.Name = "Backdrop"
 	backdrop.Size = UDim2.fromScale(1, 1)
-	backdrop.BackgroundColor3 = Color3.fromRGB(7, 11, 27)
-	backdrop.BackgroundTransparency = 0.12
+	backdrop.BackgroundColor3 = Color3.fromRGB(3, 8, 20)
+	backdrop.BackgroundTransparency = 0.42
 	backdrop.BorderSizePixel = 0
 	backdrop.Active = true
 	backdrop.Parent = screenGui
@@ -2390,11 +2450,9 @@ function UIController:_createTestUpgradeTree()
 	mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 	mainFrame.Size = UDim2.fromScale(0.94, 0.9)
 	mainFrame.Position = UDim2.fromScale(0.5, 0.5)
-	mainFrame.BackgroundColor3 = Color3.fromRGB(22, 29, 58)
+	mainFrame.BackgroundTransparency = 1
 	mainFrame.BorderSizePixel = 0
 	mainFrame.Parent = screenGui
-	addTestTreeCorner(mainFrame, 24)
-	addTestTreeStroke(mainFrame, Color3.fromRGB(93, 233, 157), 5)
 
 	local sizeConstraint = Instance.new("UISizeConstraint")
 	sizeConstraint.MaxSize = Vector2.new(1160, 840)
@@ -2405,20 +2463,20 @@ function UIController:_createTestUpgradeTree()
 	title.Size = UDim2.new(0.58, 0, 0, 52)
 	title.Position = UDim2.new(0.21, 0, 0, 8)
 	title.BackgroundTransparency = 1
-	title.Text = "UPGRADE TREE • TEST"
-	title.TextColor3 = Color3.fromRGB(116, 255, 181)
+	title.Text = "MASTERY UPGRADE TREE"
+	title.TextColor3 = TEST_TREE_BLUE_BRIGHT
 	title.Font = Enum.Font.GothamBlack
 	title.TextScaled = true
 	title.Parent = mainFrame
-	addTestTreeStroke(title, Color3.fromRGB(20, 73, 48), 2)
+	addTestTreeStroke(title, Color3.fromRGB(8, 35, 76), 2)
 
 	local subtitle = Instance.new("TextLabel")
 	subtitle.Name = "Subtitle"
 	subtitle.Size = UDim2.new(0.56, 0, 0, 26)
 	subtitle.Position = UDim2.new(0.22, 0, 0, 58)
 	subtitle.BackgroundTransparency = 1
-	subtitle.Text = "SICHERE TESTVERSION DES IMPORTIERTEN TREES"
-	subtitle.TextColor3 = Color3.fromRGB(178, 194, 221)
+	subtitle.Text = "ONE LEVEL PER PURCHASE • Q TO TOGGLE"
+	subtitle.TextColor3 = Color3.fromRGB(170, 204, 235)
 	subtitle.Font = Enum.Font.GothamBold
 	subtitle.TextScaled = true
 	subtitle.Parent = mainFrame
@@ -2427,10 +2485,11 @@ function UIController:_createTestUpgradeTree()
 	pointsPill.Name = "PointsPill"
 	pointsPill.Size = UDim2.fromOffset(188, 43)
 	pointsPill.Position = UDim2.fromOffset(18, 20)
-	pointsPill.BackgroundColor3 = Color3.fromRGB(74, 48, 132)
+	pointsPill.BackgroundColor3 = Color3.fromRGB(12, 34, 72)
+	pointsPill.BackgroundTransparency = 0.18
 	pointsPill.Parent = mainFrame
 	addTestTreeCorner(pointsPill, 999)
-	addTestTreeStroke(pointsPill, Color3.fromRGB(188, 116, 255), 3)
+	addTestTreeStroke(pointsPill, TEST_TREE_BLUE_BRIGHT, 3)
 
 	local pointsLabel = Instance.new("TextLabel")
 	pointsLabel.Name = "PointsLabel"
@@ -2469,16 +2528,14 @@ function UIController:_createTestUpgradeTree()
 	viewport.Name = "TreeViewport"
 	viewport.Size = UDim2.new(1, -28, 1, -158)
 	viewport.Position = UDim2.fromOffset(14, 110)
-	viewport.BackgroundColor3 = Color3.fromRGB(12, 18, 40)
+	viewport.BackgroundTransparency = 1
 	viewport.BorderSizePixel = 0
 	viewport.CanvasSize = UDim2.fromOffset(TEST_TREE_CANVAS_SIZE.X, TEST_TREE_CANVAS_SIZE.Y)
 	viewport.ScrollBarThickness = 9
-	viewport.ScrollBarImageColor3 = Color3.fromRGB(104, 239, 168)
+	viewport.ScrollBarImageColor3 = TEST_TREE_BLUE_BRIGHT
 	viewport.ScrollingDirection = Enum.ScrollingDirection.XY
 	viewport.ElasticBehavior = Enum.ElasticBehavior.WhenScrollable
 	viewport.Parent = mainFrame
-	addTestTreeCorner(viewport, 16)
-	addTestTreeStroke(viewport, Color3.fromRGB(49, 64, 105), 2)
 
 	local canvas = Instance.new("Frame")
 	canvas.Name = "TreeCanvas"
@@ -2487,67 +2544,76 @@ function UIController:_createTestUpgradeTree()
 	canvas.Parent = viewport
 
 	for _, buffId in ipairs(TEST_TREE_BUFF_ORDER) do
-		createTestTreeConnector(canvas, TEST_TREE_ROOT_POSITION, TEST_TREE_POSITIONS[buffId])
+		local previousPosition = TEST_TREE_ROOT_POSITION
+		for _, position in ipairs(TEST_TREE_POSITIONS[buffId]) do
+			createTestTreeConnector(canvas, previousPosition, position)
+			previousPosition = position
+		end
 	end
-
-	local root = Instance.new("Frame")
-	root.Name = "MasteryRoot"
-	root.AnchorPoint = Vector2.new(0.5, 0.5)
-	root.Size = UDim2.fromOffset(210, 180)
-	root.Position = UDim2.fromOffset(TEST_TREE_ROOT_POSITION.X, TEST_TREE_ROOT_POSITION.Y)
-	root.BackgroundColor3 = Color3.fromRGB(80, 48, 142)
-	root.BorderSizePixel = 0
-	root.ZIndex = 5
-	root.Parent = canvas
-	addTestTreeCorner(root, 30)
-	addTestTreeStroke(root, Color3.fromRGB(205, 141, 255), 5)
-
-	local rootGradient = Instance.new("UIGradient")
-	rootGradient.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(139, 74, 210)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(48, 43, 122)),
-	})
-	rootGradient.Rotation = 35
-	rootGradient.Parent = root
-
-	local rootIcon = Instance.new("TextLabel")
-	rootIcon.Size = UDim2.new(1, 0, 0, 70)
-	rootIcon.Position = UDim2.fromOffset(0, 12)
-	rootIcon.BackgroundTransparency = 1
-	rootIcon.Text = "◆"
-	rootIcon.TextColor3 = Color3.fromRGB(235, 205, 255)
-	rootIcon.Font = Enum.Font.GothamBlack
-	rootIcon.TextScaled = true
-	rootIcon.ZIndex = 6
-	rootIcon.Parent = root
-
-	local rootTitle = Instance.new("TextLabel")
-	rootTitle.Size = UDim2.new(1, -20, 0, 38)
-	rootTitle.Position = UDim2.fromOffset(10, 84)
-	rootTitle.BackgroundTransparency = 1
-	rootTitle.Text = "MASTERY CORE"
-	rootTitle.TextColor3 = COLORS.White
-	rootTitle.Font = Enum.Font.GothamBlack
-	rootTitle.TextScaled = true
-	rootTitle.ZIndex = 6
-	rootTitle.Parent = root
-
-	local rootStatus = Instance.new("TextLabel")
-	rootStatus.Name = "RootStatus"
-	rootStatus.Size = UDim2.new(1, -20, 0, 28)
-	rootStatus.Position = UDim2.fromOffset(10, 128)
-	rootStatus.BackgroundTransparency = 1
-	rootStatus.Text = "4 REAL UPGRADES"
-	rootStatus.TextColor3 = Color3.fromRGB(190, 205, 235)
-	rootStatus.Font = Enum.Font.GothamBold
-	rootStatus.TextScaled = true
-	rootStatus.ZIndex = 6
-	rootStatus.Parent = root
 
 	self._testTreeNodes = {}
 	for _, buffId in ipairs(TEST_TREE_BUFF_ORDER) do
-		self:_createTestTreeNode(canvas, buffId, TEST_TREE_POSITIONS[buffId])
+		for tierIndex, position in ipairs(TEST_TREE_POSITIONS[buffId]) do
+			self:_createTestTreeNode(canvas, buffId, tierIndex, position)
+		end
 	end
+
+	local exitButton = Instance.new("TextButton")
+	exitButton.Name = "ExitButton"
+	exitButton.AnchorPoint = Vector2.new(0.5, 0.5)
+	exitButton.Size = UDim2.fromOffset(180, 150)
+	exitButton.Position = UDim2.fromOffset(TEST_TREE_ROOT_POSITION.X, TEST_TREE_ROOT_POSITION.Y)
+	exitButton.BackgroundTransparency = 1
+	exitButton.Text = ""
+	exitButton.AutoButtonColor = false
+	exitButton.ZIndex = 8
+	exitButton.Parent = canvas
+
+	local exitScale = Instance.new("UIScale")
+	exitScale.Scale = 1
+	exitScale.Parent = exitButton
+	createTestTreeHexLayers(
+		exitButton,
+		Vector2.new(126, 106),
+		Vector2.new(90, 75),
+		Color3.fromRGB(194, 31, 48),
+		Color3.fromRGB(255, 104, 116),
+		8
+	)
+
+	local exitTitle = Instance.new("TextLabel")
+	exitTitle.Name = "ExitTitle"
+	exitTitle.Size = UDim2.fromOffset(134, 48)
+	exitTitle.Position = UDim2.fromOffset(23, 40)
+	exitTitle.BackgroundTransparency = 1
+	exitTitle.Text = "EXIT"
+	exitTitle.TextColor3 = COLORS.White
+	exitTitle.Font = Enum.Font.GothamBlack
+	exitTitle.TextSize = 35
+	exitTitle.ZIndex = 10
+	exitTitle.Parent = exitButton
+
+	local exitSubtitle = Instance.new("TextLabel")
+	exitSubtitle.Name = "ExitSubtitle"
+	exitSubtitle.Size = UDim2.fromOffset(126, 22)
+	exitSubtitle.Position = UDim2.fromOffset(27, 84)
+	exitSubtitle.BackgroundTransparency = 1
+	exitSubtitle.Text = "CLOSE TREE"
+	exitSubtitle.TextColor3 = Color3.fromRGB(255, 213, 216)
+	exitSubtitle.Font = Enum.Font.GothamBold
+	exitSubtitle.TextSize = 12
+	exitSubtitle.ZIndex = 10
+	exitSubtitle.Parent = exitButton
+
+	exitButton.Activated:Connect(function()
+		self:closeScreen("TestUpgradeTree")
+	end)
+	exitButton.MouseEnter:Connect(function()
+		TweenService:Create(exitScale, TweenInfo.new(0.12), { Scale = 1.07 }):Play()
+	end)
+	exitButton.MouseLeave:Connect(function()
+		TweenService:Create(exitScale, TweenInfo.new(0.12), { Scale = 1 }):Play()
+	end)
 
 	local feedback = Instance.new("TextLabel")
 	feedback.Name = "Feedback"
@@ -2555,7 +2621,7 @@ function UIController:_createTestUpgradeTree()
 	feedback.Size = UDim2.new(0.66, 0, 0, 30)
 	feedback.Position = UDim2.new(0.5, 0, 1, -8)
 	feedback.BackgroundTransparency = 1
-	feedback.Text = "Knoten anklicken, um echte Mastery-Punkte auszugeben • Q öffnet/schließt"
+	feedback.Text = "SELECT THE ACTIVE TIER TO BUY ONE LEVEL • Q TO TOGGLE"
 	feedback.TextColor3 = Color3.fromRGB(180, 201, 228)
 	feedback.Font = Enum.Font.GothamBold
 	feedback.TextScaled = true
@@ -2616,7 +2682,7 @@ function UIController:_setTestTreeFeedback(message, color)
 	if message and message ~= "" then
 		task.delay(3.5, function()
 			if token == self._testTreeFeedbackToken and self._testTreeFeedbackLabel then
-				self._testTreeFeedbackLabel.Text = "Knoten anklicken, um echte Mastery-Punkte auszugeben • Q öffnet/schließt"
+				self._testTreeFeedbackLabel.Text = "SELECT THE ACTIVE TIER TO BUY ONE LEVEL • Q TO TOGGLE"
 				self._testTreeFeedbackLabel.TextColor3 = Color3.fromRGB(180, 201, 228)
 			end
 		end)
@@ -2630,76 +2696,116 @@ function UIController:_refreshTestUpgradeTree()
 
 	local buffs = self._masteryState.buffs or {}
 	local points = tonumber(self._masteryState.masteryPoints) or 0
-	for buffId, node in pairs(self._testTreeNodes) do
-		local buffDef = MasteryData.Buffs[buffId]
-		if buffDef and node.button and node.button.Parent then
-			local currentLevel = math.clamp(math.floor(tonumber(buffs[buffId]) or 0), 0, buffDef.maxLevel)
-			local isMaxed = currentLevel >= buffDef.maxLevel
-			local cost = not isMaxed and tonumber(buffDef.pointsPerLevel[currentLevel + 1]) or 0
-			local canAfford = not isMaxed and points >= cost
-			local isBusy = self._testTreePurchaseInFlight ~= nil
-			local enabled = not isMaxed and not isBusy
-			local bonus = currentLevel > 0 and buffDef.bonusPerLevel[currentLevel] or nil
+	local purchaseInFlight = self._testTreePurchaseInFlight
+	local isBusy = purchaseInFlight ~= nil
+	for _, node in ipairs(self._testTreeNodes) do
+		local buffDef = MasteryData.Buffs[node.buffId]
+		if buffDef and node.hitButton and node.hitButton.Parent then
+			local currentLevel = math.clamp(
+				math.floor(tonumber(buffs[node.buffId]) or 0),
+				0,
+				buffDef.maxLevel
+			)
+			local isDone = currentLevel >= node.lastLevel
+			local isLocked = currentLevel < node.firstLevel - 1
+			local isActiveTier = not isDone and not isLocked
+			local cost = isActiveTier and tonumber(buffDef.pointsPerLevel[currentLevel + 1]) or nil
+			local canAfford = cost ~= nil and points >= cost
+			local isThisBusy = purchaseInFlight
+				and purchaseInFlight.buffId == node.buffId
+				and purchaseInFlight.tierIndex == node.tierIndex
 
-			node.levelLabel.Text = "LV. " .. tostring(currentLevel) .. "/" .. tostring(buffDef.maxLevel)
-				.. (bonus and (" • x" .. tostring(bonus)) or " • NO BONUS")
-			if self._testTreePurchaseInFlight == buffId then
-				node.actionLabel.Text = "UPGRADING..."
-			elseif isMaxed then
-				node.actionLabel.Text = "MAXED"
+			node.isActionable = isActiveTier and not isBusy
+			node.hitButton.Active = node.isActionable
+			node.hitButton.Selectable = node.isActionable
+			if not node.isActionable then
+				node.hoverScale.Scale = 1
+			end
+
+			local fillColor
+			local outlineColor
+			if isDone then
+				node.statusLabel.Text = "DONE"
+				node.statusLabel.BackgroundColor3 = Color3.fromRGB(24, 92, 120)
+				fillColor = Color3.fromRGB(13, 42, 58)
+				outlineColor = Color3.fromRGB(72, 163, 205)
+			elseif isLocked then
+				node.statusLabel.Text = "LOCKED"
+				node.statusLabel.BackgroundColor3 = Color3.fromRGB(31, 39, 58)
+				fillColor = Color3.fromRGB(10, 16, 31)
+				outlineColor = Color3.fromRGB(38, 71, 103)
+			elseif isThisBusy then
+				node.statusLabel.Text = "UPGRADING"
+				node.statusLabel.BackgroundColor3 = Color3.fromRGB(27, 99, 160)
+				fillColor = Color3.fromRGB(14, 45, 88)
+				outlineColor = TEST_TREE_BLUE_BRIGHT
 			elseif canAfford then
-				node.actionLabel.Text = "UPGRADE • " .. tostring(cost) .. " PTS"
+				node.statusLabel.Text = "UPGRADE " .. tostring(cost)
+				node.statusLabel.BackgroundColor3 = Color3.fromRGB(20, 113, 178)
+				fillColor = Color3.fromRGB(13, 37, 77)
+				outlineColor = TEST_TREE_BLUE_BRIGHT
 			else
-				node.actionLabel.Text = "NEED " .. tostring(cost) .. " PTS"
+				node.statusLabel.Text = "NEED " .. tostring(cost)
+				node.statusLabel.BackgroundColor3 = Color3.fromRGB(77, 48, 68)
+				fillColor = Color3.fromRGB(27, 25, 48)
+				outlineColor = TEST_TREE_BLUE
 			end
 
-			node.button.Active = enabled
-			node.button.Selectable = enabled
-			local targetColor
-			if isMaxed then
-				targetColor = node.baseColor:Lerp(Color3.fromRGB(245, 235, 145), 0.35)
-			elseif canAfford and not isBusy then
-				targetColor = node.baseColor
-			else
-				targetColor = node.baseColor:Lerp(Color3.fromRGB(66, 72, 94), 0.58)
+			for _, layer in ipairs(node.hexLayers) do
+				layer.shape.BackgroundColor3 = fillColor
+				layer.stroke.Color = outlineColor
 			end
-			for _, shape in ipairs(node.shapes) do
-				shape.BackgroundColor3 = targetColor
-			end
-			node.actionLabel.BackgroundColor3 = canAfford and not isBusy
-				and Color3.fromRGB(38, 151, 94)
-				or Color3.fromRGB(47, 55, 78)
+			node.statusStroke.Color = outlineColor
 		end
 	end
 end
 
-function UIController:_purchaseTestTreeBuff(buffId)
+function UIController:_purchaseTestTreeBuff(buffId, tierIndex)
 	local isAllowed = table.find(TEST_TREE_BUFF_ORDER, buffId) ~= nil
 	local buffDef = isAllowed and MasteryData.Buffs[buffId] or nil
-	if not buffDef or self._testTreePurchaseInFlight then return end
+	local tier = type(tierIndex) == "number" and TEST_TREE_TIERS[tierIndex] or nil
+	if not buffDef or not tier then
+		self:_setTestTreeFeedback("That upgrade tier is not available.", COLORS.ButtonRed)
+		return
+	end
+	if self._testTreePurchaseInFlight then return end
 
 	local currentLevel = math.clamp(
 		math.floor(tonumber((self._masteryState.buffs or {})[buffId]) or 0),
 		0,
 		buffDef.maxLevel
 	)
-	if currentLevel >= buffDef.maxLevel then
-		self:_setTestTreeFeedback(buffDef.displayName .. " ist bereits MAXED!", COLORS.CoinYellow)
+	if currentLevel < tier.firstLevel - 1 then
+		self:_setTestTreeFeedback(
+			buffDef.displayName .. " Tier " .. tier.roman .. " is still locked.",
+			COLORS.ButtonRed
+		)
 		return
 	end
+	if currentLevel >= tier.lastLevel then
+		self:_setTestTreeFeedback(
+			buffDef.displayName .. " Tier " .. tier.roman .. " is already done.",
+			Color3.fromRGB(72, 163, 205)
+		)
+		return
+	end
+
 	local cost = tonumber(buffDef.pointsPerLevel[currentLevel + 1]) or math.huge
 	if (tonumber(self._masteryState.masteryPoints) or 0) < cost then
-		self:_setTestTreeFeedback("Nicht genug Mastery-Punkte für " .. buffDef.displayName .. ".", COLORS.ButtonRed)
+		self:_setTestTreeFeedback("Not enough Mastery Points for " .. buffDef.displayName .. ".", COLORS.ButtonRed)
 		return
 	end
 
 	local remote = self._remotes and self._remotes:FindFirstChild("PurchaseMasteryBuff")
 	if not remote then
-		self:_setTestTreeFeedback("Mastery-Service ist gerade nicht verfügbar.", COLORS.ButtonRed)
+		self:_setTestTreeFeedback("The Mastery service is not available right now.", COLORS.ButtonRed)
 		return
 	end
 
-	self._testTreePurchaseInFlight = buffId
+	self._testTreePurchaseInFlight = {
+		buffId = buffId,
+		tierIndex = tierIndex,
+	}
 	self:_refreshTestUpgradeTree()
 	task.spawn(function()
 		local ok, success, message = pcall(function()
@@ -2707,14 +2813,14 @@ function UIController:_purchaseTestTreeBuff(buffId)
 		end)
 		self._testTreePurchaseInFlight = nil
 		if not ok then
-			self:_setTestTreeFeedback("Upgrade fehlgeschlagen: " .. tostring(success), COLORS.ButtonRed)
+			self:_setTestTreeFeedback("Upgrade failed: " .. tostring(success), COLORS.ButtonRed)
 		elseif success then
 			self:_setTestTreeFeedback(
-				buffDef.displayName .. " verbessert! " .. tostring(message or ""),
+				buffDef.displayName .. " upgraded! " .. tostring(message or ""),
 				Color3.fromRGB(102, 255, 165)
 			)
 		else
-			self:_setTestTreeFeedback(tostring(message or "Upgrade fehlgeschlagen."), COLORS.ButtonRed)
+			self:_setTestTreeFeedback(tostring(message or "Upgrade failed."), COLORS.ButtonRed)
 		end
 		self:_refreshTestUpgradeTree()
 	end)
