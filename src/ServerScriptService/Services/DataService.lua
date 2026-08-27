@@ -257,6 +257,7 @@ function DataService.getClientData(player)
 		equippedPets = DataSchema.deepCopy(data.equippedPets),
 		unlockedZones = DataSchema.deepCopy(data.unlockedZones),
 		upgrades = DataSchema.deepCopy(data.upgrades),
+		upgradeTreePurchases = DataSchema.deepCopy(data.upgradeTreePurchases or {}),
 		questStats = DataSchema.deepCopy(data.questStats),
 		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,

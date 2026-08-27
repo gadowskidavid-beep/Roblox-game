@@ -8,7 +8,7 @@ local Config = require(game.ReplicatedStorage.Shared.Config)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 4
+DataSchema.VERSION = 5
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -77,6 +77,7 @@ function DataSchema.getDefaultData()
 		campaignProgress = {},
 		campaignBossRewards = {},
 		upgrades = {},
+		upgradeTreePurchases = {},
 		equippedPets = { "starter_pet_1" },
 		questStats = {
 			destroyDestructibles = 0,
@@ -195,6 +196,15 @@ function DataSchema.normalize(data)
 		data.questStats[statName] = math.floor(finiteNumber(data.questStats[statName], defaultValue, 0))
 	end
 	if type(data.upgrades) ~= "table" then data.upgrades = {} end
+	local normalizedTreePurchases = {}
+	if type(data.upgradeTreePurchases) == "table" then
+		for upgradeId, isPurchased in pairs(data.upgradeTreePurchases) do
+			if type(upgradeId) == "string" and #upgradeId > 0 and #upgradeId <= 64 and isPurchased == true then
+				normalizedTreePurchases[upgradeId] = true
+			end
+		end
+	end
+	data.upgradeTreePurchases = normalizedTreePurchases
 	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
 	if type(data.discoveredPets) ~= "table" then data.discoveredPets = {} end
 	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
