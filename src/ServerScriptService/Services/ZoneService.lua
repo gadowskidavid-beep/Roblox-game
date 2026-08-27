@@ -16,6 +16,7 @@ ZoneService._dataService = nil
 ZoneService._currencyService = nil
 ZoneService._petService = nil
 ZoneService._questService = nil
+ZoneService._shopService = nil
 
 -- Active destructibles tracked by unique ID
 ZoneService._destructibles = {}
@@ -872,6 +873,15 @@ function ZoneService._spawnLobby()
 	shopCounter.Material = Enum.Material.Wood
 	shopCounter.Parent = lobbyFolder
 
+	local shopPrompt = Instance.new("ProximityPrompt")
+	shopPrompt.Name = "PotionShopPrompt"
+	shopPrompt.ActionText = "Open Shop"
+	shopPrompt.ObjectText = "Potion Shop"
+	shopPrompt.MaxActivationDistance = 10
+	shopPrompt.HoldDuration = 0
+	shopPrompt.RequiresLineOfSight = false
+	shopPrompt.Parent = shopCounter
+
 	-- Shop awning (roof)
 	local shopAwning = Instance.new("Part")
 	shopAwning.Name = "ShopAwning"
@@ -1716,7 +1726,8 @@ function ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
 	end
 
 	-- Validate the destructible exists
-	if not ZoneService._destructibles[destructibleId] then
+	local destructible = ZoneService._destructibles[destructibleId]
+	if not destructible then
 		return false, "Destructible not found"
 	end
 
@@ -1724,6 +1735,19 @@ function ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
 	local data = ZoneService._dataService.getPlayerData(player)
 	if not data then
 		return false, "No player data"
+	end
+
+	-- Reject assignments the authoritative attack path cannot currently accept.
+	if not table.find(data.unlockedZones, destructible.zoneId) then
+		return false, "Zone not unlocked"
+	end
+	local character = player.Character
+	local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then
+		return false, "No HumanoidRootPart"
+	end
+	if (humanoidRootPart.Position - destructible.position).Magnitude > MAX_ATTACK_DISTANCE then
+		return false, "Too far from destructible"
 	end
 
 	local petFound = false
@@ -1818,9 +1842,15 @@ function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedD
 		local playerRewards = { Coins = 0, Diamonds = 0 }
 		local coinShare = coinAllocations[entry.userId] or 0
 		if coinShare > 0 then
-			local success, actualCoins = ZoneService._currencyService.addCoins(player, coinShare)
+			-- Coin Potion applies only to newly earned breakable rewards for this contributor.
+			local coinMultiplier = 1
+			if ZoneService._shopService then
+				coinMultiplier = ZoneService._shopService.getShopMultiplier(player, "coins")
+			end
+			local earnedCoins = math.floor(coinShare * coinMultiplier)
+			local success, actualCoins = ZoneService._currencyService.addCoins(player, earnedCoins)
 			if success then
-				playerRewards.Coins = actualCoins or coinShare
+				playerRewards.Coins = actualCoins or earnedCoins
 				fireCollectCurrency(player, destructible.position, playerRewards.Coins, "Coins")
 				if ZoneService._questService then
 					ZoneService._questService.incrementStat(player, "earnCoins", playerRewards.Coins)
@@ -2265,6 +2295,11 @@ end
 -- Set mastery service reference
 function ZoneService.setMasteryService(masteryService)
 	ZoneService._masteryService = masteryService
+end
+
+-- Set shop service reference for contributor-specific breakable rewards.
+function ZoneService.setShopService(shopService)
+	ZoneService._shopService = shopService
 end
 
 --------------------------------------------------------------------------------

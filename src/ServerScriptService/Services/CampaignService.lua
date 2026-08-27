@@ -5,6 +5,7 @@
 
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local CampaignData = require(game.ReplicatedStorage.Shared.CampaignData)
@@ -220,6 +221,7 @@ function CampaignService.deployPet(player, petInstanceId)
 		hp = effectiveDamage * 5, -- HP based on damage as simple scaling
 		maxHp = effectiveDamage * 5,
 		damage = effectiveDamage,
+		sourcePet = petInstance, -- server-only reference for current centralized damage
 		speed = speed,
 		position = PET_START_X,
 		attacking = false,
@@ -261,6 +263,16 @@ function CampaignService._spawnWave(userId, battle)
 	end
 
 	battle.spawnedCurrentWave = true
+end
+
+-- Resolve deployed pet damage at attack time so timed shop effects start and
+-- expire during an active campaign without duplicating PetService's damage logic.
+local function getCurrentPetDamage(userId, deployedPet)
+	local player = Players:GetPlayerByUserId(userId)
+	if player and deployedPet.sourcePet then
+		return CampaignService._petService.getPetDamage(deployedPet.sourcePet, player)
+	end
+	return deployedPet.damage
 end
 
 -- Main update loop (called every Heartbeat)
@@ -316,11 +328,11 @@ function CampaignService._updateBattle(userId, battle, dt)
 		end
 
 		if closestEnemy and closestDist <= 3 then
-			-- Attack the enemy (cooldown-based fixed damage)
+			-- Attack the enemy using current centralized pet damage.
 			pet.attacking = true
 			pet.target = closestEnemy
 			if pet.attackTimer <= 0 then
-				closestEnemy.hp = closestEnemy.hp - pet.damage
+				closestEnemy.hp = closestEnemy.hp - getCurrentPetDamage(userId, pet)
 				pet.attackTimer = ATTACK_COOLDOWN
 			end
 		elseif closestEnemy then
@@ -334,7 +346,7 @@ function CampaignService._updateBattle(userId, battle, dt)
 			if pet.position >= LANE_LENGTH then
 				pet.attacking = true
 				if pet.attackTimer <= 0 then
-					battle.enemyBaseHP = battle.enemyBaseHP - pet.damage
+					battle.enemyBaseHP = battle.enemyBaseHP - getCurrentPetDamage(userId, pet)
 					pet.attackTimer = ATTACK_COOLDOWN
 				end
 			end

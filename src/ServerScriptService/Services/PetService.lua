@@ -502,10 +502,9 @@ function PetService.getInventory(player)
 	return data.pets
 end
 
--- Calculate effective pet damage with StrongPets upgrade multiplier
+-- Calculate effective pet damage with StrongPets and shop multipliers.
 -- Note: variant (Shiny 3x, Rainbow 5x) and golden (2x) multipliers are already
 -- baked into pet.damage at creation time (hatchEgg / convertToGoldenPet).
--- Only the StrongPets upgrade bonus is applied at runtime to avoid double-multiplying.
 function PetService.getPetDamage(pet, player)
 	if not pet or not player then
 		return 0
@@ -516,6 +515,12 @@ function PetService.getPetDamage(pet, player)
 
 	if strongBonus > 0 then
 		baseDamage = math.floor(baseDamage * strongBonus)
+	end
+	if PetService._shopService then
+		local shopDamageMultiplier = PetService._shopService.getShopMultiplier(player, "damage")
+		if shopDamageMultiplier > 1 then
+			baseDamage = math.floor(baseDamage * shopDamageMultiplier)
+		end
 	end
 
 	return baseDamage

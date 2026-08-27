@@ -377,6 +377,15 @@ ProximityPromptService.PromptHidden:Connect(function(prompt)
 	end
 end)
 
+-- The world shop prompt only opens the local modal. Purchases remain fully
+-- server-authoritative through PurchaseShopItem.
+ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer)
+	if prompt.Name == "PotionShopPrompt"
+		and (triggeringPlayer == nil or triggeringPlayer == player) then
+		uiController:openScreen("ShopScreen")
+	end
+end)
+
 -- Initialize equipped pets visuals from initial data (called ONCE)
 if playerData and playerData.equippedPets then
 	localEquippedPets = buildEquippedListFromData(playerData)
@@ -587,8 +596,8 @@ CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
 	effectsController:showCurrencyPopup(popupPosition, amount, currencyType)
 end)
 
-ShopBuffsUpdated.OnClientEvent:Connect(function(buffs)
-	uiController:updateShopBuffs(buffs)
+ShopBuffsUpdated.OnClientEvent:Connect(function(state)
+	uiController:updateShopBuffs(state)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")
