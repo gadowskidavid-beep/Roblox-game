@@ -18,6 +18,7 @@ local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local MasteryData = require(ReplicatedStorage.Shared.MasteryData)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -356,22 +357,31 @@ getRemoteFunction("GetQuestProgress").OnServerInvoke = function(player)
 end
 
 -- PurchaseMasteryBuff (1 second cooldown)
-getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffId)
+getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffId, tierIndex)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
 	if not canCall(player, "PurchaseMasteryBuff", 1) then
 		return false, "Please wait before purchasing again"
 	end
-	if type(buffId) ~= "string" then
+	if not isValidIdentifier(buffId) then
 		return false, "Invalid buff ID parameter"
 	end
-	local success, msg = MasteryService.purchaseBuff(player, buffId)
-	-- Refresh walkspeed in case FasterRunning was purchased
-	if success then
+	if tierIndex ~= nil
+		and (type(tierIndex) ~= "number"
+			or tierIndex ~= tierIndex
+			or tierIndex == math.huge
+			or tierIndex == -math.huge
+			or tierIndex % 1 ~= 0
+			or tierIndex < 1
+			or tierIndex > #MasteryData.SkillTree.tiers) then
+		return false, "Invalid mastery tier parameter"
+	end
+	local success, msg, state = MasteryService.purchaseBuff(player, buffId, tierIndex)
+	if success and buffId == "FasterRunning" then
 		applyWalkSpeedBuffs(player)
 	end
-	return success, msg
+	return success, msg, state
 end
 
 -- GetMasteryState
