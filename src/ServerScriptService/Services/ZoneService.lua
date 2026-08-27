@@ -65,9 +65,8 @@ function ZoneService.init(dataService, currencyService, petService)
 	end
 	ZoneService._zonesFolder = zonesFolder
 
-	-- Create the complete runtime world from one authoritative source.
+	-- Create the runtime world. CampaignPortal is already part of the place.
 	ZoneService._spawnLobby()
-	ZoneService._spawnCampaignPortal()
 
 	-- Spawn destructibles for all 8 zones
 	for zoneId = 1, 8 do
