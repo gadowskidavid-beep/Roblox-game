@@ -117,6 +117,7 @@ _G.expect = expect
 local specFiles = {
 	"tests/BalanceConfig.spec",
 	"tests/PetVariantMath.spec",
+	"tests/PetVariantPresentation.spec",
 	"tests/DataSchema.spec",
 	"tests/PetService.spec",
 }
