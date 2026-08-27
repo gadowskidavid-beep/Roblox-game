@@ -135,6 +135,43 @@ MasteryData.Buffs = {
 	},
 }
 
+-- Shared, server-authoritative mastery tree metadata. Presentation positions stay
+-- client-side, but membership and tier boundaries must be identical everywhere.
+MasteryData.SkillTree = {
+	buffOrder = {
+		"MoreDiamonds",
+		"FasterRunning",
+		"MoreCoins",
+		"BetterLuck",
+	},
+	buffs = {
+		MoreCoins = {
+			label = "COINS",
+			image = "rbxassetid://111031759264614",
+		},
+		MoreDiamonds = {
+			label = "DIAMONDS",
+			image = "rbxassetid://115133441053724",
+		},
+		BetterLuck = {
+			label = "LUCK",
+			image = "rbxassetid://77723077485482",
+			tierImages = {
+				[3] = "rbxassetid://83151654742132",
+			},
+		},
+		FasterRunning = {
+			label = "RUN SPEED",
+			image = "rbxassetid://93720048292311",
+		},
+	},
+	tiers = {
+		{ roman = "I", firstLevel = 1, lastLevel = 3 },
+		{ roman = "II", firstLevel = 4, lastLevel = 7 },
+		{ roman = "III", firstLevel = 8, lastLevel = 10 },
+	},
+}
+
 -- Ordered list for UI display
 MasteryData.BuffOrder = {
 	"MoreCoins", "MoreDiamonds", "BetterLuck", "XPBoost", "FasterRunning",

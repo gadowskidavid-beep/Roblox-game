@@ -1888,6 +1888,39 @@ end
 --------------------------------------------------------------------------------
 -- MASTERY WINDOW
 --------------------------------------------------------------------------------
+local SKILL_TREE = MasteryData.SkillTree
+
+local function getNormalizedMasteryLevel(value, maxLevel)
+	local numericLevel = tonumber(value)
+	if not numericLevel
+		or numericLevel ~= numericLevel
+		or numericLevel == math.huge
+		or numericLevel == -math.huge then
+		return 0
+	end
+	return math.clamp(math.floor(numericLevel), 0, maxLevel)
+end
+
+local function getActiveSkillTreeTier(currentLevel)
+	for tierIndex, tier in ipairs(SKILL_TREE.tiers) do
+		if currentLevel < tier.lastLevel then
+			return tierIndex, tier
+		end
+	end
+	return nil, nil
+end
+
+local function getRemainingTierCost(buffDef, currentLevel, tier)
+	if not buffDef or not tier or currentLevel >= tier.lastLevel then return nil end
+	local totalCost = 0
+	for level = currentLevel + 1, math.min(tier.lastLevel, buffDef.maxLevel) do
+		local levelCost = tonumber(buffDef.pointsPerLevel[level])
+		if not levelCost or levelCost < 0 then return nil end
+		totalCost += levelCost
+	end
+	return totalCost
+end
+
 function UIController:_createMasteryWindow()
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "MasteryWindow"
@@ -2017,7 +2050,7 @@ function UIController:_refreshMasteryGrid()
 		local buffDef = MasteryData.Buffs[buffId]
 		if not buffDef then continue end
 
-		local currentLevel = buffs[buffId] or 0
+		local currentLevel = getNormalizedMasteryLevel(buffs[buffId], buffDef.maxLevel)
 		local maxLevel = buffDef.maxLevel
 		local buffColor = Color3.fromRGB(buffDef.color[1], buffDef.color[2], buffDef.color[3])
 		local isMaxed = currentLevel >= maxLevel
@@ -2118,18 +2151,29 @@ function UIController:_refreshMasteryGrid()
 			maxLabel.TextScaled = true
 			maxLabel.Parent = card
 		else
-			local cost = buffDef.pointsPerLevel[currentLevel + 1]
-			local canAfford = (self._masteryState.masteryPoints or 0) >= cost
+			local treeBuff = SKILL_TREE.buffs[buffId]
+			local activeTierIndex, activeTier
+			local cost
+			if treeBuff then
+				activeTierIndex, activeTier = getActiveSkillTreeTier(currentLevel)
+				cost = getRemainingTierCost(buffDef, currentLevel, activeTier)
+			else
+				cost = tonumber(buffDef.pointsPerLevel[currentLevel + 1])
+			end
+			local canAfford = cost ~= nil and (tonumber(self._masteryState.masteryPoints) or 0) >= cost
 
 			local buyBtn = Instance.new("TextButton")
 			buyBtn.Name = "BuyBtn"
 			buyBtn.Size = UDim2.fromScale(0.7, 0.17)
 			buyBtn.Position = UDim2.fromScale(0.15, 0.78)
 			buyBtn.BackgroundColor3 = canAfford and COLORS.MasteryPurple or Color3.fromRGB(80, 80, 100)
-			buyBtn.Text = tostring(cost) .. " pts"
+			buyBtn.Text = cost and (tostring(cost) .. " pts") or "UNAVAILABLE"
 			buyBtn.TextColor3 = COLORS.White
 			buyBtn.Font = Enum.Font.GothamBold
 			buyBtn.TextScaled = true
+			buyBtn.AutoButtonColor = canAfford
+			buyBtn.Active = canAfford
+			buyBtn.Selectable = canAfford
 			buyBtn.Parent = card
 
 			local buyCorner = Instance.new("UICorner")
@@ -2142,10 +2186,13 @@ function UIController:_refreshMasteryGrid()
 			buyStroke.Parent = buyBtn
 
 			buyBtn.MouseButton1Click:Connect(function()
-				self:_purchaseMasteryBuff(buffId)
+				if canAfford then
+					self:_purchaseMasteryBuff(buffId, activeTierIndex)
+				end
 			end)
 
 			buyBtn.MouseEnter:Connect(function()
+				if not canAfford then return end
 				TweenService:Create(buyBtn, TweenInfo.new(0.1), {
 					Size = UDim2.fromScale(0.74, 0.18),
 				}):Play()
@@ -2159,61 +2206,49 @@ function UIController:_refreshMasteryGrid()
 	end
 end
 
-function UIController:_purchaseMasteryBuff(buffId)
-	if self._remotes then
-		local remote = self._remotes:FindFirstChild("PurchaseMasteryBuff")
-		if remote then
-			remote:InvokeServer(buffId)
+function UIController:_purchaseMasteryBuff(buffId, tierIndex)
+	local remote = self._remotes and self._remotes:FindFirstChild("PurchaseMasteryBuff")
+	if not remote then return end
+
+	task.spawn(function()
+		local ok, success, _, state = pcall(function()
+			return remote:InvokeServer(buffId, tierIndex)
+		end)
+		if ok
+			and success
+			and type(state) == "table"
+			and tonumber(state.masteryPoints) ~= nil
+			and type(state.buffs) == "table" then
+			self:updateMastery(state)
 		end
-	end
+	end)
 end
 
 --------------------------------------------------------------------------------
 -- TEST UPGRADE TREE
--- Safe adaptation of the imported RAR demo. It keeps the tree presentation,
--- but uses existing server-authoritative Mastery purchases and no external assets.
+-- Uses existing server-authoritative Mastery purchases and supplied icon assets.
 --------------------------------------------------------------------------------
-local TEST_TREE_BUFF_ORDER = {
-	"MoreCoins",
-	"MoreDiamonds",
-	"BetterLuck",
-	"FasterRunning",
-}
-
-local TEST_TREE_TIERS = {
-	{ roman = "I", firstLevel = 1, lastLevel = 3 },
-	{ roman = "II", firstLevel = 4, lastLevel = 7 },
-	{ roman = "III", firstLevel = 8, lastLevel = 10 },
-}
-
 local TEST_TREE_POSITIONS = {
-	MoreCoins = {
+	MoreDiamonds = {
 		Vector2.new(420, 330),
 		Vector2.new(310, 210),
 		Vector2.new(155, 245),
 	},
-	MoreDiamonds = {
+	FasterRunning = {
 		Vector2.new(680, 330),
 		Vector2.new(790, 210),
 		Vector2.new(945, 245),
 	},
-	BetterLuck = {
+	MoreCoins = {
 		Vector2.new(420, 480),
 		Vector2.new(310, 600),
 		Vector2.new(155, 565),
 	},
-	FasterRunning = {
+	BetterLuck = {
 		Vector2.new(680, 480),
 		Vector2.new(790, 600),
 		Vector2.new(945, 565),
 	},
-}
-
-local TEST_TREE_SYMBOLS = {
-	MoreCoins = "$",
-	MoreDiamonds = "◆",
-	BetterLuck = "★",
-	FasterRunning = ">>",
 }
 
 local TEST_TREE_ROOT_POSITION = Vector2.new(550, 405)
@@ -2287,8 +2322,9 @@ end
 
 function UIController:_createTestTreeNode(parent, buffId, tierIndex, position)
 	local buffDef = MasteryData.Buffs[buffId]
-	local tier = TEST_TREE_TIERS[tierIndex]
-	if not buffDef or not tier then return end
+	local treeBuff = SKILL_TREE.buffs[buffId]
+	local tier = SKILL_TREE.tiers[tierIndex]
+	if not buffDef or not treeBuff or not tier then return end
 
 	local node = Instance.new("Frame")
 	node.Name = "TreeNode_" .. buffId .. "_Tier" .. tostring(tierIndex)
@@ -2306,8 +2342,8 @@ function UIController:_createTestTreeNode(parent, buffId, tierIndex, position)
 
 	local shadow = Instance.new("Frame")
 	shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-	shadow.Size = UDim2.fromOffset(116, 98)
-	shadow.Position = UDim2.fromOffset(88, 78)
+	shadow.Size = UDim2.fromOffset(130, 108)
+	shadow.Position = UDim2.fromOffset(88, 67)
 	shadow.BackgroundColor3 = Color3.fromRGB(2, 8, 22)
 	shadow.BackgroundTransparency = 0.22
 	shadow.Rotation = 30
@@ -2318,23 +2354,32 @@ function UIController:_createTestTreeNode(parent, buffId, tierIndex, position)
 
 	local hexLayers = createTestTreeHexLayers(
 		node,
-		Vector2.new(112, 94),
-		Vector2.new(85, 72),
+		Vector2.new(126, 106),
+		Vector2.new(85, 62),
 		Color3.fromRGB(13, 27, 59),
 		TEST_TREE_BLUE,
 		4
 	)
 
+	local iconLabel = Instance.new("ImageLabel")
+	iconLabel.Name = "SkillIcon"
+	iconLabel.Size = UDim2.fromOffset(88, 66)
+	iconLabel.Position = UDim2.fromOffset(41, 18)
+	iconLabel.BackgroundTransparency = 1
+	iconLabel.Image = (treeBuff.tierImages and treeBuff.tierImages[tierIndex]) or treeBuff.image
+	iconLabel.ScaleType = Enum.ScaleType.Fit
+	iconLabel.ZIndex = 6
+	iconLabel.Parent = node
+
 	local identityLabel = Instance.new("TextLabel")
 	identityLabel.Name = "BuffIdentity"
-	identityLabel.Size = UDim2.fromOffset(142, 24)
-	identityLabel.Position = UDim2.fromOffset(14, 11)
+	identityLabel.Size = UDim2.fromOffset(148, 20)
+	identityLabel.Position = UDim2.fromOffset(11, 82)
 	identityLabel.BackgroundTransparency = 1
-	identityLabel.Text = (TEST_TREE_SYMBOLS[buffId] or "•") .. " " .. string.upper(buffDef.displayName)
-	identityLabel.TextColor3 = Color3.fromRGB(215, 237, 255)
+	identityLabel.Text = treeBuff.label .. " " .. tier.roman
+	identityLabel.TextColor3 = Color3.fromRGB(225, 242, 255)
 	identityLabel.Font = Enum.Font.GothamBlack
 	identityLabel.TextScaled = true
-	identityLabel.TextWrapped = true
 	identityLabel.ZIndex = 6
 	identityLabel.Parent = node
 	local identitySize = Instance.new("UITextSizeConstraint")
@@ -2342,34 +2387,10 @@ function UIController:_createTestTreeNode(parent, buffId, tierIndex, position)
 	identitySize.MaxTextSize = 13
 	identitySize.Parent = identityLabel
 
-	local tierLabel = Instance.new("TextLabel")
-	tierLabel.Name = "TierLabel"
-	tierLabel.Size = UDim2.fromOffset(120, 32)
-	tierLabel.Position = UDim2.fromOffset(25, 37)
-	tierLabel.BackgroundTransparency = 1
-	tierLabel.Text = "TIER " .. tier.roman
-	tierLabel.TextColor3 = COLORS.White
-	tierLabel.Font = Enum.Font.GothamBlack
-	tierLabel.TextSize = 23
-	tierLabel.ZIndex = 6
-	tierLabel.Parent = node
-
-	local rangeLabel = Instance.new("TextLabel")
-	rangeLabel.Name = "LevelRange"
-	rangeLabel.Size = UDim2.fromOffset(126, 19)
-	rangeLabel.Position = UDim2.fromOffset(22, 69)
-	rangeLabel.BackgroundTransparency = 1
-	rangeLabel.Text = "LEVELS " .. tostring(tier.firstLevel) .. "-" .. tostring(tier.lastLevel)
-	rangeLabel.TextColor3 = Color3.fromRGB(163, 199, 232)
-	rangeLabel.Font = Enum.Font.GothamBold
-	rangeLabel.TextSize = 12
-	rangeLabel.ZIndex = 6
-	rangeLabel.Parent = node
-
 	local statusLabel = Instance.new("TextLabel")
 	statusLabel.Name = "StatusBadge"
-	statusLabel.Size = UDim2.fromOffset(126, 27)
-	statusLabel.Position = UDim2.fromOffset(22, 94)
+	statusLabel.Size = UDim2.fromOffset(114, 23)
+	statusLabel.Position = UDim2.fromOffset(28, 107)
 	statusLabel.BackgroundColor3 = Color3.fromRGB(25, 68, 112)
 	statusLabel.TextColor3 = COLORS.White
 	statusLabel.Font = Enum.Font.GothamBlack
@@ -2402,6 +2423,8 @@ function UIController:_createTestTreeNode(parent, buffId, tierIndex, position)
 		hexLayers = hexLayers,
 		statusLabel = statusLabel,
 		statusStroke = statusStroke,
+		iconLabel = iconLabel,
+		identityLabel = identityLabel,
 		isActionable = false,
 	}
 	table.insert(self._testTreeNodes, nodeRecord)
@@ -2415,8 +2438,7 @@ function UIController:_createTestTreeNode(parent, buffId, tierIndex, position)
 		if not nodeRecord.isActionable then return end
 		TweenService:Create(scale, TweenInfo.new(0.12), { Scale = 1.06 }):Play()
 		self:_setTestTreeFeedback(
-			buffDef.displayName .. " • Tier " .. tier.roman .. " • Levels "
-				.. tostring(tier.firstLevel) .. "-" .. tostring(tier.lastLevel),
+			treeBuff.label .. " " .. tier.roman .. " • ONE NODE PURCHASE",
 			TEST_TREE_BLUE_BRIGHT
 		)
 	end)
@@ -2475,7 +2497,7 @@ function UIController:_createTestUpgradeTree()
 	subtitle.Size = UDim2.new(0.56, 0, 0, 26)
 	subtitle.Position = UDim2.new(0.22, 0, 0, 58)
 	subtitle.BackgroundTransparency = 1
-	subtitle.Text = "ONE LEVEL PER PURCHASE • Q TO TOGGLE"
+	subtitle.Text = "ONE NODE PER PURCHASE • Q TO TOGGLE"
 	subtitle.TextColor3 = Color3.fromRGB(170, 204, 235)
 	subtitle.Font = Enum.Font.GothamBold
 	subtitle.TextScaled = true
@@ -2543,7 +2565,7 @@ function UIController:_createTestUpgradeTree()
 	canvas.BackgroundTransparency = 1
 	canvas.Parent = viewport
 
-	for _, buffId in ipairs(TEST_TREE_BUFF_ORDER) do
+	for _, buffId in ipairs(SKILL_TREE.buffOrder) do
 		local previousPosition = TEST_TREE_ROOT_POSITION
 		for _, position in ipairs(TEST_TREE_POSITIONS[buffId]) do
 			createTestTreeConnector(canvas, previousPosition, position)
@@ -2552,7 +2574,7 @@ function UIController:_createTestUpgradeTree()
 	end
 
 	self._testTreeNodes = {}
-	for _, buffId in ipairs(TEST_TREE_BUFF_ORDER) do
+	for _, buffId in ipairs(SKILL_TREE.buffOrder) do
 		for tierIndex, position in ipairs(TEST_TREE_POSITIONS[buffId]) do
 			self:_createTestTreeNode(canvas, buffId, tierIndex, position)
 		end
@@ -2621,7 +2643,7 @@ function UIController:_createTestUpgradeTree()
 	feedback.Size = UDim2.new(0.66, 0, 0, 30)
 	feedback.Position = UDim2.new(0.5, 0, 1, -8)
 	feedback.BackgroundTransparency = 1
-	feedback.Text = "SELECT THE ACTIVE TIER TO BUY ONE LEVEL • Q TO TOGGLE"
+	feedback.Text = "SELECT THE ACTIVE NODE • ONE NODE PER PURCHASE • Q TO TOGGLE"
 	feedback.TextColor3 = Color3.fromRGB(180, 201, 228)
 	feedback.Font = Enum.Font.GothamBold
 	feedback.TextScaled = true
@@ -2682,7 +2704,7 @@ function UIController:_setTestTreeFeedback(message, color)
 	if message and message ~= "" then
 		task.delay(3.5, function()
 			if token == self._testTreeFeedbackToken and self._testTreeFeedbackLabel then
-				self._testTreeFeedbackLabel.Text = "SELECT THE ACTIVE TIER TO BUY ONE LEVEL • Q TO TOGGLE"
+				self._testTreeFeedbackLabel.Text = "SELECT THE ACTIVE NODE • ONE NODE PER PURCHASE • Q TO TOGGLE"
 				self._testTreeFeedbackLabel.TextColor3 = Color3.fromRGB(180, 201, 228)
 			end
 		end)
@@ -2696,26 +2718,27 @@ function UIController:_refreshTestUpgradeTree()
 
 	local buffs = self._masteryState.buffs or {}
 	local points = tonumber(self._masteryState.masteryPoints) or 0
+	if points ~= points or points == math.huge or points == -math.huge then
+		points = 0
+	end
 	local purchaseInFlight = self._testTreePurchaseInFlight
 	local isBusy = purchaseInFlight ~= nil
 	for _, node in ipairs(self._testTreeNodes) do
 		local buffDef = MasteryData.Buffs[node.buffId]
 		if buffDef and node.hitButton and node.hitButton.Parent then
-			local currentLevel = math.clamp(
-				math.floor(tonumber(buffs[node.buffId]) or 0),
-				0,
-				buffDef.maxLevel
-			)
+			local currentLevel = getNormalizedMasteryLevel(buffs[node.buffId], buffDef.maxLevel)
+			local activeTierIndex = getActiveSkillTreeTier(currentLevel)
 			local isDone = currentLevel >= node.lastLevel
-			local isLocked = currentLevel < node.firstLevel - 1
-			local isActiveTier = not isDone and not isLocked
-			local cost = isActiveTier and tonumber(buffDef.pointsPerLevel[currentLevel + 1]) or nil
+			local isActiveTier = node.tierIndex == activeTierIndex
+			local isLocked = not isDone and not isActiveTier
+			local tier = SKILL_TREE.tiers[node.tierIndex]
+			local cost = isActiveTier and getRemainingTierCost(buffDef, currentLevel, tier) or nil
 			local canAfford = cost ~= nil and points >= cost
 			local isThisBusy = purchaseInFlight
 				and purchaseInFlight.buffId == node.buffId
 				and purchaseInFlight.tierIndex == node.tierIndex
 
-			node.isActionable = isActiveTier and not isBusy
+			node.isActionable = isActiveTier and canAfford and not isBusy
 			node.hitButton.Active = node.isActionable
 			node.hitButton.Selectable = node.isActionable
 			if not node.isActionable then
@@ -2740,17 +2763,20 @@ function UIController:_refreshTestUpgradeTree()
 				fillColor = Color3.fromRGB(14, 45, 88)
 				outlineColor = TEST_TREE_BLUE_BRIGHT
 			elseif canAfford then
-				node.statusLabel.Text = "UPGRADE " .. tostring(cost)
+				node.statusLabel.Text = tostring(cost) .. " PTS"
 				node.statusLabel.BackgroundColor3 = Color3.fromRGB(20, 113, 178)
 				fillColor = Color3.fromRGB(13, 37, 77)
 				outlineColor = TEST_TREE_BLUE_BRIGHT
 			else
-				node.statusLabel.Text = "NEED " .. tostring(cost)
+				node.statusLabel.Text = cost and ("NEED " .. tostring(cost)) or "UNAVAILABLE"
 				node.statusLabel.BackgroundColor3 = Color3.fromRGB(77, 48, 68)
 				fillColor = Color3.fromRGB(27, 25, 48)
 				outlineColor = TEST_TREE_BLUE
 			end
 
+			local muted = isLocked or isBusy and not isThisBusy
+			node.iconLabel.ImageTransparency = muted and 0.58 or 0
+			node.identityLabel.TextTransparency = muted and 0.45 or 0
 			for _, layer in ipairs(node.hexLayers) do
 				layer.shape.BackgroundColor3 = fillColor
 				layer.stroke.Color = outlineColor
@@ -2761,38 +2787,31 @@ function UIController:_refreshTestUpgradeTree()
 end
 
 function UIController:_purchaseTestTreeBuff(buffId, tierIndex)
-	local isAllowed = table.find(TEST_TREE_BUFF_ORDER, buffId) ~= nil
-	local buffDef = isAllowed and MasteryData.Buffs[buffId] or nil
-	local tier = type(tierIndex) == "number" and TEST_TREE_TIERS[tierIndex] or nil
+	local treeBuff = SKILL_TREE.buffs[buffId]
+	local buffDef = treeBuff and MasteryData.Buffs[buffId] or nil
+	local tier = type(tierIndex) == "number" and SKILL_TREE.tiers[tierIndex] or nil
 	if not buffDef or not tier then
-		self:_setTestTreeFeedback("That upgrade tier is not available.", COLORS.ButtonRed)
+		self:_setTestTreeFeedback("That upgrade node is not available.", COLORS.ButtonRed)
 		return
 	end
 	if self._testTreePurchaseInFlight then return end
 
-	local currentLevel = math.clamp(
-		math.floor(tonumber((self._masteryState.buffs or {})[buffId]) or 0),
-		0,
+	local currentLevel = getNormalizedMasteryLevel(
+		(self._masteryState.buffs or {})[buffId],
 		buffDef.maxLevel
 	)
-	if currentLevel < tier.firstLevel - 1 then
-		self:_setTestTreeFeedback(
-			buffDef.displayName .. " Tier " .. tier.roman .. " is still locked.",
-			COLORS.ButtonRed
-		)
-		return
-	end
-	if currentLevel >= tier.lastLevel then
-		self:_setTestTreeFeedback(
-			buffDef.displayName .. " Tier " .. tier.roman .. " is already done.",
-			Color3.fromRGB(72, 163, 205)
-		)
+	local activeTierIndex = getActiveSkillTreeTier(currentLevel)
+	if tierIndex ~= activeTierIndex then
+		local message = currentLevel >= tier.lastLevel
+			and (treeBuff.label .. " " .. tier.roman .. " is already done.")
+			or (treeBuff.label .. " " .. tier.roman .. " is still locked.")
+		self:_setTestTreeFeedback(message, COLORS.ButtonRed)
 		return
 	end
 
-	local cost = tonumber(buffDef.pointsPerLevel[currentLevel + 1]) or math.huge
-	if (tonumber(self._masteryState.masteryPoints) or 0) < cost then
-		self:_setTestTreeFeedback("Not enough Mastery Points for " .. buffDef.displayName .. ".", COLORS.ButtonRed)
+	local cost = getRemainingTierCost(buffDef, currentLevel, tier)
+	if not cost or (tonumber(self._masteryState.masteryPoints) or 0) < cost then
+		self:_setTestTreeFeedback("Not enough Mastery Points for " .. treeBuff.label .. ".", COLORS.ButtonRed)
 		return
 	end
 
@@ -2808,15 +2827,20 @@ function UIController:_purchaseTestTreeBuff(buffId, tierIndex)
 	}
 	self:_refreshTestUpgradeTree()
 	task.spawn(function()
-		local ok, success, message = pcall(function()
-			return remote:InvokeServer(buffId)
+		local ok, success, message, state = pcall(function()
+			return remote:InvokeServer(buffId, tierIndex)
 		end)
 		self._testTreePurchaseInFlight = nil
 		if not ok then
 			self:_setTestTreeFeedback("Upgrade failed: " .. tostring(success), COLORS.ButtonRed)
 		elseif success then
+			if type(state) == "table"
+				and tonumber(state.masteryPoints) ~= nil
+				and type(state.buffs) == "table" then
+				self:updateMastery(state)
+			end
 			self:_setTestTreeFeedback(
-				buffDef.displayName .. " upgraded! " .. tostring(message or ""),
+				treeBuff.label .. " " .. tier.roman .. " purchased! " .. tostring(message or ""),
 				Color3.fromRGB(102, 255, 165)
 			)
 		else
