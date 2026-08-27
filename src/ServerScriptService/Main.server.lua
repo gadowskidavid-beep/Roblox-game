@@ -150,7 +150,15 @@ EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
 ShopService.setEggService(EggService)
 
-ZoneService.init(DataService, CurrencyService, PetService)
+-- World generation should not prevent remotes, player data, and the GUI from
+-- starting if a future world builder fails. The current failure is still logged
+-- with a traceback so it is visible in the Roblox Studio server output.
+local zoneInitSucceeded, zoneInitError = xpcall(function()
+	ZoneService.init(DataService, CurrencyService, PetService)
+end, debug.traceback)
+if not zoneInitSucceeded then
+	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(zoneInitError))
+end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 

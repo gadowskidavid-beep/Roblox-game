@@ -460,26 +460,15 @@ DestructibleDamaged.OnClientEvent:Connect(function(destructibleId, currentHP, ma
 	end
 end)
 
-DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
-	if drops and drops.Coins and drops.Coins > 0 then
-		completeOnboardingStep("coins")
-	end
-
+DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId)
 	local destructiblePart = resolveDestructiblePart(destructibleId)
 	if destructiblePart then
 		effectsController:removeProgressBar(destructiblePart)
 		local pos = destructiblePart.Position
-		-- Show poof effect with the destructible's color
+		-- Show poof effect with the destructible's color. Currency popups are
+		-- delivered separately through CollectCurrency to rewarded players only.
 		local poofColor = destructiblePart.Color or Color3.fromRGB(200, 200, 200)
 		effectsController:showDestructiblePoof(pos, poofColor)
-		if drops then
-			if drops.Coins and drops.Coins > 0 then
-				effectsController:showCurrencyPopup(pos, drops.Coins, "Coins")
-			end
-			if drops.Diamonds and drops.Diamonds > 0 then
-				effectsController:showCurrencyPopup(pos + Vector3.new(0, 1, 0), drops.Diamonds, "Diamonds")
-			end
-		end
 	else
 		effectsController:removeProgressBar(destructibleId)
 	end
@@ -556,7 +545,14 @@ MasteryUpdated.OnClientEvent:Connect(function(masteryState)
 end)
 
 CollectCurrency.OnClientEvent:Connect(function(position, amount, currencyType)
-	effectsController:showCurrencyPopup(position, amount, currencyType)
+	if currencyType == "Coins" and amount > 0 then
+		completeOnboardingStep("coins")
+	end
+	local popupPosition = position
+	if currencyType == "Diamonds" then
+		popupPosition = position + Vector3.new(0, 1, 0)
+	end
+	effectsController:showCurrencyPopup(popupPosition, amount, currencyType)
 end)
 
 ShopBuffsUpdated.OnClientEvent:Connect(function(buffs)
@@ -726,6 +722,11 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 			if elapsed < HOLD_THRESHOLD then
 				-- SINGLE CLICK: send only 1 pet to the target
 				petController:sendOnePetToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
+			else
+				-- Heartbeat may not have observed the threshold before release. Treat
+				-- this as a hold so the exact frame boundary never drops the order.
+				holdFired = true
+				petController:sendAllPetsToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
 			end
 		end
 
@@ -752,7 +753,8 @@ RunService.Heartbeat:Connect(function()
 	end
 
 	-- Auto-click damage while holding (every AUTO_CLICK_INTERVAL seconds)
-	if autoClickActive and mouseDownTarget then
+	if autoClickActive and mouseDownTarget
+		and (tick() - lastClickDamageTime) >= AUTO_CLICK_INTERVAL then
 		-- Check if the target still exists
 		if mouseDownTarget.part and mouseDownTarget.part.Parent then
 			fireClickDamage(mouseDownTarget)
