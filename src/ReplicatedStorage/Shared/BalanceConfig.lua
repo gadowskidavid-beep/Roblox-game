@@ -82,10 +82,15 @@ local BalanceConfig = {
 		},
 	},
 
-	-- Approved target hatch model. Current hatch behavior remains under Legacy.Hatch
-	-- until the variant migration and atomic batch flow are implemented.
+	-- Canonical direct-hatch model. QOF-06 activates these outcomes for the
+	-- existing single-egg transaction; tree entitlements and batches remain later.
 	Hatch = {
-		RuntimeEnabled = false,
+		-- This top-level gate owns only the direct single-egg outcome model.
+		-- Deferred subfeatures keep explicit gates so their balance data stays dormant.
+		RuntimeEnabled = true,
+		EggQualityRuntimeEnabled = false,
+		MultiOpenRuntimeEnabled = false,
+		DirectVariantUpgradesRuntimeEnabled = false,
 		BaseChances = {
 			Golden = 0.01,
 			Rainbow = 0.001,
@@ -382,8 +387,11 @@ end
 
 function BalanceConfig.Validate()
 	assert(BalanceConfig.Variants.RuntimeEnabled == true, "Variants must be enabled in QOF-04")
+	assert(BalanceConfig.Hatch.RuntimeEnabled == true, "direct Hatch outcomes must be enabled in QOF-06")
+	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == false, "Egg Quality must remain disabled until QOF-07")
+	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == false, "Multi-Open must remain disabled until QOF-08")
+	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == false, "direct variant upgrades must remain disabled until QOF-07")
 	local futureSections = {
-		Hatch = BalanceConfig.Hatch,
 		Machines = BalanceConfig.Machines,
 		CoreUpgrades = BalanceConfig.CoreUpgrades,
 		Potions = BalanceConfig.Potions,
@@ -437,6 +445,27 @@ function BalanceConfig.Validate()
 		assert(isFiniteNumber(chance) and chance >= 0 and chance <= 1, name .. " hatch chance is invalid")
 	end
 	assert(chances.Golden + chances.Rainbow <= 1, "base variant chances exceed 100%")
+
+	local luckCaps = BalanceConfig.Hatch.LuckCaps
+	assert(
+		isFiniteNumber(luckCaps.SpeciesMultiplier) and luckCaps.SpeciesMultiplier >= 1,
+		"species luck cap must be at least x1"
+	)
+	local directChanceCaps = {
+		Golden = luckCaps.GoldenChance,
+		Rainbow = luckCaps.RainbowChance,
+		Shiny = luckCaps.ShinyChance,
+	}
+	for name, cap in pairs(directChanceCaps) do
+		assert(
+			isFiniteNumber(cap) and cap >= chances[name] and cap <= 1,
+			name .. " luck cap must be finite and between its base chance and 100%"
+		)
+	end
+	assert(
+		directChanceCaps.Golden + directChanceCaps.Rainbow <= 1,
+		"capped base variant chances exceed 100%"
+	)
 
 	assert(BalanceConfig.Variants.Base.Normal.damageMultiplier == 1, "Normal multiplier must be x1")
 	assert(BalanceConfig.Variants.Base.Golden.damageMultiplier == 2, "Gold multiplier must be x2")

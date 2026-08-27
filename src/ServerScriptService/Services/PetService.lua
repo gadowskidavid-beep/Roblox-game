@@ -10,7 +10,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
+local PetHatchMath = require(game.ReplicatedStorage.Shared.PetHatchMath)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
+local PetVariantPresentation = require(game.ReplicatedStorage.Shared.PetVariantPresentation)
 
 local PetService = {}
 
@@ -37,52 +39,56 @@ function PetService.setShopService(shopService)
 	PetService._shopService = shopService
 end
 
--- Weighted random selection from a pet pool, respecting LuckyEggs upgrade, BetterLuck mastery, and Lucky Potion
-local function weightedRandomPet(petPool, player)
-	-- Calculate total weight
+-- Resolve every currently active server-side hatch luck source once per egg.
+-- QOF-07 tree entitlements are intentionally not consumed here yet.
+function PetService.getHatchLuckMultiplier(player)
+	local questLuck = 1
+	if PetService._upgradeService then
+		questLuck = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
+	end
+
+	local masteryLuck = 1
+	if PetService._masteryService then
+		masteryLuck = PetService._masteryService.getBuffBonus(player, "BetterLuck")
+	end
+
+	local shopLuck = 1
+	if PetService._shopService then
+		shopLuck = PetService._shopService.getShopMultiplier(player, "luck")
+	end
+
+	return PetHatchMath.combineLuckMultipliers(questLuck, masteryLuck, shopLuck)
+end
+
+-- Weighted species selection respects the same composed luck while bounding its
+-- influence independently from direct Gold/Rainbow/Shiny chance caps.
+local function weightedRandomPet(petPool, luckMultiplier)
 	local totalWeight = 0
 	local adjustedPool = {}
+	local speciesMultiplier = PetHatchMath.getSpeciesMultiplier(luckMultiplier)
 
 	for _, entry in ipairs(petPool) do
 		local weight = entry.weight
-		-- LuckyEggs bonus: increases weight of rarer pets
 		local petDef = PetData.Pets[entry.petId]
 		if petDef and petDef.rarity ~= "Common" then
-			local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
-			if luckyBonus > 0 then
-				weight = weight * luckyBonus
-			end
-			-- BetterLuck mastery bonus: further increases weight of rarer pets
-			if PetService._masteryService then
-				local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
-				if betterLuckBonus > 0 then
-					weight = weight * betterLuckBonus
-				end
-			end
-			-- Lucky Potion shop buff: further increases weight of rarer pets
-			if PetService._shopService then
-				local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
-				if shopLuckMultiplier > 1 then
-					weight = weight * shopLuckMultiplier
-				end
-			end
+			weight = weight * speciesMultiplier
 		end
 		totalWeight = totalWeight + weight
 		table.insert(adjustedPool, { petId = entry.petId, weight = weight })
 	end
 
-	-- Roll random number
+	if #adjustedPool == 0 or totalWeight <= 0 then
+		return nil
+	end
+
 	local roll = math.random() * totalWeight
 	local cumulative = 0
-
 	for _, entry in ipairs(adjustedPool) do
 		cumulative = cumulative + entry.weight
 		if roll <= cumulative then
 			return entry.petId
 		end
 	end
-
-	-- Fallback: return last entry
 	return adjustedPool[#adjustedPool].petId
 end
 
@@ -111,8 +117,22 @@ function PetService.canAddPet(player)
 	return true
 end
 
--- Hatch an egg and return the new pet
--- If skipCostDeduction is true, assumes cost was already deducted by the caller (EggService)
+-- Preserve the four-category discovery contract until the dedicated combined
+-- Pet Dex migration. Any Shiny composition maps to the existing Shiny category.
+function PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
+	if type(petId) ~= "string" or petId == "" then
+		return nil
+	end
+	if isShiny == true then
+		return "Shiny_" .. petId
+	elseif baseVariant == "Golden" then
+		return "Golden_" .. petId
+	elseif baseVariant == "Rainbow" then
+		return "Rainbow_" .. petId
+	end
+	return petId
+end
+
 function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
@@ -151,49 +171,26 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		end
 	end
 
-	-- Select random pet from pool
-	local petId = weightedRandomPet(eggDef.petPool, player)
-	local petDef = PetData.Pets[petId]
+	-- Select species and canonical direct outcome using one server-derived luck
+	-- multiplier. Base variant is categorical; Shiny is independently composable.
+	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
+	local petId = weightedRandomPet(eggDef.petPool, luckMultiplier)
+	local petDef = petId and PetData.Pets[petId] or nil
 	if not petDef then
 		return nil, "Invalid pet in pool"
 	end
 
-	-- Roll the active legacy exclusive Shiny/Rainbow outcome. QOF-03 stores
-	-- Shiny independently but intentionally preserves the current probabilities,
-	-- names, and baked damage until QOF-04 activates canonical variant math.
-	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
-	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
-	-- BetterLuck mastery bonus also improves variant roll
-	if PetService._masteryService then
-		local betterLuckBonus = PetService._masteryService.getBuffBonus(player, "BetterLuck")
-		if betterLuckBonus > 0 then
-			luckyMultiplier = luckyMultiplier * betterLuckBonus
-		end
-	end
-	-- Lucky Potion shop buff also improves variant roll
-	if PetService._shopService then
-		local shopLuckMultiplier = PetService._shopService.getShopMultiplier(player, "luck")
-		if shopLuckMultiplier > 1 then
-			luckyMultiplier = luckyMultiplier * shopLuckMultiplier
-		end
-	end
-	local variant = "Normal"
-	if math.random() < Config.RAINBOW_CHANCE * luckyMultiplier then
-		variant = "Rainbow"
-	elseif math.random() < Config.SHINY_CHANCE * luckyMultiplier then
-		variant = "Shiny"
-	end
-
-	-- Preserve the current exclusive hatch presentation while deriving damage
-	-- canonically from pet identity, base variant, and the independent Shiny flag.
-	local petName = petDef.name
-	local baseVariant = variant == "Shiny" and "Normal" or variant
-	local isShiny = variant == "Shiny"
-	if isShiny then
-		petName = "Shiny " .. petDef.name
-	elseif baseVariant == "Rainbow" then
-		petName = "Rainbow " .. petDef.name
-	end
+	local baseVariant, isShiny = PetHatchMath.rollOutcome(
+		math.random(),
+		math.random(),
+		luckMultiplier
+	)
+	local presentation = PetVariantPresentation.resolve({
+		petId = petId,
+		variant = baseVariant,
+		shiny = isShiny,
+	})
+	local petName = presentation.displayPetName
 	local petDamage = PetVariantMath.getBaseDamage(petId, baseVariant, isShiny)
 
 	-- Create unique pet instance
@@ -205,20 +202,13 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		damage = petDamage,
 		variant = baseVariant,
 		shiny = isShiny,
-		golden = false,
+		golden = baseVariant == "Golden",
 		favorite = false,
 		equipped = false,
 	}
 
-	-- Track discovery (collection book)
-	local discoveryKey
-	if variant == "Normal" then
-		discoveryKey = petId
-	elseif variant == "Shiny" then
-		discoveryKey = "Shiny_" .. petId
-	elseif variant == "Rainbow" then
-		discoveryKey = "Rainbow_" .. petId
-	end
+	-- Track discovery through the existing four-category compatibility keys.
+	local discoveryKey = PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
 	if not data.discoveredPets then
 		data.discoveredPets = {}
 	end
