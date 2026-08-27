@@ -1,87 +1,54 @@
 --[[
-	Config.lua - Main game configuration for Battle Pets
-	Contains all game constants, upgrade definitions, zone costs, and campaign parameters.
+	Config.lua - Runtime and infrastructure configuration for Battle Pets.
+	Gameplay/economy values come from BalanceConfig; compatibility aliases keep
+	existing systems unchanged while they migrate through the QOF roadmap.
 ]]
+
+local BalanceConfig = require(script.Parent.BalanceConfig)
 
 local Config = {}
 
--- General
+-- Expose the canonical balance module for compatibility and diagnostics.
+Config.Balance = BalanceConfig
+
+-- General infrastructure
 Config.GameName = "Battle Pets"
 Config.DataStoreName = "BattlePets_v1"
 Config.AutoSaveInterval = 60
 Config.SessionLockTimeout = 180
 
 -- Hard limits protect DataStore size, rendering cost, and combat balance.
-Config.MaxPetInventoryBase = 100
-Config.MaxPetInventoryAbsolute = 250
-Config.MaxExtraEquipSlots = 5
-Config.MaxEquippedPetsAbsolute = 12
-Config.AutoHatchInterval = 3
-Config.DestructibleReplicationDistance = 300
+Config.MaxPetInventoryBase = BalanceConfig.Limits.PetInventoryBase
+Config.MaxPetInventoryAbsolute = BalanceConfig.Limits.PetInventoryAbsolute
+Config.MaxExtraEquipSlots = BalanceConfig.Limits.ExtraEquipSlots
+Config.MaxEquippedPetsBase = BalanceConfig.Limits.EquippedPetsBase
+Config.MaxEquippedPetsAbsolute = BalanceConfig.Limits.EquippedPetsAbsolute
+Config.AutoHatchInterval = BalanceConfig.Limits.AutoHatchInterval
+Config.DestructibleReplicationDistance = BalanceConfig.Limits.DestructibleReplicationDistance
 
--- Currency types
+-- Existing display-facing currency names.
 Config.Currencies = {
 	Coins = "Coins",
 	Diamonds = "Diamonds",
 }
 
--- Pet rarity weights (must sum to 100)
-Config.RarityWeights = {
-	Common = 60,
-	Uncommon = 25,
-	Rare = 10,
-	Epic = 4,
-	Legendary = 1,
-}
+Config.RarityWeights = BalanceConfig.World.RarityWeights
 
--- Egg costs per zone
-Config.EggCosts = {
-	[1] = { Coins = 100 },
-	[2] = { Coins = 500 },
-	[3] = { Coins = 2000 },
-	[4] = { Coins = 5000 },
-	[5] = { Coins = 15000 },
-	[6] = { Coins = 40000 },
-	[7] = { Coins = 100000 },
-	[8] = { Coins = 300000 },
-}
+-- Existing consumers expect { Coins = amount } per zone.
+Config.EggCosts = {}
+for zoneId, amount in pairs(BalanceConfig.World.EggCoinCostsByZone) do
+	Config.EggCosts[zoneId] = { Coins = amount }
+end
 
--- Max equipped pets (base value before upgrades)
-Config.MaxEquippedPetsBase = 3
-
--- Upgrade definitions (DEPRECATED - upgrades are now quest-based, see QuestData.lua)
--- Kept for reference only; UpgradeService now delegates to QuestService
+-- Upgrade definitions (deprecated; upgrades are quest/tree based).
 Config.Upgrades = {}
 
--- Zone gate costs (coins required to unlock each zone)
-Config.ZoneGateCosts = {
-	[1] = 0,         -- Gruene Wiesen (free/starter)
-	[2] = 500,       -- Stadt
-	[3] = 2000,      -- Strand
-	[4] = 5000,      -- Wueste
-	[5] = 15000,     -- Eiswelt
-	[6] = 40000,     -- Vulkan
-	[7] = 100000,    -- Himmel
-	[8] = 300000,    -- Weltraum
-}
+Config.ZoneGateCosts = BalanceConfig.World.ZoneGateCoinCosts
+Config.Campaign = BalanceConfig.World.Campaign
 
--- Campaign parameters
-Config.Campaign = {
-	EnergyRegenRate = 1,   -- energy per second
-	MaxEnergy = 100,
-	BaseHealth = 500,      -- base HP for player's base
-	EnemyBaseHealth = 500, -- base HP for enemy base (scales with level)
-	PetDeployCosts = {
-		Common = 10,
-		Uncommon = 20,
-		Rare = 35,
-		Epic = 45,
-		Legendary = 50,
-	},
-}
-
--- Shiny/Rainbow variant chances (base, multiplied by LuckyEggs bonus)
-Config.SHINY_CHANCE = 0.01    -- 1% base chance
-Config.RAINBOW_CHANCE = 0.001 -- 0.1% base chance
+-- Compatibility values preserve the current exclusive Shiny/Rainbow hatch model.
+-- QOF-03/QOF-04 will switch PetService atomically to BalanceConfig.Hatch.
+Config.SHINY_CHANCE = BalanceConfig.Legacy.Hatch.ShinyChance
+Config.RAINBOW_CHANCE = BalanceConfig.Legacy.Hatch.RainbowChance
 
 return Config

@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX0000006F">
+	<Item class="ServerScriptService" referent="RBX00000070">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX0000006E">
+			<Item class="Script" referent="RBX0000006F">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -1552,11 +1552,11 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX0000006D">
+			<Item class="Folder" referent="RBX0000006E">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000061">
+				<Item class="ModuleScript" referent="RBX00000062">
 					<Properties>
 						<string name="Name">DataSchema</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1807,7 +1807,7 @@ return DataSchema
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000062">
+				<Item class="ModuleScript" referent="RBX00000063">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2132,7 +2132,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000063">
+				<Item class="ModuleScript" referent="RBX00000064">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2328,7 +2328,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000064">
+				<Item class="ModuleScript" referent="RBX00000065">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2342,6 +2342,7 @@ local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
 
 local PetService = {}
@@ -2860,16 +2861,10 @@ function PetService.getPetDamage(pet, player)
 	return baseDamage
 end
 
--- Golden conversion chance table: index = number of pets sacrificed, value = success chance (0-1)
-local GOLDEN_CHANCES = {
-	[1] = 0.13,
-	[2] = 0.26,
-	[3] = 0.39,
-	[4] = 0.50,
-	[5] = 0.63,
-	[6] = 0.88,
-	[7] = 1.00,
-}
+-- Shared machine chance table. QOF-02 centralizes this without changing the
+-- existing Golden conversion behavior; machine costs/zones activate later.
+local GOLDEN_CONVERSION = BalanceConfig.Legacy.GoldenConversion
+local GOLDEN_CHANCES = GOLDEN_CONVERSION.SuccessChanceByInput
 
 -- Convert pets into a golden pet (multi-pet sacrifice with chance)
 -- petInstanceIds: table of 1-7 pet instance IDs (all must be same petId/type)
@@ -2880,8 +2875,12 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 	end
 
 	local count = #petInstanceIds
-	if count < 1 or count > 7 then
-		return nil, "Must sacrifice between 1 and 7 pets"
+	if count < GOLDEN_CONVERSION.MinInputs or count > GOLDEN_CONVERSION.MaxInputs then
+		return nil, "Must sacrifice between "
+			.. tostring(GOLDEN_CONVERSION.MinInputs)
+			.. " and "
+			.. tostring(GOLDEN_CONVERSION.MaxInputs)
+			.. " pets"
 	end
 
 	local data = PetService._dataService.getPlayerData(player)
@@ -3029,7 +3028,7 @@ return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000065">
+				<Item class="ModuleScript" referent="RBX00000066">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3125,7 +3124,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000066">
+				<Item class="ModuleScript" referent="RBX00000067">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -5776,7 +5775,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000067">
+				<Item class="ModuleScript" referent="RBX00000068">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6378,7 +6377,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000068">
+				<Item class="ModuleScript" referent="RBX00000069">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6631,7 +6630,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000069">
+				<Item class="ModuleScript" referent="RBX0000006A">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6831,7 +6830,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006A">
+				<Item class="ModuleScript" referent="RBX0000006B">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6981,7 +6980,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006B">
+				<Item class="ModuleScript" referent="RBX0000006C">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7238,7 +7237,7 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7367,15 +7366,15 @@ return UpgradeTreeService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX00000078">
+	<Item class="StarterPlayer" referent="RBX00000079">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000077">
+		<Item class="StarterPlayerScripts" referent="RBX00000078">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000076">
+				<Item class="LocalScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -8192,7 +8191,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000070">
+				<Item class="ModuleScript" referent="RBX00000071">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11949,7 +11948,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000071">
+				<Item class="ModuleScript" referent="RBX00000072">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -13413,7 +13412,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000072">
+				<Item class="ModuleScript" referent="RBX00000073">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -14328,7 +14327,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000073">
+				<Item class="ModuleScript" referent="RBX00000074">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15510,7 +15509,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000074">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15692,7 +15691,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000076">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15845,109 +15844,611 @@ return UpgradeTreeController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX00000060">
+	<Item class="ReplicatedStorage" referent="RBX00000061">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX00000037">
+			<Item class="Folder" referent="RBX00000038">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
 				<Item class="ModuleScript" referent="RBX00000030">
 					<Properties>
+						<string name="Name">BalanceConfig</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	BalanceConfig.lua - Single source of truth for Battle Pets economy and progression values.
+
+	Sections marked RuntimeEnabled = false define approved future QOF balance, but are not
+	consumed by gameplay until their data migration and server-authoritative service exist.
+	Legacy values preserve current behavior while systems are migrated incrementally.
+]]
+
+local BalanceConfig = {
+	Version = 1,
+
+	Currencies = {
+		Coins = "coins",
+		Diamonds = "diamonds",
+	},
+
+	Limits = {
+		PetInventoryBase = 100,
+		PetInventoryAbsolute = 250,
+		ExtraEquipSlots = 5,
+		EquippedPetsBase = 3,
+		EquippedPetsAbsolute = 12,
+		AutoHatchInterval = 3,
+		DestructibleReplicationDistance = 300,
+	},
+
+	World = {
+		RarityWeights = {
+			Common = 60,
+			Uncommon = 25,
+			Rare = 10,
+			Epic = 4,
+			Legendary = 1,
+		},
+		EggCoinCostsByZone = {
+			[1] = 100,
+			[2] = 500,
+			[3] = 2000,
+			[4] = 5000,
+			[5] = 15000,
+			[6] = 40000,
+			[7] = 100000,
+			[8] = 300000,
+		},
+		ZoneGateCoinCosts = {
+			[1] = 0,
+			[2] = 500,
+			[3] = 2000,
+			[4] = 5000,
+			[5] = 15000,
+			[6] = 40000,
+			[7] = 100000,
+			[8] = 300000,
+		},
+		Campaign = {
+			EnergyRegenRate = 1,
+			MaxEnergy = 100,
+			BaseHealth = 500,
+			EnemyBaseHealth = 500,
+			PetDeployCosts = {
+				Common = 10,
+				Uncommon = 20,
+				Rare = 35,
+				Epic = 45,
+				Legendary = 50,
+			},
+		},
+	},
+
+	-- Approved target model. Activated with the V6 pet migration in QOF-03/QOF-04.
+	Variants = {
+		RuntimeEnabled = false,
+		Base = {
+			Normal = { displayName = "Normal", damageMultiplier = 1 },
+			Golden = { displayName = "Gold", damageMultiplier = 2 },
+			Rainbow = { displayName = "Rainbow", damageMultiplier = 5 },
+		},
+		Shiny = {
+			baseChance = 0.0001,
+			damageMultiplier = 1.5,
+			displayName = "Shiny",
+		},
+	},
+
+	-- Approved target hatch model. Current hatch behavior remains under Legacy.Hatch
+	-- until the variant migration and atomic batch flow are implemented.
+	Hatch = {
+		RuntimeEnabled = false,
+		BaseChances = {
+			Golden = 0.01,
+			Rainbow = 0.001,
+			Shiny = 0.0001,
+		},
+		LuckCaps = {
+			SpeciesMultiplier = 10,
+			GoldenChance = 0.05,
+			RainbowChance = 0.005,
+			ShinyChance = 0.001,
+		},
+		EggQuality = {
+			{ id = "Eggs I", cost = { currency = "coins", amount = 5000 }, rarityMultiplier = 1.25 },
+			{ id = "Eggs II", cost = { currency = "coins", amount = 50000 }, rarityMultiplier = 1.60 },
+		},
+		MultiOpen = {
+			{ id = "Eggs III", cost = { currency = "diamonds", amount = 500 }, eggCount = 2 },
+			{ id = "Eggs IV", cost = { currency = "diamonds", amount = 2500 }, eggCount = 5 },
+			{ id = "Eggs V", cost = { currency = "diamonds", amount = 10000 }, eggCount = 10 },
+		},
+		DirectVariantUpgrades = {
+			Golden = {
+				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 500 } },
+				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 1500 } },
+				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 5000 } },
+			},
+			Rainbow = {
+				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 1500 } },
+				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 5000 } },
+				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 15000 } },
+			},
+			Shiny = {
+				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 5000 } },
+				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 15000 } },
+				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 50000 } },
+			},
+		},
+	},
+
+	Machines = {
+		RuntimeEnabled = false,
+		MinInputs = 1,
+		MaxInputs = 7,
+		SuccessChanceByInput = {
+			[1] = 0.13,
+			[2] = 0.26,
+			[3] = 0.39,
+			[4] = 0.50,
+			[5] = 0.63,
+			[6] = 0.88,
+			[7] = 1.00,
+		},
+		Gold = {
+			id = "GoldMachine",
+			zoneId = 3,
+			inputVariant = "Normal",
+			outputVariant = "Golden",
+			cost = { currency = "diamonds", amount = 750 },
+		},
+		Rainbow = {
+			id = "RainbowMachine",
+			zoneId = 6,
+			inputVariant = "Golden",
+			outputVariant = "Rainbow",
+			cost = { currency = "diamonds", amount = 2500 },
+		},
+	},
+
+	CoreUpgrades = {
+		RuntimeEnabled = false,
+		Speed = {
+			{ multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
+			{ multiplier = 1.10, cost = { currency = "coins", amount = 25000 } },
+			{ multiplier = 1.15, cost = { currency = "coins", amount = 100000 } },
+			{ multiplier = 1.20, cost = { currency = "coins", amount = 300000 } },
+		},
+		Storage = {
+			{ bonusSlots = 25, cost = { currency = "diamonds", amount = 250 } },
+			{ bonusSlots = 50, cost = { currency = "diamonds", amount = 750 } },
+			{ bonusSlots = 75, cost = { currency = "diamonds", amount = 2000 } },
+			{ bonusSlots = 100, cost = { currency = "diamonds", amount = 5000 } },
+			{ bonusSlots = 125, cost = { currency = "diamonds", amount = 10000 } },
+			{ bonusSlots = 150, cost = { currency = "diamonds", amount = 20000 } },
+		},
+		Magnet = {
+			{ multiplier = 1.25, cost = { currency = "coins", amount = 10000 } },
+			{ multiplier = 1.50, cost = { currency = "coins", amount = 50000 } },
+			{ multiplier = 2.00, cost = { currency = "coins", amount = 200000 } },
+		},
+		DoubleLuck = {
+			multiplier = 2,
+			cost = { currency = "diamonds", amount = 5000 },
+		},
+		PetEquipSlots = {
+			{ bonusSlots = 1, cost = { currency = "diamonds", amount = 1000 } },
+			{ bonusSlots = 2, cost = { currency = "diamonds", amount = 2500 } },
+			{ bonusSlots = 3, cost = { currency = "diamonds", amount = 5000 } },
+		},
+	},
+
+	Potions = {
+		RuntimeEnabled = false,
+		Catalog = {
+			LuckPotion = {
+				cost = { currency = "diamonds", amount = 100 },
+				buffType = "luck",
+				multiplier = 2,
+				durationSeconds = 600,
+			},
+			MegaLuckPotion = {
+				cost = { currency = "diamonds", amount = 350 },
+				buffType = "luck",
+				multiplier = 5,
+				durationSeconds = 300,
+			},
+			SpeedPotion = {
+				cost = { currency = "diamonds", amount = 50 },
+				buffType = "speed",
+				multiplier = 2,
+				durationSeconds = 300,
+			},
+			CoinPotion = {
+				cost = { currency = "diamonds", amount = 125 },
+				buffType = "coins",
+				multiplier = 2,
+				durationSeconds = 600,
+			},
+			ShinyPotion = {
+				cost = { currency = "diamonds", amount = 1000 },
+				buffType = "shinyChance",
+				multiplier = 10,
+				hatchCharges = 3,
+			},
+		},
+		Upgrades = {
+			BaseSlots = 2,
+			MaxSlots = 5,
+			PotionSlots = {
+				{ slots = 3, cost = { currency = "diamonds", amount = 500 } },
+				{ slots = 4, cost = { currency = "diamonds", amount = 1500 } },
+				{ slots = 5, cost = { currency = "diamonds", amount = 4000 } },
+			},
+			Duration = {
+				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 750 } },
+				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 2000 } },
+				{ multiplier = 1.75, cost = { currency = "diamonds", amount = 5000 } },
+				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 10000 } },
+			},
+			AutoDrink = {
+				cost = { currency = "diamonds", amount = 7500 },
+			},
+			MaxShinyCharges = 30,
+		},
+	},
+
+	Enchanting = {
+		RuntimeEnabled = false,
+		RollCost = { currency = "diamonds", amount = 500 },
+		MaxSlotsPerPet = 1,
+		Pool = {
+			{ id = "StrongI", weight = 35, stat = "damage", multiplier = 1.10 },
+			{ id = "StrongII", weight = 15, stat = "damage", multiplier = 1.25 },
+			{ id = "StrongIII", weight = 5, stat = "damage", multiplier = 1.50 },
+			{ id = "AgileI", weight = 30, stat = "speed", multiplier = 1.10 },
+			{ id = "AgileII", weight = 12, stat = "speed", multiplier = 1.20 },
+			{ id = "AgileIII", weight = 3, stat = "speed", multiplier = 1.35 },
+		},
+	},
+
+	-- Values below remain active until their owning systems are migrated.
+	Legacy = {
+		Hatch = {
+			ShinyChance = 0.01,
+			RainbowChance = 0.001,
+		},
+		GoldenConversion = {
+			MinInputs = 1,
+			MaxInputs = 7,
+			SuccessChanceByInput = {
+				[1] = 0.13,
+				[2] = 0.26,
+				[3] = 0.39,
+				[4] = 0.50,
+				[5] = 0.63,
+				[6] = 0.88,
+				[7] = 1.00,
+			},
+		},
+		Shop = {
+			LuckyPotion = { cost = 100, currency = "diamonds", multiplier = 2, duration = 300 },
+			SpeedPotion = { cost = 50, currency = "diamonds", multiplier = 2, duration = 300 },
+			PowerPotion = { cost = 150, currency = "diamonds", multiplier = 2, duration = 300 },
+			CoinPotion = { cost = 125, currency = "diamonds", multiplier = 2, duration = 300 },
+			AutoHatch = { cost = 500, currency = "diamonds", multiplier = 1, duration = 600 },
+			ExtraEquipSlot = {
+				cost = 1000,
+				currency = "diamonds",
+				multiplier = 1,
+				duration = 0,
+				maxPurchases = 5,
+			},
+		},
+		UpgradeTreeRequirements = {
+			["exit"] = { currency = "coins", amount = 0 },
+			["Eggs I"] = { currency = "coins", amount = 15 },
+			["Eggs II"] = { currency = "coins", amount = 2500 },
+			["Eggs III"] = { currency = "coins", amount = 5000000 },
+			["Eggs IV"] = { currency = "coins", amount = 1002000000 },
+			["Eggs V"] = { currency = "coins", amount = 1555000000000 },
+			["eggSpeed I"] = { currency = "coins", amount = 500 },
+			["eggSpeed II"] = { currency = "coins", amount = 10000 },
+			["eggSpeed III"] = { currency = "coins", amount = 500000 },
+			["luck I"] = { currency = "coins", amount = 100 },
+			["luck II"] = { currency = "coins", amount = 5000 },
+			["luck III"] = { currency = "coins", amount = 250000 },
+			["luck IV"] = { currency = "coins", amount = 10000000 },
+			["coins I"] = { currency = "coins", amount = 50 },
+			["coins II"] = { currency = "coins", amount = 2000 },
+			["coins III"] = { currency = "coins", amount = 100000 },
+			["coins IV"] = { currency = "coins", amount = 5000000 },
+			["coins V"] = { currency = "coins", amount = 500000000 },
+			["playerPortal"] = { currency = "coins", amount = 0 },
+			["luckPortal"] = { currency = "coins", amount = 0 },
+			["coinPortal"] = { currency = "coins", amount = 0 },
+			["playerBack"] = { currency = "coins", amount = 0 },
+			["friends1"] = { currency = "coins", amount = 1000 },
+			["friends2"] = { currency = "coins", amount = 25000 },
+			["friends3"] = { currency = "coins", amount = 500000 },
+			["playtime1"] = { currency = "coins", amount = 500 },
+			["playtime2"] = { currency = "coins", amount = 15000 },
+			["playtime3"] = { currency = "coins", amount = 250000 },
+			["streak1"] = { currency = "coins", amount = 750 },
+			["streak2"] = { currency = "coins", amount = 20000 },
+			["streak3"] = { currency = "coins", amount = 400000 },
+			["vip1"] = { currency = "coins", amount = 5000 },
+			["vip2"] = { currency = "coins", amount = 100000 },
+			["vip3"] = { currency = "coins", amount = 2000000 },
+			["luckBack"] = { currency = "coins", amount = 0 },
+			["epicLuck1"] = { currency = "coins", amount = 50000 },
+			["epicLuck2"] = { currency = "coins", amount = 500000 },
+			["epicLuck3"] = { currency = "coins", amount = 5000000 },
+			["legendLuck1"] = { currency = "coins", amount = 200000 },
+			["legendLuck2"] = { currency = "coins", amount = 2000000 },
+			["legendLuck3"] = { currency = "coins", amount = 20000000 },
+			["rerollLuck1"] = { currency = "coins", amount = 100000 },
+			["rerollLuck2"] = { currency = "coins", amount = 1000000 },
+			["rerollLuck3"] = { currency = "coins", amount = 50000000 },
+			["coinBack"] = { currency = "coins", amount = 0 },
+			["coinMult1"] = { currency = "coins", amount = 1000000 },
+			["coinMult2"] = { currency = "coins", amount = 10000000 },
+			["coinMult3"] = { currency = "coins", amount = 100000000 },
+			["coinMult4"] = { currency = "coins", amount = 1000000000 },
+			["coinPassive1"] = { currency = "coins", amount = 500000 },
+			["coinPassive2"] = { currency = "coins", amount = 5000000 },
+			["coinPassive3"] = { currency = "coins", amount = 50000000 },
+			["coinPassive4"] = { currency = "coins", amount = 500000000 },
+			["coinBonus1"] = { currency = "coins", amount = 750000 },
+			["coinBonus2"] = { currency = "coins", amount = 7500000 },
+			["coinBonus3"] = { currency = "coins", amount = 75000000 },
+		},
+	},
+}
+
+local VALID_CURRENCIES = {
+	coins = true,
+	diamonds = true,
+}
+
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function validateCost(cost, context)
+	assert(type(cost) == "table", context .. " cost must be a table")
+	assert(VALID_CURRENCIES[cost.currency] == true, context .. " has an unknown currency")
+	assert(isFiniteNumber(cost.amount) and cost.amount >= 0, context .. " has an invalid amount")
+end
+
+local function validateIncreasingCosts(levels, context)
+	local previous = -1
+	for index, level in ipairs(levels) do
+		validateCost(level.cost, context .. " level " .. tostring(index))
+		assert(level.cost.amount > previous, context .. " costs must increase")
+		previous = level.cost.amount
+	end
+end
+
+function BalanceConfig.Validate()
+	local futureSections = {
+		Variants = BalanceConfig.Variants,
+		Hatch = BalanceConfig.Hatch,
+		Machines = BalanceConfig.Machines,
+		CoreUpgrades = BalanceConfig.CoreUpgrades,
+		Potions = BalanceConfig.Potions,
+		Enchanting = BalanceConfig.Enchanting,
+	}
+	for name, section in pairs(futureSections) do
+		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
+	end
+
+	for name, value in pairs(BalanceConfig.Limits) do
+		assert(isFiniteNumber(value) and value > 0, name .. " limit must be positive")
+	end
+	assert(BalanceConfig.Limits.PetInventoryBase <= BalanceConfig.Limits.PetInventoryAbsolute, "pet inventory limits are inverted")
+	assert(BalanceConfig.Limits.EquippedPetsBase <= BalanceConfig.Limits.EquippedPetsAbsolute, "equipped pet limits are inverted")
+
+	local rarityWeight = 0
+	for name, weight in pairs(BalanceConfig.World.RarityWeights) do
+		assert(isFiniteNumber(weight) and weight > 0, name .. " rarity weight must be positive")
+		rarityWeight = rarityWeight + weight
+	end
+	assert(rarityWeight == 100, "rarity weights must sum to 100")
+
+	local zoneCount = 0
+	for zoneId = 1, 8 do
+		local eggCost = BalanceConfig.World.EggCoinCostsByZone[zoneId]
+		local gateCost = BalanceConfig.World.ZoneGateCoinCosts[zoneId]
+		assert(isFiniteNumber(eggCost) and eggCost >= 0, "zone " .. tostring(zoneId) .. " egg cost is invalid")
+		assert(isFiniteNumber(gateCost) and gateCost >= 0, "zone " .. tostring(zoneId) .. " gate cost is invalid")
+		zoneCount = zoneCount + 1
+	end
+	assert(zoneCount == 8, "world must define exactly eight zones")
+	for zoneId in pairs(BalanceConfig.World.EggCoinCostsByZone) do
+		assert(type(zoneId) == "number" and zoneId >= 1 and zoneId <= zoneCount, "egg cost contains an unknown zone")
+	end
+	for zoneId in pairs(BalanceConfig.World.ZoneGateCoinCosts) do
+		assert(type(zoneId) == "number" and zoneId >= 1 and zoneId <= zoneCount, "gate cost contains an unknown zone")
+	end
+
+	local campaign = BalanceConfig.World.Campaign
+	assert(isFiniteNumber(campaign.EnergyRegenRate) and campaign.EnergyRegenRate > 0, "campaign energy regen is invalid")
+	assert(isFiniteNumber(campaign.MaxEnergy) and campaign.MaxEnergy > 0, "campaign max energy is invalid")
+	assert(isFiniteNumber(campaign.BaseHealth) and campaign.BaseHealth > 0, "campaign base health is invalid")
+	assert(isFiniteNumber(campaign.EnemyBaseHealth) and campaign.EnemyBaseHealth > 0, "campaign enemy health is invalid")
+	for rarity, cost in pairs(campaign.PetDeployCosts) do
+		assert(BalanceConfig.World.RarityWeights[rarity] ~= nil, "unknown campaign deploy rarity")
+		assert(isFiniteNumber(cost) and cost >= 0 and cost <= campaign.MaxEnergy, rarity .. " deploy cost is invalid")
+	end
+
+	local chances = BalanceConfig.Hatch.BaseChances
+	for name, chance in pairs(chances) do
+		assert(isFiniteNumber(chance) and chance >= 0 and chance <= 1, name .. " hatch chance is invalid")
+	end
+	assert(chances.Golden + chances.Rainbow <= 1, "base variant chances exceed 100%")
+
+	assert(BalanceConfig.Variants.Base.Normal.damageMultiplier == 1, "Normal multiplier must be x1")
+	assert(BalanceConfig.Variants.Base.Golden.damageMultiplier == 2, "Gold multiplier must be x2")
+	assert(BalanceConfig.Variants.Base.Rainbow.damageMultiplier == 5, "Rainbow multiplier must be x5")
+	assert(BalanceConfig.Variants.Shiny.damageMultiplier == 1.5, "Shiny multiplier must be x1.5")
+
+	local expectedCounts = { 2, 5, 10 }
+	for index, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+		assert(level.eggCount == expectedCounts[index], "Multi-Open counts must be 2/5/10")
+		validateCost(level.cost, "Multi-Open " .. tostring(index))
+	end
+	assert(#BalanceConfig.Hatch.MultiOpen == #expectedCounts, "Multi-Open must have exactly three levels")
+
+	validateIncreasingCosts(BalanceConfig.Hatch.EggQuality, "Egg Quality")
+	for variant, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
+		validateIncreasingCosts(levels, variant .. " hatch chance")
+		local previousMultiplier = 0
+		for _, level in ipairs(levels) do
+			assert(isFiniteNumber(level.multiplier) and level.multiplier > previousMultiplier, variant .. " multipliers must increase")
+			previousMultiplier = level.multiplier
+		end
+	end
+
+	local function validateMachineCurve(machine, context)
+		assert(machine.MinInputs >= 1 and machine.MaxInputs >= machine.MinInputs, context .. " input limits are invalid")
+		local previousChance = -1
+		for count = machine.MinInputs, machine.MaxInputs do
+			local chance = machine.SuccessChanceByInput[count]
+			assert(isFiniteNumber(chance) and chance > previousChance and chance <= 1, context .. " chances must increase")
+			previousChance = chance
+		end
+		assert(previousChance == 1, context .. " maximum inputs must guarantee success")
+	end
+	validateMachineCurve(BalanceConfig.Machines, "target machine")
+	validateMachineCurve(BalanceConfig.Legacy.GoldenConversion, "legacy Golden conversion")
+	validateCost(BalanceConfig.Machines.Gold.cost, "Gold Machine")
+	validateCost(BalanceConfig.Machines.Rainbow.cost, "Rainbow Machine")
+
+	validateIncreasingCosts(BalanceConfig.CoreUpgrades.Speed, "Speed")
+	validateIncreasingCosts(BalanceConfig.CoreUpgrades.Storage, "Storage")
+	validateIncreasingCosts(BalanceConfig.CoreUpgrades.Magnet, "Magnet")
+	validateIncreasingCosts(BalanceConfig.CoreUpgrades.PetEquipSlots, "Pet Equip Slots")
+	validateCost(BalanceConfig.CoreUpgrades.DoubleLuck.cost, "Double Luck")
+	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.PotionSlots, "Potion Slots")
+	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.Duration, "Potion Duration")
+	validateCost(BalanceConfig.Potions.Upgrades.AutoDrink.cost, "Auto-Drink")
+
+	for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
+		validateCost(potion.cost, potionId)
+		assert(isFiniteNumber(potion.multiplier) and potion.multiplier > 0, potionId .. " multiplier is invalid")
+		if potion.durationSeconds ~= nil then
+			assert(isFiniteNumber(potion.durationSeconds) and potion.durationSeconds > 0, potionId .. " duration is invalid")
+		end
+		if potion.hatchCharges ~= nil then
+			assert(potion.hatchCharges > 0 and potion.hatchCharges % 1 == 0, potionId .. " charges are invalid")
+		end
+	end
+
+	validateCost(BalanceConfig.Enchanting.RollCost, "Enchanting")
+	local enchantWeight = 0
+	for _, enchant in ipairs(BalanceConfig.Enchanting.Pool) do
+		assert(enchant.weight > 0, enchant.id .. " weight must be positive")
+		enchantWeight = enchantWeight + enchant.weight
+	end
+	assert(enchantWeight == 100, "enchant weights must sum to 100")
+
+	local legacyHatch = BalanceConfig.Legacy.Hatch
+	assert(isFiniteNumber(legacyHatch.ShinyChance) and legacyHatch.ShinyChance >= 0 and legacyHatch.ShinyChance <= 1, "legacy Shiny chance is invalid")
+	assert(isFiniteNumber(legacyHatch.RainbowChance) and legacyHatch.RainbowChance >= 0 and legacyHatch.RainbowChance <= 1, "legacy Rainbow chance is invalid")
+	assert(legacyHatch.ShinyChance + legacyHatch.RainbowChance <= 1, "legacy hatch chances exceed 100%")
+
+	for itemId, item in pairs(BalanceConfig.Legacy.Shop) do
+		validateCost({ currency = item.currency, amount = item.cost }, "legacy shop " .. itemId)
+		assert(isFiniteNumber(item.multiplier) and item.multiplier > 0, itemId .. " multiplier is invalid")
+		assert(isFiniteNumber(item.duration) and item.duration >= 0, itemId .. " duration is invalid")
+		if item.maxPurchases ~= nil then
+			assert(item.maxPurchases > 0 and item.maxPurchases % 1 == 0, itemId .. " max purchases is invalid")
+		end
+	end
+
+	local treeCount = 0
+	for upgradeId, requirement in pairs(BalanceConfig.Legacy.UpgradeTreeRequirements) do
+		validateCost(requirement, "legacy tree " .. upgradeId)
+		treeCount = treeCount + 1
+	end
+	assert(treeCount == 56, "legacy upgrade tree must contain exactly 56 nodes")
+
+	return true
+end
+
+BalanceConfig.Validate()
+
+return BalanceConfig
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000031">
+					<Properties>
 						<string name="Name">Config</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	Config.lua - Main game configuration for Battle Pets
-	Contains all game constants, upgrade definitions, zone costs, and campaign parameters.
+	Config.lua - Runtime and infrastructure configuration for Battle Pets.
+	Gameplay/economy values come from BalanceConfig; compatibility aliases keep
+	existing systems unchanged while they migrate through the QOF roadmap.
 ]]
+
+local BalanceConfig = require(script.Parent.BalanceConfig)
 
 local Config = {}
 
--- General
+-- Expose the canonical balance module for compatibility and diagnostics.
+Config.Balance = BalanceConfig
+
+-- General infrastructure
 Config.GameName = "Battle Pets"
 Config.DataStoreName = "BattlePets_v1"
 Config.AutoSaveInterval = 60
 Config.SessionLockTimeout = 180
 
 -- Hard limits protect DataStore size, rendering cost, and combat balance.
-Config.MaxPetInventoryBase = 100
-Config.MaxPetInventoryAbsolute = 250
-Config.MaxExtraEquipSlots = 5
-Config.MaxEquippedPetsAbsolute = 12
-Config.AutoHatchInterval = 3
-Config.DestructibleReplicationDistance = 300
+Config.MaxPetInventoryBase = BalanceConfig.Limits.PetInventoryBase
+Config.MaxPetInventoryAbsolute = BalanceConfig.Limits.PetInventoryAbsolute
+Config.MaxExtraEquipSlots = BalanceConfig.Limits.ExtraEquipSlots
+Config.MaxEquippedPetsBase = BalanceConfig.Limits.EquippedPetsBase
+Config.MaxEquippedPetsAbsolute = BalanceConfig.Limits.EquippedPetsAbsolute
+Config.AutoHatchInterval = BalanceConfig.Limits.AutoHatchInterval
+Config.DestructibleReplicationDistance = BalanceConfig.Limits.DestructibleReplicationDistance
 
--- Currency types
+-- Existing display-facing currency names.
 Config.Currencies = {
 	Coins = "Coins",
 	Diamonds = "Diamonds",
 }
 
--- Pet rarity weights (must sum to 100)
-Config.RarityWeights = {
-	Common = 60,
-	Uncommon = 25,
-	Rare = 10,
-	Epic = 4,
-	Legendary = 1,
-}
+Config.RarityWeights = BalanceConfig.World.RarityWeights
 
--- Egg costs per zone
-Config.EggCosts = {
-	[1] = { Coins = 100 },
-	[2] = { Coins = 500 },
-	[3] = { Coins = 2000 },
-	[4] = { Coins = 5000 },
-	[5] = { Coins = 15000 },
-	[6] = { Coins = 40000 },
-	[7] = { Coins = 100000 },
-	[8] = { Coins = 300000 },
-}
+-- Existing consumers expect { Coins = amount } per zone.
+Config.EggCosts = {}
+for zoneId, amount in pairs(BalanceConfig.World.EggCoinCostsByZone) do
+	Config.EggCosts[zoneId] = { Coins = amount }
+end
 
--- Max equipped pets (base value before upgrades)
-Config.MaxEquippedPetsBase = 3
-
--- Upgrade definitions (DEPRECATED - upgrades are now quest-based, see QuestData.lua)
--- Kept for reference only; UpgradeService now delegates to QuestService
+-- Upgrade definitions (deprecated; upgrades are quest/tree based).
 Config.Upgrades = {}
 
--- Zone gate costs (coins required to unlock each zone)
-Config.ZoneGateCosts = {
-	[1] = 0,         -- Gruene Wiesen (free/starter)
-	[2] = 500,       -- Stadt
-	[3] = 2000,      -- Strand
-	[4] = 5000,      -- Wueste
-	[5] = 15000,     -- Eiswelt
-	[6] = 40000,     -- Vulkan
-	[7] = 100000,    -- Himmel
-	[8] = 300000,    -- Weltraum
-}
+Config.ZoneGateCosts = BalanceConfig.World.ZoneGateCoinCosts
+Config.Campaign = BalanceConfig.World.Campaign
 
--- Campaign parameters
-Config.Campaign = {
-	EnergyRegenRate = 1,   -- energy per second
-	MaxEnergy = 100,
-	BaseHealth = 500,      -- base HP for player's base
-	EnemyBaseHealth = 500, -- base HP for enemy base (scales with level)
-	PetDeployCosts = {
-		Common = 10,
-		Uncommon = 20,
-		Rare = 35,
-		Epic = 45,
-		Legendary = 50,
-	},
-}
-
--- Shiny/Rainbow variant chances (base, multiplied by LuckyEggs bonus)
-Config.SHINY_CHANCE = 0.01    -- 1% base chance
-Config.RAINBOW_CHANCE = 0.001 -- 0.1% base chance
+-- Compatibility values preserve the current exclusive Shiny/Rainbow hatch model.
+-- QOF-03/QOF-04 will switch PetService atomically to BalanceConfig.Hatch.
+Config.SHINY_CHANCE = BalanceConfig.Legacy.Hatch.ShinyChance
+Config.RAINBOW_CHANCE = BalanceConfig.Legacy.Hatch.RainbowChance
 
 return Config
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000031">
+				<Item class="ModuleScript" referent="RBX00000032">
 					<Properties>
 						<string name="Name">PetData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -16183,7 +16684,7 @@ return PetData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000032">
+				<Item class="ModuleScript" referent="RBX00000033">
 					<Properties>
 						<string name="Name">ZoneData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -16398,7 +16899,7 @@ return ZoneData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000033">
+				<Item class="ModuleScript" referent="RBX00000034">
 					<Properties>
 						<string name="Name">CampaignData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -16581,7 +17082,7 @@ return CampaignData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000034">
+				<Item class="ModuleScript" referent="RBX00000035">
 					<Properties>
 						<string name="Name">QuestData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -16883,7 +17384,7 @@ return QuestData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000035">
+				<Item class="ModuleScript" referent="RBX00000036">
 					<Properties>
 						<string name="Name">MasteryData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17035,19 +17536,20 @@ return MasteryData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000036">
+				<Item class="ModuleScript" referent="RBX00000037">
 					<Properties>
 						<string name="Name">ShopData</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	ShopData.lua - Shared display and gameplay metadata for the potion shop.
-	Clients may use this catalog for presentation, but the server remains
-	authoritative for validation, currency deduction, and effect application.
+	ShopData.lua - Shared presentation metadata for the current potion shop.
+	Balance comes from BalanceConfig.Legacy.Shop until the persistent potion
+	inventory is activated in QOF-13/QOF-14.
 ]]
+
+local BalanceConfig = require(script.Parent.BalanceConfig)
 
 local ShopData = {}
 
--- Stable card order for deterministic shop rendering.
 ShopData.Order = {
 	"LuckyPotion",
 	"SpeedPotion",
@@ -17057,92 +17559,81 @@ ShopData.Order = {
 	"ExtraEquipSlot",
 }
 
+local function legacyItem(itemId, presentation)
+	local balance = BalanceConfig.Legacy.Shop[itemId]
+	assert(balance, "Missing legacy shop balance for " .. itemId)
+
+	local item = {}
+	for key, value in pairs(presentation) do
+		item[key] = value
+	end
+	for key, value in pairs(balance) do
+		item[key] = value
+	end
+	return item
+end
+
 ShopData.Items = {
-	LuckyPotion = {
+	LuckyPotion = legacyItem("LuckyPotion", {
 		displayName = "Lucky Potion",
 		description = "2x egg and pet variant luck for 5 minutes",
-		cost = 100,
-		currency = "diamonds",
 		buffType = "luck",
-		multiplier = 2,
-		duration = 300,
 		permanent = false,
 		artType = "potion",
 		color = { 70, 210, 105 },
 		accentColor = { 185, 255, 155 },
 		durationLabel = "5 min",
-	},
-	SpeedPotion = {
+	}),
+	SpeedPotion = legacyItem("SpeedPotion", {
 		displayName = "Speed Potion",
 		description = "2x player walk speed for 5 minutes",
-		cost = 50,
-		currency = "diamonds",
 		buffType = "speed",
-		multiplier = 2,
-		duration = 300,
 		permanent = false,
 		artType = "potion",
 		color = { 40, 210, 225 },
 		accentColor = { 165, 250, 255 },
 		durationLabel = "5 min",
-	},
-	PowerPotion = {
+	}),
+	PowerPotion = legacyItem("PowerPotion", {
 		displayName = "Power Potion",
 		description = "2x pet damage for 5 minutes",
-		cost = 150,
-		currency = "diamonds",
 		buffType = "damage",
-		multiplier = 2,
-		duration = 300,
 		permanent = false,
 		artType = "potion",
 		color = { 235, 70, 40 },
 		accentColor = { 255, 155, 55 },
 		durationLabel = "5 min",
-	},
-	CoinPotion = {
+	}),
+	CoinPotion = legacyItem("CoinPotion", {
 		displayName = "Coin Potion",
 		description = "2x breakable coin rewards for 5 minutes",
-		cost = 125,
-		currency = "diamonds",
 		buffType = "coins",
-		multiplier = 2,
-		duration = 300,
 		permanent = false,
 		artType = "potion",
 		color = { 245, 185, 35 },
 		accentColor = { 255, 235, 125 },
 		durationLabel = "5 min",
-	},
-	AutoHatch = {
+	}),
+	AutoHatch = legacyItem("AutoHatch", {
 		displayName = "Auto-Hatch",
 		description = "Automatically buys and hatches normal eggs for 10 minutes",
-		cost = 500,
-		currency = "diamonds",
 		buffType = "autoHatch",
-		multiplier = 1,
-		duration = 600,
 		permanent = false,
 		artType = "egg",
 		color = { 245, 125, 35 },
 		accentColor = { 255, 205, 105 },
 		durationLabel = "10 min",
-	},
-	ExtraEquipSlot = {
+	}),
+	ExtraEquipSlot = legacyItem("ExtraEquipSlot", {
 		displayName = "Extra Equip Slot",
 		description = "Permanently equip 1 more pet (maximum 5)",
-		cost = 1000,
-		currency = "diamonds",
 		buffType = "equipSlot",
-		multiplier = 1,
-		duration = 0,
 		permanent = true,
-		maxPurchases = 5,
 		artType = "pawPlus",
 		color = { 235, 90, 170 },
 		accentColor = { 255, 180, 220 },
 		durationLabel = "Permanent",
-	},
+	}),
 }
 
 return ShopData
@@ -17150,11 +17641,11 @@ return ShopData
 					</Properties>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000053">
+			<Item class="Folder" referent="RBX00000054">
 				<Properties>
 					<string name="Name">packages</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000052">
+				<Item class="ModuleScript" referent="RBX00000053">
 					<Properties>
 						<string name="Name">vide</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17170,7 +17661,7 @@ export type Context<T> = vide.Context<T>
 return vide
 ]]></ProtectedString>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX00000038">
+					<Item class="ModuleScript" referent="RBX00000039">
 						<Properties>
 							<string name="Name">action</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17202,7 +17693,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000039">
+					<Item class="ModuleScript" referent="RBX0000003A">
 						<Properties>
 							<string name="Name">apply</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17371,7 +17862,7 @@ return apply
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003A">
+					<Item class="ModuleScript" referent="RBX0000003B">
 						<Properties>
 							<string name="Name">batch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17401,7 +17892,7 @@ return batch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003B">
+					<Item class="ModuleScript" referent="RBX0000003C">
 						<Properties>
 							<string name="Name">branch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17448,7 +17939,7 @@ return branch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003C">
+					<Item class="ModuleScript" referent="RBX0000003D">
 						<Properties>
 							<string name="Name">changed</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17473,7 +17964,7 @@ return changed
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003D">
+					<Item class="ModuleScript" referent="RBX0000003E">
 						<Properties>
 							<string name="Name">cleanup</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17523,7 +18014,7 @@ return cleanup ::
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003E">
+					<Item class="ModuleScript" referent="RBX0000003F">
 						<Properties>
 							<string name="Name">context</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17604,7 +18095,7 @@ return context
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003F">
+					<Item class="ModuleScript" referent="RBX00000040">
 						<Properties>
 							<string name="Name">create</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17721,7 +18212,7 @@ return (create :: any) :: Create
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000040">
+					<Item class="ModuleScript" referent="RBX00000041">
 						<Properties>
 							<string name="Name">defaults</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17841,7 +18332,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000041">
+					<Item class="ModuleScript" referent="RBX00000042">
 						<Properties>
 							<string name="Name">derive</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17866,7 +18357,7 @@ return derive
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000042">
+					<Item class="ModuleScript" referent="RBX00000043">
 						<Properties>
 							<string name="Name">effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17885,7 +18376,7 @@ return effect :: (<T>(callback: (T) -> T, initial_value: T) -> ()) & ((callback:
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000043">
+					<Item class="ModuleScript" referent="RBX00000044">
 						<Properties>
 							<string name="Name">flags</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17904,7 +18395,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000044">
+					<Item class="ModuleScript" referent="RBX00000045">
 						<Properties>
 							<string name="Name">graph</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18232,7 +18723,7 @@ return table.freeze {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000045">
+					<Item class="ModuleScript" referent="RBX00000046">
 						<Properties>
 							<string name="Name">implicit_effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18364,7 +18855,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000046">
+					<Item class="ModuleScript" referent="RBX00000047">
 						<Properties>
 							<string name="Name">indexes</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18492,7 +18983,7 @@ return indexes
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000047">
+					<Item class="ModuleScript" referent="RBX00000048">
 						<Properties>
 							<string name="Name">lib</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18619,7 +19110,7 @@ return vide
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000048">
+					<Item class="ModuleScript" referent="RBX00000049">
 						<Properties>
 							<string name="Name">mount</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18637,7 +19128,7 @@ return mount :: (<T>(component: () -> T, target: Instance) -> () -> ()) & ((comp
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000049">
+					<Item class="ModuleScript" referent="RBX0000004A">
 						<Properties>
 							<string name="Name">read</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18649,7 +19140,7 @@ return read
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004A">
+					<Item class="ModuleScript" referent="RBX0000004B">
 						<Properties>
 							<string name="Name">root</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18691,7 +19182,7 @@ return root :: <T...>(fn: (destroy: () -> ()) -> T...) -> (() -> (), T...)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004B">
+					<Item class="ModuleScript" referent="RBX0000004C">
 						<Properties>
 							<string name="Name">show</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18734,7 +19225,7 @@ return show
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004C">
+					<Item class="ModuleScript" referent="RBX0000004D">
 						<Properties>
 							<string name="Name">source</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18772,7 +19263,7 @@ return source :: (<T>(initial_value: T) -> Source<T>) & (<T>() -> Source<T>)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004D">
+					<Item class="ModuleScript" referent="RBX0000004E">
 						<Properties>
 							<string name="Name">spring</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19107,7 +19598,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004E">
+					<Item class="ModuleScript" referent="RBX0000004F">
 						<Properties>
 							<string name="Name">switch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19228,7 +19719,7 @@ return switch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004F">
+					<Item class="ModuleScript" referent="RBX00000050">
 						<Properties>
 							<string name="Name">timeout</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19262,7 +19753,7 @@ return function() return timeout, update_timeouts end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000050">
+					<Item class="ModuleScript" referent="RBX00000051">
 						<Properties>
 							<string name="Name">untrack</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19294,7 +19785,7 @@ return untrack :: ( <T>(fn: () -> T) -> T ) & ( (fn: () -> ()) -> () )
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000051">
+					<Item class="ModuleScript" referent="RBX00000052">
 						<Properties>
 							<string name="Name">values</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19434,11 +19925,11 @@ return values
 					</Item>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX0000005F">
+			<Item class="Folder" referent="RBX00000060">
 				<Properties>
 					<string name="Name">modules</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX0000005E">
+				<Item class="ModuleScript" referent="RBX0000005F">
 					<Properties>
 						<string name="Name">formatNumber</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19490,11 +19981,11 @@ return formatNumber
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="Folder" referent="RBX0000005D">
+				<Item class="Folder" referent="RBX0000005E">
 					<Properties>
 						<string name="Name">upgradeTree</string>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX00000054">
+					<Item class="ModuleScript" referent="RBX00000055">
 						<Properties>
 							<string name="Name">upgradeState</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19597,7 +20088,7 @@ end
 return createUpgradeState]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000055">
+					<Item class="ModuleScript" referent="RBX00000056">
 						<Properties>
 							<string name="Name">upgradeTree</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20766,7 +21257,7 @@ return createUpgradeTree
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000056">
+					<Item class="ModuleScript" referent="RBX00000057">
 						<Properties>
 							<string name="Name">upgradeTreeData</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20804,6 +21295,7 @@ type upgradeTreeData = {
 }
 
 local settings = require(script.Parent.upgradeTreeSettings)
+local BalanceConfig = require(game:GetService("ReplicatedStorage").Shared.BalanceConfig)
 
 local upgradeTreeData:upgradeTreeData = {
 	hexRadius = settings.hexRadius,
@@ -21463,11 +21955,26 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
+-- QOF-02 keeps the existing tree layout and behavior unchanged while making
+-- BalanceConfig the canonical source for all current purchase requirements.
+for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
+	for _, upgrade in ipairs(treeUpgrades) do
+		local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
+		assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
+		upgrade.requirements = {
+			{
+				currency = requirement.currency,
+				amount = requirement.amount,
+			},
+		}
+	end
+end
+
 return upgradeTreeData
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000057">
+					<Item class="ModuleScript" referent="RBX00000058">
 						<Properties>
 							<string name="Name">upgradeTreeSettings</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21544,29 +22051,29 @@ return upgradeTreeSettings
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="Folder" referent="RBX0000005C">
+					<Item class="Folder" referent="RBX0000005D">
 						<Properties>
 							<string name="Name">sounds</string>
 						</Properties>
-						<Item class="Sound" referent="RBX00000058">
+						<Item class="Sound" referent="RBX00000059">
 							<Properties>
 								<string name="Name">close</string>
 								<Content name="SoundId"><url>rbxassetid://134438769993456</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000059">
+						<Item class="Sound" referent="RBX0000005A">
 							<Properties>
 								<string name="Name">hover</string>
 								<Content name="SoundId"><url>rbxassetid://86397706758188</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005A">
+						<Item class="Sound" referent="RBX0000005B">
 							<Properties>
 								<string name="Name">open</string>
 								<Content name="SoundId"><url>rbxassetid://72320208051245</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005B">
+						<Item class="Sound" referent="RBX0000005C">
 							<Properties>
 								<string name="Name">upgrade</string>
 								<Content name="SoundId"><url>rbxassetid://72362215248423</url></Content>
@@ -21576,7 +22083,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX00000079">
+	<Item class="StarterGui" referent="RBX0000007A">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -21611,7 +22118,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000007A">
+	<Item class="SoundService" referent="RBX0000007B">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

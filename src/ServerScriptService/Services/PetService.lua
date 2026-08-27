@@ -8,6 +8,7 @@ local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
 
 local PetService = {}
@@ -526,16 +527,10 @@ function PetService.getPetDamage(pet, player)
 	return baseDamage
 end
 
--- Golden conversion chance table: index = number of pets sacrificed, value = success chance (0-1)
-local GOLDEN_CHANCES = {
-	[1] = 0.13,
-	[2] = 0.26,
-	[3] = 0.39,
-	[4] = 0.50,
-	[5] = 0.63,
-	[6] = 0.88,
-	[7] = 1.00,
-}
+-- Shared machine chance table. QOF-02 centralizes this without changing the
+-- existing Golden conversion behavior; machine costs/zones activate later.
+local GOLDEN_CONVERSION = BalanceConfig.Legacy.GoldenConversion
+local GOLDEN_CHANCES = GOLDEN_CONVERSION.SuccessChanceByInput
 
 -- Convert pets into a golden pet (multi-pet sacrifice with chance)
 -- petInstanceIds: table of 1-7 pet instance IDs (all must be same petId/type)
@@ -546,8 +541,12 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 	end
 
 	local count = #petInstanceIds
-	if count < 1 or count > 7 then
-		return nil, "Must sacrifice between 1 and 7 pets"
+	if count < GOLDEN_CONVERSION.MinInputs or count > GOLDEN_CONVERSION.MaxInputs then
+		return nil, "Must sacrifice between "
+			.. tostring(GOLDEN_CONVERSION.MinInputs)
+			.. " and "
+			.. tostring(GOLDEN_CONVERSION.MaxInputs)
+			.. " pets"
 	end
 
 	local data = PetService._dataService.getPlayerData(player)

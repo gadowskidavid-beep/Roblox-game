@@ -32,6 +32,7 @@ type upgradeTreeData = {
 }
 
 local settings = require(script.Parent.upgradeTreeSettings)
+local BalanceConfig = require(game:GetService("ReplicatedStorage").Shared.BalanceConfig)
 
 local upgradeTreeData:upgradeTreeData = {
 	hexRadius = settings.hexRadius,
@@ -690,5 +691,20 @@ local upgradeTreeData:upgradeTreeData = {
 		} :: {upgrades},
 	}
 }
+
+-- QOF-02 keeps the existing tree layout and behavior unchanged while making
+-- BalanceConfig the canonical source for all current purchase requirements.
+for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
+	for _, upgrade in ipairs(treeUpgrades) do
+		local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
+		assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
+		upgrade.requirements = {
+			{
+				currency = requirement.currency,
+				amount = requirement.amount,
+			},
+		}
+	end
+end
 
 return upgradeTreeData

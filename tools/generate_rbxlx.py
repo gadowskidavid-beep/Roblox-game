@@ -455,7 +455,10 @@ def build_lighting():
 def build_replicated_storage():
     """Build ReplicatedStorage with shared game data and the imported Vide tree."""
     shared_modules = []
-    module_names = ["Config", "PetData", "ZoneData", "CampaignData", "QuestData", "MasteryData", "ShopData"]
+    module_names = [
+        "BalanceConfig", "Config", "PetData", "ZoneData", "CampaignData",
+        "QuestData", "MasteryData", "ShopData",
+    ]
     for mod_name in module_names:
         filepath = os.path.join(SRC_DIR, "ReplicatedStorage", "Shared", f"{mod_name}.lua")
         source = read_source(filepath)
