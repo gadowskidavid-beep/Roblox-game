@@ -10,6 +10,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
+local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local PetService = {}
 
@@ -183,16 +184,17 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		variant = "Shiny"
 	end
 
-	-- Set name and damage based on variant
+	-- Preserve the current exclusive hatch presentation while deriving damage
+	-- canonically from pet identity, base variant, and the independent Shiny flag.
 	local petName = petDef.name
-	local petDamage = petDef.baseDamage
-	if variant == "Shiny" then
+	local baseVariant = variant == "Shiny" and "Normal" or variant
+	local isShiny = variant == "Shiny"
+	if isShiny then
 		petName = "Shiny " .. petDef.name
-		petDamage = petDef.baseDamage * 3
-	elseif variant == "Rainbow" then
+	elseif baseVariant == "Rainbow" then
 		petName = "Rainbow " .. petDef.name
-		petDamage = petDef.baseDamage * 5
 	end
+	local petDamage = PetVariantMath.getBaseDamage(petId, baseVariant, isShiny)
 
 	-- Create unique pet instance
 	local newPet = {
@@ -201,8 +203,8 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		name = petName,
 		rarity = petDef.rarity,
 		damage = petDamage,
-		variant = variant == "Shiny" and "Normal" or variant,
-		shiny = variant == "Shiny",
+		variant = baseVariant,
+		shiny = isShiny,
 		golden = false,
 		favorite = false,
 		equipped = false,
@@ -507,15 +509,14 @@ function PetService.getInventory(player)
 	return data.pets
 end
 
--- Calculate effective pet damage with StrongPets and shop multipliers.
--- Note: variant (Shiny 3x, Rainbow 5x) and golden (2x) multipliers are already
--- baked into pet.damage at creation time (hatchEgg / convertToGoldenPet).
+-- Calculate effective damage from canonical identity and apply active buffs once.
+-- pet.damage is a replicated compatibility mirror and is never combat authority.
 function PetService.getPetDamage(pet, player)
 	if not pet or not player then
 		return 0
 	end
 
-	local baseDamage = pet.damage or 0
+	local baseDamage = PetVariantMath.getPetBaseDamage(pet)
 	local strongBonus = PetService._upgradeService.getUpgradeBonus(player, "StrongPets")
 
 	if strongBonus > 0 then
@@ -662,7 +663,7 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			petId = requiredPetId,
 			name = "Golden " .. petDef.name,
 			rarity = petDef.rarity,
-			damage = petDef.baseDamage * 2,
+			damage = PetVariantMath.getBaseDamage(requiredPetId, "Golden", false),
 			variant = "Golden",
 			shiny = false,
 			golden = true,

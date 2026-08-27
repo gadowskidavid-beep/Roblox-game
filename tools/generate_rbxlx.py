@@ -456,7 +456,7 @@ def build_replicated_storage():
     """Build ReplicatedStorage with shared game data and the imported Vide tree."""
     shared_modules = []
     module_names = [
-        "BalanceConfig", "Config", "PetData", "ZoneData", "CampaignData",
+        "BalanceConfig", "Config", "PetData", "PetVariantMath", "ZoneData", "CampaignData",
         "QuestData", "MasteryData", "ShopData",
     ]
     for mod_name in module_names:

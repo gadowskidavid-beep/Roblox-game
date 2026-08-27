@@ -6,6 +6,7 @@
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
@@ -74,7 +75,7 @@ function DataSchema.getDefaultData()
 		petId = "Buddy",
 		name = "Buddy",
 		rarity = "Common",
-		damage = 1,
+		damage = PetVariantMath.getBaseDamage("Buddy", "Normal", false),
 		variant = "Normal",
 		shiny = false,
 		golden = false,
@@ -146,8 +147,6 @@ local function normalizePets(data)
 	local petById = {}
 	for _, pet in ipairs(data.pets) do
 		if type(pet) == "table" and type(pet.id) == "string" and pet.id ~= "" and not petById[pet.id] then
-			pet.damage = math.floor(finiteNumber(pet.damage, 0, 0))
-
 			local legacyVariant = type(pet.variant) == "string" and pet.variant or "Normal"
 			local variant = "Normal"
 			if pet.golden == true or legacyVariant == "Golden" then
@@ -166,6 +165,7 @@ local function normalizePets(data)
 			-- Keep the current visual/rolling-version compatibility mirror. The
 			-- base variant remains authoritative in V6.
 			pet.golden = variant == "Golden"
+			PetVariantMath.refreshDamageMirror(pet)
 			pet.favorite = pet.favorite == true
 			pet.equipped = pet.equipped == true
 			petById[pet.id] = pet
