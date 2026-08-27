@@ -15,6 +15,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 
 -- Get remotes folder from ReplicatedStorage
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
@@ -91,6 +92,7 @@ local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
 -- INITIALIZATION
 --------------------------------------------------------------------------------
 local playerData = GetPlayerData:InvokeServer()
+local hasLoadedPlayerData = playerData ~= nil
 if not playerData then
 	playerData = {
 		coins = 0,
@@ -130,6 +132,7 @@ end
 -- O(1) destructible lookup shared with PetController. The index follows runtime
 -- spawns/respawns and avoids a GetDescendants scan on every hit or heartbeat.
 local destructibleIndex = {}
+local refreshOnboardingHint = function() end
 
 local function indexDestructibleDescendant(obj)
 	local part = nil
@@ -143,15 +146,20 @@ local function indexDestructibleDescendant(obj)
 	end
 	if part and idValue and idValue.Value ~= "" then
 		destructibleIndex[idValue.Value] = part
+		task.defer(refreshOnboardingHint)
 	end
 end
 
 local function removeDestructibleDescendant(obj)
 	if obj:IsA("StringValue") and obj.Name == "DestructibleId" then
 		destructibleIndex[obj.Value] = nil
+		task.defer(refreshOnboardingHint)
 	elseif obj:IsA("BasePart") then
 		local idValue = obj:FindFirstChild("DestructibleId")
-		if idValue then destructibleIndex[idValue.Value] = nil end
+		if idValue then
+			destructibleIndex[idValue.Value] = nil
+			task.defer(refreshOnboardingHint)
+		end
 	end
 end
 
@@ -190,6 +198,152 @@ petController:setDestructibleIndex(destructibleIndex)
 campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
 musicController:init()
+
+--------------------------------------------------------------------------------
+-- LIGHTWEIGHT NEW-PLAYER ONBOARDING
+--------------------------------------------------------------------------------
+local ONBOARDING_STEPS = {
+	{ key = "click", text = "Click a breakable to attack it." },
+	{ key = "coins", text = "Destroy breakables to earn Coins." },
+	{ key = "egg", text = "Go to the Basic Egg and press E." },
+	{ key = "equip", text = "Open Pets and equip a pet." },
+	{ key = "zone", text = "Earn 500 Coins and walk through the City gate." },
+}
+
+local onboardingCompleted = {}
+local onboardingActive = hasLoadedPlayerData
+
+local questStats = playerData.questStats or {}
+local hasUnlockedLaterZone = false
+for _, zoneId in ipairs(playerData.unlockedZones or {}) do
+	local numericZoneId = tonumber(zoneId)
+	if numericZoneId and numericZoneId > 1 then
+		hasUnlockedLaterZone = true
+		break
+	end
+end
+
+local hasEquippedNonStarter = false
+for _, petId in ipairs(playerData.equippedPets or {}) do
+	if petId ~= "starter_pet_1" then
+		hasEquippedNonStarter = true
+		break
+	end
+end
+
+-- Later persisted milestones imply the earlier onboarding context. Session facts
+-- below remain monotonic so a completed hint never returns during this join.
+onboardingCompleted.zone = hasUnlockedLaterZone
+onboardingCompleted.equip = hasUnlockedLaterZone or hasEquippedNonStarter
+onboardingCompleted.egg = hasUnlockedLaterZone or (tonumber(questStats.hatchEggs) or 0) > 0
+onboardingCompleted.coins = onboardingCompleted.egg or (tonumber(questStats.earnCoins) or 0) > 0
+onboardingCompleted.click = onboardingCompleted.coins
+	or (tonumber(questStats.destroyDestructibles) or 0) > 0
+
+local function findNearestDestructible()
+	local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local nearestPart = nil
+	local nearestDistance = math.huge
+	for _, part in pairs(destructibleIndex) do
+		if part and part.Parent then
+			local distance = rootPart and (part.Position - rootPart.Position).Magnitude or 0
+			if distance < nearestDistance then
+				nearestDistance = distance
+				nearestPart = part
+			end
+		end
+	end
+	return nearestPart
+end
+
+local function findBasicEgg()
+	local stations = workspace:FindFirstChild("EggStations")
+	if not stations then return nil end
+	for _, obj in ipairs(stations:GetDescendants()) do
+		if obj:IsA("StringValue") and obj.Name == "PromptEggType" and obj.Value == "BasicEgg"
+			and obj.Parent and obj.Parent:IsA("BasePart") then
+			return obj.Parent
+		end
+	end
+	return nil
+end
+
+local function findCityGate()
+	local gates = workspace:FindFirstChild("ZoneGates")
+	local gateModel = gates and gates:FindFirstChild("ZoneGateModel_2")
+	if not gateModel then return nil end
+	return gateModel:FindFirstChild("GateBarrier_2", true)
+		or gateModel:FindFirstChild("TopArch", true)
+end
+
+local function getOnboardingTarget(stepKey)
+	if stepKey == "click" or stepKey == "coins" then
+		return findNearestDestructible()
+	elseif stepKey == "egg" then
+		return findBasicEgg()
+	elseif stepKey == "zone" then
+		return findCityGate()
+	end
+	return nil
+end
+
+refreshOnboardingHint = function()
+	if not onboardingActive then
+		uiController:clearOnboardingHint()
+		return
+	end
+
+	for stepNumber, step in ipairs(ONBOARDING_STEPS) do
+		if not onboardingCompleted[step.key] then
+			uiController:setOnboardingHint(
+				stepNumber,
+				#ONBOARDING_STEPS,
+				step.text,
+				getOnboardingTarget(step.key)
+			)
+			return
+		end
+	end
+
+	onboardingActive = false
+	uiController:clearOnboardingHint()
+end
+
+local function completeOnboardingStep(stepKey)
+	if not onboardingActive or onboardingCompleted[stepKey] then return end
+	onboardingCompleted[stepKey] = true
+	refreshOnboardingHint()
+end
+
+refreshOnboardingHint()
+-- World folders can arrive shortly after the HUD; refresh the same hint instead
+-- of creating another tutorial system or blocking the player.
+task.delay(2, refreshOnboardingHint)
+
+-- Track the egg station whose hatch prompt is currently visible. This keeps the
+-- HUD target scoped to the active station and falls back when the player leaves.
+local function getEggTypeFromPrompt(prompt)
+	if prompt.Name ~= "HatchPrompt" or not prompt.Parent then return nil end
+	local eggTypeTag = prompt.Parent:FindFirstChild("PromptEggType")
+	if eggTypeTag and eggTypeTag:IsA("StringValue") then
+		return eggTypeTag.Value
+	end
+	return nil
+end
+
+ProximityPromptService.PromptShown:Connect(function(prompt)
+	local eggType = getEggTypeFromPrompt(prompt)
+	if eggType then
+		uiController:showEggStationPrompt(eggType)
+	end
+end)
+
+ProximityPromptService.PromptHidden:Connect(function(prompt)
+	local eggType = getEggTypeFromPrompt(prompt)
+	if eggType then
+		uiController:hideEggStationPrompt(eggType)
+	end
+end)
 
 -- Initialize equipped pets visuals from initial data (called ONCE)
 if playerData and playerData.equippedPets then
@@ -232,6 +386,7 @@ end)
 PetEquipped.OnClientEvent:Connect(function(petData)
 	print("[Client] PetEquipped event received: " .. tostring(petData and petData.name or "nil"))
 	if petData and type(petData) == "table" and petData.id then
+		completeOnboardingStep("equip")
 		for i = #localEquippedPets, 1, -1 do
 			if localEquippedPets[i].id == petData.id then
 				table.remove(localEquippedPets, i)
@@ -258,6 +413,11 @@ PetUnequipped.OnClientEvent:Connect(function(petInstanceId)
 end)
 
 ZoneUnlocked.OnClientEvent:Connect(function(zoneId, gatePosition)
+	uiController:unlockZone(zoneId)
+	local numericZoneId = tonumber(zoneId)
+	if numericZoneId and numericZoneId > 1 then
+		completeOnboardingStep("zone")
+	end
 	if gatePosition then
 		effectsController:showZoneUnlock(gatePosition)
 	end
@@ -295,12 +455,16 @@ DestructibleDamaged.OnClientEvent:Connect(function(destructibleId, currentHP, ma
 	if destructiblePart then
 		effectsController:showProgressBar(destructiblePart, currentHP, maxHP)
 		if damage and damage > 0 then
-			petController:showDamageText(destructiblePart.Position, damage)
+			petController:showDamageText(destructiblePart.Position, damage, damage == 2)
 		end
 	end
 end)
 
 DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
+	if drops and drops.Coins and drops.Coins > 0 then
+		completeOnboardingStep("coins")
+	end
+
 	local destructiblePart = resolveDestructiblePart(destructibleId)
 	if destructiblePart then
 		effectsController:removeProgressBar(destructiblePart)
@@ -339,6 +503,14 @@ end)
 
 EggHatchResult.OnClientEvent:Connect(function(petData)
 	effectsController._lastHatchPosition = nil
+
+	if petData then
+		completeOnboardingStep("egg")
+	end
+
+	if petData and petData.isNewDiscovery == true then
+		uiController:enqueueDiscoveryToast(petData)
+	end
 
 	-- Complete the egg hatch animation (cancels wobble, does shakes + reveal)
 	effectsController:completeEggHatch(petData)
@@ -475,7 +647,12 @@ local function fireClickDamage(target)
 	lastClickDamageTime = now
 
 	-- Fire click attack to server (always 1 damage)
-	ClickAttackDestructible:InvokeServer(target.destructibleId)
+	local invoked, clickSucceeded = pcall(function()
+		return ClickAttackDestructible:InvokeServer(target.destructibleId)
+	end)
+	if invoked and clickSucceeded == true then
+		completeOnboardingStep("click")
+	end
 
 	-- Spawn a crit button only if there is NOT already one active
 	-- Prevents spammy rapid spawn/destroy cycles on every click
@@ -593,7 +770,8 @@ end)
 -- CHARACTER SETUP (campaign portal, egg stations, ProximityPrompt)
 --------------------------------------------------------------------------------
 local function onCharacterAdded(character)
-	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+	character:WaitForChild("HumanoidRootPart")
+	refreshOnboardingHint()
 
 	-- Campaign portal proximity (touch detection)
 	local campaignPortal = workspace:FindFirstChild("CampaignPortal")
@@ -603,23 +781,6 @@ local function onCharacterAdded(character)
 				campaignController:showCampaignSelect(CampaignData, playerData and playerData.campaignProgress)
 			end
 		end)
-	end
-
-	-- Egg station proximity detection (touch-based fallback)
-	local eggStationsFolder = workspace:FindFirstChild("EggStations")
-	if eggStationsFolder then
-		for _, obj in ipairs(eggStationsFolder:GetChildren()) do
-			if obj:IsA("BasePart") and obj.Name:find("InteractZone_") then
-				local eggTypeTag = obj:FindFirstChild("EggType")
-				if eggTypeTag then
-					obj.Touched:Connect(function(hit)
-						if hit:IsDescendantOf(character) then
-							uiController:showEggStationPrompt(eggTypeTag.Value)
-						end
-					end)
-				end
-			end
-		end
 	end
 
 	-- ProximityPrompt interaction for egg stations (E-key)

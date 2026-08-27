@@ -8,7 +8,7 @@ local Config = require(game.ReplicatedStorage.Shared.Config)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 3
+DataSchema.VERSION = 4
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -62,6 +62,7 @@ function DataSchema.getDefaultData()
 		rarity = "Common",
 		damage = 1,
 		variant = "Normal",
+		favorite = false,
 		equipped = true,
 	}
 
@@ -127,6 +128,7 @@ local function normalizePets(data)
 			else
 				pet.variant = type(pet.variant) == "string" and pet.variant or "Normal"
 			end
+			pet.favorite = pet.favorite == true
 			pet.equipped = pet.equipped == true
 			petById[pet.id] = pet
 			table.insert(normalizedPets, pet)
