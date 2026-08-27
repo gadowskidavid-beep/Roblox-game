@@ -19,6 +19,7 @@ type upgrades = {
 	isPortal:boolean?,
 	portalTo:string?,
 	toggleButton:boolean?,
+	runtimeAvailable:boolean?,
 
 }
 
@@ -692,18 +693,59 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-02 keeps the existing tree layout and behavior unchanged while making
--- BalanceConfig the canonical source for all current purchase requirements.
+-- QOF-07 keeps the imported layout and stable IDs while mapping only approved
+-- entitlements to canonical costs and effects. Every other gameplay node is
+-- visibly dormant and server-blocked; Multi-Open remains owned by QOF-08.
+local activeById = {}
+for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
+	activeById[level.id] = level
+end
+for _, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
+	for _, level in ipairs(levels) do
+		activeById[level.id] = level
+	end
+end
+
+local futureById = {}
+for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+	futureById[level.id] = level
+end
+
 for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 	for _, upgrade in ipairs(treeUpgrades) do
-		local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
-		assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
-		upgrade.requirements = {
-			{
-				currency = requirement.currency,
-				amount = requirement.amount,
-			},
-		}
+		local active = activeById[upgrade.id]
+		local future = futureById[upgrade.id]
+		if upgrade.id == "luckPortal" then
+			upgrade.name = "Variant Chances"
+			upgrade.description = "Gold, Rainbow, and Shiny direct hatch upgrades."
+			upgrade.requireId = {}
+		elseif active then
+			upgrade.name = active.name
+			upgrade.description = active.description
+			upgrade.requireId = active.requireIds or {}
+			upgrade.requirements = {
+				{ currency = active.cost.currency, amount = active.cost.amount },
+			}
+			upgrade.runtimeAvailable = true
+		elseif future then
+			upgrade.name = future.name .. " (Coming Soon)"
+			upgrade.description = "Multi-Open activates with the atomic batch flow in QOF-08."
+			upgrade.requirements = {
+				{ currency = future.cost.currency, amount = future.cost.amount },
+			}
+			upgrade.runtimeAvailable = false
+		else
+			local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
+			assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
+			upgrade.requirements = {
+				{ currency = requirement.currency, amount = requirement.amount },
+			}
+			if not upgrade.isPortal and not upgrade.toggleButton then
+				upgrade.name = upgrade.name .. " (Later)"
+				upgrade.description = "This legacy node is preserved but not purchasable in QOF-07."
+				upgrade.runtimeAvailable = false
+			end
+		end
 	end
 end
 

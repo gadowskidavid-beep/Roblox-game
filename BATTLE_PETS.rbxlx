@@ -868,6 +868,7 @@ UpgradeService.setMasteryService(MasteryService)
 PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
+PetService.setUpgradeTreeService(UpgradeTreeService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
 ShopService.setEggService(EggService)
@@ -1108,7 +1109,7 @@ end
 -- GetUpgradeTreeState
 getRemoteFunction("GetUpgradeTreeState").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
-		return { currency = { coins = 0 }, purchased = {} }
+		return { currency = { coins = 0, diamonds = 0 }, purchased = {}, available = {}, entitlements = {} }
 	end
 	if not canCall(player, "GetUpgradeTreeState", 0.25) then
 		return nil
@@ -1116,7 +1117,7 @@ getRemoteFunction("GetUpgradeTreeState").OnServerInvoke = function(player)
 	return UpgradeTreeService.getState(player)
 end
 
--- PurchaseTreeUpgrade (server validates canonical ID, prerequisites, and coin cost)
+-- PurchaseTreeUpgrade (server validates canonical ID, prerequisites, and currency cost)
 getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgradeId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player", { currency = { coins = 0 }, purchased = {} }
@@ -2253,190 +2254,180 @@ return DataService
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	CurrencyService.lua - Manages coin and diamond transactions
-	Server-authoritative: validates all transactions and prevents negative balances.
+	CurrencyService.lua - Server-authoritative coin and diamond transactions.
+	QOF-07 centralizes validated spending and bonus-free raw refunds so purchases
+	cannot trust client currency data or accidentally apply reward multipliers.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Config = require(game.ReplicatedStorage.Shared.Config)
-
 local CurrencyService = {}
 
--- Reference to DataService (set during init)
 CurrencyService._dataService = nil
 CurrencyService._upgradeService = nil
+
+local VALID_CURRENCIES = {
+	coins = true,
+	diamonds = true,
+}
+
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function normalizePositiveAmount(amount, requireInteger)
+	if not isFiniteNumber(amount) or amount <= 0 then
+		return nil
+	end
+	if requireInteger and amount % 1 ~= 0 then
+		return nil
+	end
+	local normalized = math.floor(amount)
+	if normalized <= 0 then
+		return nil
+	end
+	return normalized
+end
+
+local function getProfile(player)
+	if not player or not CurrencyService._dataService then
+		return nil
+	end
+	local data = CurrencyService._dataService.getPlayerData(player)
+	if not data
+		or not isFiniteNumber(data.coins)
+		or data.coins < 0
+		or not isFiniteNumber(data.diamonds)
+		or data.diamonds < 0 then
+		return nil
+	end
+	return data
+end
+
+local function fireCurrencyUpdate(player, data)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("CurrencyUpdated")
+	if event then
+		pcall(function()
+			event:FireClient(player, data.coins, data.diamonds)
+		end)
+	end
+end
 
 function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._dataService = dataService
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply DropCloner, LuckyDrops, and CoinCollector bonuses to coin amounts
+-- Apply existing quest/mastery reward bonuses only to earned coin grants.
 local function applyBonuses(player, amount)
 	local finalAmount = amount
-
-	-- Apply LuckyDrops multiplier (maps to MoreCoins mastery via UpgradeService)
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
-		if luckyDropsBonus > 0 then
+		if isFiniteNumber(luckyDropsBonus) and luckyDropsBonus > 0 then
 			finalAmount = math.floor(finalAmount * luckyDropsBonus)
 		end
-	end
 
-	-- Apply CoinCollector quest bonus multiplier
-	if CurrencyService._upgradeService then
 		local coinCollectorBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "CoinCollector")
-		if coinCollectorBonus > 0 then
+		if isFiniteNumber(coinCollectorBonus) and coinCollectorBonus > 0 then
 			finalAmount = math.floor(finalAmount * coinCollectorBonus)
 		end
-	end
 
-	-- Apply DropCloner chance to double
-	if CurrencyService._upgradeService then
 		local dropClonerBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "DropCloner")
-		if dropClonerBonus > 0 then
-			if math.random() < dropClonerBonus then
-				finalAmount = finalAmount * 2
-			end
+		if isFiniteNumber(dropClonerBonus) and dropClonerBonus > 0 and math.random() < dropClonerBonus then
+			finalAmount = finalAmount * 2
 		end
 	end
-
-	return finalAmount
+	return normalizePositiveAmount(finalAmount, true)
 end
 
--- Add coins to player (with upgrade bonuses applied)
 function CurrencyService.addCoins(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
+	amount = normalizePositiveAmount(amount, false)
+	local data = getProfile(player)
+	if not amount or not data then
 		return false
 	end
-
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
+	local finalAmount = applyBonuses(player, amount)
+	if not finalAmount then
 		return false
 	end
-
-	local finalAmount = applyBonuses(player, math.floor(amount))
 	data.coins = data.coins + finalAmount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
-	end
-
+	fireCurrencyUpdate(player, data)
 	return true, finalAmount
 end
 
--- Remove coins from player (no bonuses applied to deductions)
-function CurrencyService.removeCoins(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
-		return false
-	end
-
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
-		return false
-	end
-
-	amount = math.floor(amount)
-	if data.coins < amount then
-		return false
-	end
-
-	data.coins = data.coins - amount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
-	end
-
-	return true
-end
-
--- Add diamonds to player
 function CurrencyService.addDiamonds(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
+	amount = normalizePositiveAmount(amount, false)
+	local data = getProfile(player)
+	if not amount or not data then
 		return false
 	end
 
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
-		return false
-	end
-
-	local finalAmount = math.floor(amount)
-
-	-- Apply Diamonds upgrade multiplier
+	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local diamondBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "Diamonds")
-		if diamondBonus > 0 then
+		if isFiniteNumber(diamondBonus) and diamondBonus > 0 then
 			finalAmount = math.floor(finalAmount * diamondBonus)
 		end
 	end
-
-	data.diamonds = data.diamonds + finalAmount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
+	finalAmount = normalizePositiveAmount(finalAmount, true)
+	if not finalAmount then
+		return false
 	end
 
+	data.diamonds = data.diamonds + finalAmount
+	fireCurrencyUpdate(player, data)
 	return true, finalAmount
 end
 
--- Remove diamonds from player
-function CurrencyService.removeDiamonds(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
+-- Canonical deduction API. Currency and amount always come from server-owned
+-- configuration; only exact positive integer transactions are accepted.
+function CurrencyService.spend(player, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount or VALID_CURRENCIES[currency] ~= true then
 		return false
 	end
-
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
+	local data = getProfile(player)
+	if not data or data[currency] < amount then
 		return false
 	end
-
-	amount = math.floor(amount)
-	if data.diamonds < amount then
-		return false
-	end
-
-	data.diamonds = data.diamonds - amount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
-	end
-
+	data[currency] = data[currency] - amount
+	fireCurrencyUpdate(player, data)
 	return true
 end
 
--- Get current balance for player
-function CurrencyService.getBalance(player)
-	if not player then
-		return { coins = 0, diamonds = 0 }
+-- Exact, bonus-free credit for transaction rollback. This must never call the
+-- earned-reward APIs because quest/mastery multipliers would inflate refunds.
+function CurrencyService.creditRaw(player, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount or VALID_CURRENCIES[currency] ~= true then
+		return false
 	end
+	local data = getProfile(player)
+	if not data then
+		return false
+	end
+	data[currency] = data[currency] + amount
+	fireCurrencyUpdate(player, data)
+	return true
+end
 
-	local data = CurrencyService._dataService.getPlayerData(player)
+function CurrencyService.removeCoins(player, amount)
+	return CurrencyService.spend(player, "coins", amount)
+end
+
+function CurrencyService.removeDiamonds(player, amount)
+	return CurrencyService.spend(player, "diamonds", amount)
+end
+
+function CurrencyService.getBalance(player)
+	local data = getProfile(player)
 	if not data then
 		return { coins = 0, diamonds = 0 }
 	end
-
 	return { coins = data.coins, diamonds = data.diamonds }
 end
 
@@ -2472,6 +2463,7 @@ PetService._currencyService = nil
 PetService._upgradeService = nil
 PetService._masteryService = nil
 PetService._shopService = nil
+PetService._upgradeTreeService = nil
 
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
@@ -2489,8 +2481,31 @@ function PetService.setShopService(shopService)
 	PetService._shopService = shopService
 end
 
+function PetService.setUpgradeTreeService(upgradeTreeService)
+	PetService._upgradeTreeService = upgradeTreeService
+end
+
+function PetService.getHatchEntitlements(player)
+	local neutral = {
+		eggQualityMultiplier = 1,
+		directVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 },
+	}
+	if not PetService._upgradeTreeService then
+		return neutral
+	end
+	local entitlements = PetService._upgradeTreeService.getEntitlements(player)
+	if type(entitlements) ~= "table" then
+		return neutral
+	end
+	return {
+		eggQualityMultiplier = entitlements.eggQualityMultiplier,
+		directVariantMultipliers = type(entitlements.directVariantMultipliers) == "table"
+			and entitlements.directVariantMultipliers
+			or neutral.directVariantMultipliers,
+	}
+end
+
 -- Resolve every currently active server-side hatch luck source once per egg.
--- QOF-07 tree entitlements are intentionally not consumed here yet.
 function PetService.getHatchLuckMultiplier(player)
 	local questLuck = 1
 	if PetService._upgradeService then
@@ -2512,10 +2527,13 @@ end
 
 -- Weighted species selection respects the same composed luck while bounding its
 -- influence independently from direct Gold/Rainbow/Shiny chance caps.
-local function weightedRandomPet(petPool, luckMultiplier)
+local function weightedRandomPet(petPool, luckMultiplier, eggQualityMultiplier)
 	local totalWeight = 0
 	local adjustedPool = {}
-	local speciesMultiplier = PetHatchMath.getSpeciesMultiplier(luckMultiplier)
+	local speciesMultiplier = PetHatchMath.getSpeciesMultiplier(
+		luckMultiplier,
+		eggQualityMultiplier
+	)
 
 	for _, entry in ipairs(petPool) do
 		local weight = entry.weight
@@ -2621,10 +2639,16 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		end
 	end
 
-	-- Select species and canonical direct outcome using one server-derived luck
-	-- multiplier. Base variant is categorical; Shiny is independently composable.
+	-- General Luck affects species and direct outcomes. QOF-07 Tree effects are
+	-- intentionally split: Egg Quality affects species only, while each direct
+	-- variant multiplier affects only its matching capped chance.
 	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
-	local petId = weightedRandomPet(eggDef.petPool, luckMultiplier)
+	local hatchEntitlements = PetService.getHatchEntitlements(player)
+	local petId = weightedRandomPet(
+		eggDef.petPool,
+		luckMultiplier,
+		hatchEntitlements.eggQualityMultiplier
+	)
 	local petDef = petId and PetData.Pets[petId] or nil
 	if not petDef then
 		return nil, "Invalid pet in pool"
@@ -2633,7 +2657,8 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	local baseVariant, isShiny = PetHatchMath.rollOutcome(
 		math.random(),
 		math.random(),
-		luckMultiplier
+		luckMultiplier,
+		hatchEntitlements.directVariantMultipliers
 	)
 	local presentation = PetVariantPresentation.resolve({
 		petId = petId,
@@ -6535,8 +6560,8 @@ function EggService.purchaseAndHatch(player, eggType)
 		return nil, "Already hatching an egg"
 	end
 	EggService._hatchLock[player.UserId] = true
+	local paidCoinCost = 0
 
-	-- Wrap in a function so we can always release the lock
 	local function doHatch()
 		-- Validate egg type exists
 		local eggDef = PetData.Eggs[eggType]
@@ -6574,6 +6599,7 @@ function EggService.purchaseAndHatch(player, eggType)
 			if not success then
 				return nil, "Not enough coins"
 			end
+			paidCoinCost = eggCost.Coins
 		end
 
 		-- Fire hatch start event to client (triggers animation)
@@ -6591,12 +6617,14 @@ function EggService.purchaseAndHatch(player, eggType)
 		-- Delegate to PetService for actual hatching (cost already deducted)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
 		if not newPet then
-			-- Refund the coins if hatching failed for some reason
-			if eggCost and eggCost.Coins then
-				EggService._currencyService.addCoins(player, eggCost.Coins)
+			-- Refund exactly what was deducted without reward multipliers.
+			if paidCoinCost > 0 then
+				EggService._currencyService.creditRaw(player, "coins", paidCoinCost)
+				paidCoinCost = 0
 			end
 			return nil, err
 		end
+		paidCoinCost = 0
 
 		-- Fire hatch result event with the new pet data
 		if remotes then
@@ -6617,8 +6645,15 @@ function EggService.purchaseAndHatch(player, eggType)
 		return newPet, nil
 	end
 
-	local newPet, err = doHatch()
+	local callSucceeded, newPet, err = pcall(doHatch)
+	if not callSucceeded and paidCoinCost > 0 then
+		EggService._currencyService.creditRaw(player, "coins", paidCoinCost)
+		paidCoinCost = 0
+	end
 	EggService._hatchLock[player.UserId] = nil
+	if not callSucceeded then
+		return nil, "Hatch failed safely"
+	end
 	return newPet, err
 end
 
@@ -6708,8 +6743,11 @@ function EggService.hatchFree(player, eggType)
 		return newPet, nil
 	end
 
-	local newPet, err = doHatch()
+	local callSucceeded, newPet, err = pcall(doHatch)
 	EggService._hatchLock[player.UserId] = nil
+	if not callSucceeded then
+		return nil, "Hatch failed safely"
+	end
 	return newPet, err
 end
 
@@ -7358,43 +7396,118 @@ return ShopService
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	UpgradeTreeService.lua - Server-authoritative purchases for the Vide upgrade tree.
-	The renderer and visual data remain in ReplicatedStorage; the server only accepts
-	an upgrade ID and independently validates its canonical cost and prerequisites.
+	UpgradeTreeService.lua - Server-authoritative QOF-07 tree purchases and effects.
+	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
+	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local upgradeTreeFolder = ReplicatedStorage
-	:WaitForChild("modules")
-	:WaitForChild("upgradeTree")
-local UpgradeTreeData = require(upgradeTreeFolder:WaitForChild("upgradeTreeData"))
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 
 local UpgradeTreeService = {}
 
 UpgradeTreeService._dataService = nil
 UpgradeTreeService._currencyService = nil
+UpgradeTreeService._purchaseLocks = {}
+UpgradeTreeService._transactionHook = nil
 
-local upgradeById = {}
-for _, tree in pairs(UpgradeTreeData.upgrades) do
-	for _, upgrade in ipairs(tree) do
-		if type(upgrade.id) == "string" and not upgrade.isPortal and not upgrade.toggleButton then
-			upgradeById[upgrade.id] = upgrade
+local purchasableById = {}
+local availableIds = {}
+
+local function registerPurchasable(level, effectType, variant)
+	assert(purchasableById[level.id] == nil, "duplicate purchasable tree ID: " .. level.id)
+	purchasableById[level.id] = {
+		id = level.id,
+		cost = level.cost,
+		requireIds = level.requireIds or {},
+		effectType = effectType,
+		variant = variant,
+	}
+	availableIds[level.id] = true
+end
+
+if BalanceConfig.Hatch.EggQualityRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
+		registerPurchasable(level, "EggQuality")
+	end
+end
+
+if BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled then
+	for variant, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
+		for _, level in ipairs(levels) do
+			registerPurchasable(level, "DirectVariant", variant)
 		end
 	end
 end
 
-local function copyPurchased(purchased)
-	local copy = {}
-	if type(purchased) ~= "table" then
-		return copy
+local function copyBooleanMap(input)
+	local output = {}
+	if type(input) ~= "table" then
+		return output
 	end
-	for upgradeId, isPurchased in pairs(purchased) do
-		if type(upgradeId) == "string" and isPurchased == true then
-			copy[upgradeId] = true
+	for key, value in pairs(input) do
+		if type(key) == "string" and value == true then
+			output[key] = true
 		end
 	end
-	return copy
+	return output
+end
+
+local function copyAvailableIds()
+	return copyBooleanMap(availableIds)
+end
+
+local function neutralEntitlements()
+	return {
+		eggQualityMultiplier = 1,
+		directVariantMultipliers = {
+			Golden = 1,
+			Rainbow = 1,
+			Shiny = 1,
+		},
+		multiOpenCount = 1,
+	}
+end
+
+local function applyHighestContiguousLevel(levels, purchased, valueKey)
+	local value = 1
+	for _, level in ipairs(levels) do
+		if purchased[level.id] ~= true then
+			break
+		end
+		value = level[valueKey]
+	end
+	return value
+end
+
+-- Pure resolver used by gameplay and tests. Unknown IDs never grant an effect;
+-- skipped/corrupt levels stop at the highest complete contiguous chain.
+function UpgradeTreeService.resolveEntitlements(purchased)
+	purchased = type(purchased) == "table" and purchased or {}
+	local entitlements = neutralEntitlements()
+
+	if BalanceConfig.Hatch.EggQualityRuntimeEnabled then
+		entitlements.eggQualityMultiplier = applyHighestContiguousLevel(
+			BalanceConfig.Hatch.EggQuality,
+			purchased,
+			"rarityMultiplier"
+		)
+	end
+
+	if BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled then
+		for variant, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
+			entitlements.directVariantMultipliers[variant] = applyHighestContiguousLevel(
+				levels,
+				purchased,
+				"multiplier"
+			)
+		end
+	end
+
+	-- Multi-Open purchases may exist in legacy saves, but QOF-08 owns their
+	-- runtime effect and purchase activation.
+	return entitlements
 end
 
 function UpgradeTreeService.init(dataService, currencyService)
@@ -7402,18 +7515,38 @@ function UpgradeTreeService.init(dataService, currencyService)
 	UpgradeTreeService._currencyService = currencyService
 end
 
-function UpgradeTreeService.getState(player)
+function UpgradeTreeService.getEntitlements(player)
+	if not player or not UpgradeTreeService._dataService then
+		return neutralEntitlements()
+	end
 	local data = UpgradeTreeService._dataService.getPlayerData(player)
 	if not data then
+		return neutralEntitlements()
+	end
+	return UpgradeTreeService.resolveEntitlements(data.upgradeTreePurchases)
+end
+
+function UpgradeTreeService.getState(player)
+	local data = player
+		and UpgradeTreeService._dataService
+		and UpgradeTreeService._dataService.getPlayerData(player)
+	if not data then
 		return {
-			currency = { coins = 0 },
+			currency = { coins = 0, diamonds = 0 },
 			purchased = {},
+			available = copyAvailableIds(),
+			entitlements = neutralEntitlements(),
 		}
 	end
 
 	return {
-		currency = { coins = data.coins or 0 },
-		purchased = copyPurchased(data.upgradeTreePurchases),
+		currency = {
+			coins = type(data.coins) == "number" and data.coins or 0,
+			diamonds = type(data.diamonds) == "number" and data.diamonds or 0,
+		},
+		purchased = copyBooleanMap(data.upgradeTreePurchases),
+		available = copyAvailableIds(),
+		entitlements = UpgradeTreeService.resolveEntitlements(data.upgradeTreePurchases),
 	}
 end
 
@@ -7421,18 +7554,22 @@ local function fireUpdate(player)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	local event = remotes and remotes:FindFirstChild("UpgradeTreeUpdated")
 	if event then
-		event:FireClient(player, UpgradeTreeService.getState(player))
+		pcall(function()
+			event:FireClient(player, UpgradeTreeService.getState(player))
+		end)
 	end
 end
 
-function UpgradeTreeService.purchase(player, upgradeId)
-	if not player or type(upgradeId) ~= "string" or #upgradeId == 0 or #upgradeId > 64 then
-		return false, "Invalid upgrade", UpgradeTreeService.getState(player)
+local function runTransactionHook(stage, transaction)
+	if type(UpgradeTreeService._transactionHook) == "function" then
+		UpgradeTreeService._transactionHook(stage, transaction)
 	end
+end
 
-	local upgrade = upgradeById[upgradeId]
-	if not upgrade then
-		return false, "Unknown upgrade", UpgradeTreeService.getState(player)
+local function purchaseUnlocked(player, upgradeId, transaction)
+	local definition = purchasableById[upgradeId]
+	if not definition then
+		return false, "Upgrade not available yet", UpgradeTreeService.getState(player)
 	end
 
 	local data = UpgradeTreeService._dataService.getPlayerData(player)
@@ -7447,33 +7584,86 @@ function UpgradeTreeService.purchase(player, upgradeId)
 		return false, "Already purchased", UpgradeTreeService.getState(player)
 	end
 
-	for _, requiredId in ipairs(upgrade.requireId or {}) do
+	for _, requiredId in ipairs(definition.requireIds) do
 		if data.upgradeTreePurchases[requiredId] ~= true then
 			return false, "Missing prerequisite", UpgradeTreeService.getState(player)
 		end
 	end
 
-	local coinCost = 0
-	for _, requirement in ipairs(upgrade.requirements or {}) do
-		local amount = requirement.amount
-		if requirement.currency ~= "coins"
-			or type(amount) ~= "number"
-			or amount ~= amount
-			or amount == math.huge
-			or amount == -math.huge
-			or amount < 0 then
-			return false, "Unsupported requirement", UpgradeTreeService.getState(player)
-		end
-		coinCost = coinCost + math.floor(amount)
+	local cost = definition.cost
+	transaction.data = data
+	transaction.currency = cost.currency
+	transaction.amount = cost.amount
+	transaction.previousValue = data.upgradeTreePurchases[upgradeId]
+	local spent = UpgradeTreeService._currencyService.spend(
+		player,
+		cost.currency,
+		cost.amount
+	)
+	if not spent then
+		return false, "Not enough " .. cost.currency, UpgradeTreeService.getState(player)
 	end
+	transaction.spent = true
+	runTransactionHook("afterSpend", transaction)
 
-	if coinCost > 0 and not UpgradeTreeService._currencyService.removeCoins(player, coinCost) then
-		return false, "Not enough coins", UpgradeTreeService.getState(player)
-	end
-
+	-- Both mutations are rollback-tracked until the authoritative state has been
+	-- constructed. Client replication happens only after this commit point.
 	data.upgradeTreePurchases[upgradeId] = true
+	transaction.entitlementSet = true
+	runTransactionHook("afterEntitlement", transaction)
+	local state = UpgradeTreeService.getState(player)
+	transaction.committed = true
 	fireUpdate(player)
-	return true, "Purchased", UpgradeTreeService.getState(player)
+	return true, "Purchased " .. upgradeId, state
+end
+
+function UpgradeTreeService.purchase(player, upgradeId)
+	if not player or type(upgradeId) ~= "string" or #upgradeId == 0 or #upgradeId > 64 then
+		return false, "Invalid upgrade", UpgradeTreeService.getState(player)
+	end
+	if not UpgradeTreeService._dataService or not UpgradeTreeService._currencyService then
+		return false, "Service unavailable", UpgradeTreeService.getState(player)
+	end
+
+	local lockKey = player.UserId or player
+	if UpgradeTreeService._purchaseLocks[lockKey] then
+		return false, "Purchase already in progress", UpgradeTreeService.getState(player)
+	end
+	UpgradeTreeService._purchaseLocks[lockKey] = true
+
+	local transaction = {
+		player = player,
+		upgradeId = upgradeId,
+		spent = false,
+		entitlementSet = false,
+		committed = false,
+	}
+	local callSucceeded, purchaseSucceeded, message, state = pcall(
+		purchaseUnlocked,
+		player,
+		upgradeId,
+		transaction
+	)
+	UpgradeTreeService._purchaseLocks[lockKey] = nil
+
+	if not callSucceeded then
+		if transaction.entitlementSet and transaction.data then
+			transaction.data.upgradeTreePurchases[upgradeId] = transaction.previousValue
+		end
+		local rollbackSucceeded = true
+		if transaction.spent then
+			rollbackSucceeded = UpgradeTreeService._currencyService.creditRaw(
+				player,
+				transaction.currency,
+				transaction.amount
+			) == true
+		end
+		if not rollbackSucceeded then
+			return false, "Purchase rollback failed", UpgradeTreeService.getState(player)
+		end
+		return false, "Purchase failed safely", UpgradeTreeService.getState(player)
+	end
+	return purchaseSucceeded, message, state
 end
 
 return UpgradeTreeService
@@ -16094,9 +16284,9 @@ return MusicController
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	UpgradeTreeController.lua - Mounts the imported Vide upgrade tree in Battle Pets.
-	Q opens the tree. Purchases are sent to UpgradeTreeService and are never trusted
-	from the local Vide state alone.
+	UpgradeTreeController.lua - Server-state adapter for the imported Vide tree.
+	QOF-07 adds dual-currency state, purchase feedback/in-flight protection, and
+	a touch-accessible open button without changing upgradeTree.lua or Vide.
 ]]
 
 local Players = game:GetService("Players")
@@ -16124,10 +16314,87 @@ local function copyMap(input)
 	return output
 end
 
+local function initialAvailability()
+	local available = {}
+	for _, tree in pairs(UpgradeTreeData.upgrades) do
+		for _, upgrade in ipairs(tree) do
+			if upgrade.runtimeAvailable == true then
+				available[upgrade.id] = true
+			end
+		end
+	end
+	return available
+end
+
+local function createAccessGui(playerGui)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "UpgradeTreeAccessGui"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = false
+	gui.DisplayOrder = 25
+	gui.Parent = playerGui
+
+	local openButton = Instance.new("TextButton")
+	openButton.Name = "OpenUpgradeTree"
+	openButton.AnchorPoint = Vector2.new(0, 1)
+	openButton.Position = UDim2.new(0, 16, 1, -92)
+	openButton.Size = UDim2.fromOffset(72, 72)
+	openButton.BackgroundColor3 = Color3.fromRGB(44, 82, 160)
+	openButton.Text = "TREE\n[Q]"
+	openButton.TextColor3 = Color3.fromRGB(245, 249, 255)
+	openButton.TextScaled = true
+	openButton.TextWrapped = true
+	openButton.Font = Enum.Font.GothamBold
+	openButton.AutoButtonColor = true
+	openButton.Parent = gui
+
+	local buttonCorner = Instance.new("UICorner")
+	buttonCorner.CornerRadius = UDim.new(0, 14)
+	buttonCorner.Parent = openButton
+
+	local buttonStroke = Instance.new("UIStroke")
+	buttonStroke.Color = Color3.fromRGB(116, 184, 255)
+	buttonStroke.Thickness = 3
+	buttonStroke.Parent = openButton
+
+	local feedback = Instance.new("TextLabel")
+	feedback.Name = "PurchaseFeedback"
+	feedback.AnchorPoint = Vector2.new(0.5, 0)
+	feedback.Position = UDim2.new(0.5, 0, 0, 18)
+	feedback.Size = UDim2.new(0.7, 0, 0, 48)
+	feedback.BackgroundColor3 = Color3.fromRGB(22, 29, 48)
+	feedback.BackgroundTransparency = 0.08
+	feedback.TextColor3 = Color3.fromRGB(255, 255, 255)
+	feedback.TextScaled = true
+	feedback.TextWrapped = true
+	feedback.Font = Enum.Font.GothamBold
+	feedback.Visible = false
+	feedback.ZIndex = 50
+	feedback.Parent = gui
+
+	local feedbackConstraint = Instance.new("UISizeConstraint")
+	feedbackConstraint.MinSize = Vector2.new(260, 48)
+	feedbackConstraint.MaxSize = Vector2.new(680, 48)
+	feedbackConstraint.Parent = feedback
+
+	local feedbackCorner = Instance.new("UICorner")
+	feedbackCorner.CornerRadius = UDim.new(0, 10)
+	feedbackCorner.Parent = feedback
+
+	local feedbackStroke = Instance.new("UIStroke")
+	feedbackStroke.Color = Color3.fromRGB(100, 150, 255)
+	feedbackStroke.Thickness = 2
+	feedbackStroke.Parent = feedback
+
+	return gui, openButton, feedback, feedbackStroke
+end
+
 function UpgradeTreeController.new()
 	return setmetatable({
 		_initialized = false,
 		_connections = {},
+		_treeCleanup = nil,
+		_feedbackToken = 0,
 	}, UpgradeTreeController)
 end
 
@@ -16142,11 +16409,32 @@ function UpgradeTreeController:init(remotes, playerData)
 	local getStateRemote = remotes:WaitForChild("GetUpgradeTreeState")
 	local updatedRemote = remotes:WaitForChild("UpgradeTreeUpdated")
 	local currencyUpdated = remotes:WaitForChild("CurrencyUpdated")
+	local _, openButton, feedbackLabel, feedbackStroke = createAccessGui(playerGui)
 
 	local currency = Vide.source({
 		coins = tonumber(playerData and playerData.coins) or 0,
+		diamonds = tonumber(playerData and playerData.diamonds) or 0,
 	})
 	local purchased = Vide.source(copyMap(playerData and playerData.upgradeTreePurchases))
+	local available = Vide.source(initialAvailability())
+	local entitlements = Vide.source({})
+	local purchasePending = Vide.source(false)
+
+	local function showFeedback(message, success)
+		self._feedbackToken += 1
+		local token = self._feedbackToken
+		feedbackLabel.Text = tostring(message or (success and "Purchase complete" or "Purchase failed"))
+		feedbackLabel.TextColor3 = success and Color3.fromRGB(145, 255, 170)
+			or Color3.fromRGB(255, 160, 160)
+		feedbackStroke.Color = success and Color3.fromRGB(70, 210, 110)
+			or Color3.fromRGB(230, 80, 80)
+		feedbackLabel.Visible = true
+		task.delay(3, function()
+			if self._feedbackToken == token then
+				feedbackLabel.Visible = false
+			end
+		end)
+	end
 
 	local function applyServerState(serverState)
 		if type(serverState) ~= "table" then
@@ -16158,6 +16446,12 @@ function UpgradeTreeController:init(remotes, playerData)
 		if type(serverState.purchased) == "table" then
 			purchased(copyMap(serverState.purchased))
 		end
+		if type(serverState.available) == "table" then
+			available(copyMap(serverState.available))
+		end
+		if type(serverState.entitlements) == "table" then
+			entitlements(copyMap(serverState.entitlements))
+		end
 	end
 
 	local state = {}
@@ -16167,6 +16461,9 @@ function UpgradeTreeController:init(remotes, playerData)
 	end
 
 	function state.isUnlocked(upgrade)
+		if state.isPurchased(upgrade.id) then
+			return true
+		end
 		for _, requiredId in ipairs(upgrade.requireId or {}) do
 			if not state.isPurchased(requiredId) then
 				return false
@@ -16176,7 +16473,10 @@ function UpgradeTreeController:init(remotes, playerData)
 	end
 
 	function state.canBuy(upgrade)
-		if state.isPurchased(upgrade.id) or not state.isUnlocked(upgrade) then
+		if purchasePending()
+			or available()[upgrade.id] ~= true
+			or state.isPurchased(upgrade.id)
+			or not state.isUnlocked(upgrade) then
 			return false
 		end
 		local balances = currency()
@@ -16189,28 +16489,46 @@ function UpgradeTreeController:init(remotes, playerData)
 	end
 
 	function state.buy(upgrade)
-		if not state.canBuy(upgrade) then
+		if purchasePending() then
+			showFeedback("A purchase is already in progress", false)
 			return false
 		end
-		local callSucceeded, purchaseSucceeded, _message, serverState = pcall(function()
+		if available()[upgrade.id] ~= true then
+			showFeedback("This upgrade is coming in a later QOF", false)
+			return false
+		end
+		if not state.canBuy(upgrade) then
+			showFeedback("Missing prerequisite or currency", false)
+			return false
+		end
+
+		purchasePending(true)
+		showFeedback("Purchasing " .. tostring(upgrade.name) .. "…", true)
+		local callSucceeded, purchaseSucceeded, message, serverState = pcall(function()
 			return purchaseRemote:InvokeServer(upgrade.id)
 		end)
-		if not callSucceeded or purchaseSucceeded ~= true then
-			if callSucceeded then
-				applyServerState(serverState)
-			end
+		purchasePending(false)
+
+		if callSucceeded then
+			applyServerState(serverState)
+		end
+		if not callSucceeded then
+			showFeedback("Purchase request failed — please retry", false)
 			return false
 		end
-		applyServerState(serverState)
-		return true
+		showFeedback(message, purchaseSucceeded == true)
+		return purchaseSucceeded == true
 	end
 
 	state.currency = currency
 	state.purchased = purchased
+	state.available = available
+	state.entitlements = entitlements
 
-	table.insert(self._connections, currencyUpdated.OnClientEvent:Connect(function(coins)
+	table.insert(self._connections, currencyUpdated.OnClientEvent:Connect(function(coins, diamonds)
 		local nextCurrency = copyMap(currency())
 		nextCurrency.coins = tonumber(coins) or 0
+		nextCurrency.diamonds = tonumber(diamonds) or 0
 		currency(nextCurrency)
 	end))
 
@@ -16223,17 +16541,28 @@ function UpgradeTreeController:init(remotes, playerData)
 		applyServerState(serverState)
 	end
 
-	Vide.mount(function()
-		return UpgradeTree(Vide, {
-			data = UpgradeTreeData,
-			state = state,
-			title = "Battle Pets Upgrade Tree",
-			toggleKey = Enum.KeyCode.Q,
-			startOpen = false,
-			enableKeybind = true,
-			enableFovZoom = true,
-		})
-	end, playerGui)
+	local function mountTree(startOpen)
+		if self._treeCleanup then
+			self._treeCleanup()
+			self._treeCleanup = nil
+		end
+		self._treeCleanup = Vide.mount(function()
+			return UpgradeTree(Vide, {
+				data = UpgradeTreeData,
+				state = state,
+				title = "Battle Pets Upgrade Tree",
+				toggleKey = Enum.KeyCode.Q,
+				startOpen = startOpen,
+				enableKeybind = true,
+				enableFovZoom = true,
+			})
+		end, playerGui)
+	end
+
+	mountTree(false)
+	table.insert(self._connections, openButton.Activated:Connect(function()
+		mountTree(true)
+	end))
 end
 
 return UpgradeTreeController
@@ -16338,15 +16667,15 @@ local BalanceConfig = {
 		},
 	},
 
-	-- Canonical direct-hatch model. QOF-06 activates these outcomes for the
-	-- existing single-egg transaction; tree entitlements and batches remain later.
+	-- Canonical hatch model. QOF-07 adds save-compatible Tree entitlements to
+	-- the QOF-06 single-egg outcomes; atomic Multi-Open remains QOF-08.
 	Hatch = {
 		-- This top-level gate owns only the direct single-egg outcome model.
 		-- Deferred subfeatures keep explicit gates so their balance data stays dormant.
 		RuntimeEnabled = true,
-		EggQualityRuntimeEnabled = false,
+		EggQualityRuntimeEnabled = true,
 		MultiOpenRuntimeEnabled = false,
-		DirectVariantUpgradesRuntimeEnabled = false,
+		DirectVariantUpgradesRuntimeEnabled = true,
 		BaseChances = {
 			Golden = 0.01,
 			Rainbow = 0.001,
@@ -16359,29 +16688,108 @@ local BalanceConfig = {
 			ShinyChance = 0.001,
 		},
 		EggQuality = {
-			{ id = "Eggs I", cost = { currency = "coins", amount = 5000 }, rarityMultiplier = 1.25 },
-			{ id = "Eggs II", cost = { currency = "coins", amount = 50000 }, rarityMultiplier = 1.60 },
+			{
+				id = "Eggs I",
+				name = "Egg Quality I",
+				description = "Improves non-Common species weights by x1.25.",
+				requireIds = {},
+				cost = { currency = "coins", amount = 5000 },
+				rarityMultiplier = 1.25,
+			},
+			{
+				id = "Eggs II",
+				name = "Egg Quality II",
+				description = "Improves non-Common species weights by x1.60 total.",
+				requireIds = { "Eggs I" },
+				cost = { currency = "coins", amount = 50000 },
+				rarityMultiplier = 1.60,
+			},
 		},
 		MultiOpen = {
-			{ id = "Eggs III", cost = { currency = "diamonds", amount = 500 }, eggCount = 2 },
-			{ id = "Eggs IV", cost = { currency = "diamonds", amount = 2500 }, eggCount = 5 },
-			{ id = "Eggs V", cost = { currency = "diamonds", amount = 10000 }, eggCount = 10 },
+			{ id = "Eggs III", name = "Multi-Open I", cost = { currency = "diamonds", amount = 500 }, eggCount = 2 },
+			{ id = "Eggs IV", name = "Multi-Open II", cost = { currency = "diamonds", amount = 2500 }, eggCount = 5 },
+			{ id = "Eggs V", name = "Multi-Open III", cost = { currency = "diamonds", amount = 10000 }, eggCount = 10 },
 		},
+		-- QOF-07 intentionally reuses three legacy save-compatible chains. Each
+		-- branch applies only its highest contiguous purchased level.
 		DirectVariantUpgrades = {
 			Golden = {
-				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 500 } },
-				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 1500 } },
-				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 5000 } },
+				{
+					id = "epicLuck1",
+					name = "Gold Chance I",
+					description = "Multiplies direct Gold hatch chance by x1.25.",
+					requireIds = {},
+					multiplier = 1.25,
+					cost = { currency = "diamonds", amount = 500 },
+				},
+				{
+					id = "epicLuck2",
+					name = "Gold Chance II",
+					description = "Multiplies direct Gold hatch chance by x1.50 total.",
+					requireIds = { "epicLuck1" },
+					multiplier = 1.50,
+					cost = { currency = "diamonds", amount = 1500 },
+				},
+				{
+					id = "epicLuck3",
+					name = "Gold Chance III",
+					description = "Multiplies direct Gold hatch chance by x2 total.",
+					requireIds = { "epicLuck2" },
+					multiplier = 2.00,
+					cost = { currency = "diamonds", amount = 5000 },
+				},
 			},
 			Rainbow = {
-				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 1500 } },
-				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 5000 } },
-				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 15000 } },
+				{
+					id = "legendLuck1",
+					name = "Rainbow Chance I",
+					description = "Multiplies direct Rainbow hatch chance by x1.25.",
+					requireIds = {},
+					multiplier = 1.25,
+					cost = { currency = "diamonds", amount = 1500 },
+				},
+				{
+					id = "legendLuck2",
+					name = "Rainbow Chance II",
+					description = "Multiplies direct Rainbow hatch chance by x1.50 total.",
+					requireIds = { "legendLuck1" },
+					multiplier = 1.50,
+					cost = { currency = "diamonds", amount = 5000 },
+				},
+				{
+					id = "legendLuck3",
+					name = "Rainbow Chance III",
+					description = "Multiplies direct Rainbow hatch chance by x2 total.",
+					requireIds = { "legendLuck2" },
+					multiplier = 2.00,
+					cost = { currency = "diamonds", amount = 15000 },
+				},
 			},
 			Shiny = {
-				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 5000 } },
-				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 15000 } },
-				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 50000 } },
+				{
+					id = "rerollLuck1",
+					name = "Shiny Chance I",
+					description = "Multiplies independent Shiny chance by x1.25.",
+					requireIds = {},
+					multiplier = 1.25,
+					cost = { currency = "diamonds", amount = 5000 },
+				},
+				{
+					id = "rerollLuck2",
+					name = "Shiny Chance II",
+					description = "Multiplies independent Shiny chance by x1.50 total.",
+					requireIds = { "rerollLuck1" },
+					multiplier = 1.50,
+					cost = { currency = "diamonds", amount = 15000 },
+				},
+				{
+					id = "rerollLuck3",
+					name = "Shiny Chance III",
+					description = "Multiplies independent Shiny chance by x2 total.",
+					requireIds = { "rerollLuck2" },
+					multiplier = 2.00,
+					cost = { currency = "diamonds", amount = 50000 },
+				},
 			},
 		},
 	},
@@ -16644,9 +17052,9 @@ end
 function BalanceConfig.Validate()
 	assert(BalanceConfig.Variants.RuntimeEnabled == true, "Variants must be enabled in QOF-04")
 	assert(BalanceConfig.Hatch.RuntimeEnabled == true, "direct Hatch outcomes must be enabled in QOF-06")
-	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == false, "Egg Quality must remain disabled until QOF-07")
+	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == true, "Egg Quality must be enabled in QOF-07")
 	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == false, "Multi-Open must remain disabled until QOF-08")
-	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == false, "direct variant upgrades must remain disabled until QOF-07")
+	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
 		Machines = BalanceConfig.Machines,
 		CoreUpgrades = BalanceConfig.CoreUpgrades,
@@ -16735,13 +17143,46 @@ function BalanceConfig.Validate()
 	end
 	assert(#BalanceConfig.Hatch.MultiOpen == #expectedCounts, "Multi-Open must have exactly three levels")
 
+	local entitlementIds = {}
+	local entitlementLevels = {}
+	local function registerEntitlement(level, context)
+		assert(type(level.id) == "string" and #level.id > 0 and #level.id <= 64, context .. " has an invalid ID")
+		assert(entitlementIds[level.id] == nil, "duplicate hatch entitlement ID: " .. level.id)
+		assert(type(level.name) == "string" and level.name ~= "", context .. " has an invalid name")
+		validateCost(level.cost, context)
+		assert(level.cost.amount > 0 and level.cost.amount % 1 == 0, context .. " cost must be a positive integer")
+		entitlementIds[level.id] = true
+		table.insert(entitlementLevels, level)
+	end
+
+	for index, level in ipairs(BalanceConfig.Hatch.EggQuality) do
+		registerEntitlement(level, "Egg Quality " .. tostring(index))
+		assert(type(level.requireIds) == "table", "Egg Quality prerequisites must be a table")
+		assert(isFiniteNumber(level.rarityMultiplier) and level.rarityMultiplier > 1, "Egg Quality multiplier is invalid")
+	end
 	validateIncreasingCosts(BalanceConfig.Hatch.EggQuality, "Egg Quality")
+	assert(
+		BalanceConfig.Hatch.EggQuality[2].rarityMultiplier > BalanceConfig.Hatch.EggQuality[1].rarityMultiplier,
+		"Egg Quality multipliers must increase"
+	)
+
 	for variant, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
 		validateIncreasingCosts(levels, variant .. " hatch chance")
 		local previousMultiplier = 0
-		for _, level in ipairs(levels) do
+		for index, level in ipairs(levels) do
+			registerEntitlement(level, variant .. " hatch chance " .. tostring(index))
+			assert(type(level.requireIds) == "table", variant .. " prerequisites must be a table")
 			assert(isFiniteNumber(level.multiplier) and level.multiplier > previousMultiplier, variant .. " multipliers must increase")
 			previousMultiplier = level.multiplier
+		end
+	end
+
+	for index, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+		registerEntitlement(level, "Multi-Open " .. tostring(index))
+	end
+	for _, level in ipairs(entitlementLevels) do
+		for _, requiredId in ipairs(level.requireIds or {}) do
+			assert(entitlementIds[requiredId] == true, level.id .. " has an unknown prerequisite")
 		end
 	end
 
@@ -17186,21 +17627,31 @@ function PetHatchMath.combineLuckMultipliers(...)
 	return result
 end
 
-function PetHatchMath.getSpeciesMultiplier(luckMultiplier)
+function PetHatchMath.getSpeciesMultiplier(luckMultiplier, eggQualityMultiplier)
 	return math.min(
-		normalizedMultiplier(luckMultiplier),
+		normalizedMultiplier(luckMultiplier) * normalizedMultiplier(eggQualityMultiplier),
 		BalanceConfig.Hatch.LuckCaps.SpeciesMultiplier
 	)
 end
 
-function PetHatchMath.getEffectiveChances(luckMultiplier)
-	local multiplier = normalizedMultiplier(luckMultiplier)
+function PetHatchMath.getEffectiveChances(luckMultiplier, directVariantMultipliers)
+	local generalMultiplier = normalizedMultiplier(luckMultiplier)
+	local direct = type(directVariantMultipliers) == "table" and directVariantMultipliers or {}
 	local base = BalanceConfig.Hatch.BaseChances
 	local caps = BalanceConfig.Hatch.LuckCaps
 	return {
-		Golden = math.min(base.Golden * multiplier, caps.GoldenChance),
-		Rainbow = math.min(base.Rainbow * multiplier, caps.RainbowChance),
-		Shiny = math.min(base.Shiny * multiplier, caps.ShinyChance),
+		Golden = math.min(
+			base.Golden * generalMultiplier * normalizedMultiplier(direct.Golden),
+			caps.GoldenChance
+		),
+		Rainbow = math.min(
+			base.Rainbow * generalMultiplier * normalizedMultiplier(direct.Rainbow),
+			caps.RainbowChance
+		),
+		Shiny = math.min(
+			base.Shiny * generalMultiplier * normalizedMultiplier(direct.Shiny),
+			caps.ShinyChance
+		),
 	}
 end
 
@@ -17211,8 +17662,8 @@ local function normalizedRoll(value)
 	return value
 end
 
-function PetHatchMath.rollOutcome(baseVariantRoll, shinyRoll, luckMultiplier)
-	local chances = PetHatchMath.getEffectiveChances(luckMultiplier)
+function PetHatchMath.rollOutcome(baseVariantRoll, shinyRoll, luckMultiplier, directVariantMultipliers)
+	local chances = PetHatchMath.getEffectiveChances(luckMultiplier, directVariantMultipliers)
 	local baseRoll = normalizedRoll(baseVariantRoll)
 	local baseVariant = "Normal"
 
@@ -22008,6 +22459,7 @@ type upgrades = {
 	isPortal:boolean?,
 	portalTo:string?,
 	toggleButton:boolean?,
+	runtimeAvailable:boolean?,
 
 }
 
@@ -22681,18 +23133,59 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-02 keeps the existing tree layout and behavior unchanged while making
--- BalanceConfig the canonical source for all current purchase requirements.
+-- QOF-07 keeps the imported layout and stable IDs while mapping only approved
+-- entitlements to canonical costs and effects. Every other gameplay node is
+-- visibly dormant and server-blocked; Multi-Open remains owned by QOF-08.
+local activeById = {}
+for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
+	activeById[level.id] = level
+end
+for _, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
+	for _, level in ipairs(levels) do
+		activeById[level.id] = level
+	end
+end
+
+local futureById = {}
+for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+	futureById[level.id] = level
+end
+
 for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 	for _, upgrade in ipairs(treeUpgrades) do
-		local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
-		assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
-		upgrade.requirements = {
-			{
-				currency = requirement.currency,
-				amount = requirement.amount,
-			},
-		}
+		local active = activeById[upgrade.id]
+		local future = futureById[upgrade.id]
+		if upgrade.id == "luckPortal" then
+			upgrade.name = "Variant Chances"
+			upgrade.description = "Gold, Rainbow, and Shiny direct hatch upgrades."
+			upgrade.requireId = {}
+		elseif active then
+			upgrade.name = active.name
+			upgrade.description = active.description
+			upgrade.requireId = active.requireIds or {}
+			upgrade.requirements = {
+				{ currency = active.cost.currency, amount = active.cost.amount },
+			}
+			upgrade.runtimeAvailable = true
+		elseif future then
+			upgrade.name = future.name .. " (Coming Soon)"
+			upgrade.description = "Multi-Open activates with the atomic batch flow in QOF-08."
+			upgrade.requirements = {
+				{ currency = future.cost.currency, amount = future.cost.amount },
+			}
+			upgrade.runtimeAvailable = false
+		else
+			local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
+			assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
+			upgrade.requirements = {
+				{ currency = requirement.currency, amount = requirement.amount },
+			}
+			if not upgrade.isPortal and not upgrade.toggleButton then
+				upgrade.name = upgrade.name .. " (Later)"
+				upgrade.description = "This legacy node is preserved but not purchasable in QOF-07."
+				upgrade.runtimeAvailable = false
+			end
+		end
 	end
 end
 
@@ -22756,6 +23249,7 @@ return upgradeTreeData
 	
 	currencyIcon = {
 		coins = "rbxassetid://111031759264614",
+		diamonds = "rbxasset://textures/ui/common/icons/menu/gem_small.png",
 	},-- icons of the currency in the requirements
 	
 	

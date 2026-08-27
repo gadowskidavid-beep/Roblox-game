@@ -1,4 +1,4 @@
--- PetHatchMath.spec.lua - Canonical QOF-06 direct-hatch probability tests.
+-- PetHatchMath.spec.lua - QOF-07 canonical hatch probability and entitlement tests.
 
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
@@ -50,11 +50,31 @@ describe("PetHatchMath canonical direct outcomes", function()
 		expect(shinyAt):toBeFalse()
 	end)
 
-	it("caps species and every direct chance at approved limits", function()
+	it("separates Egg Quality from per-variant direct entitlement multipliers", function()
+		expect(PetHatchMath.getSpeciesMultiplier(2, 1.6)):toBe(3.2)
+		local generalOnly = PetHatchMath.getEffectiveChances(2)
+		local upgraded = PetHatchMath.getEffectiveChances(2, {
+			Golden = 2,
+			Rainbow = 1.5,
+			Shiny = 1.25,
+		})
+		expect(generalOnly.Golden):toBe(0.02)
+		expect(generalOnly.Rainbow):toBe(0.002)
+		expect(generalOnly.Shiny):toBe(0.0002)
+		expect(upgraded.Golden):toBe(0.04)
+		expect(upgraded.Rainbow):toBe(0.003)
+		expect(upgraded.Shiny):toBe(0.00025)
+	end)
+
+	it("applies every cap after general Luck and direct entitlements compose", function()
 		local combined = PetHatchMath.combineLuckMultipliers(2, 3, 2)
-		local chances = PetHatchMath.getEffectiveChances(combined)
+		local chances = PetHatchMath.getEffectiveChances(combined, {
+			Golden = 2,
+			Rainbow = 2,
+			Shiny = 2,
+		})
 		expect(combined):toBe(10)
-		expect(PetHatchMath.getSpeciesMultiplier(999)):toBe(10)
+		expect(PetHatchMath.getSpeciesMultiplier(999, 1.6)):toBe(10)
 		expect(chances.Golden):toBe(0.05)
 		expect(chances.Rainbow):toBe(0.005)
 		expect(chances.Shiny):toBe(0.001)

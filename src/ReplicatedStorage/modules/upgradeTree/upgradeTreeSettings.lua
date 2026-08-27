@@ -50,6 +50,7 @@ local upgradeTreeSettings = {
 	
 	currencyIcon = {
 		coins = "rbxassetid://111031759264614",
+		diamonds = "rbxasset://textures/ui/common/icons/menu/gem_small.png",
 	},-- icons of the currency in the requirements
 	
 	
