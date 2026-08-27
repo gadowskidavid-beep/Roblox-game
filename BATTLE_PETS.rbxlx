@@ -11347,9 +11347,11 @@ function PetController.new()
 	self._initialized = false
 	self._initGuard = false -- prevents double initialization
 	self._attackingPets = {} -- pets currently animating attack on a destructible
-	-- Auto-attack state (distributed targeting)
+	-- Pet attacks keep ticking for manually assigned targets. Automatic target
+	-- discovery is a separate future AutoFarm upgrade and starts disabled.
 	self._autoAttackEnabled = true
-	self._autoAttackInterval = 1.5 -- seconds between auto-attacks per pet
+	self._autoFarmEnabled = false
+	self._autoAttackInterval = 1.5 -- seconds between attacks per assigned pet
 	self._autoAttackRange = 40 -- studs detection range
 	self._autoAttackConnection = nil
 	-- Per-pet targeting: each pet has its own assigned target
@@ -11573,13 +11575,15 @@ end
 -- Returns the ground Y + half the pet body size so the pet sits on the surface.
 -- If no ground is found, falls back to the player's HumanoidRootPart Y.
 --------------------------------------------------------------------------------
-function PetController:_getGroundY(position, fallbackY)
+function PetController:_getGroundY(position, fallbackY, extraIgnore)
 	local rayOrigin = Vector3.new(position.X, position.Y + 50, position.Z)
 	local rayDirection = Vector3.new(0, -200, 0)
 
-	-- Create raycast params to ignore the ClientPets folder and the player character
+	-- Only collidable surfaces can be pet ground. Explicitly exclude decorative
+	-- trees/rocks and the current destructible so pets cannot stand on top of them.
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.RespectCanCollide = true
 	local filterList = {}
 	if self._petsFolder then
 		table.insert(filterList, self._petsFolder)
@@ -11587,6 +11591,21 @@ function PetController:_getGroundY(position, fallbackY)
 	local character = self._player and self._player.Character
 	if character then
 		table.insert(filterList, character)
+	end
+	local worldDecoration = workspace:FindFirstChild("WorldDecoration")
+	if worldDecoration then
+		table.insert(filterList, worldDecoration)
+	end
+	if extraIgnore then
+		if typeof(extraIgnore) == "Instance" then
+			table.insert(filterList, extraIgnore)
+		elseif type(extraIgnore) == "table" then
+			for _, instance in ipairs(extraIgnore) do
+				if typeof(instance) == "Instance" then
+					table.insert(filterList, instance)
+				end
+			end
+		end
 	end
 	rayParams.FilterDescendantsInstances = filterList
 
@@ -11944,6 +11963,14 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 	end
 
 	local model = petInfo.model
+	local destructibleIgnore = nil
+	if destructiblePart and typeof(destructiblePart) == "Instance" then
+		if destructiblePart.Parent and destructiblePart.Parent:IsA("Model") then
+			destructibleIgnore = destructiblePart.Parent
+		else
+			destructibleIgnore = destructiblePart
+		end
+	end
 
 	-- Determine target position: on the ground beside the destructible
 	local targetPos
@@ -11956,7 +11983,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		local rawPos = destructiblePart.Position + Vector3.new(offsetX, 0, offsetZ)
 		-- Raycast to snap pet to the ground beside the destructible
 		local fallbackY = destructiblePart.Position.Y - destructiblePart.Size.Y / 2 + 1.1
-		local groundY = self:_getGroundY(rawPos, fallbackY)
+		local groundY = self:_getGroundY(rawPos, fallbackY, destructibleIgnore)
 		targetPos = Vector3.new(rawPos.X, groundY, rawPos.Z)
 	else
 		local character = self._player.Character
@@ -12030,7 +12057,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				local alpha = math.min(1, dt * APPROACH_SPEED)
 				local newPos = currentPos:Lerp(targetPos, alpha)
 				-- Snap Y to ground via raycast during approach
-				local approachGroundY = self:_getGroundY(newPos, targetPos.Y)
+				local approachGroundY = self:_getGroundY(newPos, targetPos.Y, destructibleIgnore)
 				newPos = Vector3.new(newPos.X, approachGroundY, newPos.Z)
 				local offset = newPos - currentPos
 
@@ -12124,13 +12151,24 @@ end
 -- numPets: how many pets are attacking (1 for single click, all for hold)
 --------------------------------------------------------------------------------
 function PetController:fireAttackRemote(destructibleId)
-	if not self._initialized then return end
-	if not self._remotes then return end
+	if not self._initialized then return false end
+	if not self._remotes then return false end
+
+	-- Never send pet damage while the player has no active character. Assignments
+	-- may finish asynchronously during respawn, so this guard must be central.
+	local character = self._player and self._player.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then
+		return false
+	end
 
 	local attackRemote = self._remotes:FindFirstChild("AttackDestructible")
 	if attackRemote then
-		attackRemote:InvokeServer(destructibleId)
+		local invoked = pcall(function()
+			attackRemote:InvokeServer(destructibleId)
+		end)
+		return invoked
 	end
+	return false
 end
 
 --------------------------------------------------------------------------------
@@ -12294,7 +12332,7 @@ function PetController:_getNextQueuedPet()
 			and self._attackingPets[uniqueId] == targetInfo.destructibleId
 
 		if not targetIsValid then
-			return uniqueId
+			return uniqueId, true
 		end
 
 		local assignedAt = targetInfo.assignedAt or -math.huge
@@ -12304,7 +12342,60 @@ function PetController:_getNextQueuedPet()
 		end
 	end
 
-	return oldestPetId
+	return oldestPetId, false
+end
+
+function PetController:_hasActivePetAtTarget(destructibleId)
+	for uniqueId, targetInfo in pairs(self._petTargets) do
+		if targetInfo.destructibleId == destructibleId
+			and targetInfo.part
+			and targetInfo.part.Parent
+			and self._attackingPets[uniqueId] == destructibleId then
+			return true
+		end
+	end
+	return false
+end
+
+function PetController:_clearPetTarget(uniqueId)
+	self._petTargets[uniqueId] = nil
+	self._attackingPets[uniqueId] = nil
+	if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
+		self:_requestPetTarget(uniqueId, nil)
+	end
+end
+
+-- Keep manually assigned pets attacking without allowing them to discover or
+-- switch to new targets. This remains active while AutoFarm is disabled.
+function PetController:_updateAssignedPetAttacks(now)
+	local character = self._player and self._player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	for _, uniqueId in ipairs(self:_getQueuedPetIds()) do
+		local targetInfo = self._petTargets[uniqueId]
+		if targetInfo then
+			local part = targetInfo.part
+			local targetIsValid = part and part.Parent ~= nil
+			if targetIsValid and rootPart then
+				targetIsValid = (rootPart.Position - part.Position).Magnitude <= 60
+			end
+
+			if not targetIsValid then
+				self:_clearPetTarget(uniqueId)
+			else
+				if self._attackingPets[uniqueId] ~= targetInfo.destructibleId then
+					self:_sendAutoPetToTarget(uniqueId, targetInfo)
+				end
+				if targetInfo.assignmentConfirmed
+					and self:_isPetTargetConfirmed(uniqueId, targetInfo.destructibleId)
+					and (now - targetInfo.lastAttackTime >= self._autoAttackInterval) then
+					targetInfo.lastAttackTime = now
+					self:fireAttackRemote(targetInfo.destructibleId)
+				end
+			end
+		end
+	end
 end
 
 function PetController:_sendAutoPetToTarget(uniqueId, targetInfo)
@@ -12332,8 +12423,6 @@ function PetController:_startAutoAttack()
 	self._autoAttackConnection = RunService.Heartbeat:Connect(function()
 		if not self._autoAttackEnabled then return end
 		if not self._initialized then return end
-		-- Skip auto-attack while in manual target mode
-		if self._manualTargetMode then return end
 
 		-- Check if we have any equipped pets
 		local hasPets = false
@@ -12342,6 +12431,13 @@ function PetController:_startAutoAttack()
 			break
 		end
 		if not hasPets then return end
+
+		local now = tick()
+		self:_updateAssignedPetAttacks(now)
+
+		-- AutoFarm controls target discovery only. Manual targets continue to
+		-- attack above, but pets never seek or switch targets while this is false.
+		if not self._autoFarmEnabled or self._manualTargetMode then return end
 
 		-- Get all destructibles within range
 		local destructibles = self:getAllDestructiblesInRange(self._autoAttackRange)
@@ -12370,7 +12466,6 @@ function PetController:_startAutoAttack()
 		end
 
 		-- Process pets in stable follow order so target distribution is deterministic.
-		local now = tick()
 		for _, uniqueId in ipairs(self:_getQueuedPetIds()) do
 			local currentTarget = self._petTargets[uniqueId]
 
@@ -12437,18 +12532,12 @@ function PetController:_startAutoAttack()
 					self:_sendAutoPetToTarget(uniqueId, currentTarget)
 				end
 			end
-
-			-- Fire attack remote periodically for damage while stationed
-			local targetInfo = self._petTargets[uniqueId]
-			if targetInfo
-				and targetInfo.assignmentConfirmed
-				and self:_isPetTargetConfirmed(uniqueId, targetInfo.destructibleId)
-				and (now - targetInfo.lastAttackTime >= self._autoAttackInterval) then
-				targetInfo.lastAttackTime = now
-				self:fireAttackRemote(targetInfo.destructibleId)
-			end
 		end
 	end)
+end
+
+function PetController:setAutoFarmEnabled(enabled)
+	self._autoFarmEnabled = enabled == true
 end
 
 function PetController:_stopAutoAttack()
@@ -12465,19 +12554,28 @@ end
 function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
 	if not self._initialized then return end
 
-	local sentPetId = self:_getNextQueuedPet()
-	if not sentPetId then return end
+	local sentPetId, petWasIdle = self:_getNextQueuedPet()
+	if not sentPetId then return false end
+
+	-- If every pet is already busy and this breakable is already being attacked,
+	-- this click is damage/Crit-QTE only. Do not restart movement or assignment.
+	if not petWasIdle and self:_hasActivePetAtTarget(destructibleId) then
+		self._manualTargetMode = true
+		self._manualTargetExpiry = tick() + self._manualTargetDuration
+		return false
+	end
 
 	self._manualOrderVersion = self._manualOrderVersion + 1
 
 	-- Release from previous station if any and create a fresh queue assignment.
 	self._attackingPets[sentPetId] = nil
 	local now = tick()
+	local assignmentId = self:_nextAssignmentSequence()
 	self._petTargets[sentPetId] = {
 		destructibleId = destructibleId,
 		part = destructiblePart,
 		lastAttackTime = now,
-		assignedAt = self:_nextAssignmentSequence(),
+		assignedAt = assignmentId,
 		assignmentConfirmed = false,
 	}
 
@@ -12487,8 +12585,10 @@ function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
 		local currentTarget = self._petTargets[sentPetId]
 		if accepted
 			and currentTarget
+			and currentTarget.assignedAt == assignmentId
 			and currentTarget.destructibleId == destructibleId then
 			currentTarget.assignmentConfirmed = true
+			currentTarget.lastAttackTime = tick()
 			self:fireAttackRemote(destructibleId)
 		end
 	end)
@@ -12535,7 +12635,6 @@ function PetController:sendAllPetsToTarget(destructibleId, destructiblePart)
 				and currentTarget
 				and currentTarget.assignedAt == holdAssignments[petId]
 				and currentTarget.destructibleId == destructibleId then
-				currentTarget.assignmentConfirmed = true
 				acceptedAssignments = acceptedAssignments + 1
 			end
 			if pendingAssignments == 0 then
@@ -12543,6 +12642,14 @@ function PetController:sendAllPetsToTarget(destructibleId, destructiblePart)
 					and expectedAssignments > 0
 					and acceptedAssignments == expectedAssignments
 				if holdSucceeded then
+					local holdAttackTime = tick()
+					for confirmedPetId, confirmedAssignment in pairs(holdAssignments) do
+						local confirmedTarget = self._petTargets[confirmedPetId]
+						if confirmedTarget and confirmedTarget.assignedAt == confirmedAssignment then
+							confirmedTarget.assignmentConfirmed = true
+							confirmedTarget.lastAttackTime = holdAttackTime
+						end
+					end
 					self:fireAttackRemote(destructibleId)
 				else
 					-- Hold is atomic: if any member failed or a newer order replaced it,
