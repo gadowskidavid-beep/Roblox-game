@@ -3290,6 +3290,7 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	local uniqueId = game:GetService("HttpService"):GenerateGUID(false)
 	local model = Instance.new("Model")
 	model.Name = "Destructible_" .. uniqueId
+	model:SetAttribute("DestructibleId", uniqueId)
 
 	local mainPart = nil
 
@@ -3437,11 +3438,45 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 		position = mainPart.Position,
 	}
 
-	-- Tag the main part with the destructible ID for client lookup
+	-- Retain the legacy main-part StringValue for canonical visual lookup.
 	local idValue = Instance.new("StringValue")
 	idValue.Name = "DestructibleId"
 	idValue.Value = uniqueId
 	idValue.Parent = mainPart
+
+	-- A generous invisible query-only volume makes every visual breakable easy
+	-- to click without changing pet grounding, touches, or physical collisions.
+	local boundsCFrame, boundsSize = model:GetBoundingBox()
+	local boundsRight = boundsCFrame.RightVector
+	local boundsUp = boundsCFrame.UpVector
+	local boundsForward = boundsCFrame.LookVector
+	local worldBoundsSize = Vector3.new(
+		math.abs(boundsRight.X) * boundsSize.X
+			+ math.abs(boundsUp.X) * boundsSize.Y
+			+ math.abs(boundsForward.X) * boundsSize.Z,
+		math.abs(boundsRight.Y) * boundsSize.X
+			+ math.abs(boundsUp.Y) * boundsSize.Y
+			+ math.abs(boundsForward.Y) * boundsSize.Z,
+		math.abs(boundsRight.Z) * boundsSize.X
+			+ math.abs(boundsUp.Z) * boundsSize.Y
+			+ math.abs(boundsForward.Z) * boundsSize.Z
+	)
+	local clickHitbox = Instance.new("Part")
+	clickHitbox.Name = "ClickHitbox"
+	clickHitbox.Size = Vector3.new(
+		worldBoundsSize.X + 2,
+		math.max(worldBoundsSize.Y + 1, 5),
+		worldBoundsSize.Z + 2
+	)
+	clickHitbox.CFrame = CFrame.new(boundsCFrame.Position)
+	clickHitbox.Anchored = true
+	clickHitbox.Transparency = 1
+	clickHitbox.CanQuery = true
+	clickHitbox.CanCollide = false
+	clickHitbox.CanTouch = false
+	clickHitbox.CastShadow = false
+	clickHitbox:SetAttribute("DestructibleId", uniqueId)
+	clickHitbox.Parent = model
 
 	-- Fade-in animation for respawned destructibles (Transparency 1 -> 0 over 0.5 seconds)
 	if fadeIn then
@@ -7128,7 +7163,7 @@ return ShopService
 	- Single left click on destructible: send 1 pet to attack it
 	- Hold left click (0.3s+) on destructible: send ALL pets to attack it
 	- E-key: hatch egg when near egg station (via ProximityPrompt)
-	- When not clicking: pets auto-distribute to different nearby destructibles
+	- Assigned pets keep attacking; target discovery is manual-only
 ]]
 
 -- Services
@@ -7251,12 +7286,34 @@ local function buildEquippedListFromData(data)
 	return list
 end
 
--- O(1) destructible lookup shared with PetController. The index follows runtime
--- spawns/respawns and avoids a GetDescendants scan on every hit or heartbeat.
+-- O(1) canonical visual lookup shared with PetController. Click targeting uses a
+-- separate live hitbox-only list so pets, effects, and decorations cannot block it.
 local destructibleIndex = {}
+local clickHitboxesById = {}
+local clickHitboxList = {}
 local refreshOnboardingHint = function() end
 
+local function rebuildClickHitboxList()
+	clickHitboxList = {}
+	for destructibleId, hitbox in pairs(clickHitboxesById) do
+		if hitbox and hitbox.Parent then
+			table.insert(clickHitboxList, hitbox)
+		else
+			clickHitboxesById[destructibleId] = nil
+		end
+	end
+end
+
 local function indexDestructibleDescendant(obj)
+	if obj:IsA("BasePart") and obj.Name == "ClickHitbox" then
+		local destructibleId = obj:GetAttribute("DestructibleId")
+		if type(destructibleId) == "string" and destructibleId ~= "" then
+			clickHitboxesById[destructibleId] = obj
+			rebuildClickHitboxList()
+		end
+		return
+	end
+
 	local part = nil
 	local idValue = nil
 	if obj:IsA("BasePart") then
@@ -7273,6 +7330,15 @@ local function indexDestructibleDescendant(obj)
 end
 
 local function removeDestructibleDescendant(obj)
+	if obj:IsA("BasePart") and obj.Name == "ClickHitbox" then
+		local destructibleId = obj:GetAttribute("DestructibleId")
+		if clickHitboxesById[destructibleId] == obj then
+			clickHitboxesById[destructibleId] = nil
+			rebuildClickHitboxList()
+		end
+		return
+	end
+
 	if obj:IsA("StringValue") and obj.Name == "DestructibleId" then
 		destructibleIndex[obj.Value] = nil
 		task.defer(refreshOnboardingHint)
@@ -7710,44 +7776,35 @@ local mouseDownTarget = nil -- { destructibleId, part }
 local isMouseDown = false
 local holdFired = false -- whether we already sent all-pets command during this hold
 
--- Helper: Raycast from screen position to find a destructible
+local function resetCurrentGesture()
+	isMouseDown = false
+	mouseDownTarget = nil
+	holdFired = false
+end
+
+-- Raycast only against server-created query hitboxes. The returned part remains
+-- the canonical visual part used by pet movement, effects, and damage UI.
 local function raycastForDestructible(screenPosition)
 	local camera = workspace.CurrentCamera
 	if not camera then return nil end
 
-	local ray = camera:ViewportPointToRay(screenPosition.X, screenPosition.Y)
+	local ray = camera:ScreenPointToRay(screenPosition.X, screenPosition.Y)
 	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = { player.Character }
+	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	raycastParams.FilterDescendantsInstances = clickHitboxList
 
 	local result = workspace:Raycast(ray.Origin, ray.Direction * 200, raycastParams)
 	if not result or not result.Instance then return nil end
 
-	local hit = result.Instance
-	local zonesFolder = workspace:FindFirstChild("Zones")
-	if not zonesFolder or not hit:IsDescendantOf(zonesFolder) then return nil end
+	local destructibleId = result.Instance:GetAttribute("DestructibleId")
+	if type(destructibleId) ~= "string" or destructibleId == "" then return nil end
 
-	-- Check if the hit part has a DestructibleId
-	local destructibleIdValue = hit:FindFirstChild("DestructibleId")
-	-- If not on the hit part, check parent Model children
-	if not destructibleIdValue and hit.Parent then
-		for _, sibling in ipairs(hit.Parent:GetChildren()) do
-			if sibling:IsA("BasePart") then
-				local idVal = sibling:FindFirstChild("DestructibleId")
-				if idVal then
-					destructibleIdValue = idVal
-					hit = sibling
-					break
-				end
-			end
-		end
-	end
-
-	if not destructibleIdValue then return nil end
+	local canonicalPart = resolveDestructiblePart(destructibleId)
+	if not canonicalPart then return nil end
 
 	return {
-		destructibleId = destructibleIdValue.Value,
-		part = hit,
+		destructibleId = destructibleId,
+		part = canonicalPart,
 	}
 end
 
@@ -7794,11 +7851,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			holdFired = false
 			offerCritQTE(target)
 		else
-			-- Clicked on empty space: cancel all pet attacks, return them to player
-			petController:cancelAllAttacks()
-			isMouseDown = false
-			mouseDownTarget = nil
-			holdFired = false
+			-- A ray miss only abandons this gesture. Existing assignments keep
+			-- attacking, so clicking the same visible breakable can never cancel
+			-- pets because of a transient input/raycast miss.
+			resetCurrentGesture()
 		end
 	end
 end)
@@ -11179,10 +11235,9 @@ return UIController
 	and shows floating damage numbers. All visuals are procedural with no external assets.
 
 	TARGETING SYSTEM (Pet Simulator 1 style):
-	- Idle mode: Each pet auto-distributes to a DIFFERENT nearby destructible
 	- Single click: Send only 1 pet to the clicked target
 	- Hold click (0.3s+): Send ALL pets to the clicked target
-	- When a destructible is destroyed, pet auto-finds next available target
+	- Manually assigned pets keep attacking until their target is gone
 
 	IMPORTANT: Only ONE model per equipped pet must exist at any time.
 	The updateEquippedPets method enforces this by destroying all old models
@@ -11208,7 +11263,7 @@ local RARITY_COLORS = {
 function PetController.new()
 	local self = setmetatable({}, PetController)
 	self._remotes = nil
-	self._equippedPets = {} -- { uniqueId = { model = Model, data = petData, followIndex = number } }
+	self._equippedPets = {} -- { uniqueId = { model, data, followIndex, attackMarker, attackMarkerGui } }
 	self._petsFolder = nil
 	-- Follow-behind settings
 	self._followDistance = 5 -- distance behind the player per pet slot
@@ -11272,7 +11327,7 @@ function PetController:init(remotes)
 
 	self._initialized = true
 
-	-- Start auto-attack loop (distributed targeting)
+	-- Start periodic attacks for manually assigned pets
 	self:_startAutoAttack()
 end
 
@@ -11613,6 +11668,66 @@ function PetController:createPetModel(petData)
 	return model
 end
 
+-- Create a flat client-only marker whose asymmetric ring makes rotation visible.
+-- It stays parented to the pet model so normal visual cleanup destroys it too.
+function PetController:_createAttackMarker(model)
+	local marker = Instance.new("Part")
+	marker.Name = "AttackMarker"
+	marker.Size = Vector3.new(3.8, 0.05, 3.8)
+	marker.Transparency = 1
+	marker.Anchored = true
+	marker.CanCollide = false
+	marker.CanTouch = false
+	marker.CanQuery = false
+	marker.CastShadow = false
+	marker.Parent = model
+
+	local surfaceGui = Instance.new("SurfaceGui")
+	surfaceGui.Name = "AttackMarkerSurface"
+	surfaceGui.Face = Enum.NormalId.Top
+	surfaceGui.CanvasSize = Vector2.new(256, 256)
+	surfaceGui.LightInfluence = 0
+	surfaceGui.Enabled = false
+	surfaceGui.Parent = marker
+
+	for i = 1, 16 do
+		local angle = ((i - 1) / 16) * math.pi * 2
+		local dotSize = i == 1 and 28 or (i % 4 == 0 and 18 or 13)
+		local dot = Instance.new("Frame")
+		dot.Name = "RingDot_" .. tostring(i)
+		dot.Size = UDim2.fromOffset(dotSize, dotSize)
+		dot.Position = UDim2.fromOffset(
+			128 + math.cos(angle) * 82 - dotSize / 2,
+			128 + math.sin(angle) * 82 - dotSize / 2
+		)
+		dot.BackgroundColor3 = i == 1
+			and Color3.fromRGB(255, 245, 120)
+			or Color3.fromRGB(255, 145, 35)
+		dot.BackgroundTransparency = i % 2 == 0 and 0.15 or 0
+		dot.BorderSizePixel = 0
+		dot.Parent = surfaceGui
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Parent = dot
+	end
+
+	local accent = Instance.new("Frame")
+	accent.Name = "DirectionAccent"
+	accent.Size = UDim2.fromOffset(42, 12)
+	accent.Position = UDim2.fromOffset(152, 122)
+	accent.BackgroundColor3 = Color3.fromRGB(255, 245, 120)
+	accent.BorderSizePixel = 0
+	accent.Rotation = -18
+	accent.Parent = surfaceGui
+
+	local accentCorner = Instance.new("UICorner")
+	accentCorner.CornerRadius = UDim.new(1, 0)
+	accentCorner.Parent = accent
+
+	return marker, surfaceGui
+end
+
 --------------------------------------------------------------------------------
 -- Update equipped pets: create/remove pet models as needed.
 -- CRITICAL: This method ensures EXACTLY 1 model per equipped pet exists.
@@ -11668,12 +11783,16 @@ function PetController:updateEquippedPets(equippedList)
 			local petInfo = self._equippedPets[petData.id]
 			if not petInfo then
 				local model = self:createPetModel(petData)
+				local attackMarker, attackMarkerGui = self:_createAttackMarker(model)
 				model.Parent = self._petsFolder
 
 				petInfo = {
 					model = model,
 					data = petData,
 					followIndex = i,
+					attackMarker = attackMarker,
+					attackMarkerGui = attackMarkerGui,
+					attackMarkerAngle = 0,
 				}
 				self._equippedPets[petData.id] = petInfo
 			else
@@ -11682,6 +11801,39 @@ function PetController:updateEquippedPets(equippedList)
 			end
 		end
 	end
+end
+
+-- Keep the attack marker independently ground-snapped so pet translation and
+-- bounce animations cannot lift it. The current breakable is excluded from the
+-- ground raycast, just like the attacking pet's own stationing raycasts.
+function PetController:_updateAttackMarker(uniqueId, petInfo, deltaTime)
+	local marker = petInfo.attackMarker
+	local surfaceGui = petInfo.attackMarkerGui
+	local model = petInfo.model
+	local body = model and model.PrimaryPart
+	local isAttacking = self._attackingPets[uniqueId] ~= nil
+
+	if surfaceGui and surfaceGui.Parent then
+		surfaceGui.Enabled = isAttacking
+	end
+	-- Hidden markers need no placement raycast or rotation work.
+	if not isAttacking then return end
+	if not marker or not marker.Parent or not body or not body.Parent then return end
+
+	local targetInfo = self._petTargets[uniqueId]
+	local targetIgnore = nil
+	if targetInfo and targetInfo.part and targetInfo.part.Parent then
+		targetIgnore = targetInfo.part.Parent:IsA("Model") and targetInfo.part.Parent or targetInfo.part
+	end
+
+	local bodyPosition = body.Position
+	local groundY = self:_getGroundY(bodyPosition, bodyPosition.Y, targetIgnore) - 1.1
+	petInfo.attackMarkerAngle = ((petInfo.attackMarkerAngle or 0) + deltaTime * math.rad(110)) % (math.pi * 2)
+	marker.CFrame = CFrame.new(
+		bodyPosition.X,
+		groundY + marker.Size.Y / 2 + 0.02,
+		bodyPosition.Z
+	) * CFrame.Angles(0, petInfo.attackMarkerAngle, 0)
 end
 
 --------------------------------------------------------------------------------
@@ -11751,7 +11903,10 @@ function PetController:update(deltaTime)
 				local offset = newPos - model.PrimaryPart.Position
 
 				for _, part in ipairs(model:GetDescendants()) do
-					if part:IsA("BasePart") and part.Name ~= "Shadow" and not part.Name:find("GlowParticle") then
+					if part:IsA("BasePart")
+						and part.Name ~= "Shadow"
+						and part.Name ~= "AttackMarker"
+						and not part.Name:find("GlowParticle") then
 						part.Position = part.Position + offset
 					end
 				end
@@ -11768,6 +11923,8 @@ function PetController:update(deltaTime)
 				self:_updateGlowParticles(model, newPos, index)
 			end
 		end
+
+		self:_updateAttackMarker(uniqueId, petInfo, deltaTime)
 	end
 end
 
@@ -11934,7 +12091,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				local offset = newPos - currentPos
 
 				for _, part in ipairs(model:GetDescendants()) do
-					if part:IsA("BasePart") and part.Name ~= "Shadow" then
+					if part:IsA("BasePart") and part.Name ~= "Shadow" and part.Name ~= "AttackMarker" then
 						part.Position = part.Position + offset
 					end
 				end
@@ -11997,7 +12154,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				local offset = desiredPos - currentPos
 
 				for _, part in ipairs(model:GetDescendants()) do
-					if part:IsA("BasePart") and part.Name ~= "Shadow" then
+					if part:IsA("BasePart") and part.Name ~= "Shadow" and part.Name ~= "AttackMarker" then
 						part.Position = part.Position + offset
 					end
 				end
@@ -12284,10 +12441,9 @@ function PetController:_sendAutoPetToTarget(uniqueId, targetInfo)
 end
 
 --------------------------------------------------------------------------------
--- DISTRIBUTED AUTO-ATTACK: Each pet picks its own unique target
--- Pets spread out to different destructibles instead of all attacking the same one.
--- Pets STAY at their target (sendPetToAttack handles stationing) and the remote
--- is fired periodically for damage while the pet is stationed there.
+-- ASSIGNED PET ATTACK LOOP
+-- Only already-manually-assigned pets are maintained here. Automatic discovery
+-- and next-target selection are intentionally disabled for current gameplay.
 --------------------------------------------------------------------------------
 function PetController:_startAutoAttack()
 	if self._autoAttackConnection then return end
@@ -12296,120 +12452,14 @@ function PetController:_startAutoAttack()
 		if not self._autoAttackEnabled then return end
 		if not self._initialized then return end
 
-		-- Check if we have any equipped pets
-		local hasPets = false
-		for _ in pairs(self._equippedPets) do
-			hasPets = true
-			break
-		end
-		if not hasPets then return end
-
-		local now = tick()
-		self:_updateAssignedPetAttacks(now)
-
-		-- AutoFarm controls target discovery only. Manual targets continue to
-		-- attack above, but pets never seek or switch targets while this is false.
-		if not self._autoFarmEnabled or self._manualTargetMode then return end
-
-		-- Get all destructibles within range
-		local destructibles = self:getAllDestructiblesInRange(self._autoAttackRange)
-		if #destructibles == 0 then
-			-- Clear all targets if nothing in range
-			for petId, _ in pairs(self._petTargets) do
-				self._petTargets[petId] = nil
-				-- Release the pet from stationed state
-				if self._attackingPets[petId] then
-					self._attackingPets[petId] = nil
-					if self._assignPetTarget and self:_hasPetTargetRequest(petId) then
-						self:_requestPetTarget(petId, nil)
-					end
-				end
-			end
-			return
-		end
-
-		-- Build a set of which destructible IDs are already targeted by a pet
-		local targetedIds = {}
-		for petId, targetInfo in pairs(self._petTargets) do
-			-- Only count as targeted if the pet still exists
-			if self._equippedPets[petId] then
-				targetedIds[targetInfo.destructibleId] = true
-			end
-		end
-
-		-- Process pets in stable follow order so target distribution is deterministic.
-		for _, uniqueId in ipairs(self:_getQueuedPetIds()) do
-			local currentTarget = self._petTargets[uniqueId]
-
-			-- Check if current target is still valid (exists in destructibles list)
-			local targetStillValid = false
-			if currentTarget then
-				for _, d in ipairs(destructibles) do
-					if d.id == currentTarget.destructibleId then
-						targetStillValid = true
-						break
-					end
-				end
-			end
-
-			-- If target is invalid/missing, assign a new one
-			if not targetStillValid then
-				self._petTargets[uniqueId] = nil
-				-- Release stationing
-				if self._attackingPets[uniqueId] then
-					self._attackingPets[uniqueId] = nil
-					if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
-						self:_requestPetTarget(uniqueId, nil)
-					end
-				end
-				-- Remove from targeted set
-				if currentTarget then
-					targetedIds[currentTarget.destructibleId] = nil
-				end
-
-				-- Find the nearest destructible NOT already targeted by another pet
-				local assigned = false
-				for _, d in ipairs(destructibles) do
-					if not targetedIds[d.id] then
-						self._petTargets[uniqueId] = {
-							destructibleId = d.id,
-							part = d.part,
-							lastAttackTime = now,
-							assignedAt = self:_nextAssignmentSequence(),
-							assignmentConfirmed = false,
-						}
-						targetedIds[d.id] = true
-						assigned = true
-						-- Send pet only after tracking the assignment confirmation.
-						self:_sendAutoPetToTarget(uniqueId, self._petTargets[uniqueId])
-						break
-					end
-				end
-
-				-- If all destructibles are taken, allow sharing (pick nearest)
-				if not assigned and #destructibles > 0 then
-					local nearest = destructibles[1]
-					self._petTargets[uniqueId] = {
-						destructibleId = nearest.id,
-						part = nearest.part,
-						lastAttackTime = now,
-						assignedAt = self:_nextAssignmentSequence(),
-						assignmentConfirmed = false,
-					}
-					self:_sendAutoPetToTarget(uniqueId, self._petTargets[uniqueId])
-				end
-			else
-				-- Target is still valid; ensure the pet is sent there (idempotent)
-				if currentTarget and not self._attackingPets[uniqueId] then
-					self:_sendAutoPetToTarget(uniqueId, currentTarget)
-				end
-			end
-		end
+		self:_updateAssignedPetAttacks(tick())
 	end)
 end
 
-function PetController:setAutoFarmEnabled(enabled)
-	self._autoFarmEnabled = enabled == true
+function PetController:setAutoFarmEnabled(_enabled)
+	-- Future upgrade point: enabling AutoFarm must not restore target discovery
+	-- until that behavior is deliberately redesigned and reintroduced.
+	self._autoFarmEnabled = false
 end
 
 function PetController:_stopAutoAttack()
@@ -12477,17 +12527,41 @@ function PetController:sendAllPetsToTarget(destructibleId, destructiblePart)
 	if not self._initialized then return end
 
 	local queuedIds = self:_getQueuedPetIds()
-	local pendingAssignments = #queuedIds
-	local expectedAssignments = #queuedIds
+	if #queuedIds == 0 then return end
+
+	local now = tick()
+	local petsToAssign = {}
+
+	-- Preserve every pet already active on this breakable. A repeated or partial
+	-- same-target hold must never restart, clear, or roll back existing work.
+	for _, uniqueId in ipairs(queuedIds) do
+		local targetInfo = self._petTargets[uniqueId]
+		local alreadyTargeting = self._attackingPets[uniqueId] == destructibleId
+			and targetInfo
+			and targetInfo.destructibleId == destructibleId
+			and targetInfo.part
+			and targetInfo.part.Parent ~= nil
+		if not alreadyTargeting then
+			table.insert(petsToAssign, uniqueId)
+		end
+	end
+
+	if #petsToAssign == 0 then
+		self._manualTargetMode = true
+		self._manualTargetExpiry = now + self._manualTargetDuration
+		return
+	end
+
+	local pendingAssignments = #petsToAssign
+	local expectedAssignments = #petsToAssign
 	local acceptedAssignments = 0
 	local holdAssignments = {}
-	local now = tick()
 	self._manualOrderVersion = self._manualOrderVersion + 1
 	local orderVersion = self._manualOrderVersion
 
-	-- Assign in stable follow order. Sequential assignedAt values make the queue
-	-- after a hold deterministic if a later single click must steal a busy pet.
-	for _, uniqueId in ipairs(queuedIds) do
+	-- Assign only pets that are not already on this target. Sequential assignedAt
+	-- values keep later single-click queue stealing deterministic.
+	for _, uniqueId in ipairs(petsToAssign) do
 		local petId = uniqueId
 		self._attackingPets[petId] = nil
 		local assignmentId = self:_nextAssignmentSequence()

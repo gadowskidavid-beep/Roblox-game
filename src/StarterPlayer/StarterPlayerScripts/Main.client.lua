@@ -7,7 +7,7 @@
 	- Single left click on destructible: send 1 pet to attack it
 	- Hold left click (0.3s+) on destructible: send ALL pets to attack it
 	- E-key: hatch egg when near egg station (via ProximityPrompt)
-	- When not clicking: pets auto-distribute to different nearby destructibles
+	- Assigned pets keep attacking; target discovery is manual-only
 ]]
 
 -- Services
@@ -130,12 +130,34 @@ local function buildEquippedListFromData(data)
 	return list
 end
 
--- O(1) destructible lookup shared with PetController. The index follows runtime
--- spawns/respawns and avoids a GetDescendants scan on every hit or heartbeat.
+-- O(1) canonical visual lookup shared with PetController. Click targeting uses a
+-- separate live hitbox-only list so pets, effects, and decorations cannot block it.
 local destructibleIndex = {}
+local clickHitboxesById = {}
+local clickHitboxList = {}
 local refreshOnboardingHint = function() end
 
+local function rebuildClickHitboxList()
+	clickHitboxList = {}
+	for destructibleId, hitbox in pairs(clickHitboxesById) do
+		if hitbox and hitbox.Parent then
+			table.insert(clickHitboxList, hitbox)
+		else
+			clickHitboxesById[destructibleId] = nil
+		end
+	end
+end
+
 local function indexDestructibleDescendant(obj)
+	if obj:IsA("BasePart") and obj.Name == "ClickHitbox" then
+		local destructibleId = obj:GetAttribute("DestructibleId")
+		if type(destructibleId) == "string" and destructibleId ~= "" then
+			clickHitboxesById[destructibleId] = obj
+			rebuildClickHitboxList()
+		end
+		return
+	end
+
 	local part = nil
 	local idValue = nil
 	if obj:IsA("BasePart") then
@@ -152,6 +174,15 @@ local function indexDestructibleDescendant(obj)
 end
 
 local function removeDestructibleDescendant(obj)
+	if obj:IsA("BasePart") and obj.Name == "ClickHitbox" then
+		local destructibleId = obj:GetAttribute("DestructibleId")
+		if clickHitboxesById[destructibleId] == obj then
+			clickHitboxesById[destructibleId] = nil
+			rebuildClickHitboxList()
+		end
+		return
+	end
+
 	if obj:IsA("StringValue") and obj.Name == "DestructibleId" then
 		destructibleIndex[obj.Value] = nil
 		task.defer(refreshOnboardingHint)
@@ -589,44 +620,35 @@ local mouseDownTarget = nil -- { destructibleId, part }
 local isMouseDown = false
 local holdFired = false -- whether we already sent all-pets command during this hold
 
--- Helper: Raycast from screen position to find a destructible
+local function resetCurrentGesture()
+	isMouseDown = false
+	mouseDownTarget = nil
+	holdFired = false
+end
+
+-- Raycast only against server-created query hitboxes. The returned part remains
+-- the canonical visual part used by pet movement, effects, and damage UI.
 local function raycastForDestructible(screenPosition)
 	local camera = workspace.CurrentCamera
 	if not camera then return nil end
 
-	local ray = camera:ViewportPointToRay(screenPosition.X, screenPosition.Y)
+	local ray = camera:ScreenPointToRay(screenPosition.X, screenPosition.Y)
 	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = { player.Character }
+	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	raycastParams.FilterDescendantsInstances = clickHitboxList
 
 	local result = workspace:Raycast(ray.Origin, ray.Direction * 200, raycastParams)
 	if not result or not result.Instance then return nil end
 
-	local hit = result.Instance
-	local zonesFolder = workspace:FindFirstChild("Zones")
-	if not zonesFolder or not hit:IsDescendantOf(zonesFolder) then return nil end
+	local destructibleId = result.Instance:GetAttribute("DestructibleId")
+	if type(destructibleId) ~= "string" or destructibleId == "" then return nil end
 
-	-- Check if the hit part has a DestructibleId
-	local destructibleIdValue = hit:FindFirstChild("DestructibleId")
-	-- If not on the hit part, check parent Model children
-	if not destructibleIdValue and hit.Parent then
-		for _, sibling in ipairs(hit.Parent:GetChildren()) do
-			if sibling:IsA("BasePart") then
-				local idVal = sibling:FindFirstChild("DestructibleId")
-				if idVal then
-					destructibleIdValue = idVal
-					hit = sibling
-					break
-				end
-			end
-		end
-	end
-
-	if not destructibleIdValue then return nil end
+	local canonicalPart = resolveDestructiblePart(destructibleId)
+	if not canonicalPart then return nil end
 
 	return {
-		destructibleId = destructibleIdValue.Value,
-		part = hit,
+		destructibleId = destructibleId,
+		part = canonicalPart,
 	}
 end
 
@@ -673,11 +695,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			holdFired = false
 			offerCritQTE(target)
 		else
-			-- Clicked on empty space: cancel all pet attacks, return them to player
-			petController:cancelAllAttacks()
-			isMouseDown = false
-			mouseDownTarget = nil
-			holdFired = false
+			-- A ray miss only abandons this gesture. Existing assignments keep
+			-- attacking, so clicking the same visible breakable can never cancel
+			-- pets because of a transient input/raycast miss.
+			resetCurrentGesture()
 		end
 	end
 end)
