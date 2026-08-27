@@ -396,6 +396,8 @@ describe("V6 compatibility guarantees", function()
 			},
 			upgradeTreePurchases = {
 				["Eggs I"] = true,
+				["Eggs III"] = true,
+				["Eggs V"] = true,
 				["luck I"] = true,
 				Ignored = false,
 			},
@@ -406,7 +408,12 @@ describe("V6 compatibility guarantees", function()
 			Shiny_Dog = true,
 			Rainbow_Dog = true,
 		})
-		expect(data.upgradeTreePurchases):toEqual({ ["Eggs I"] = true, ["luck I"] = true })
+		expect(data.upgradeTreePurchases):toEqual({
+			["Eggs I"] = true,
+			["Eggs III"] = true,
+			["Eggs V"] = true,
+			["luck I"] = true,
+		})
 	end)
 
 	it("is idempotent for migrated V6 profiles", function()

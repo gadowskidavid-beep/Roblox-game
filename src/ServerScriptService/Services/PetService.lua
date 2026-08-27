@@ -132,16 +132,24 @@ function PetService.getMaxInventory(player)
 	)
 end
 
-function PetService.canAddPet(player)
+function PetService.canAddPets(player, count)
+	if type(count) ~= "number" or count ~= count or count == math.huge or count == -math.huge
+		or count % 1 ~= 0 or count < 1 then
+		return false, "Invalid pet count"
+	end
 	local data = PetService._dataService.getPlayerData(player)
 	if not data or type(data.pets) ~= "table" then
 		return false, "No player data"
 	end
 	local capacity = PetService.getMaxInventory(player)
-	if #data.pets >= capacity then
-		return false, "Pet inventory full (" .. tostring(capacity) .. ")"
+	if #data.pets + count > capacity then
+		return false, "Pet inventory needs " .. tostring(count) .. " free slots (" .. tostring(capacity) .. " max)"
 	end
 	return true
+end
+
+function PetService.canAddPet(player)
+	return PetService.canAddPets(player, 1)
 end
 
 -- Preserve the four-category discovery contract until the dedicated combined
@@ -160,49 +168,20 @@ function PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
 	return petId
 end
 
-function PetService.hatchEgg(player, eggType, skipCostDeduction)
-	if not player or type(eggType) ~= "string" then
-		return nil, "Invalid parameters"
+local function copyBooleanMap(input)
+	local output = {}
+	if type(input) ~= "table" then
+		return output
 	end
-
-	-- Validate egg type exists
-	local eggDef = PetData.Eggs[eggType]
-	if not eggDef then
-		return nil, "Unknown egg type: " .. tostring(eggType)
-	end
-
-	local data = PetService._dataService.getPlayerData(player)
-	if not data then
-		return nil, "No player data"
-	end
-
-	local hasSpace, capacityError = PetService.canAddPet(player)
-	if not hasSpace then
-		return nil, capacityError
-	end
-
-	-- Get egg cost from config based on zone
-	local eggZone = eggDef.zone
-	local eggCost = Config.EggCosts[eggZone]
-	if not eggCost then
-		return nil, "No cost defined for egg zone"
-	end
-
-	-- Deduct cost (only if not already deducted by EggService)
-	if not skipCostDeduction then
-		if eggCost.Coins then
-			local success = PetService._currencyService.removeCoins(player, eggCost.Coins)
-			if not success then
-				return nil, "Not enough coins"
-			end
+	for key, value in pairs(input) do
+		if type(key) == "string" and value == true then
+			output[key] = true
 		end
 	end
+	return output
+end
 
-	-- General Luck affects species and direct outcomes. QOF-07 Tree effects are
-	-- intentionally split: Egg Quality affects species only, while each direct
-	-- variant multiplier affects only its matching capped chance.
-	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
-	local hatchEntitlements = PetService.getHatchEntitlements(player)
+local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered)
 	local petId = weightedRandomPet(
 		eggDef.petPool,
 		luckMultiplier,
@@ -224,16 +203,12 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		variant = baseVariant,
 		shiny = isShiny,
 	})
-	local petName = presentation.displayPetName
-	local petDamage = PetVariantMath.getBaseDamage(petId, baseVariant, isShiny)
-
-	-- Create unique pet instance
 	local newPet = {
 		id = HttpService:GenerateGUID(false),
 		petId = petId,
-		name = petName,
+		name = presentation.displayPetName,
 		rarity = petDef.rarity,
-		damage = petDamage,
+		damage = PetVariantMath.getBaseDamage(petId, baseVariant, isShiny),
 		variant = baseVariant,
 		shiny = isShiny,
 		golden = baseVariant == "Golden",
@@ -241,31 +216,165 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		equipped = false,
 	}
 
-	-- Track discovery through the existing four-category compatibility keys.
 	local discoveryKey = PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
-	if not data.discoveredPets then
-		data.discoveredPets = {}
+	newPet.isNewDiscovery = discovered[discoveryKey] ~= true
+	discovered[discoveryKey] = true
+	return newPet, discoveryKey
+end
+
+-- Prepare every random outcome without mutating inventory, discovery, currency,
+-- quests, or replication. EggService can therefore reject or roll back a whole
+-- batch instead of exposing partially completed hatches.
+function PetService.prepareHatchBatch(player, eggType, count)
+	if not player or type(eggType) ~= "string" then
+		return nil, "Invalid parameters"
 	end
-	if not data.discoveredPets[discoveryKey] then
-		data.discoveredPets[discoveryKey] = true
-		newPet.isNewDiscovery = true
-	else
-		newPet.isNewDiscovery = false
+	local maximumCount = BalanceConfig.Hatch.MultiOpen[#BalanceConfig.Hatch.MultiOpen].eggCount
+	if type(count) ~= "number" or count % 1 ~= 0 or count < 1 or count > maximumCount then
+		return nil, "Invalid hatch count"
+	end
+	local eggDef = PetData.Eggs[eggType]
+	if not eggDef then
+		return nil, "Unknown egg type: " .. tostring(eggType)
+	end
+	local data = PetService._dataService.getPlayerData(player)
+	if not data or type(data.pets) ~= "table" then
+		return nil, "No player data"
+	end
+	local hasSpace, capacityError = PetService.canAddPets(player, count)
+	if not hasSpace then
+		return nil, capacityError
+	end
+	if not Config.EggCosts[eggDef.zone] then
+		return nil, "No cost defined for egg zone"
 	end
 
-	-- Add to player inventory
-	table.insert(data.pets, newPet)
-
-	-- Fire inventory update event
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("PetInventoryUpdated")
-		if event then
-			event:FireClient(player, data.pets)
+	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
+	local hatchEntitlements = PetService.getHatchEntitlements(player)
+	local discovered = copyBooleanMap(data.discoveredPets)
+	local pets = {}
+	local newDiscoveryKeys = {}
+	for _ = 1, count do
+		local pet, discoveryKeyOrError = buildPreparedPet(
+			eggDef,
+			luckMultiplier,
+			hatchEntitlements,
+			discovered
+		)
+		if not pet then
+			return nil, discoveryKeyOrError
+		end
+		table.insert(pets, pet)
+		if pet.isNewDiscovery then
+			newDiscoveryKeys[discoveryKeyOrError] = true
 		end
 	end
 
-	return newPet, nil
+	return {
+		player = player,
+		data = data,
+		eggType = eggType,
+		pets = pets,
+		newDiscoveryKeys = newDiscoveryKeys,
+		originalPetCount = #data.pets,
+		discoveryTableWasNil = type(data.discoveredPets) ~= "table",
+		mutationStarted = false,
+		committed = false,
+	}, nil
+end
+
+function PetService.commitHatchBatch(player, prepared)
+	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed then
+		return false, "Invalid prepared hatch"
+	end
+	local data = PetService._dataService.getPlayerData(player)
+	if data ~= prepared.data or type(data.pets) ~= "table" or #data.pets ~= prepared.originalPetCount then
+		return false, "Inventory changed during hatch"
+	end
+	local hasSpace, capacityError = PetService.canAddPets(player, #prepared.pets)
+	if not hasSpace then
+		return false, capacityError
+	end
+
+	prepared.mutationStarted = true
+	if type(data.discoveredPets) ~= "table" then
+		data.discoveredPets = {}
+	end
+	for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+		data.discoveredPets[discoveryKey] = true
+	end
+	for _, pet in ipairs(prepared.pets) do
+		table.insert(data.pets, pet)
+	end
+	prepared.committed = true
+	return true
+end
+
+function PetService.rollbackHatchBatch(prepared)
+	if type(prepared) ~= "table" or not prepared.mutationStarted or type(prepared.data) ~= "table" then
+		return true
+	end
+	local data = prepared.data
+	if type(data.pets) ~= "table" then
+		return false
+	end
+	while #data.pets > prepared.originalPetCount do
+		table.remove(data.pets)
+	end
+	if prepared.discoveryTableWasNil then
+		data.discoveredPets = nil
+	elseif type(data.discoveredPets) == "table" then
+		for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+			data.discoveredPets[discoveryKey] = nil
+		end
+	end
+	prepared.mutationStarted = false
+	prepared.committed = false
+	return true
+end
+
+function PetService.replicateInventory(player)
+	local data = PetService._dataService.getPlayerData(player)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("PetInventoryUpdated")
+	if data and event then
+		event:FireClient(player, data.pets)
+	end
+end
+
+-- Compatibility single-roll API used by campaign rewards. Paid player hatches
+-- are orchestrated by EggService through the atomic batch methods above.
+function PetService.hatchEgg(player, eggType, skipCostDeduction)
+	local prepared, prepareError = PetService.prepareHatchBatch(player, eggType, 1)
+	if not prepared then
+		return nil, prepareError
+	end
+
+	local paidAmount = 0
+	if not skipCostDeduction then
+		local eggDef = PetData.Eggs[eggType]
+		local eggCost = eggDef and Config.EggCosts[eggDef.zone]
+		paidAmount = eggCost and eggCost.Coins or 0
+		if paidAmount > 0 then
+			local spent = PetService._currencyService.spend
+				and PetService._currencyService.spend(player, "coins", paidAmount)
+				or PetService._currencyService.removeCoins(player, paidAmount)
+			if not spent then
+				return nil, "Not enough coins"
+			end
+		end
+	end
+
+	local callSucceeded, committed, commitError = pcall(PetService.commitHatchBatch, player, prepared)
+	if not callSucceeded or not committed then
+		PetService.rollbackHatchBatch(prepared)
+		if paidAmount > 0 then
+			PetService._currencyService.creditRaw(player, "coins", paidAmount)
+		end
+		return nil, callSucceeded and commitError or "Hatch failed safely"
+	end
+	PetService.replicateInventory(player)
+	return prepared.pets[1], nil
 end
 
 -- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)

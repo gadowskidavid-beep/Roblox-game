@@ -1,4 +1,4 @@
--- UpgradeTreeService.spec.lua - QOF-07 entitlement and purchase tests.
+-- UpgradeTreeService.spec.lua - QOF-07/QOF-08 entitlement and purchase tests.
 
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
@@ -69,7 +69,7 @@ local function resetState()
 	UpgradeTreeService._transactionHook = nil
 end
 
-describe("UpgradeTreeService QOF-07 entitlements", function()
+describe("UpgradeTreeService QOF-07/QOF-08 entitlements", function()
 	it("uses only the highest contiguous Egg Quality and direct variant stages", function()
 		local entitlements = UpgradeTreeService.resolveEntitlements({
 			["Eggs I"] = true,
@@ -80,15 +80,18 @@ describe("UpgradeTreeService QOF-07 entitlements", function()
 			legendLuck1 = true,
 			rerollLuck1 = true,
 			rerollLuck2 = true,
+			["Eggs III"] = true,
+			["Eggs IV"] = true,
+			["Eggs V"] = true,
 		})
 		expect(entitlements.eggQualityMultiplier):toBe(1.6)
 		expect(entitlements.directVariantMultipliers.Golden):toBe(2)
 		expect(entitlements.directVariantMultipliers.Rainbow):toBe(1.25)
 		expect(entitlements.directVariantMultipliers.Shiny):toBe(1.5)
-		expect(entitlements.multiOpenCount):toBe(1)
+		expect(entitlements.multiOpenCount):toBe(10)
 	end)
 
-	it("ignores unknown, skipped, and dormant Multi-Open purchase IDs", function()
+	it("ignores unknown, skipped, and sparse Multi-Open purchase IDs", function()
 		local entitlements = UpgradeTreeService.resolveEntitlements({
 			["Eggs II"] = true,
 			epicLuck3 = true,
@@ -101,7 +104,7 @@ describe("UpgradeTreeService QOF-07 entitlements", function()
 	end)
 end)
 
-describe("UpgradeTreeService QOF-07 purchases", function()
+describe("UpgradeTreeService QOF-07/QOF-08 purchases", function()
 	it("purchases canonical Coin and Diamond nodes with server-owned costs", function()
 		resetState()
 		local qualitySuccess, _, qualityState = UpgradeTreeService.purchase(player, "Eggs I")
@@ -133,9 +136,26 @@ describe("UpgradeTreeService QOF-07 purchases", function()
 		expect(#spends):toBe(1)
 	end)
 
-	it("blocks Multi-Open and every no-op legacy node without charging", function()
+	it("purchases the strict Eggs II to V chain at canonical Diamond costs", function()
 		resetState()
-		for _, id in ipairs({ "Eggs III", "luck I", "coinMult1", "forged" }) do
+		expect(UpgradeTreeService.purchase(player, "Eggs I")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "Eggs II")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "Eggs III")):toBeTrue()
+		expect(UpgradeTreeService.getState(player).entitlements.multiOpenCount):toBe(2)
+		expect(UpgradeTreeService.purchase(player, "Eggs IV")):toBeTrue()
+		expect(UpgradeTreeService.getState(player).entitlements.multiOpenCount):toBe(5)
+		local success, _, state = UpgradeTreeService.purchase(player, "Eggs V")
+		expect(success):toBeTrue()
+		expect(state.entitlements.multiOpenCount):toBe(10)
+		expect(profile.diamonds):toBe(87000)
+		expect(spends[3]):toEqual({ currency = "diamonds", amount = 500 })
+		expect(spends[4]):toEqual({ currency = "diamonds", amount = 2500 })
+		expect(spends[5]):toEqual({ currency = "diamonds", amount = 10000 })
+	end)
+
+	it("blocks every no-op legacy node without charging", function()
+		resetState()
+		for _, id in ipairs({ "luck I", "coinMult1", "forged" }) do
 			local success, message = UpgradeTreeService.purchase(player, id)
 			expect(success):toBeFalse()
 			expect(message):toBe("Upgrade not available yet")
@@ -153,7 +173,7 @@ describe("UpgradeTreeService QOF-07 purchases", function()
 		expect(state.purchased["Eggs V"]):toBeTrue()
 		expect(state.available["Eggs I"]):toBeTrue()
 		expect(state.available.epicLuck1):toBeTrue()
-		expect(state.available["Eggs III"]):toBeNil()
+		expect(state.available["Eggs III"]):toBeTrue()
 		expect(state.entitlements.multiOpenCount):toBe(1)
 	end)
 

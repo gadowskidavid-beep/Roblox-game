@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds the QOF-07 runtime sources."""
+"""Verify that the generated Battle Pets place embeds the QOF-08 runtime sources."""
 
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -18,6 +18,7 @@ EXPECTED_SOURCES = {
     "PetService": "src/ServerScriptService/Services/PetService.lua",
     "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
     "EggService": "src/ServerScriptService/Services/EggService.lua",
+    "ShopService": "src/ServerScriptService/Services/ShopService.lua",
     "UpgradeTreeService": "src/ServerScriptService/Services/UpgradeTreeService.lua",
     "DataSchema": "src/ServerScriptService/Services/DataSchema.lua",
     "DataService": "src/ServerScriptService/Services/DataService.lua",
@@ -76,7 +77,7 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds all QOF-07 sources exactly once")
+    print("PASS: generated place embeds all QOF-08 sources exactly once")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

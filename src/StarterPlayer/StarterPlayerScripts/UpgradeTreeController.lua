@@ -1,7 +1,7 @@
 --[[
 	UpgradeTreeController.lua - Server-state adapter for the imported Vide tree.
-	QOF-07 adds dual-currency state, purchase feedback/in-flight protection, and
-	a touch-accessible open button without changing upgradeTree.lua or Vide.
+	QOF-07 adds dual-currency state and purchase protection; QOF-08 activates
+	the stable Eggs III-V Multi-Open branch without changing upgradeTree.lua or Vide.
 ]]
 
 local Players = game:GetService("Players")

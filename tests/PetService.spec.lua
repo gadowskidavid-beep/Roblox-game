@@ -291,3 +291,43 @@ describe("PetService legacy Golden conversion regression", function()
 		expect(#profile.pets):toBe(1)
 	end)
 end)
+
+
+
+describe("PetService QOF-08 prepared batch boundary", function()
+	it("prepares without mutation, commits all results once, and can restore the exact snapshot", function()
+		freshProfile()
+		local originalRandom = math.random
+		math.random = function() return 0.5 end
+		local prepared, prepareError = PetService.prepareHatchBatch(player, "BasicEgg", 2)
+		math.random = originalRandom
+
+		expect(prepareError):toBeNil()
+		expect(#prepared.pets):toBe(2)
+		expect(#profile.pets):toBe(0)
+		expect(profile.discoveredPets.Buddy):toBeNil()
+		expect(prepared.pets[1].isNewDiscovery):toBeTrue()
+		expect(prepared.pets[2].isNewDiscovery):toBeFalse()
+
+		local committed, commitError = PetService.commitHatchBatch(player, prepared)
+		expect(committed):toBeTrue()
+		expect(commitError):toBeNil()
+		expect(#profile.pets):toBe(2)
+		expect(profile.discoveredPets.Buddy):toBeTrue()
+
+		expect(PetService.rollbackHatchBatch(prepared)):toBeTrue()
+		expect(#profile.pets):toBe(0)
+		expect(profile.discoveredPets.Buddy):toBeNil()
+	end)
+
+	it("rejects a whole batch when total capacity is unavailable", function()
+		freshProfile()
+		for index = 1, 99 do
+			table.insert(profile.pets, { id = "existing-" .. tostring(index) })
+		end
+		local prepared, prepareError = PetService.prepareHatchBatch(player, "BasicEgg", 2)
+		expect(prepared):toBeNil()
+		expect(prepareError):toBe("Pet inventory needs 2 free slots (100 max)")
+		expect(#profile.pets):toBe(99)
+	end)
+end)

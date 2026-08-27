@@ -306,13 +306,31 @@ function EffectsController:startEggWobble()
 	self._hatchWobbleTween = wobbleTween
 end
 
+function EffectsController:cancelEggHatch()
+	if self._hatchWobbleTween then
+		pcall(function()
+			self._hatchWobbleTween:Cancel()
+		end)
+	end
+	if self._hatchScreenGui and self._hatchScreenGui.Parent then
+		self._hatchScreenGui:Destroy()
+	end
+	self._hatchScreenGui = nil
+	self._hatchOverlay = nil
+	self._hatchEggContainer = nil
+	self._hatchEggFrame = nil
+	self._hatchEggStroke = nil
+	self._hatchWhiteFlash = nil
+	self._hatchWobbleTween = nil
+	self._isHatching = false
+end
+
 --------------------------------------------------------------------------------
--- completeEggHatch(petData): cancels the infinite wobble, plays intense shakes,
--- flashes to rarity color, white screen flash, then reveals pet name + rarity
--- with a bounce animation. Auto-dismisses after 2 seconds.
---------------------------------------------------------------------------------
-function EffectsController:completeEggHatch(petData)
+-- completeEggHatch(petData, batchCount): cancels the infinite wobble and plays
+-- one shared reveal. Multi-Open never stacks ten blocking single-pet animations.
+function EffectsController:completeEggHatch(petData, batchCount, onComplete)
 	if not self._initialized then return end
+	batchCount = math.max(1, math.floor(tonumber(batchCount) or 1))
 
 	local rarity = petData and petData.rarity or "Common"
 	local presentation = PetVariantPresentation.resolve(petData)
@@ -345,9 +363,11 @@ function EffectsController:completeEggHatch(petData)
 	-- Reset rotation before intense shakes
 	eggContainer.Rotation = 0
 
-	-- Run the completion animation in a coroutine
+	-- Run the completion animation in a coroutine. Cleanup and callback dispatch
+	-- happen after xpcall so one presentation error cannot wedge Auto-Hatch.
 	task.spawn(function()
-		-- Phase 1: Quick intense shakes (3 fast shakes with increasing intensity)
+		local animationSucceeded, animationError = xpcall(function()
+			-- Phase 1: Quick intense shakes (3 fast shakes with increasing intensity)
 		local shakeAngles = { 8, -14, 18 }
 		for _, angle in ipairs(shakeAngles) do
 			local shakeInfo = TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
@@ -394,7 +414,9 @@ function EffectsController:completeEggHatch(petData)
 		petNameLabel.Size = UDim2.fromScale(1, 0.55)
 		petNameLabel.Position = UDim2.fromScale(0, 0.1)
 		petNameLabel.BackgroundTransparency = 1
-		petNameLabel.Text = petName
+		petNameLabel.Text = batchCount > 1
+			and ("x" .. tostring(batchCount) .. " EGGS OPENED!")
+			or petName
 		petNameLabel.TextColor3 = baseColor
 		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		petNameLabel.TextStrokeTransparency = 0
@@ -409,7 +431,9 @@ function EffectsController:completeEggHatch(petData)
 		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
 		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
 		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = presentation.variantLabel .. " • " .. rarity
+		rarityLabel.Text = batchCount > 1
+			and "Results ready"
+			or (presentation.variantLabel .. " • " .. rarity)
 		rarityLabel.TextColor3 = presentation.isShiny and shinyColor or baseColor
 		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		rarityLabel.TextStrokeTransparency = 0.2
@@ -426,10 +450,11 @@ function EffectsController:completeEggHatch(petData)
 		}):Play()
 		task.wait(0.4)
 
-		-- Phase 5: Auto-dismiss after 2 seconds with fade out
-		task.wait(2)
+		-- Keep the complete shared reveal below the three-second Auto-Hatch cadence
+		-- so normal automation cannot build an ever-growing presentation queue.
+		task.wait(0.75)
 
-		local fadeOutInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		local fadeOutInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		TweenService:Create(overlay, fadeOutInfo, {
 			BackgroundTransparency = 1,
 		}):Play()
@@ -442,20 +467,16 @@ function EffectsController:completeEggHatch(petData)
 			TextStrokeTransparency = 1,
 		}):Play()
 
-		task.wait(0.6)
-
-		-- Cleanup
-		if screenGui and screenGui.Parent then
-			screenGui:Destroy()
+			task.wait(0.35)
+		end, debug.traceback)
+		if not animationSucceeded then
+			warn("[EffectsController] Hatch reveal recovered from an error:\n" .. tostring(animationError))
 		end
-		self._hatchScreenGui = nil
-		self._hatchOverlay = nil
-		self._hatchEggContainer = nil
-		self._hatchEggFrame = nil
-		self._hatchEggStroke = nil
-		self._hatchWhiteFlash = nil
-		self._hatchWobbleTween = nil
-		self._isHatching = false
+
+		self:cancelEggHatch()
+		if type(onComplete) == "function" then
+			task.defer(onComplete)
+		end
 	end)
 end
 

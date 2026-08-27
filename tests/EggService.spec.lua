@@ -1,4 +1,4 @@
--- EggService.spec.lua - Paid QOF-07 single-egg transaction regressions.
+-- EggService.spec.lua - QOF-08 atomic paid batch transaction regressions.
 
 local originalRequire = require
 local Config = {
@@ -11,16 +11,31 @@ local PetData = originalRequire("src/ReplicatedStorage/Shared/PetData")
 local startEvents = {}
 local resultEvents = {}
 local startEvent = {}
-function startEvent:FireClient(player, eggType)
-	table.insert(startEvents, { player = player, eggType = eggType })
+function startEvent:FireClient(_, payload)
+	table.insert(startEvents, {
+		batchId = payload.batchId,
+		eggType = payload.eggType,
+		count = payload.count,
+		totalCost = payload.totalCost,
+	})
 end
 local resultEvent = {}
-function resultEvent:FireClient(player, pet)
-	table.insert(resultEvents, {
-		player = player,
+function resultEvent:FireClient(_, payload)
+	local pets = {}
+	for _, pet in ipairs(payload.pets or {}) do
+		table.insert(pets, {
+		id = pet.id,
 		variant = pet.variant,
 		shiny = pet.shiny,
 		isNewDiscovery = pet.isNewDiscovery,
+		})
+	end
+	table.insert(resultEvents, {
+		batchId = payload.batchId,
+		eggType = payload.eggType,
+		count = payload.count,
+		totalCost = payload.totalCost,
+		pets = pets,
 	})
 end
 local remotes = {}
@@ -42,7 +57,6 @@ function gameMock:GetService(name)
 	error("Unexpected service: " .. tostring(name))
 end
 rawset(_G, "game", gameMock)
-rawset(_G, "task", { wait = function() end })
 
 local function mockRequire(path)
 	if path == Config then return Config end
@@ -55,137 +69,268 @@ rawset(_G, "require", originalRequire)
 
 local player = { Name = "Tester", UserId = 42 }
 local profile = nil
-local removedCoins = 0
+local maximumBatchCount = 10
+local spentCoins = 0
 local refundedCoins = 0
-local hatchResult = nil
-local hatchError = nil
-local hatchThrows = false
 local questHatches = 0
+local inventoryReplications = 0
+local rollbackCount = 0
+local prepareError = nil
+local prepareThrows = false
+local commitError = nil
+local commitThrows = false
+local stationNear = true
 
 local dataService = {}
 function dataService.getPlayerData()
 	return profile
 end
+
 local currencyService = {}
-function currencyService.removeCoins(_, amount)
-	removedCoins = removedCoins + amount
+function currencyService.spend(_, currency, amount)
+	expect(currency):toBe("coins")
+	if profile.coins < amount then
+		return false
+	end
+	profile.coins = profile.coins - amount
+	spentCoins = spentCoins + amount
 	return true
 end
 function currencyService.creditRaw(_, currency, amount)
 	expect(currency):toBe("coins")
+	profile.coins = profile.coins + amount
 	refundedCoins = refundedCoins + amount
 	return true
 end
+
 local petService = {}
-function petService.canAddPet()
-	if profile.capacityBlocked then
-		return false, "Pet inventory full"
+function petService.canAddPets(_, count)
+	if profile.capacityBlocked or #profile.pets + count > profile.capacity then
+		return false, "Pet inventory needs " .. tostring(count) .. " free slots"
 	end
 	return true
 end
-function petService.hatchEgg(_, eggType, skipCostDeduction)
+function petService.prepareHatchBatch(_, eggType, count)
 	expect(eggType):toBe("BasicEgg")
-	expect(skipCostDeduction):toBeTrue()
-	if hatchThrows then
-		error("constructor exploded")
+	if prepareThrows then error("prepare exploded") end
+	if prepareError then return nil, prepareError end
+	local pets = {}
+	for index = 1, count do
+		table.insert(pets, {
+			id = "pet-" .. tostring(index),
+			petId = "Buddy",
+			variant = index % 2 == 0 and "Golden" or "Normal",
+			shiny = index == count,
+			isNewDiscovery = index == 1,
+		})
 	end
-	return hatchResult, hatchError
+	return {
+		pets = pets,
+		originalPetCount = #profile.pets,
+		mutationStarted = false,
+	}, nil
 end
+function petService.commitHatchBatch(_, prepared)
+	if commitThrows then error("commit exploded") end
+	if commitError then return false, commitError end
+	prepared.mutationStarted = true
+	for _, pet in ipairs(prepared.pets) do
+		table.insert(profile.pets, pet)
+	end
+	return true
+end
+function petService.rollbackHatchBatch(prepared)
+	rollbackCount = rollbackCount + 1
+	while #profile.pets > prepared.originalPetCount do
+		table.remove(profile.pets)
+	end
+	prepared.mutationStarted = false
+	return true
+end
+function petService.replicateInventory()
+	inventoryReplications = inventoryReplications + 1
+end
+
 local questService = {}
 function questService.incrementStat(_, statName, amount)
 	expect(statName):toBe("hatchEggs")
 	questHatches = questHatches + amount
 end
+local upgradeTreeService = {}
+function upgradeTreeService.getEntitlements()
+	return { multiOpenCount = maximumBatchCount }
+end
 
-EggService.init(dataService, currencyService, petService)
+EggService.init(dataService, currencyService, petService, upgradeTreeService)
 EggService.setQuestService(questService)
+EggService._stationValidator = function()
+	return stationNear
+end
 
 local function resetState()
-	profile = { unlockedZones = { 1 }, capacityBlocked = false }
-	removedCoins = 0
-	refundedCoins = 0
-	hatchResult = {
-		id = "pet-1",
-		petId = "Buddy",
-		variant = "Golden",
-		shiny = true,
-		isNewDiscovery = true,
+	profile = {
+		coins = 10000,
+		unlockedZones = { 1 },
+		pets = {},
+		capacity = 100,
+		capacityBlocked = false,
 	}
-	hatchError = nil
-	hatchThrows = false
+	maximumBatchCount = 10
+	spentCoins = 0
+	refundedCoins = 0
 	questHatches = 0
+	inventoryReplications = 0
+	rollbackCount = 0
+	prepareError = nil
+	prepareThrows = false
+	commitError = nil
+	commitThrows = false
+	stationNear = true
 	startEvents = {}
 	resultEvents = {}
 	EggService._hatchLock[player.UserId] = nil
+	EggService._selectedBatchCounts[player.UserId] = nil
+	EggService._transactionHook = nil
 end
 
-describe("EggService paid QOF-07 single hatch", function()
-	it("charges once, emits the canonical result, advances quests, and releases its lock", function()
+describe("EggService QOF-08 atomic batches", function()
+	it("charges one total, commits all pets, emits one DTO, and advances quests by count", function()
 		resetState()
-		local pet, err = EggService.purchaseAndHatch(player, "BasicEgg")
-		local expectedCost = Config.EggCosts[1].Coins
+		local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 5, {
+			bypassStation = false,
+		})
 
 		expect(err):toBeNil()
-		expect(pet):toBe(hatchResult)
-		expect(removedCoins):toBe(expectedCost)
+		expect(result.count):toBe(5)
+		expect(result.totalCost):toBe(500)
+		expect(spentCoins):toBe(500)
 		expect(refundedCoins):toBe(0)
+		expect(profile.coins):toBe(9500)
+		expect(#profile.pets):toBe(5)
 		expect(#startEvents):toBe(1)
-		expect(startEvents[1].eggType):toBe("BasicEgg")
+		expect(startEvents[1].count):toBe(5)
 		expect(#resultEvents):toBe(1)
-		expect(resultEvents[1].variant):toBe("Golden")
-		expect(resultEvents[1].shiny):toBeTrue()
-		expect(resultEvents[1].isNewDiscovery):toBeTrue()
-		expect(hatchResult.isNewDiscovery):toBeNil()
+		expect(resultEvents[1].count):toBe(5)
+		expect(#resultEvents[1].pets):toBe(5)
+		expect(resultEvents[1].pets[1].isNewDiscovery):toBeTrue()
+		expect(result.pets[1].isNewDiscovery):toBeNil()
+		expect(inventoryReplications):toBe(1)
+		expect(questHatches):toBe(5)
+		expect(EggService._hatchLock[player.UserId]):toBeNil()
+	end)
+
+	it("keeps single hatch compatible and charges exactly one egg", function()
+		resetState()
+		maximumBatchCount = 1
+		local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 1, {
+			bypassStation = false,
+		})
+		expect(err):toBeNil()
+		expect(result.count):toBe(1)
+		expect(spentCoins):toBe(100)
+		expect(#profile.pets):toBe(1)
 		expect(questHatches):toBe(1)
-		expect(EggService._hatchLock[player.UserId]):toBeNil()
 	end)
 
-	it("refunds exactly once and suppresses result and quest events when construction fails", function()
+	it("rejects hostile, unsupported, locked, and out-of-range counts before mutation", function()
+		for _, count in ipairs({ 0, 2.5, 3, 11 }) do
+			resetState()
+			local result, err = EggService.purchaseAndHatch(player, "BasicEgg", count, {
+				bypassStation = false,
+			})
+			expect(result):toBeNil()
+			expect(err):toBe("Invalid hatch count")
+			expect(spentCoins):toBe(0)
+			expect(#profile.pets):toBe(0)
+		end
+
 		resetState()
-		hatchResult = nil
-		hatchError = "Invalid pet in pool"
-		local pet, err = EggService.purchaseAndHatch(player, "BasicEgg")
-		local expectedCost = Config.EggCosts[1].Coins
-
-		expect(pet):toBeNil()
-		expect(err):toBe("Invalid pet in pool")
-		expect(removedCoins):toBe(expectedCost)
-		expect(refundedCoins):toBe(expectedCost)
-		expect(#startEvents):toBe(1)
-		expect(#resultEvents):toBe(0)
-		expect(questHatches):toBe(0)
-		expect(EggService._hatchLock[player.UserId]):toBeNil()
+		maximumBatchCount = 2
+		local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 5, {
+			bypassStation = false,
+		})
+		expect(result):toBeNil()
+		expect(err):toBe("Multi-Open upgrade required")
+		expect(spentCoins):toBe(0)
 	end)
 
-	it("refunds exactly and releases its lock after an unexpected constructor error", function()
+	it("requires station proximity manually while allowing server auto-hatch to bypass it", function()
 		resetState()
-		hatchThrows = true
-		local pet, err = EggService.purchaseAndHatch(player, "BasicEgg")
-		local expectedCost = Config.EggCosts[1].Coins
+		stationNear = false
+		local manualResult, manualError = EggService.purchaseAndHatch(player, "BasicEgg", 2, {
+			bypassStation = false,
+		})
+		expect(manualResult):toBeNil()
+		expect(manualError):toBe("Move closer to this egg station")
+		expect(spentCoins):toBe(0)
 
-		expect(pet):toBeNil()
-		expect(err):toBe("Hatch failed safely")
-		expect(removedCoins):toBe(expectedCost)
-		expect(refundedCoins):toBe(expectedCost)
-		expect(questHatches):toBe(0)
-		expect(EggService._hatchLock[player.UserId]):toBeNil()
+		local autoResult, autoError = EggService.purchaseAndHatch(player, "BasicEgg", 2, {
+			bypassStation = true,
+		})
+		expect(autoError):toBeNil()
+		expect(autoResult.count):toBe(2)
+		expect(spentCoins):toBe(200)
 	end)
 
-	it("rejects locked zones and full inventories before charging", function()
+	it("preflights zone, total capacity, and total price without partial hatches", function()
 		resetState()
 		profile.unlockedZones = {}
-		local zonePet, zoneError = EggService.purchaseAndHatch(player, "BasicEgg")
-		expect(zonePet):toBeNil()
+		local zoneResult, zoneError = EggService.purchaseAndHatch(player, "BasicEgg", 5, true)
+		expect(zoneResult):toBeNil()
 		expect(zoneError):toBe("Zone not unlocked for this egg type")
-		expect(removedCoins):toBe(0)
+		expect(spentCoins):toBe(0)
 
 		resetState()
-		profile.capacityBlocked = true
-		local capacityPet, capacityError = EggService.purchaseAndHatch(player, "BasicEgg")
-		expect(capacityPet):toBeNil()
-		expect(capacityError):toBe("Pet inventory full")
-		expect(removedCoins):toBe(0)
-		expect(#startEvents):toBe(0)
-		expect(#resultEvents):toBe(0)
+		profile.capacity = 4
+		local capacityResult, capacityError = EggService.purchaseAndHatch(player, "BasicEgg", 5, true)
+		expect(capacityResult):toBeNil()
+		expect(capacityError):toBe("Pet inventory needs 5 free slots")
+		expect(spentCoins):toBe(0)
+
+		resetState()
+		profile.coins = 499
+		local coinResult, coinError = EggService.purchaseAndHatch(player, "BasicEgg", 5, true)
+		expect(coinResult):toBeNil()
+		expect(coinError):toBe("Not enough coins for x5")
+		expect(spentCoins):toBe(0)
+		expect(#profile.pets):toBe(0)
+	end)
+
+	it("rolls back the exact total and every pet after injected transaction faults", function()
+		for _, faultStage in ipairs({ "afterSpend", "afterInventory" }) do
+			resetState()
+			EggService._transactionHook = function(stage)
+				if stage == faultStage then
+					error("injected " .. stage)
+				end
+			end
+			local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 10, true)
+			expect(result):toBeNil()
+			expect(err):toBe("Hatch failed safely")
+			expect(profile.coins):toBe(10000)
+			expect(spentCoins):toBe(1000)
+			expect(refundedCoins):toBe(1000)
+			expect(#profile.pets):toBe(0)
+			expect(#startEvents):toBe(0)
+			expect(#resultEvents):toBe(0)
+			expect(questHatches):toBe(0)
+			expect(EggService._hatchLock[player.UserId]):toBeNil()
+		end
+		EggService._transactionHook = nil
+	end)
+
+	it("preserves a validated selection for paid auto-hatch and cleans up player state", function()
+		resetState()
+		local selected, selectionError, state = EggService.setSelectedBatchCount(player, 5)
+		expect(selected):toBeTrue()
+		expect(selectionError):toBeNil()
+		expect(state.selectedCount):toBe(5)
+		expect(state.maximumCount):toBe(10)
+		expect(EggService.getSelectedBatchCount(player)):toBe(5)
+
+		EggService._hatchLock[player.UserId] = true
+		EggService.onPlayerRemoving(player)
+		expect(EggService._hatchLock[player.UserId]):toBeNil()
+		expect(EggService._selectedBatchCounts[player.UserId]):toBeNil()
 	end)
 end)

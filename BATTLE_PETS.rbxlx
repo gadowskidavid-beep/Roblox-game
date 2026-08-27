@@ -814,6 +814,7 @@ end
 -- Create all RemoteFunctions
 local remoteFunctions = {
 	"HatchEgg",
+	"SetHatchBatchSize",
 	"EquipPet",
 	"UnequipPet",
 	"DeletePet",
@@ -869,7 +870,7 @@ PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
-EggService.init(DataService, CurrencyService, PetService)
+EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
 ShopService.setEggService(EggService)
 
@@ -947,18 +948,32 @@ getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	return DataService.getClientData(player)
 end
 
--- HatchEgg (3 second cooldown)
-getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType)
+-- HatchEgg (one authoritative batch per 3 seconds)
+getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, requestedCount)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
 	if not canCall(player, "HatchEgg", 3) then
 		return nil, "Please wait before hatching again"
 	end
-	if type(eggType) ~= "string" then
-		return nil, "Invalid egg type parameter"
+	if type(eggType) ~= "string" or type(requestedCount) ~= "number" then
+		return nil, "Invalid hatch parameters"
 	end
-	return EggService.purchaseAndHatch(player, eggType)
+	return EggService.purchaseAndHatch(player, eggType, requestedCount, {
+		bypassStation = false,
+	})
+end
+
+-- SetHatchBatchSize only stores a validated session preference for auto-hatch.
+-- HatchEgg validates the count again for every paid transaction.
+getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "SetHatchBatchSize", 0.15) then
+		return false, "Please wait before changing batch size", EggService.getBatchState(player)
+	end
+	return EggService.setSelectedBatchCount(player, requestedCount)
 end
 
 -- EquipPet (0.5 second cooldown)
@@ -1427,6 +1442,9 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup rate limits
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
+
+	-- Cleanup QOF-08 hatch locks and session batch preference
+	EggService.onPlayerRemoving(player)
 
 	-- Cleanup ShopService player state (active buffs)
 	ShopService._activeBuffs[player.UserId] = nil
@@ -2573,16 +2591,24 @@ function PetService.getMaxInventory(player)
 	)
 end
 
-function PetService.canAddPet(player)
+function PetService.canAddPets(player, count)
+	if type(count) ~= "number" or count ~= count or count == math.huge or count == -math.huge
+		or count % 1 ~= 0 or count < 1 then
+		return false, "Invalid pet count"
+	end
 	local data = PetService._dataService.getPlayerData(player)
 	if not data or type(data.pets) ~= "table" then
 		return false, "No player data"
 	end
 	local capacity = PetService.getMaxInventory(player)
-	if #data.pets >= capacity then
-		return false, "Pet inventory full (" .. tostring(capacity) .. ")"
+	if #data.pets + count > capacity then
+		return false, "Pet inventory needs " .. tostring(count) .. " free slots (" .. tostring(capacity) .. " max)"
 	end
 	return true
+end
+
+function PetService.canAddPet(player)
+	return PetService.canAddPets(player, 1)
 end
 
 -- Preserve the four-category discovery contract until the dedicated combined
@@ -2601,49 +2627,20 @@ function PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
 	return petId
 end
 
-function PetService.hatchEgg(player, eggType, skipCostDeduction)
-	if not player or type(eggType) ~= "string" then
-		return nil, "Invalid parameters"
+local function copyBooleanMap(input)
+	local output = {}
+	if type(input) ~= "table" then
+		return output
 	end
-
-	-- Validate egg type exists
-	local eggDef = PetData.Eggs[eggType]
-	if not eggDef then
-		return nil, "Unknown egg type: " .. tostring(eggType)
-	end
-
-	local data = PetService._dataService.getPlayerData(player)
-	if not data then
-		return nil, "No player data"
-	end
-
-	local hasSpace, capacityError = PetService.canAddPet(player)
-	if not hasSpace then
-		return nil, capacityError
-	end
-
-	-- Get egg cost from config based on zone
-	local eggZone = eggDef.zone
-	local eggCost = Config.EggCosts[eggZone]
-	if not eggCost then
-		return nil, "No cost defined for egg zone"
-	end
-
-	-- Deduct cost (only if not already deducted by EggService)
-	if not skipCostDeduction then
-		if eggCost.Coins then
-			local success = PetService._currencyService.removeCoins(player, eggCost.Coins)
-			if not success then
-				return nil, "Not enough coins"
-			end
+	for key, value in pairs(input) do
+		if type(key) == "string" and value == true then
+			output[key] = true
 		end
 	end
+	return output
+end
 
-	-- General Luck affects species and direct outcomes. QOF-07 Tree effects are
-	-- intentionally split: Egg Quality affects species only, while each direct
-	-- variant multiplier affects only its matching capped chance.
-	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
-	local hatchEntitlements = PetService.getHatchEntitlements(player)
+local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered)
 	local petId = weightedRandomPet(
 		eggDef.petPool,
 		luckMultiplier,
@@ -2665,16 +2662,12 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		variant = baseVariant,
 		shiny = isShiny,
 	})
-	local petName = presentation.displayPetName
-	local petDamage = PetVariantMath.getBaseDamage(petId, baseVariant, isShiny)
-
-	-- Create unique pet instance
 	local newPet = {
 		id = HttpService:GenerateGUID(false),
 		petId = petId,
-		name = petName,
+		name = presentation.displayPetName,
 		rarity = petDef.rarity,
-		damage = petDamage,
+		damage = PetVariantMath.getBaseDamage(petId, baseVariant, isShiny),
 		variant = baseVariant,
 		shiny = isShiny,
 		golden = baseVariant == "Golden",
@@ -2682,31 +2675,165 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		equipped = false,
 	}
 
-	-- Track discovery through the existing four-category compatibility keys.
 	local discoveryKey = PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
-	if not data.discoveredPets then
-		data.discoveredPets = {}
+	newPet.isNewDiscovery = discovered[discoveryKey] ~= true
+	discovered[discoveryKey] = true
+	return newPet, discoveryKey
+end
+
+-- Prepare every random outcome without mutating inventory, discovery, currency,
+-- quests, or replication. EggService can therefore reject or roll back a whole
+-- batch instead of exposing partially completed hatches.
+function PetService.prepareHatchBatch(player, eggType, count)
+	if not player or type(eggType) ~= "string" then
+		return nil, "Invalid parameters"
 	end
-	if not data.discoveredPets[discoveryKey] then
-		data.discoveredPets[discoveryKey] = true
-		newPet.isNewDiscovery = true
-	else
-		newPet.isNewDiscovery = false
+	local maximumCount = BalanceConfig.Hatch.MultiOpen[#BalanceConfig.Hatch.MultiOpen].eggCount
+	if type(count) ~= "number" or count % 1 ~= 0 or count < 1 or count > maximumCount then
+		return nil, "Invalid hatch count"
+	end
+	local eggDef = PetData.Eggs[eggType]
+	if not eggDef then
+		return nil, "Unknown egg type: " .. tostring(eggType)
+	end
+	local data = PetService._dataService.getPlayerData(player)
+	if not data or type(data.pets) ~= "table" then
+		return nil, "No player data"
+	end
+	local hasSpace, capacityError = PetService.canAddPets(player, count)
+	if not hasSpace then
+		return nil, capacityError
+	end
+	if not Config.EggCosts[eggDef.zone] then
+		return nil, "No cost defined for egg zone"
 	end
 
-	-- Add to player inventory
-	table.insert(data.pets, newPet)
-
-	-- Fire inventory update event
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("PetInventoryUpdated")
-		if event then
-			event:FireClient(player, data.pets)
+	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
+	local hatchEntitlements = PetService.getHatchEntitlements(player)
+	local discovered = copyBooleanMap(data.discoveredPets)
+	local pets = {}
+	local newDiscoveryKeys = {}
+	for _ = 1, count do
+		local pet, discoveryKeyOrError = buildPreparedPet(
+			eggDef,
+			luckMultiplier,
+			hatchEntitlements,
+			discovered
+		)
+		if not pet then
+			return nil, discoveryKeyOrError
+		end
+		table.insert(pets, pet)
+		if pet.isNewDiscovery then
+			newDiscoveryKeys[discoveryKeyOrError] = true
 		end
 	end
 
-	return newPet, nil
+	return {
+		player = player,
+		data = data,
+		eggType = eggType,
+		pets = pets,
+		newDiscoveryKeys = newDiscoveryKeys,
+		originalPetCount = #data.pets,
+		discoveryTableWasNil = type(data.discoveredPets) ~= "table",
+		mutationStarted = false,
+		committed = false,
+	}, nil
+end
+
+function PetService.commitHatchBatch(player, prepared)
+	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed then
+		return false, "Invalid prepared hatch"
+	end
+	local data = PetService._dataService.getPlayerData(player)
+	if data ~= prepared.data or type(data.pets) ~= "table" or #data.pets ~= prepared.originalPetCount then
+		return false, "Inventory changed during hatch"
+	end
+	local hasSpace, capacityError = PetService.canAddPets(player, #prepared.pets)
+	if not hasSpace then
+		return false, capacityError
+	end
+
+	prepared.mutationStarted = true
+	if type(data.discoveredPets) ~= "table" then
+		data.discoveredPets = {}
+	end
+	for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+		data.discoveredPets[discoveryKey] = true
+	end
+	for _, pet in ipairs(prepared.pets) do
+		table.insert(data.pets, pet)
+	end
+	prepared.committed = true
+	return true
+end
+
+function PetService.rollbackHatchBatch(prepared)
+	if type(prepared) ~= "table" or not prepared.mutationStarted or type(prepared.data) ~= "table" then
+		return true
+	end
+	local data = prepared.data
+	if type(data.pets) ~= "table" then
+		return false
+	end
+	while #data.pets > prepared.originalPetCount do
+		table.remove(data.pets)
+	end
+	if prepared.discoveryTableWasNil then
+		data.discoveredPets = nil
+	elseif type(data.discoveredPets) == "table" then
+		for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+			data.discoveredPets[discoveryKey] = nil
+		end
+	end
+	prepared.mutationStarted = false
+	prepared.committed = false
+	return true
+end
+
+function PetService.replicateInventory(player)
+	local data = PetService._dataService.getPlayerData(player)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("PetInventoryUpdated")
+	if data and event then
+		event:FireClient(player, data.pets)
+	end
+end
+
+-- Compatibility single-roll API used by campaign rewards. Paid player hatches
+-- are orchestrated by EggService through the atomic batch methods above.
+function PetService.hatchEgg(player, eggType, skipCostDeduction)
+	local prepared, prepareError = PetService.prepareHatchBatch(player, eggType, 1)
+	if not prepared then
+		return nil, prepareError
+	end
+
+	local paidAmount = 0
+	if not skipCostDeduction then
+		local eggDef = PetData.Eggs[eggType]
+		local eggCost = eggDef and Config.EggCosts[eggDef.zone]
+		paidAmount = eggCost and eggCost.Coins or 0
+		if paidAmount > 0 then
+			local spent = PetService._currencyService.spend
+				and PetService._currencyService.spend(player, "coins", paidAmount)
+				or PetService._currencyService.removeCoins(player, paidAmount)
+			if not spent then
+				return nil, "Not enough coins"
+			end
+		end
+	end
+
+	local callSucceeded, committed, commitError = pcall(PetService.commitHatchBatch, player, prepared)
+	if not callSucceeded or not committed then
+		PetService.rollbackHatchBatch(prepared)
+		if paidAmount > 0 then
+			PetService._currencyService.creditRaw(player, "coins", paidAmount)
+		end
+		return nil, callSucceeded and commitError or "Hatch failed safely"
+	end
+	PetService.replicateInventory(player)
+	return prepared.pets[1], nil
 end
 
 -- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
@@ -6523,8 +6650,10 @@ return CampaignService
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	EggService.lua - Egg hatching orchestration
-	Validates purchase, triggers animation events, and delegates to PetService for hatching.
+	EggService.lua - Atomic server-authoritative egg batch orchestration.
+	QOF-08 validates station proximity, entitlement-selected batch size, total
+	price and total capacity before committing any result. Client animation never
+	delays the authoritative transaction.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -6534,249 +6663,345 @@ local PetData = require(game.ReplicatedStorage.Shared.PetData)
 
 local EggService = {}
 
--- References to other services
 EggService._dataService = nil
 EggService._currencyService = nil
 EggService._petService = nil
 EggService._questService = nil
-
--- Per-player purchase lock to prevent concurrent hatch exploits
+EggService._upgradeTreeService = nil
 EggService._hatchLock = {}
+EggService._selectedBatchCounts = {}
+EggService._transactionHook = nil
+EggService._stationValidator = nil
+EggService._nextBatchId = 0
 
-function EggService.init(dataService, currencyService, petService)
+local VALID_BATCH_COUNTS = {
+	[1] = true,
+	[2] = true,
+	[5] = true,
+	[10] = true,
+}
+
+function EggService.init(dataService, currencyService, petService, upgradeTreeService)
 	EggService._dataService = dataService
 	EggService._currencyService = currencyService
 	EggService._petService = petService
+	EggService._upgradeTreeService = upgradeTreeService
 end
 
--- Purchase and hatch an egg (full flow with animation delay)
-function EggService.purchaseAndHatch(player, eggType)
-	if not player or type(eggType) ~= "string" then
-		return nil, "Invalid parameters"
-	end
-
-	-- Per-player lock: prevent concurrent egg hatching
-	if EggService._hatchLock[player.UserId] then
-		return nil, "Already hatching an egg"
-	end
-	EggService._hatchLock[player.UserId] = true
-	local paidCoinCost = 0
-
-	local function doHatch()
-		-- Validate egg type exists
-		local eggDef = PetData.Eggs[eggType]
-		if not eggDef then
-			return nil, "Unknown egg type: " .. tostring(eggType)
-		end
-
-		local data = EggService._dataService.getPlayerData(player)
-		if not data then
-			return nil, "No player data"
-		end
-
-		local hasSpace, capacityError = EggService._petService.canAddPet(player)
-		if not hasSpace then
-			return nil, capacityError
-		end
-
-		-- Validate player has unlocked the required zone for this egg
-		local zoneRequired = eggDef.zone
-		local zoneUnlocked = false
-		for _, unlockedId in ipairs(data.unlockedZones) do
-			if unlockedId == zoneRequired then
-				zoneUnlocked = true
-				break
-			end
-		end
-		if not zoneUnlocked then
-			return nil, "Zone not unlocked for this egg type"
-		end
-
-		-- Deduct cost BEFORE the animation delay to prevent TOCTOU race condition
-		local eggCost = Config.EggCosts[zoneRequired]
-		if eggCost and eggCost.Coins then
-			local success = EggService._currencyService.removeCoins(player, eggCost.Coins)
-			if not success then
-				return nil, "Not enough coins"
-			end
-			paidCoinCost = eggCost.Coins
-		end
-
-		-- Fire hatch start event to client (triggers animation)
-		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-		if remotes then
-			local event = remotes:FindFirstChild("EggHatchStart")
-			if event then
-				event:FireClient(player, eggType)
-			end
-		end
-
-		-- Short delay to allow client to start animation (1 second; wobble begins immediately on client)
-		task.wait(1)
-
-		-- Delegate to PetService for actual hatching (cost already deducted)
-		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
-		if not newPet then
-			-- Refund exactly what was deducted without reward multipliers.
-			if paidCoinCost > 0 then
-				EggService._currencyService.creditRaw(player, "coins", paidCoinCost)
-				paidCoinCost = 0
-			end
-			return nil, err
-		end
-		paidCoinCost = 0
-
-		-- Fire hatch result event with the new pet data
-		if remotes then
-			local event = remotes:FindFirstChild("EggHatchResult")
-			if event then
-				event:FireClient(player, newPet)
-			end
-		end
-
-		-- Strip isNewDiscovery from the pet table so it does not persist in DataStore
-		newPet.isNewDiscovery = nil
-
-		-- Track quest progress: egg hatched
-		if EggService._questService then
-			EggService._questService.incrementStat(player, "hatchEggs", 1)
-		end
-
-		return newPet, nil
-	end
-
-	local callSucceeded, newPet, err = pcall(doHatch)
-	if not callSucceeded and paidCoinCost > 0 then
-		EggService._currencyService.creditRaw(player, "coins", paidCoinCost)
-		paidCoinCost = 0
-	end
-	EggService._hatchLock[player.UserId] = nil
-	if not callSucceeded then
-		return nil, "Hatch failed safely"
-	end
-	return newPet, err
-end
-
--- Set quest service reference (called after init to avoid circular deps)
 function EggService.setQuestService(questService)
 	EggService._questService = questService
 end
 
--- Hatch an egg for free (used by auto-hatch; no cost deduction, still validates zone)
-function EggService.hatchFree(player, eggType)
+local function isUnlockedZone(data, zoneId)
+	for _, unlockedId in ipairs(data.unlockedZones or {}) do
+		if unlockedId == zoneId then
+			return true
+		end
+	end
+	return false
+end
+
+local function getMaximumBatchCount(player)
+	if not EggService._upgradeTreeService then
+		return 1
+	end
+	local entitlements = EggService._upgradeTreeService.getEntitlements(player)
+	local count = type(entitlements) == "table" and entitlements.multiOpenCount or 1
+	if VALID_BATCH_COUNTS[count] then
+		return count
+	end
+	return 1
+end
+
+local function validateRequestedCount(player, requestedCount)
+	if type(requestedCount) ~= "number" or requestedCount ~= requestedCount
+		or requestedCount == math.huge or requestedCount == -math.huge
+		or requestedCount % 1 ~= 0 or not VALID_BATCH_COUNTS[requestedCount] then
+		return nil, "Invalid hatch count"
+	end
+	local maximum = getMaximumBatchCount(player)
+	if requestedCount > maximum then
+		return nil, "Multi-Open upgrade required"
+	end
+	return requestedCount, nil
+end
+
+function EggService.getSelectedBatchCount(player)
+	if not player then
+		return 1
+	end
+	local key = player.UserId or player
+	local selected = EggService._selectedBatchCounts[key] or 1
+	local validated = validateRequestedCount(player, selected)
+	if validated then
+		return selected
+	end
+	EggService._selectedBatchCounts[key] = 1
+	return 1
+end
+
+function EggService.getBatchState(player)
+	return {
+		selectedCount = EggService.getSelectedBatchCount(player),
+		maximumCount = getMaximumBatchCount(player),
+		availableCounts = { 1, 2, 5, 10 },
+	}
+end
+
+function EggService.setSelectedBatchCount(player, requestedCount)
+	if not player then
+		return false, "Invalid player", EggService.getBatchState(player)
+	end
+	local count, countError = validateRequestedCount(player, requestedCount)
+	if not count then
+		return false, countError, EggService.getBatchState(player)
+	end
+	EggService._selectedBatchCounts[player.UserId or player] = count
+	return true, nil, EggService.getBatchState(player)
+end
+
+local function defaultStationValidator(player, eggType)
+	local character = player and player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not rootPart:IsA("BasePart") then
+		return false
+	end
+	local workspaceService = game:GetService("Workspace")
+	local stations = workspaceService:FindFirstChild("EggStations")
+	if not stations then
+		return false
+	end
+	for _, station in ipairs(stations:GetChildren()) do
+		if station:IsA("BasePart") and station.Name == "EggModel" then
+			local tag = station:FindFirstChild("PromptEggType")
+			local prompt = station:FindFirstChild("HatchPrompt")
+			if tag and tag:IsA("StringValue") and tag.Value == eggType
+				and prompt and prompt:IsA("ProximityPrompt") then
+				local allowedDistance = math.max(1, prompt.MaxActivationDistance) + 2
+				if (station.Position - rootPart.Position).Magnitude <= allowedDistance then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function isNearStation(player, eggType)
+	if type(EggService._stationValidator) == "function" then
+		return EggService._stationValidator(player, eggType) == true
+	end
+	return defaultStationValidator(player, eggType)
+end
+
+local function runTransactionHook(stage, transaction)
+	if type(EggService._transactionHook) == "function" then
+		EggService._transactionHook(stage, transaction)
+	end
+end
+
+local function makeBatchId(player)
+	EggService._nextBatchId = EggService._nextBatchId + 1
+	return tostring(player.UserId or "player") .. ":" .. tostring(EggService._nextBatchId)
+end
+
+local function rollbackTransaction(transaction)
+	local inventoryRestored = true
+	if transaction.prepared and transaction.prepared.mutationStarted then
+		inventoryRestored = EggService._petService.rollbackHatchBatch(transaction.prepared) == true
+	end
+	local currencyRestored = true
+	if transaction.spent and transaction.totalCost > 0 then
+		currencyRestored = EggService._currencyService.creditRaw(
+			transaction.player,
+			"coins",
+			transaction.totalCost
+		) == true
+		transaction.spent = false
+	end
+	return inventoryRestored and currencyRestored
+end
+
+local function notifyCommittedBatch(player, result)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if remotes then
+		local startEvent = remotes:FindFirstChild("EggHatchStart")
+		if startEvent then
+			pcall(function()
+				startEvent:FireClient(player, {
+					batchId = result.batchId,
+					eggType = result.eggType,
+					count = result.count,
+					totalCost = result.totalCost,
+				})
+			end)
+		end
+		local resultEvent = remotes:FindFirstChild("EggHatchResult")
+		if resultEvent then
+			pcall(function()
+				resultEvent:FireClient(player, result)
+			end)
+		end
+	end
+
+	-- The result DTO is serialized before transient discovery flags are removed.
+	-- Inventory replication and persistence never receive those presentation flags.
+	for _, pet in ipairs(result.pets) do
+		pet.isNewDiscovery = nil
+	end
+	pcall(EggService._petService.replicateInventory, player)
+	if EggService._questService then
+		pcall(EggService._questService.incrementStat, player, "hatchEggs", result.count)
+	end
+end
+
+-- options is server-owned. Manual remote calls pass { bypassStation = false };
+-- auto-hatch passes true and still pays the full batch price.
+function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
-
-	-- Per-player lock: prevent concurrent egg hatching
-	if EggService._hatchLock[player.UserId] then
-		return nil, "Already hatching an egg"
+	options = type(options) == "table" and options or {
+		bypassStation = options == true,
+	}
+	local count = requestedCount == nil and EggService.getSelectedBatchCount(player) or requestedCount
+	local validatedCount, countError = validateRequestedCount(player, count)
+	if not validatedCount then
+		return nil, countError
 	end
-	EggService._hatchLock[player.UserId] = true
+	if options.bypassStation ~= true and not isNearStation(player, eggType) then
+		return nil, "Move closer to this egg station"
+	end
 
-	local function doHatch()
-		-- Validate egg type exists
+	local lockKey = player.UserId or player
+	if EggService._hatchLock[lockKey] then
+		return nil, "Already hatching eggs"
+	end
+	EggService._hatchLock[lockKey] = true
+	EggService._selectedBatchCounts[lockKey] = validatedCount
+
+	local transaction = {
+		player = player,
+		eggType = eggType,
+		count = validatedCount,
+		prepared = nil,
+		spent = false,
+		totalCost = 0,
+	}
+
+	local function performTransaction()
 		local eggDef = PetData.Eggs[eggType]
 		if not eggDef then
 			return nil, "Unknown egg type: " .. tostring(eggType)
 		end
-
 		local data = EggService._dataService.getPlayerData(player)
 		if not data then
 			return nil, "No player data"
 		end
-
-		local hasSpace, capacityError = EggService._petService.canAddPet(player)
+		if not isUnlockedZone(data, eggDef.zone) then
+			return nil, "Zone not unlocked for this egg type"
+		end
+		local hasSpace, capacityError = EggService._petService.canAddPets(player, validatedCount)
 		if not hasSpace then
 			return nil, capacityError
 		end
+		local eggCost = Config.EggCosts[eggDef.zone]
+		local unitCost = eggCost and eggCost.Coins
+		if type(unitCost) ~= "number" or unitCost < 0 or unitCost % 1 ~= 0 then
+			return nil, "No valid coin cost for egg zone"
+		end
 
-		-- Validate player has unlocked the required zone for this egg
-		local zoneRequired = eggDef.zone
-		local zoneUnlocked = false
-		for _, unlockedId in ipairs(data.unlockedZones) do
-			if unlockedId == zoneRequired then
-				zoneUnlocked = true
-				break
+		local prepared, prepareError = EggService._petService.prepareHatchBatch(
+			player,
+			eggType,
+			validatedCount
+		)
+		if not prepared then
+			return nil, prepareError
+		end
+		transaction.prepared = prepared
+		runTransactionHook("afterPrepare", transaction)
+
+		transaction.totalCost = options.skipCharge == true and 0 or unitCost * validatedCount
+		if transaction.totalCost > 0 then
+			local spent = EggService._currencyService.spend(player, "coins", transaction.totalCost)
+			if not spent then
+				return nil, "Not enough coins for x" .. tostring(validatedCount)
 			end
-		end
-		if not zoneUnlocked then
-			return nil, "Zone not unlocked for this egg type"
-		end
-
-		-- No cost deduction for auto-hatch (player already paid for the buff)
-
-		-- Fire hatch start event to client (triggers animation)
-		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-		if remotes then
-			local event = remotes:FindFirstChild("EggHatchStart")
-			if event then
-				event:FireClient(player, eggType)
-			end
+			transaction.spent = true
+			runTransactionHook("afterSpend", transaction)
 		end
 
-		-- Short delay to allow client to start animation
-		task.wait(1)
-
-		-- Delegate to PetService for actual hatching (skip cost deduction)
-		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
-		if not newPet then
-			return nil, err
+		local committed, commitError = EggService._petService.commitHatchBatch(player, prepared)
+		if not committed then
+			return nil, commitError
 		end
-
-		-- Fire hatch result event with the new pet data
-		if remotes then
-			local event = remotes:FindFirstChild("EggHatchResult")
-			if event then
-				event:FireClient(player, newPet)
-			end
-		end
-
-		-- Strip isNewDiscovery from the pet table so it does not persist in DataStore
-		newPet.isNewDiscovery = nil
-
-		-- Track quest progress: egg hatched
-		if EggService._questService then
-			EggService._questService.incrementStat(player, "hatchEggs", 1)
-		end
-
-		return newPet, nil
+		runTransactionHook("afterInventory", transaction)
+		return {
+			batchId = makeBatchId(player),
+			eggType = eggType,
+			count = validatedCount,
+			totalCost = transaction.totalCost,
+			pets = prepared.pets,
+		}, nil
 	end
 
-	local callSucceeded, newPet, err = pcall(doHatch)
-	EggService._hatchLock[player.UserId] = nil
+	local callSucceeded, result, hatchError = pcall(performTransaction)
+	local rollbackSucceeded = true
+	if not callSucceeded or not result then
+		rollbackSucceeded = rollbackTransaction(transaction)
+	end
+	EggService._hatchLock[lockKey] = nil
+
+	if not rollbackSucceeded then
+		return nil, "Hatch rollback failed"
+	end
 	if not callSucceeded then
 		return nil, "Hatch failed safely"
 	end
-	return newPet, err
+	if not result then
+		return nil, hatchError
+	end
+
+	notifyCommittedBatch(player, result)
+	return result, nil
 end
 
--- Get eggs available to a player based on their unlocked zones
+-- Compatibility API for explicitly free server rewards. Auto-hatch does not use
+-- this path; it pays the same total price as a manual batch.
+function EggService.hatchFree(player, eggType)
+	return EggService.purchaseAndHatch(player, eggType, 1, {
+		bypassStation = true,
+		skipCharge = true,
+	})
+end
+
+function EggService.onPlayerRemoving(player)
+	if not player then return end
+	local key = player.UserId or player
+	EggService._hatchLock[key] = nil
+	EggService._selectedBatchCounts[key] = nil
+end
+
 function EggService.getAvailableEggs(player)
 	if not player then
 		return {}
 	end
-
 	local data = EggService._dataService.getPlayerData(player)
 	if not data then
 		return {}
 	end
-
 	local available = {}
 	for eggType, eggDef in pairs(PetData.Eggs) do
-		for _, unlockedId in ipairs(data.unlockedZones) do
-			if unlockedId == eggDef.zone then
-				table.insert(available, {
-					eggType = eggType,
-					name = eggDef.name,
-					zone = eggDef.zone,
-					cost = Config.EggCosts[eggDef.zone],
-				})
-				break
-			end
+		if isUnlockedZone(data, eggDef.zone) then
+			table.insert(available, {
+				eggType = eggType,
+				name = eggDef.name,
+				zone = eggDef.zone,
+				cost = Config.EggCosts[eggDef.zone],
+			})
 		end
 	end
-
 	return available
 end
 
@@ -7374,11 +7599,14 @@ function ShopService._processAutoHatch()
 							break
 						end
 					end
-					-- Auto-hatch is automation, not a free-egg faucet: every hatch
-					-- uses the normal server-authoritative coin price and inventory limit.
+					-- Auto-hatch uses the same atomic paid batch path and the player's
+					-- server-validated session selection. It never falls back silently.
 					if targetEgg then
 						task.spawn(function()
-							ShopService._eggService.purchaseAndHatch(player, targetEgg)
+							local batchCount = ShopService._eggService.getSelectedBatchCount(player)
+							ShopService._eggService.purchaseAndHatch(player, targetEgg, batchCount, {
+								bypassStation = true,
+							})
 						end)
 					end
 				end
@@ -7396,7 +7624,7 @@ return ShopService
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	UpgradeTreeService.lua - Server-authoritative QOF-07 tree purchases and effects.
+	UpgradeTreeService.lua - Server-authoritative QOF-07/QOF-08 tree purchases and effects.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -7430,6 +7658,12 @@ end
 if BalanceConfig.Hatch.EggQualityRuntimeEnabled then
 	for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 		registerPurchasable(level, "EggQuality")
+	end
+end
+
+if BalanceConfig.Hatch.MultiOpenRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+		registerPurchasable(level, "MultiOpen")
 	end
 end
 
@@ -7505,8 +7739,25 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 		end
 	end
 
-	-- Multi-Open purchases may exist in legacy saves, but QOF-08 owns their
-	-- runtime effect and purchase activation.
+	if BalanceConfig.Hatch.MultiOpenRuntimeEnabled then
+		-- The imported tree is one strict chain: Eggs I -> II -> III -> IV -> V.
+		-- Sparse or forged legacy flags stop at the last fully contiguous stage.
+		local eggQualityComplete = true
+		for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
+			if purchased[level.id] ~= true then
+				eggQualityComplete = false
+				break
+			end
+		end
+		if eggQualityComplete then
+			entitlements.multiOpenCount = applyHighestContiguousLevel(
+				BalanceConfig.Hatch.MultiOpen,
+				purchased,
+				"eggCount"
+			)
+		end
+	end
+
 	return entitlements
 end
 
@@ -7741,6 +7992,7 @@ local player = Players.LocalPlayer
 -- RemoteFunctions
 local GetPlayerData = Remotes:WaitForChild("GetPlayerData")
 local HatchEgg = Remotes:WaitForChild("HatchEgg")
+local SetHatchBatchSize = Remotes:WaitForChild("SetHatchBatchSize")
 local EquipPet = Remotes:WaitForChild("EquipPet")
 local UnequipPet = Remotes:WaitForChild("UnequipPet")
 local DeletePet = Remotes:WaitForChild("DeletePet")
@@ -7760,6 +8012,7 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
+local GetUpgradeTreeState = Remotes:WaitForChild("GetUpgradeTreeState")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -7777,6 +8030,7 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
+local UpgradeTreeUpdated = Remotes:WaitForChild("UpgradeTreeUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -7920,6 +8174,51 @@ campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
 musicController:init()
 upgradeTreeController:init(Remotes, playerData)
+
+local function applyHatchEntitlementState(serverState)
+	local entitlements = type(serverState) == "table" and serverState.entitlements or nil
+	local maximumCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
+	uiController:setHatchBatchLimit(maximumCount)
+end
+
+local hatchSelectionRequestToken = 0
+uiController:setHatchBatchSelectionCallback(function(count)
+	hatchSelectionRequestToken += 1
+	local token = hatchSelectionRequestToken
+	uiController:showHatchFeedback("Updating hatch amount…", true)
+	task.spawn(function()
+		local invoked, accepted, message, batchState = pcall(function()
+			return SetHatchBatchSize:InvokeServer(count)
+		end)
+		if token ~= hatchSelectionRequestToken then
+			return
+		end
+		if type(batchState) == "table" then
+			uiController:setHatchBatchState(batchState.maximumCount, batchState.selectedCount)
+		end
+		if not invoked then
+			uiController:showHatchFeedback(tostring(accepted or "Could not change hatch amount"), false)
+			return
+		end
+		if accepted ~= true then
+			uiController:showHatchFeedback(message or "Could not change hatch amount", false)
+			return
+		end
+		uiController:showHatchFeedback("Auto-Hatch set to x" .. tostring(count), true)
+	end)
+end)
+
+UpgradeTreeUpdated.OnClientEvent:Connect(applyHatchEntitlementState)
+-- UpgradeTreeController performs the first request during init; avoid competing
+-- with its rate limit and then synchronize this independent hatch selector.
+task.delay(0.35, function()
+	local invoked, state = pcall(function()
+		return GetUpgradeTreeState:InvokeServer()
+	end)
+	if invoked then
+		applyHatchEntitlementState(state)
+	end
+end)
 
 --------------------------------------------------------------------------------
 -- LIGHTWEIGHT NEW-PLAYER ONBOARDING
@@ -8067,12 +8366,38 @@ ProximityPromptService.PromptHidden:Connect(function(prompt)
 	end
 end)
 
--- The world shop prompt only opens the local modal. Purchases remain fully
--- server-authoritative through PurchaseShopItem.
+local hatchRequestInFlight = false
+local function requestHatch(eggType)
+	if hatchRequestInFlight then
+		uiController:showHatchFeedback("A hatch is already in progress", false)
+		return
+	end
+	hatchRequestInFlight = true
+	local count = uiController:getSelectedHatchCount()
+	task.spawn(function()
+		local invoked, result, hatchError = pcall(function()
+			return HatchEgg:InvokeServer(eggType, count)
+		end)
+		hatchRequestInFlight = false
+		if not invoked or type(result) ~= "table" then
+			uiController:showHatchFeedback(hatchError or "Hatch request failed", false)
+		end
+	end)
+end
+
+-- Prompt routing is centralized so character respawns and delayed world creation
+-- never add duplicate hatch connections.
 ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer)
-	if prompt.Name == "PotionShopPrompt"
-		and (triggeringPlayer == nil or triggeringPlayer == player) then
+	if triggeringPlayer ~= nil and triggeringPlayer ~= player then
+		return
+	end
+	if prompt.Name == "PotionShopPrompt" then
 		uiController:openScreen("ShopScreen")
+		return
+	end
+	local eggType = getEggTypeFromPrompt(prompt)
+	if eggType then
+		requestHatch(eggType)
 	end
 end)
 
@@ -8228,41 +8553,82 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId)
 	end
 end)
 
-EggHatchStart.OnClientEvent:Connect(function(eggType)
-	local hatchPosition = nil
-	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		if hrp then
-			local lookVector = hrp.CFrame.LookVector
-			hatchPosition = hrp.Position + lookVector * 6 + Vector3.new(0, 0, 0)
+local hatchPresentationQueue = {}
+local hatchPresentationActive = false
+
+local function updateHatchPosition()
+	if not player.Character then return end
+	local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	effectsController._lastHatchPosition = hrp.Position + hrp.CFrame.LookVector * 6
+end
+
+local function processNextHatchPresentation()
+	if hatchPresentationActive or #hatchPresentationQueue == 0 then return end
+	hatchPresentationActive = true
+	local presentation = table.remove(hatchPresentationQueue, 1)
+	local pets = presentation.pets
+	local presentationFinished = false
+
+	local function finishPresentation()
+		if presentationFinished then return end
+		presentationFinished = true
+		effectsController._lastHatchPosition = nil
+		local uiSucceeded, uiError = xpcall(function()
+			uiController:showEggBatch(pets)
+		end, debug.traceback)
+		hatchPresentationActive = false
+		task.defer(processNextHatchPresentation)
+		if not uiSucceeded then
+			warn("[Battle Pets] Hatch results recovered from a UI error:\n" .. tostring(uiError))
 		end
 	end
-	if hatchPosition then
-		effectsController._lastHatchPosition = hatchPosition
+
+	local revealStarted, revealError = xpcall(function()
+		updateHatchPosition()
+		if not effectsController._isHatching then
+			effectsController:startEggWobble()
+		end
+		effectsController:completeEggHatch(pets[1], #pets, finishPresentation)
+	end, debug.traceback)
+	if not revealStarted then
+		effectsController:cancelEggHatch()
+		finishPresentation()
+		warn("[Battle Pets] Hatch reveal recovered before start:\n" .. tostring(revealError))
 	end
-	-- Start the egg wobble animation immediately so the player sees feedback right away
-	effectsController:startEggWobble()
+end
+
+EggHatchStart.OnClientEvent:Connect(function(payload)
+	local eggType = type(payload) == "table" and payload.eggType or payload
+	if type(eggType) ~= "string" then return end
+	updateHatchPosition()
+	-- Start immediate feedback only when no older batch owns the reveal surface.
+	-- Queued results create their own wobble when they reach the front.
+	if not hatchPresentationActive and #hatchPresentationQueue == 0 then
+		effectsController:startEggWobble()
+	end
 end)
 
-EggHatchResult.OnClientEvent:Connect(function(petData)
-	effectsController._lastHatchPosition = nil
+EggHatchResult.OnClientEvent:Connect(function(payload)
+	local pets = type(payload) == "table" and payload.pets or nil
+	if type(pets) ~= "table" then
+		-- Rolling-server compatibility with the QOF-07 single-pet event contract.
+		pets = type(payload) == "table" and { payload } or {}
+	end
+	if #pets == 0 then return end
 
-	if petData then
-		completeOnboardingStep("egg")
+	completeOnboardingStep("egg")
+	for _, petData in ipairs(pets) do
+		if type(petData) == "table" and petData.isNewDiscovery == true then
+			uiController:enqueueDiscoveryToast(petData)
+		end
 	end
 
-	if petData and petData.isNewDiscovery == true then
-		uiController:enqueueDiscoveryToast(petData)
-	end
-
-	-- Complete the egg hatch animation (cancels wobble, does shakes + reveal)
-	effectsController:completeEggHatch(petData)
-
-	-- Delay the UIController modal until after the EffectsController animation
-	-- finishes (~4s total: shakes + crack + flash + reveal + auto-dismiss)
-	task.delay(4, function()
-		uiController:showEggHatch(petData, petData and petData.isNewDiscovery)
-	end)
+	table.insert(hatchPresentationQueue, {
+		batchId = type(payload) == "table" and payload.batchId or nil,
+		pets = pets,
+	})
+	processNextHatchPresentation()
 end)
 
 CampaignBattleUpdate.OnClientEvent:Connect(function(battleState)
@@ -8481,30 +8847,8 @@ local function onCharacterAdded(character)
 		end)
 	end
 
-	-- ProximityPrompt interaction for egg stations (E-key)
-	-- This is the primary egg interaction method: directly invokes HatchEgg on server
-	local function connectEggPrompts()
-		local stationsFolder = workspace:FindFirstChild("EggStations")
-		if not stationsFolder then return end
-		for _, obj in ipairs(stationsFolder:GetChildren()) do
-			if obj:IsA("BasePart") and obj.Name == "EggModel" then
-				local prompt = obj:FindFirstChild("HatchPrompt")
-				local promptTag = obj:FindFirstChild("PromptEggType")
-				if prompt and promptTag then
-					prompt.Triggered:Connect(function(triggerPlayer)
-						if triggerPlayer == player then
-							-- Directly invoke HatchEgg on server (validates cost server-side)
-							local eggType = promptTag.Value
-							HatchEgg:InvokeServer(eggType)
-						end
-					end)
-				end
-			end
-		end
-	end
-	connectEggPrompts()
-	-- Also listen for any future egg stations (in case they spawn after character loads)
-	task.delay(2, connectEggPrompts)
+	-- Egg and shop prompts are routed once through ProximityPromptService above;
+	-- no per-character connections are created here.
 end
 
 -- Connect character added
@@ -8644,6 +8988,14 @@ function UIController.new()
 	self._diamonds = 0
 	self._unlockedZones = { [1] = true }
 	self._selectedEggType = nil
+	self._hatchBatchLimit = 1
+	self._selectedHatchCount = 1
+	self._hatchBatchButtons = {}
+	self._hatchBatchSelector = nil
+	self._hatchBatchFeedback = nil
+	self._hatchBatchSelectionCallback = nil
+	self._hatchBatchLayoutConnection = nil
+	self._hatchFeedbackToken = 0
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
@@ -8761,6 +9113,156 @@ function UIController:_createMainHUD(playerData)
 
 	-- ===== NON-BLOCKING ONBOARDING HINT =====
 	self:_createOnboardingHint(screenGui)
+
+	-- ===== CONTEXTUAL ATOMIC HATCH SELECTOR =====
+	self:_createHatchBatchSelector(screenGui)
+end
+
+function UIController:_createHatchBatchSelector(parent)
+	local panel = Instance.new("Frame")
+	panel.Name = "HatchBatchSelector"
+	panel.AnchorPoint = Vector2.new(0.5, 1)
+	panel.Size = UDim2.new(0.48, 0, 0, 116)
+	panel.Position = UDim2.new(0.5, 0, 1, -92)
+	panel.BackgroundColor3 = COLORS.DarkBg
+	panel.BackgroundTransparency = 0.06
+	panel.BorderSizePixel = 0
+	panel.Visible = false
+	panel.Parent = parent
+	self._hatchBatchSelector = panel
+
+	local sizeConstraint = Instance.new("UISizeConstraint")
+	sizeConstraint.MinSize = Vector2.new(280, 108)
+	sizeConstraint.MaxSize = Vector2.new(520, 116)
+	sizeConstraint.Parent = panel
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 14)
+	corner.Parent = panel
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 3
+	stroke.Color = COLORS.DiamondCyan
+	stroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(1, -16, 0, 28)
+	title.Position = UDim2.fromOffset(8, 4)
+	title.BackgroundTransparency = 1
+	title.Text = "CHOOSE HATCH AMOUNT"
+	title.TextColor3 = COLORS.White
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+
+	local counts = { 1, 2, 5, 10 }
+	for index, count in ipairs(counts) do
+		local button = Instance.new("TextButton")
+		button.Name = "HatchX" .. tostring(count)
+		button.Size = UDim2.new(0.22, 0, 0, 42)
+		button.Position = UDim2.new(0.025 + (index - 1) * 0.2425, 0, 0, 34)
+		button.BackgroundColor3 = COLORS.ButtonGreen
+		button.Text = "x" .. tostring(count)
+		button.TextColor3 = COLORS.White
+		button.Font = Enum.Font.GothamBold
+		button.TextScaled = true
+		button.Parent = panel
+		local buttonCorner = Instance.new("UICorner")
+		buttonCorner.CornerRadius = UDim.new(0, 10)
+		buttonCorner.Parent = button
+		self._hatchBatchButtons[count] = button
+
+		button.MouseButton1Click:Connect(function()
+			if count > self._hatchBatchLimit then
+				self:showHatchFeedback("Unlock x" .. tostring(count) .. " in the Upgrade Tree", false)
+				return
+			end
+			-- Keep the highlighted preference authoritative: the server response
+			-- applies the selection after entitlement and throttle validation.
+			if self._hatchBatchSelectionCallback then
+				self._hatchBatchSelectionCallback(count)
+			else
+				self:setSelectedHatchCount(count)
+			end
+		end)
+	end
+
+	local feedback = Instance.new("TextLabel")
+	feedback.Name = "Feedback"
+	feedback.Size = UDim2.new(1, -16, 0, 28)
+	feedback.Position = UDim2.fromOffset(8, 82)
+	feedback.BackgroundTransparency = 1
+	feedback.Text = ""
+	feedback.TextColor3 = COLORS.White
+	feedback.Font = Enum.Font.GothamBold
+	feedback.TextScaled = true
+	feedback.TextWrapped = true
+	feedback.Parent = panel
+	self._hatchBatchFeedback = feedback
+	self:_refreshHatchBatchSelector()
+end
+
+function UIController:_refreshHatchBatchSelector()
+	if self._selectedHatchCount > self._hatchBatchLimit then
+		self._selectedHatchCount = 1
+	end
+	for count, button in pairs(self._hatchBatchButtons) do
+		local unlocked = count <= self._hatchBatchLimit
+		local selected = count == self._selectedHatchCount
+		button.BackgroundColor3 = not unlocked and COLORS.NavSettings
+			or selected and COLORS.DiamondCyan
+			or COLORS.ButtonGreen
+		button.TextTransparency = unlocked and 0 or 0.35
+		button.Text = "x" .. tostring(count) .. (unlocked and "" or " [LOCKED]")
+	end
+	if self._hatchBatchSelector then
+		self._hatchBatchSelector.Visible = self._selectedEggType ~= nil
+	end
+end
+
+function UIController:setHatchBatchLimit(maximumCount)
+	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
+	self._hatchBatchLimit = allowed[maximumCount] and maximumCount or 1
+	self:_refreshHatchBatchSelector()
+	self:_updateEggShortfall()
+end
+
+function UIController:setSelectedHatchCount(selectedCount)
+	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
+	if not allowed[selectedCount] or selectedCount > self._hatchBatchLimit then
+		selectedCount = 1
+	end
+	self._selectedHatchCount = selectedCount
+	self:_refreshHatchBatchSelector()
+	self:_updateEggShortfall()
+end
+
+function UIController:setHatchBatchState(maximumCount, selectedCount)
+	self:setHatchBatchLimit(maximumCount)
+	self:setSelectedHatchCount(selectedCount)
+end
+
+function UIController:setHatchBatchSelectionCallback(callback)
+	self._hatchBatchSelectionCallback = type(callback) == "function" and callback or nil
+end
+
+function UIController:getSelectedHatchCount()
+	return self._selectedHatchCount
+end
+
+function UIController:showHatchFeedback(message, success)
+	if not self._hatchBatchFeedback then return end
+	self._hatchFeedbackToken += 1
+	local token = self._hatchFeedbackToken
+	self._hatchBatchFeedback.Text = tostring(message or "")
+	self._hatchBatchFeedback.TextColor3 = success and Color3.fromRGB(145, 255, 170)
+		or Color3.fromRGB(255, 160, 160)
+	task.delay(3, function()
+		if self._hatchFeedbackToken == token and self._hatchBatchFeedback then
+			self._hatchBatchFeedback.Text = ""
+		end
+	end)
 end
 
 function UIController:_createOnboardingHint(parent)
@@ -10798,25 +11300,26 @@ function UIController:_updateEggShortfall()
 		return
 	end
 
+	local batchCount = self._selectedHatchCount or 1
 	local missing = {}
 	if cost.Coins then
-		local missingCoins = math.max(0, cost.Coins - self._coins)
+		local missingCoins = math.max(0, cost.Coins * batchCount - self._coins)
 		if missingCoins > 0 then
 			table.insert(missing, tostring(missingCoins) .. " Coins")
 		end
 	end
 	if cost.Diamonds then
-		local missingDiamonds = math.max(0, cost.Diamonds - self._diamonds)
+		local missingDiamonds = math.max(0, cost.Diamonds * batchCount - self._diamonds)
 		if missingDiamonds > 0 then
 			table.insert(missing, tostring(missingDiamonds) .. " Diamonds")
 		end
 	end
 
 	if #missing == 0 then
-		self._eggShortfallLabel.Text = eggDef.name .. ": READY TO HATCH!"
+		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": READY TO HATCH!"
 		self._eggShortfallLabel.TextColor3 = COLORS.ButtonGreen
 	else
-		self._eggShortfallLabel.Text = eggDef.name .. ": Need " .. table.concat(missing, " + ")
+		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": Need " .. table.concat(missing, " + ")
 		self._eggShortfallLabel.TextColor3 = COLORS.White
 	end
 end
@@ -10826,6 +11329,7 @@ function UIController:showEggStationPrompt(eggType)
 	if not eggDef or not self._unlockedZones[eggDef.zone] then return end
 
 	self._selectedEggType = eggType
+	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
@@ -10833,6 +11337,7 @@ function UIController:hideEggStationPrompt(eggType)
 	if self._selectedEggType ~= eggType then return end
 
 	self._selectedEggType = nil
+	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
@@ -12156,6 +12661,171 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 			overlay:Destroy()
 		end
 	end)
+end
+
+function UIController:showEggBatch(pets)
+	if not self._playerGui or type(pets) ~= "table" or #pets == 0 then return end
+	if self._hatchBatchLayoutConnection then
+		self._hatchBatchLayoutConnection:Disconnect()
+		self._hatchBatchLayoutConnection = nil
+	end
+	if self._activeHatchBatchOverlay and self._activeHatchBatchOverlay.Parent then
+		self._activeHatchBatchOverlay:Destroy()
+	end
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "EggBatchResults"
+	overlay.ResetOnSpawn = false
+	overlay.IgnoreGuiInset = false
+	overlay.DisplayOrder = 45
+	overlay.Parent = self._playerGui
+	self._activeHatchBatchOverlay = overlay
+
+	local shade = Instance.new("Frame")
+	shade.Size = UDim2.fromScale(1, 1)
+	shade.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	shade.BackgroundTransparency = 0.42
+	shade.BorderSizePixel = 0
+	shade.Parent = overlay
+
+	local panel = Instance.new("Frame")
+	panel.Name = "ResultsPanel"
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Size = UDim2.fromScale(0.82, 0.76)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = shade
+	local constraint = Instance.new("UISizeConstraint")
+	constraint.MinSize = Vector2.new(280, 320)
+	constraint.MaxSize = Vector2.new(920, 660)
+	constraint.Parent = panel
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 18)
+	corner.Parent = panel
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 4
+	stroke.Color = COLORS.DiamondCyan
+	stroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -100, 0, 52)
+	title.Position = UDim2.fromOffset(18, 8)
+	title.BackgroundTransparency = 1
+	title.Text = tostring(#pets) .. " PET" .. (#pets == 1 and "" or "S") .. " HATCHED!"
+	title.TextColor3 = COLORS.CoinYellow
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+
+	local close = Instance.new("TextButton")
+	close.Size = UDim2.fromOffset(58, 46)
+	close.Position = UDim2.new(1, -70, 0, 10)
+	close.BackgroundColor3 = COLORS.CloseRed
+	close.Text = "X"
+	close.TextColor3 = COLORS.White
+	close.Font = Enum.Font.GothamBold
+	close.TextScaled = true
+	close.Parent = panel
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(0, 12)
+	closeCorner.Parent = close
+
+	local grid = Instance.new("ScrollingFrame")
+	grid.Name = "PetGrid"
+	grid.Size = UDim2.new(1, -28, 1, -82)
+	grid.Position = UDim2.fromOffset(14, 68)
+	grid.BackgroundTransparency = 1
+	grid.BorderSizePixel = 0
+	grid.ScrollBarThickness = 8
+	grid.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	grid.CanvasSize = UDim2.fromOffset(0, 0)
+	grid.Parent = panel
+
+	local layout = Instance.new("UIGridLayout")
+	layout.CellPadding = UDim2.fromOffset(8, 8)
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = grid
+
+	local function refreshGridLayout()
+		local panelWidth = panel.AbsoluteSize.X
+		if panelWidth <= 0 then return end
+		local columns = panelWidth < 620 and 2 or 5
+		layout.CellSize = UDim2.new(1 / columns, -10, 0, 136)
+	end
+	local layoutConnection = panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(refreshGridLayout)
+	self._hatchBatchLayoutConnection = layoutConnection
+	task.defer(refreshGridLayout)
+
+	for index, petData in ipairs(pets) do
+		local presentation = PetVariantPresentation.resolve(petData)
+		local rarityColor = RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common
+		local accent = presentation.baseVariant == "Normal" and rarityColor or rgbToColor(presentation.accentRGB)
+		local card = Instance.new("Frame")
+		card.Name = "Result" .. tostring(index)
+		card.LayoutOrder = index
+		card.BackgroundColor3 = COLORS.DarkBg
+		card.BorderSizePixel = 0
+		card.Parent = grid
+		local cardCorner = Instance.new("UICorner")
+		cardCorner.CornerRadius = UDim.new(0, 12)
+		cardCorner.Parent = card
+		local cardStroke = Instance.new("UIStroke")
+		cardStroke.Thickness = petData.isNewDiscovery and 4 or 2
+		cardStroke.Color = petData.isNewDiscovery and COLORS.CoinYellow or accent
+		cardStroke.Parent = card
+
+		local orb = Instance.new("Frame")
+		orb.AnchorPoint = Vector2.new(0.5, 0)
+		orb.Size = UDim2.fromOffset(52, 52)
+		orb.Position = UDim2.new(0.5, 0, 0, 8)
+		orb.BackgroundColor3 = accent
+		orb.Parent = card
+		local orbCorner = Instance.new("UICorner")
+		orbCorner.CornerRadius = UDim.new(1, 0)
+		orbCorner.Parent = orb
+
+		local name = Instance.new("TextLabel")
+		name.Size = UDim2.new(1, -10, 0, 34)
+		name.Position = UDim2.fromOffset(5, 64)
+		name.BackgroundTransparency = 1
+		name.Text = presentation.displayPetName
+		name.TextColor3 = accent
+		name.Font = Enum.Font.GothamBold
+		name.TextScaled = true
+		name.TextWrapped = true
+		name.Parent = card
+
+		local detail = Instance.new("TextLabel")
+		detail.Size = UDim2.new(1, -8, 0, 26)
+		detail.Position = UDim2.fromOffset(4, 101)
+		detail.BackgroundTransparency = 1
+		detail.Text = presentation.variantLabel .. " • " .. tostring(petData.rarity or "Common")
+		detail.TextColor3 = COLORS.White
+		detail.Font = Enum.Font.GothamBold
+		detail.TextScaled = true
+		detail.TextWrapped = true
+		detail.Parent = card
+	end
+
+	local function dismiss()
+		if layoutConnection.Connected then
+			layoutConnection:Disconnect()
+		end
+		if self._hatchBatchLayoutConnection == layoutConnection then
+			self._hatchBatchLayoutConnection = nil
+		end
+		if overlay and overlay.Parent then
+			overlay:Destroy()
+		end
+		if self._activeHatchBatchOverlay == overlay then
+			self._activeHatchBatchOverlay = nil
+		end
+	end
+	close.MouseButton1Click:Connect(dismiss)
+	task.delay(15, dismiss)
 end
 
 function UIController:_refreshScreenData(screenName)
@@ -15228,13 +15898,31 @@ function EffectsController:startEggWobble()
 	self._hatchWobbleTween = wobbleTween
 end
 
+function EffectsController:cancelEggHatch()
+	if self._hatchWobbleTween then
+		pcall(function()
+			self._hatchWobbleTween:Cancel()
+		end)
+	end
+	if self._hatchScreenGui and self._hatchScreenGui.Parent then
+		self._hatchScreenGui:Destroy()
+	end
+	self._hatchScreenGui = nil
+	self._hatchOverlay = nil
+	self._hatchEggContainer = nil
+	self._hatchEggFrame = nil
+	self._hatchEggStroke = nil
+	self._hatchWhiteFlash = nil
+	self._hatchWobbleTween = nil
+	self._isHatching = false
+end
+
 --------------------------------------------------------------------------------
--- completeEggHatch(petData): cancels the infinite wobble, plays intense shakes,
--- flashes to rarity color, white screen flash, then reveals pet name + rarity
--- with a bounce animation. Auto-dismisses after 2 seconds.
---------------------------------------------------------------------------------
-function EffectsController:completeEggHatch(petData)
+-- completeEggHatch(petData, batchCount): cancels the infinite wobble and plays
+-- one shared reveal. Multi-Open never stacks ten blocking single-pet animations.
+function EffectsController:completeEggHatch(petData, batchCount, onComplete)
 	if not self._initialized then return end
+	batchCount = math.max(1, math.floor(tonumber(batchCount) or 1))
 
 	local rarity = petData and petData.rarity or "Common"
 	local presentation = PetVariantPresentation.resolve(petData)
@@ -15267,9 +15955,11 @@ function EffectsController:completeEggHatch(petData)
 	-- Reset rotation before intense shakes
 	eggContainer.Rotation = 0
 
-	-- Run the completion animation in a coroutine
+	-- Run the completion animation in a coroutine. Cleanup and callback dispatch
+	-- happen after xpcall so one presentation error cannot wedge Auto-Hatch.
 	task.spawn(function()
-		-- Phase 1: Quick intense shakes (3 fast shakes with increasing intensity)
+		local animationSucceeded, animationError = xpcall(function()
+			-- Phase 1: Quick intense shakes (3 fast shakes with increasing intensity)
 		local shakeAngles = { 8, -14, 18 }
 		for _, angle in ipairs(shakeAngles) do
 			local shakeInfo = TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
@@ -15316,7 +16006,9 @@ function EffectsController:completeEggHatch(petData)
 		petNameLabel.Size = UDim2.fromScale(1, 0.55)
 		petNameLabel.Position = UDim2.fromScale(0, 0.1)
 		petNameLabel.BackgroundTransparency = 1
-		petNameLabel.Text = petName
+		petNameLabel.Text = batchCount > 1
+			and ("x" .. tostring(batchCount) .. " EGGS OPENED!")
+			or petName
 		petNameLabel.TextColor3 = baseColor
 		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		petNameLabel.TextStrokeTransparency = 0
@@ -15331,7 +16023,9 @@ function EffectsController:completeEggHatch(petData)
 		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
 		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
 		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = presentation.variantLabel .. " • " .. rarity
+		rarityLabel.Text = batchCount > 1
+			and "Results ready"
+			or (presentation.variantLabel .. " • " .. rarity)
 		rarityLabel.TextColor3 = presentation.isShiny and shinyColor or baseColor
 		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		rarityLabel.TextStrokeTransparency = 0.2
@@ -15348,10 +16042,11 @@ function EffectsController:completeEggHatch(petData)
 		}):Play()
 		task.wait(0.4)
 
-		-- Phase 5: Auto-dismiss after 2 seconds with fade out
-		task.wait(2)
+		-- Keep the complete shared reveal below the three-second Auto-Hatch cadence
+		-- so normal automation cannot build an ever-growing presentation queue.
+		task.wait(0.75)
 
-		local fadeOutInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		local fadeOutInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		TweenService:Create(overlay, fadeOutInfo, {
 			BackgroundTransparency = 1,
 		}):Play()
@@ -15364,20 +16059,16 @@ function EffectsController:completeEggHatch(petData)
 			TextStrokeTransparency = 1,
 		}):Play()
 
-		task.wait(0.6)
-
-		-- Cleanup
-		if screenGui and screenGui.Parent then
-			screenGui:Destroy()
+			task.wait(0.35)
+		end, debug.traceback)
+		if not animationSucceeded then
+			warn("[EffectsController] Hatch reveal recovered from an error:\n" .. tostring(animationError))
 		end
-		self._hatchScreenGui = nil
-		self._hatchOverlay = nil
-		self._hatchEggContainer = nil
-		self._hatchEggFrame = nil
-		self._hatchEggStroke = nil
-		self._hatchWhiteFlash = nil
-		self._hatchWobbleTween = nil
-		self._isHatching = false
+
+		self:cancelEggHatch()
+		if type(onComplete) == "function" then
+			task.defer(onComplete)
+		end
 	end)
 end
 
@@ -16285,8 +16976,8 @@ return MusicController
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
 	UpgradeTreeController.lua - Server-state adapter for the imported Vide tree.
-	QOF-07 adds dual-currency state, purchase feedback/in-flight protection, and
-	a touch-accessible open button without changing upgradeTree.lua or Vide.
+	QOF-07 adds dual-currency state and purchase protection; QOF-08 activates
+	the stable Eggs III-V Multi-Open branch without changing upgradeTree.lua or Vide.
 ]]
 
 local Players = game:GetService("Players")
@@ -16667,14 +17358,14 @@ local BalanceConfig = {
 		},
 	},
 
-	-- Canonical hatch model. QOF-07 adds save-compatible Tree entitlements to
-	-- the QOF-06 single-egg outcomes; atomic Multi-Open remains QOF-08.
+	-- Canonical hatch model. QOF-08 adds atomic, server-authoritative Multi-Open
+	-- to the QOF-06/07 outcome and entitlement foundations.
 	Hatch = {
 		-- This top-level gate owns only the direct single-egg outcome model.
 		-- Deferred subfeatures keep explicit gates so their balance data stays dormant.
 		RuntimeEnabled = true,
 		EggQualityRuntimeEnabled = true,
-		MultiOpenRuntimeEnabled = false,
+		MultiOpenRuntimeEnabled = true,
 		DirectVariantUpgradesRuntimeEnabled = true,
 		BaseChances = {
 			Golden = 0.01,
@@ -16706,9 +17397,30 @@ local BalanceConfig = {
 			},
 		},
 		MultiOpen = {
-			{ id = "Eggs III", name = "Multi-Open I", cost = { currency = "diamonds", amount = 500 }, eggCount = 2 },
-			{ id = "Eggs IV", name = "Multi-Open II", cost = { currency = "diamonds", amount = 2500 }, eggCount = 5 },
-			{ id = "Eggs V", name = "Multi-Open III", cost = { currency = "diamonds", amount = 10000 }, eggCount = 10 },
+			{
+				id = "Eggs III",
+				name = "Multi-Open I",
+				description = "Unlocks atomic x2 egg hatching.",
+				requireIds = { "Eggs II" },
+				cost = { currency = "diamonds", amount = 500 },
+				eggCount = 2,
+			},
+			{
+				id = "Eggs IV",
+				name = "Multi-Open II",
+				description = "Unlocks atomic x5 egg hatching.",
+				requireIds = { "Eggs III" },
+				cost = { currency = "diamonds", amount = 2500 },
+				eggCount = 5,
+			},
+			{
+				id = "Eggs V",
+				name = "Multi-Open III",
+				description = "Unlocks atomic x10 egg hatching.",
+				requireIds = { "Eggs IV" },
+				cost = { currency = "diamonds", amount = 10000 },
+				eggCount = 10,
+			},
 		},
 		-- QOF-07 intentionally reuses three legacy save-compatible chains. Each
 		-- branch applies only its highest contiguous purchased level.
@@ -17053,7 +17765,7 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Variants.RuntimeEnabled == true, "Variants must be enabled in QOF-04")
 	assert(BalanceConfig.Hatch.RuntimeEnabled == true, "direct Hatch outcomes must be enabled in QOF-06")
 	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == true, "Egg Quality must be enabled in QOF-07")
-	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == false, "Multi-Open must remain disabled until QOF-08")
+	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == true, "Multi-Open must be enabled in QOF-08")
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
 		Machines = BalanceConfig.Machines,
@@ -17179,6 +17891,11 @@ function BalanceConfig.Validate()
 
 	for index, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
 		registerEntitlement(level, "Multi-Open " .. tostring(index))
+		assert(type(level.requireIds) == "table", "Multi-Open prerequisites must be a table")
+		assert(
+			type(level.eggCount) == "number" and level.eggCount > 1 and level.eggCount % 1 == 0,
+			"Multi-Open count must be an integer above one"
+		)
 	end
 	for _, level in ipairs(entitlementLevels) do
 		for _, requiredId in ipairs(level.requireIds or {}) do
@@ -23133,9 +23850,9 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-07 keeps the imported layout and stable IDs while mapping only approved
--- entitlements to canonical costs and effects. Every other gameplay node is
--- visibly dormant and server-blocked; Multi-Open remains owned by QOF-08.
+-- QOF-08 activates the imported Eggs III-V branch without changing its stable
+-- IDs or layout. Only approved hatch entitlements are purchasable; unrelated
+-- legacy nodes remain visible but server-blocked for their owning later QOFs.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -23146,15 +23863,13 @@ for _, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
 	end
 end
 
-local futureById = {}
 for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
-	futureById[level.id] = level
+	activeById[level.id] = level
 end
 
 for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 	for _, upgrade in ipairs(treeUpgrades) do
 		local active = activeById[upgrade.id]
-		local future = futureById[upgrade.id]
 		if upgrade.id == "luckPortal" then
 			upgrade.name = "Variant Chances"
 			upgrade.description = "Gold, Rainbow, and Shiny direct hatch upgrades."
@@ -23167,13 +23882,6 @@ for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 				{ currency = active.cost.currency, amount = active.cost.amount },
 			}
 			upgrade.runtimeAvailable = true
-		elseif future then
-			upgrade.name = future.name .. " (Coming Soon)"
-			upgrade.description = "Multi-Open activates with the atomic batch flow in QOF-08."
-			upgrade.requirements = {
-				{ currency = future.cost.currency, amount = future.cost.amount },
-			}
-			upgrade.runtimeAvailable = false
 		else
 			local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
 			assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
@@ -23182,7 +23890,7 @@ for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 			}
 			if not upgrade.isPortal and not upgrade.toggleButton then
 				upgrade.name = upgrade.name .. " (Later)"
-				upgrade.description = "This legacy node is preserved but not purchasable in QOF-07."
+				upgrade.description = "This legacy node is preserved but not purchasable yet."
 				upgrade.runtimeAvailable = false
 			end
 		end

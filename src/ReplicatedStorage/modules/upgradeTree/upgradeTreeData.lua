@@ -693,9 +693,9 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-07 keeps the imported layout and stable IDs while mapping only approved
--- entitlements to canonical costs and effects. Every other gameplay node is
--- visibly dormant and server-blocked; Multi-Open remains owned by QOF-08.
+-- QOF-08 activates the imported Eggs III-V branch without changing its stable
+-- IDs or layout. Only approved hatch entitlements are purchasable; unrelated
+-- legacy nodes remain visible but server-blocked for their owning later QOFs.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -706,15 +706,13 @@ for _, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
 	end
 end
 
-local futureById = {}
 for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
-	futureById[level.id] = level
+	activeById[level.id] = level
 end
 
 for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 	for _, upgrade in ipairs(treeUpgrades) do
 		local active = activeById[upgrade.id]
-		local future = futureById[upgrade.id]
 		if upgrade.id == "luckPortal" then
 			upgrade.name = "Variant Chances"
 			upgrade.description = "Gold, Rainbow, and Shiny direct hatch upgrades."
@@ -727,13 +725,6 @@ for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 				{ currency = active.cost.currency, amount = active.cost.amount },
 			}
 			upgrade.runtimeAvailable = true
-		elseif future then
-			upgrade.name = future.name .. " (Coming Soon)"
-			upgrade.description = "Multi-Open activates with the atomic batch flow in QOF-08."
-			upgrade.requirements = {
-				{ currency = future.cost.currency, amount = future.cost.amount },
-			}
-			upgrade.runtimeAvailable = false
 		else
 			local requirement = BalanceConfig.Legacy.UpgradeTreeRequirements[upgrade.id]
 			assert(requirement, "Missing balance for upgrade tree node: " .. tostring(upgrade.id))
@@ -742,7 +733,7 @@ for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 			}
 			if not upgrade.isPortal and not upgrade.toggleButton then
 				upgrade.name = upgrade.name .. " (Later)"
-				upgrade.description = "This legacy node is preserved but not purchasable in QOF-07."
+				upgrade.description = "This legacy node is preserved but not purchasable yet."
 				upgrade.runtimeAvailable = false
 			end
 		end

@@ -118,6 +118,14 @@ function UIController.new()
 	self._diamonds = 0
 	self._unlockedZones = { [1] = true }
 	self._selectedEggType = nil
+	self._hatchBatchLimit = 1
+	self._selectedHatchCount = 1
+	self._hatchBatchButtons = {}
+	self._hatchBatchSelector = nil
+	self._hatchBatchFeedback = nil
+	self._hatchBatchSelectionCallback = nil
+	self._hatchBatchLayoutConnection = nil
+	self._hatchFeedbackToken = 0
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
@@ -235,6 +243,156 @@ function UIController:_createMainHUD(playerData)
 
 	-- ===== NON-BLOCKING ONBOARDING HINT =====
 	self:_createOnboardingHint(screenGui)
+
+	-- ===== CONTEXTUAL ATOMIC HATCH SELECTOR =====
+	self:_createHatchBatchSelector(screenGui)
+end
+
+function UIController:_createHatchBatchSelector(parent)
+	local panel = Instance.new("Frame")
+	panel.Name = "HatchBatchSelector"
+	panel.AnchorPoint = Vector2.new(0.5, 1)
+	panel.Size = UDim2.new(0.48, 0, 0, 116)
+	panel.Position = UDim2.new(0.5, 0, 1, -92)
+	panel.BackgroundColor3 = COLORS.DarkBg
+	panel.BackgroundTransparency = 0.06
+	panel.BorderSizePixel = 0
+	panel.Visible = false
+	panel.Parent = parent
+	self._hatchBatchSelector = panel
+
+	local sizeConstraint = Instance.new("UISizeConstraint")
+	sizeConstraint.MinSize = Vector2.new(280, 108)
+	sizeConstraint.MaxSize = Vector2.new(520, 116)
+	sizeConstraint.Parent = panel
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 14)
+	corner.Parent = panel
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 3
+	stroke.Color = COLORS.DiamondCyan
+	stroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(1, -16, 0, 28)
+	title.Position = UDim2.fromOffset(8, 4)
+	title.BackgroundTransparency = 1
+	title.Text = "CHOOSE HATCH AMOUNT"
+	title.TextColor3 = COLORS.White
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+
+	local counts = { 1, 2, 5, 10 }
+	for index, count in ipairs(counts) do
+		local button = Instance.new("TextButton")
+		button.Name = "HatchX" .. tostring(count)
+		button.Size = UDim2.new(0.22, 0, 0, 42)
+		button.Position = UDim2.new(0.025 + (index - 1) * 0.2425, 0, 0, 34)
+		button.BackgroundColor3 = COLORS.ButtonGreen
+		button.Text = "x" .. tostring(count)
+		button.TextColor3 = COLORS.White
+		button.Font = Enum.Font.GothamBold
+		button.TextScaled = true
+		button.Parent = panel
+		local buttonCorner = Instance.new("UICorner")
+		buttonCorner.CornerRadius = UDim.new(0, 10)
+		buttonCorner.Parent = button
+		self._hatchBatchButtons[count] = button
+
+		button.MouseButton1Click:Connect(function()
+			if count > self._hatchBatchLimit then
+				self:showHatchFeedback("Unlock x" .. tostring(count) .. " in the Upgrade Tree", false)
+				return
+			end
+			-- Keep the highlighted preference authoritative: the server response
+			-- applies the selection after entitlement and throttle validation.
+			if self._hatchBatchSelectionCallback then
+				self._hatchBatchSelectionCallback(count)
+			else
+				self:setSelectedHatchCount(count)
+			end
+		end)
+	end
+
+	local feedback = Instance.new("TextLabel")
+	feedback.Name = "Feedback"
+	feedback.Size = UDim2.new(1, -16, 0, 28)
+	feedback.Position = UDim2.fromOffset(8, 82)
+	feedback.BackgroundTransparency = 1
+	feedback.Text = ""
+	feedback.TextColor3 = COLORS.White
+	feedback.Font = Enum.Font.GothamBold
+	feedback.TextScaled = true
+	feedback.TextWrapped = true
+	feedback.Parent = panel
+	self._hatchBatchFeedback = feedback
+	self:_refreshHatchBatchSelector()
+end
+
+function UIController:_refreshHatchBatchSelector()
+	if self._selectedHatchCount > self._hatchBatchLimit then
+		self._selectedHatchCount = 1
+	end
+	for count, button in pairs(self._hatchBatchButtons) do
+		local unlocked = count <= self._hatchBatchLimit
+		local selected = count == self._selectedHatchCount
+		button.BackgroundColor3 = not unlocked and COLORS.NavSettings
+			or selected and COLORS.DiamondCyan
+			or COLORS.ButtonGreen
+		button.TextTransparency = unlocked and 0 or 0.35
+		button.Text = "x" .. tostring(count) .. (unlocked and "" or " [LOCKED]")
+	end
+	if self._hatchBatchSelector then
+		self._hatchBatchSelector.Visible = self._selectedEggType ~= nil
+	end
+end
+
+function UIController:setHatchBatchLimit(maximumCount)
+	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
+	self._hatchBatchLimit = allowed[maximumCount] and maximumCount or 1
+	self:_refreshHatchBatchSelector()
+	self:_updateEggShortfall()
+end
+
+function UIController:setSelectedHatchCount(selectedCount)
+	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
+	if not allowed[selectedCount] or selectedCount > self._hatchBatchLimit then
+		selectedCount = 1
+	end
+	self._selectedHatchCount = selectedCount
+	self:_refreshHatchBatchSelector()
+	self:_updateEggShortfall()
+end
+
+function UIController:setHatchBatchState(maximumCount, selectedCount)
+	self:setHatchBatchLimit(maximumCount)
+	self:setSelectedHatchCount(selectedCount)
+end
+
+function UIController:setHatchBatchSelectionCallback(callback)
+	self._hatchBatchSelectionCallback = type(callback) == "function" and callback or nil
+end
+
+function UIController:getSelectedHatchCount()
+	return self._selectedHatchCount
+end
+
+function UIController:showHatchFeedback(message, success)
+	if not self._hatchBatchFeedback then return end
+	self._hatchFeedbackToken += 1
+	local token = self._hatchFeedbackToken
+	self._hatchBatchFeedback.Text = tostring(message or "")
+	self._hatchBatchFeedback.TextColor3 = success and Color3.fromRGB(145, 255, 170)
+		or Color3.fromRGB(255, 160, 160)
+	task.delay(3, function()
+		if self._hatchFeedbackToken == token and self._hatchBatchFeedback then
+			self._hatchBatchFeedback.Text = ""
+		end
+	end)
 end
 
 function UIController:_createOnboardingHint(parent)
@@ -2272,25 +2430,26 @@ function UIController:_updateEggShortfall()
 		return
 	end
 
+	local batchCount = self._selectedHatchCount or 1
 	local missing = {}
 	if cost.Coins then
-		local missingCoins = math.max(0, cost.Coins - self._coins)
+		local missingCoins = math.max(0, cost.Coins * batchCount - self._coins)
 		if missingCoins > 0 then
 			table.insert(missing, tostring(missingCoins) .. " Coins")
 		end
 	end
 	if cost.Diamonds then
-		local missingDiamonds = math.max(0, cost.Diamonds - self._diamonds)
+		local missingDiamonds = math.max(0, cost.Diamonds * batchCount - self._diamonds)
 		if missingDiamonds > 0 then
 			table.insert(missing, tostring(missingDiamonds) .. " Diamonds")
 		end
 	end
 
 	if #missing == 0 then
-		self._eggShortfallLabel.Text = eggDef.name .. ": READY TO HATCH!"
+		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": READY TO HATCH!"
 		self._eggShortfallLabel.TextColor3 = COLORS.ButtonGreen
 	else
-		self._eggShortfallLabel.Text = eggDef.name .. ": Need " .. table.concat(missing, " + ")
+		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": Need " .. table.concat(missing, " + ")
 		self._eggShortfallLabel.TextColor3 = COLORS.White
 	end
 end
@@ -2300,6 +2459,7 @@ function UIController:showEggStationPrompt(eggType)
 	if not eggDef or not self._unlockedZones[eggDef.zone] then return end
 
 	self._selectedEggType = eggType
+	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
@@ -2307,6 +2467,7 @@ function UIController:hideEggStationPrompt(eggType)
 	if self._selectedEggType ~= eggType then return end
 
 	self._selectedEggType = nil
+	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
@@ -3630,6 +3791,171 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 			overlay:Destroy()
 		end
 	end)
+end
+
+function UIController:showEggBatch(pets)
+	if not self._playerGui or type(pets) ~= "table" or #pets == 0 then return end
+	if self._hatchBatchLayoutConnection then
+		self._hatchBatchLayoutConnection:Disconnect()
+		self._hatchBatchLayoutConnection = nil
+	end
+	if self._activeHatchBatchOverlay and self._activeHatchBatchOverlay.Parent then
+		self._activeHatchBatchOverlay:Destroy()
+	end
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "EggBatchResults"
+	overlay.ResetOnSpawn = false
+	overlay.IgnoreGuiInset = false
+	overlay.DisplayOrder = 45
+	overlay.Parent = self._playerGui
+	self._activeHatchBatchOverlay = overlay
+
+	local shade = Instance.new("Frame")
+	shade.Size = UDim2.fromScale(1, 1)
+	shade.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	shade.BackgroundTransparency = 0.42
+	shade.BorderSizePixel = 0
+	shade.Parent = overlay
+
+	local panel = Instance.new("Frame")
+	panel.Name = "ResultsPanel"
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Size = UDim2.fromScale(0.82, 0.76)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = shade
+	local constraint = Instance.new("UISizeConstraint")
+	constraint.MinSize = Vector2.new(280, 320)
+	constraint.MaxSize = Vector2.new(920, 660)
+	constraint.Parent = panel
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 18)
+	corner.Parent = panel
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 4
+	stroke.Color = COLORS.DiamondCyan
+	stroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -100, 0, 52)
+	title.Position = UDim2.fromOffset(18, 8)
+	title.BackgroundTransparency = 1
+	title.Text = tostring(#pets) .. " PET" .. (#pets == 1 and "" or "S") .. " HATCHED!"
+	title.TextColor3 = COLORS.CoinYellow
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+
+	local close = Instance.new("TextButton")
+	close.Size = UDim2.fromOffset(58, 46)
+	close.Position = UDim2.new(1, -70, 0, 10)
+	close.BackgroundColor3 = COLORS.CloseRed
+	close.Text = "X"
+	close.TextColor3 = COLORS.White
+	close.Font = Enum.Font.GothamBold
+	close.TextScaled = true
+	close.Parent = panel
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(0, 12)
+	closeCorner.Parent = close
+
+	local grid = Instance.new("ScrollingFrame")
+	grid.Name = "PetGrid"
+	grid.Size = UDim2.new(1, -28, 1, -82)
+	grid.Position = UDim2.fromOffset(14, 68)
+	grid.BackgroundTransparency = 1
+	grid.BorderSizePixel = 0
+	grid.ScrollBarThickness = 8
+	grid.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	grid.CanvasSize = UDim2.fromOffset(0, 0)
+	grid.Parent = panel
+
+	local layout = Instance.new("UIGridLayout")
+	layout.CellPadding = UDim2.fromOffset(8, 8)
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = grid
+
+	local function refreshGridLayout()
+		local panelWidth = panel.AbsoluteSize.X
+		if panelWidth <= 0 then return end
+		local columns = panelWidth < 620 and 2 or 5
+		layout.CellSize = UDim2.new(1 / columns, -10, 0, 136)
+	end
+	local layoutConnection = panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(refreshGridLayout)
+	self._hatchBatchLayoutConnection = layoutConnection
+	task.defer(refreshGridLayout)
+
+	for index, petData in ipairs(pets) do
+		local presentation = PetVariantPresentation.resolve(petData)
+		local rarityColor = RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common
+		local accent = presentation.baseVariant == "Normal" and rarityColor or rgbToColor(presentation.accentRGB)
+		local card = Instance.new("Frame")
+		card.Name = "Result" .. tostring(index)
+		card.LayoutOrder = index
+		card.BackgroundColor3 = COLORS.DarkBg
+		card.BorderSizePixel = 0
+		card.Parent = grid
+		local cardCorner = Instance.new("UICorner")
+		cardCorner.CornerRadius = UDim.new(0, 12)
+		cardCorner.Parent = card
+		local cardStroke = Instance.new("UIStroke")
+		cardStroke.Thickness = petData.isNewDiscovery and 4 or 2
+		cardStroke.Color = petData.isNewDiscovery and COLORS.CoinYellow or accent
+		cardStroke.Parent = card
+
+		local orb = Instance.new("Frame")
+		orb.AnchorPoint = Vector2.new(0.5, 0)
+		orb.Size = UDim2.fromOffset(52, 52)
+		orb.Position = UDim2.new(0.5, 0, 0, 8)
+		orb.BackgroundColor3 = accent
+		orb.Parent = card
+		local orbCorner = Instance.new("UICorner")
+		orbCorner.CornerRadius = UDim.new(1, 0)
+		orbCorner.Parent = orb
+
+		local name = Instance.new("TextLabel")
+		name.Size = UDim2.new(1, -10, 0, 34)
+		name.Position = UDim2.fromOffset(5, 64)
+		name.BackgroundTransparency = 1
+		name.Text = presentation.displayPetName
+		name.TextColor3 = accent
+		name.Font = Enum.Font.GothamBold
+		name.TextScaled = true
+		name.TextWrapped = true
+		name.Parent = card
+
+		local detail = Instance.new("TextLabel")
+		detail.Size = UDim2.new(1, -8, 0, 26)
+		detail.Position = UDim2.fromOffset(4, 101)
+		detail.BackgroundTransparency = 1
+		detail.Text = presentation.variantLabel .. " • " .. tostring(petData.rarity or "Common")
+		detail.TextColor3 = COLORS.White
+		detail.Font = Enum.Font.GothamBold
+		detail.TextScaled = true
+		detail.TextWrapped = true
+		detail.Parent = card
+	end
+
+	local function dismiss()
+		if layoutConnection.Connected then
+			layoutConnection:Disconnect()
+		end
+		if self._hatchBatchLayoutConnection == layoutConnection then
+			self._hatchBatchLayoutConnection = nil
+		end
+		if overlay and overlay.Parent then
+			overlay:Destroy()
+		end
+		if self._activeHatchBatchOverlay == overlay then
+			self._activeHatchBatchOverlay = nil
+		end
+	end
+	close.MouseButton1Click:Connect(dismiss)
+	task.delay(15, dismiss)
 end
 
 function UIController:_refreshScreenData(screenName)

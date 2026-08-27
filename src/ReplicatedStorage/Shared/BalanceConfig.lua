@@ -82,14 +82,14 @@ local BalanceConfig = {
 		},
 	},
 
-	-- Canonical hatch model. QOF-07 adds save-compatible Tree entitlements to
-	-- the QOF-06 single-egg outcomes; atomic Multi-Open remains QOF-08.
+	-- Canonical hatch model. QOF-08 adds atomic, server-authoritative Multi-Open
+	-- to the QOF-06/07 outcome and entitlement foundations.
 	Hatch = {
 		-- This top-level gate owns only the direct single-egg outcome model.
 		-- Deferred subfeatures keep explicit gates so their balance data stays dormant.
 		RuntimeEnabled = true,
 		EggQualityRuntimeEnabled = true,
-		MultiOpenRuntimeEnabled = false,
+		MultiOpenRuntimeEnabled = true,
 		DirectVariantUpgradesRuntimeEnabled = true,
 		BaseChances = {
 			Golden = 0.01,
@@ -121,9 +121,30 @@ local BalanceConfig = {
 			},
 		},
 		MultiOpen = {
-			{ id = "Eggs III", name = "Multi-Open I", cost = { currency = "diamonds", amount = 500 }, eggCount = 2 },
-			{ id = "Eggs IV", name = "Multi-Open II", cost = { currency = "diamonds", amount = 2500 }, eggCount = 5 },
-			{ id = "Eggs V", name = "Multi-Open III", cost = { currency = "diamonds", amount = 10000 }, eggCount = 10 },
+			{
+				id = "Eggs III",
+				name = "Multi-Open I",
+				description = "Unlocks atomic x2 egg hatching.",
+				requireIds = { "Eggs II" },
+				cost = { currency = "diamonds", amount = 500 },
+				eggCount = 2,
+			},
+			{
+				id = "Eggs IV",
+				name = "Multi-Open II",
+				description = "Unlocks atomic x5 egg hatching.",
+				requireIds = { "Eggs III" },
+				cost = { currency = "diamonds", amount = 2500 },
+				eggCount = 5,
+			},
+			{
+				id = "Eggs V",
+				name = "Multi-Open III",
+				description = "Unlocks atomic x10 egg hatching.",
+				requireIds = { "Eggs IV" },
+				cost = { currency = "diamonds", amount = 10000 },
+				eggCount = 10,
+			},
 		},
 		-- QOF-07 intentionally reuses three legacy save-compatible chains. Each
 		-- branch applies only its highest contiguous purchased level.
@@ -468,7 +489,7 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Variants.RuntimeEnabled == true, "Variants must be enabled in QOF-04")
 	assert(BalanceConfig.Hatch.RuntimeEnabled == true, "direct Hatch outcomes must be enabled in QOF-06")
 	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == true, "Egg Quality must be enabled in QOF-07")
-	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == false, "Multi-Open must remain disabled until QOF-08")
+	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == true, "Multi-Open must be enabled in QOF-08")
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
 		Machines = BalanceConfig.Machines,
@@ -594,6 +615,11 @@ function BalanceConfig.Validate()
 
 	for index, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
 		registerEntitlement(level, "Multi-Open " .. tostring(index))
+		assert(type(level.requireIds) == "table", "Multi-Open prerequisites must be a table")
+		assert(
+			type(level.eggCount) == "number" and level.eggCount > 1 and level.eggCount % 1 == 0,
+			"Multi-Open count must be an integer above one"
+		)
 	end
 	for _, level in ipairs(entitlementLevels) do
 		for _, requiredId in ipairs(level.requireIds or {}) do

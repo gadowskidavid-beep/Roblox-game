@@ -54,6 +54,7 @@ local player = Players.LocalPlayer
 -- RemoteFunctions
 local GetPlayerData = Remotes:WaitForChild("GetPlayerData")
 local HatchEgg = Remotes:WaitForChild("HatchEgg")
+local SetHatchBatchSize = Remotes:WaitForChild("SetHatchBatchSize")
 local EquipPet = Remotes:WaitForChild("EquipPet")
 local UnequipPet = Remotes:WaitForChild("UnequipPet")
 local DeletePet = Remotes:WaitForChild("DeletePet")
@@ -73,6 +74,7 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
+local GetUpgradeTreeState = Remotes:WaitForChild("GetUpgradeTreeState")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -90,6 +92,7 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
+local UpgradeTreeUpdated = Remotes:WaitForChild("UpgradeTreeUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -233,6 +236,51 @@ campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
 musicController:init()
 upgradeTreeController:init(Remotes, playerData)
+
+local function applyHatchEntitlementState(serverState)
+	local entitlements = type(serverState) == "table" and serverState.entitlements or nil
+	local maximumCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
+	uiController:setHatchBatchLimit(maximumCount)
+end
+
+local hatchSelectionRequestToken = 0
+uiController:setHatchBatchSelectionCallback(function(count)
+	hatchSelectionRequestToken += 1
+	local token = hatchSelectionRequestToken
+	uiController:showHatchFeedback("Updating hatch amount…", true)
+	task.spawn(function()
+		local invoked, accepted, message, batchState = pcall(function()
+			return SetHatchBatchSize:InvokeServer(count)
+		end)
+		if token ~= hatchSelectionRequestToken then
+			return
+		end
+		if type(batchState) == "table" then
+			uiController:setHatchBatchState(batchState.maximumCount, batchState.selectedCount)
+		end
+		if not invoked then
+			uiController:showHatchFeedback(tostring(accepted or "Could not change hatch amount"), false)
+			return
+		end
+		if accepted ~= true then
+			uiController:showHatchFeedback(message or "Could not change hatch amount", false)
+			return
+		end
+		uiController:showHatchFeedback("Auto-Hatch set to x" .. tostring(count), true)
+	end)
+end)
+
+UpgradeTreeUpdated.OnClientEvent:Connect(applyHatchEntitlementState)
+-- UpgradeTreeController performs the first request during init; avoid competing
+-- with its rate limit and then synchronize this independent hatch selector.
+task.delay(0.35, function()
+	local invoked, state = pcall(function()
+		return GetUpgradeTreeState:InvokeServer()
+	end)
+	if invoked then
+		applyHatchEntitlementState(state)
+	end
+end)
 
 --------------------------------------------------------------------------------
 -- LIGHTWEIGHT NEW-PLAYER ONBOARDING
@@ -380,12 +428,38 @@ ProximityPromptService.PromptHidden:Connect(function(prompt)
 	end
 end)
 
--- The world shop prompt only opens the local modal. Purchases remain fully
--- server-authoritative through PurchaseShopItem.
+local hatchRequestInFlight = false
+local function requestHatch(eggType)
+	if hatchRequestInFlight then
+		uiController:showHatchFeedback("A hatch is already in progress", false)
+		return
+	end
+	hatchRequestInFlight = true
+	local count = uiController:getSelectedHatchCount()
+	task.spawn(function()
+		local invoked, result, hatchError = pcall(function()
+			return HatchEgg:InvokeServer(eggType, count)
+		end)
+		hatchRequestInFlight = false
+		if not invoked or type(result) ~= "table" then
+			uiController:showHatchFeedback(hatchError or "Hatch request failed", false)
+		end
+	end)
+end
+
+-- Prompt routing is centralized so character respawns and delayed world creation
+-- never add duplicate hatch connections.
 ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer)
-	if prompt.Name == "PotionShopPrompt"
-		and (triggeringPlayer == nil or triggeringPlayer == player) then
+	if triggeringPlayer ~= nil and triggeringPlayer ~= player then
+		return
+	end
+	if prompt.Name == "PotionShopPrompt" then
 		uiController:openScreen("ShopScreen")
+		return
+	end
+	local eggType = getEggTypeFromPrompt(prompt)
+	if eggType then
+		requestHatch(eggType)
 	end
 end)
 
@@ -541,41 +615,82 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId)
 	end
 end)
 
-EggHatchStart.OnClientEvent:Connect(function(eggType)
-	local hatchPosition = nil
-	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		if hrp then
-			local lookVector = hrp.CFrame.LookVector
-			hatchPosition = hrp.Position + lookVector * 6 + Vector3.new(0, 0, 0)
+local hatchPresentationQueue = {}
+local hatchPresentationActive = false
+
+local function updateHatchPosition()
+	if not player.Character then return end
+	local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	effectsController._lastHatchPosition = hrp.Position + hrp.CFrame.LookVector * 6
+end
+
+local function processNextHatchPresentation()
+	if hatchPresentationActive or #hatchPresentationQueue == 0 then return end
+	hatchPresentationActive = true
+	local presentation = table.remove(hatchPresentationQueue, 1)
+	local pets = presentation.pets
+	local presentationFinished = false
+
+	local function finishPresentation()
+		if presentationFinished then return end
+		presentationFinished = true
+		effectsController._lastHatchPosition = nil
+		local uiSucceeded, uiError = xpcall(function()
+			uiController:showEggBatch(pets)
+		end, debug.traceback)
+		hatchPresentationActive = false
+		task.defer(processNextHatchPresentation)
+		if not uiSucceeded then
+			warn("[Battle Pets] Hatch results recovered from a UI error:\n" .. tostring(uiError))
 		end
 	end
-	if hatchPosition then
-		effectsController._lastHatchPosition = hatchPosition
+
+	local revealStarted, revealError = xpcall(function()
+		updateHatchPosition()
+		if not effectsController._isHatching then
+			effectsController:startEggWobble()
+		end
+		effectsController:completeEggHatch(pets[1], #pets, finishPresentation)
+	end, debug.traceback)
+	if not revealStarted then
+		effectsController:cancelEggHatch()
+		finishPresentation()
+		warn("[Battle Pets] Hatch reveal recovered before start:\n" .. tostring(revealError))
 	end
-	-- Start the egg wobble animation immediately so the player sees feedback right away
-	effectsController:startEggWobble()
+end
+
+EggHatchStart.OnClientEvent:Connect(function(payload)
+	local eggType = type(payload) == "table" and payload.eggType or payload
+	if type(eggType) ~= "string" then return end
+	updateHatchPosition()
+	-- Start immediate feedback only when no older batch owns the reveal surface.
+	-- Queued results create their own wobble when they reach the front.
+	if not hatchPresentationActive and #hatchPresentationQueue == 0 then
+		effectsController:startEggWobble()
+	end
 end)
 
-EggHatchResult.OnClientEvent:Connect(function(petData)
-	effectsController._lastHatchPosition = nil
+EggHatchResult.OnClientEvent:Connect(function(payload)
+	local pets = type(payload) == "table" and payload.pets or nil
+	if type(pets) ~= "table" then
+		-- Rolling-server compatibility with the QOF-07 single-pet event contract.
+		pets = type(payload) == "table" and { payload } or {}
+	end
+	if #pets == 0 then return end
 
-	if petData then
-		completeOnboardingStep("egg")
+	completeOnboardingStep("egg")
+	for _, petData in ipairs(pets) do
+		if type(petData) == "table" and petData.isNewDiscovery == true then
+			uiController:enqueueDiscoveryToast(petData)
+		end
 	end
 
-	if petData and petData.isNewDiscovery == true then
-		uiController:enqueueDiscoveryToast(petData)
-	end
-
-	-- Complete the egg hatch animation (cancels wobble, does shakes + reveal)
-	effectsController:completeEggHatch(petData)
-
-	-- Delay the UIController modal until after the EffectsController animation
-	-- finishes (~4s total: shakes + crack + flash + reveal + auto-dismiss)
-	task.delay(4, function()
-		uiController:showEggHatch(petData, petData and petData.isNewDiscovery)
-	end)
+	table.insert(hatchPresentationQueue, {
+		batchId = type(payload) == "table" and payload.batchId or nil,
+		pets = pets,
+	})
+	processNextHatchPresentation()
 end)
 
 CampaignBattleUpdate.OnClientEvent:Connect(function(battleState)
@@ -794,30 +909,8 @@ local function onCharacterAdded(character)
 		end)
 	end
 
-	-- ProximityPrompt interaction for egg stations (E-key)
-	-- This is the primary egg interaction method: directly invokes HatchEgg on server
-	local function connectEggPrompts()
-		local stationsFolder = workspace:FindFirstChild("EggStations")
-		if not stationsFolder then return end
-		for _, obj in ipairs(stationsFolder:GetChildren()) do
-			if obj:IsA("BasePart") and obj.Name == "EggModel" then
-				local prompt = obj:FindFirstChild("HatchPrompt")
-				local promptTag = obj:FindFirstChild("PromptEggType")
-				if prompt and promptTag then
-					prompt.Triggered:Connect(function(triggerPlayer)
-						if triggerPlayer == player then
-							-- Directly invoke HatchEgg on server (validates cost server-side)
-							local eggType = promptTag.Value
-							HatchEgg:InvokeServer(eggType)
-						end
-					end)
-				end
-			end
-		end
-	end
-	connectEggPrompts()
-	-- Also listen for any future egg stations (in case they spawn after character loads)
-	task.delay(2, connectEggPrompts)
+	-- Egg and shop prompts are routed once through ProximityPromptService above;
+	-- no per-character connections are created here.
 end
 
 -- Connect character added
