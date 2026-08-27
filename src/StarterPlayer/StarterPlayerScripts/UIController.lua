@@ -86,7 +86,8 @@ local VARIANT_RANK = {
 }
 
 local function resolvePetVariant(petData)
-	if petData.golden == true then return "Golden" end
+	if petData.shiny == true or petData.variant == "Shiny" then return "Shiny" end
+	if petData.golden == true or petData.variant == "Golden" then return "Golden" end
 	local variant = petData.variant
 	if VARIANT_RANK[variant] then return variant end
 	return "Normal"
@@ -1309,8 +1310,12 @@ function UIController:_showGoldenConversionConfirm()
 					self:_showGoldenError("Favorite pets are protected!")
 					return
 				end
-				if pet.golden then
+				if pet.golden == true or pet.variant == "Golden" then
 					self:_showGoldenError("Cannot use golden pets!")
+					return
+				end
+				if pet.shiny == true or pet.variant == "Shiny" then
+					self:_showGoldenError("Shiny pets are protected!")
 					return
 				end
 				local variant = pet.variant or "Normal"
@@ -3305,7 +3310,7 @@ end
 function UIController:enqueueDiscoveryToast(petData)
 	if not self._playerGui or type(petData) ~= "table" then return end
 
-	local variant = petData.variant or (petData.golden and "Golden") or "Normal"
+	local variant = resolvePetVariant(petData)
 	table.insert(self._discoveryToastQueue, {
 		name = petData.name or "Pet",
 		rarity = petData.rarity or "Common",

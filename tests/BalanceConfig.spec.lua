@@ -95,6 +95,12 @@ describe("BalanceConfig validation", function()
 		})
 	end)
 
+	it("defines bounded dormant potion persistence", function()
+		expect(BalanceConfig.Potions.Persistence.MaxInventoryPerPotion):toBe(999)
+		expect(BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds):toBe(2592000)
+		expect(BalanceConfig.Potions.Upgrades.MaxShinyCharges):toBe(30)
+	end)
+
 	it("keeps target systems disabled until their owning QOF activates them", function()
 		expect(BalanceConfig.Variants.RuntimeEnabled):toBeFalse()
 		expect(BalanceConfig.Hatch.RuntimeEnabled):toBeFalse()

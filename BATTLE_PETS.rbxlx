@@ -1562,15 +1562,16 @@ print("[Battle Pets] Server initialized successfully!")
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
 	DataSchema.lua - Versioned player data schema and migration helpers
-	Keeps array fields atomic, repairs cross-field invariants, and removes
-	transient values before persistence.
+	Keeps array fields atomic, repairs cross-field invariants, normalizes future
+	potion state, and removes transient values before persistence.
 ]]
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 5
+DataSchema.VERSION = 6
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -1578,6 +1579,19 @@ local ARRAY_FIELDS = {
 	campaignProgress = true,
 	equippedPets = true,
 }
+
+local POTION_CATALOG = BalanceConfig.Potions.Catalog
+local POTION_UPGRADES = BalanceConfig.Potions.Upgrades
+local POTION_PERSISTENCE = BalanceConfig.Potions.Persistence
+local TIMED_BUFF_TYPES = {}
+local CHARGE_BUFF_TYPES = {}
+for _, potion in pairs(POTION_CATALOG) do
+	if potion.durationSeconds ~= nil then
+		TIMED_BUFF_TYPES[potion.buffType] = true
+	elseif potion.hatchCharges ~= nil then
+		CHARGE_BUFF_TYPES[potion.buffType] = true
+	end
+end
 
 local function deepCopy(value)
 	if type(value) ~= "table" then
@@ -1624,6 +1638,8 @@ function DataSchema.getDefaultData()
 		rarity = "Common",
 		damage = 1,
 		variant = "Normal",
+		shiny = false,
+		golden = false,
 		favorite = false,
 		equipped = true,
 	}
@@ -1654,6 +1670,13 @@ function DataSchema.getDefaultData()
 		discoveredPets = {},
 		shopPurchases = {
 			extraEquipSlots = 0,
+		},
+		potionInventory = {},
+		activeBuffs = {},
+		potionUpgrades = {
+			slots = POTION_UPGRADES.BaseSlots,
+			durationLevel = 0,
+			autoDrink = false,
 		},
 	}
 end
@@ -1686,11 +1709,25 @@ local function normalizePets(data)
 	for _, pet in ipairs(data.pets) do
 		if type(pet) == "table" and type(pet.id) == "string" and pet.id ~= "" and not petById[pet.id] then
 			pet.damage = math.floor(finiteNumber(pet.damage, 0, 0))
-			if pet.golden == true then
-				pet.variant = "Golden"
-			else
-				pet.variant = type(pet.variant) == "string" and pet.variant or "Normal"
+
+			local legacyVariant = type(pet.variant) == "string" and pet.variant or "Normal"
+			local variant = "Normal"
+			if pet.golden == true or legacyVariant == "Golden" then
+				variant = "Golden"
+			elseif legacyVariant == "Rainbow" then
+				variant = "Rainbow"
 			end
+
+			-- Preserve the V5 exclusive marker and a V6 Boolean mirror. Reading
+			-- both makes V6 -> rolling V5 save -> V6 lossless because V5 servers
+			-- retain unknown fields even when they stamp schemaVersion back to 5.
+			local shiny = legacyVariant == "Shiny" or pet.shiny == true
+
+			pet.variant = variant
+			pet.shiny = shiny
+			-- Keep the current visual/rolling-version compatibility mirror. The
+			-- base variant remains authoritative in V6.
+			pet.golden = variant == "Golden"
 			pet.favorite = pet.favorite == true
 			pet.equipped = pet.equipped == true
 			petById[pet.id] = pet
@@ -1730,7 +1767,7 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 				value = math.floor(value)
 				if value >= minimum and value <= maximum and not seen[value] then
 					seen[value] = true
-				table.insert(normalized, value)
+					table.insert(normalized, value)
 				end
 			end
 		end
@@ -1742,7 +1779,88 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 	return normalized
 end
 
-function DataSchema.normalize(data)
+local function normalizeBooleanMap(values, maximumKeyLength)
+	local normalized = {}
+	if type(values) == "table" then
+		for key, value in pairs(values) do
+			if type(key) == "string" and #key > 0 and #key <= maximumKeyLength and value == true then
+				normalized[key] = true
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizePotionInventory(values)
+	local normalized = {}
+	if type(values) == "table" then
+		for potionId, count in pairs(values) do
+			if POTION_CATALOG[potionId] and type(count) == "number" then
+				count = math.clamp(
+					math.floor(finiteNumber(count, 0, 0)),
+					0,
+					POTION_PERSISTENCE.MaxInventoryPerPotion
+				)
+				if count > 0 then
+					normalized[potionId] = count
+				end
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizeActiveBuffs(values, currentTime)
+	local normalized = {}
+	if type(values) ~= "table" then
+		return normalized
+	end
+
+	for buffType, state in pairs(values) do
+		if TIMED_BUFF_TYPES[buffType] and type(state) == "number" then
+			local expiresAt = math.floor(finiteNumber(state, 0, 0))
+			if expiresAt > currentTime then
+				normalized[buffType] = math.min(
+					expiresAt,
+					currentTime + POTION_PERSISTENCE.MaxTimedBuffSeconds
+				)
+			end
+		elseif CHARGE_BUFF_TYPES[buffType] and type(state) == "table" then
+			local charges = math.clamp(
+				math.floor(finiteNumber(state.charges, 0, 0)),
+				0,
+				POTION_UPGRADES.MaxShinyCharges
+			)
+			if charges > 0 then
+				normalized[buffType] = { charges = charges }
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizePotionUpgrades(values)
+	if type(values) ~= "table" then
+		values = {}
+	end
+	return {
+		slots = math.clamp(
+			math.floor(finiteNumber(values.slots, POTION_UPGRADES.BaseSlots, POTION_UPGRADES.BaseSlots)),
+			POTION_UPGRADES.BaseSlots,
+			POTION_UPGRADES.MaxSlots
+		),
+		durationLevel = math.clamp(
+			math.floor(finiteNumber(values.durationLevel, 0, 0)),
+			0,
+			#POTION_UPGRADES.Duration
+		),
+		autoDrink = values.autoDrink == true,
+	}
+end
+
+function DataSchema.normalize(data, currentTime)
+	currentTime = math.floor(finiteNumber(currentTime, os.time(), 0))
+
 	data.coins = math.floor(finiteNumber(data.coins, 0, 0))
 	data.diamonds = math.floor(finiteNumber(data.diamonds, 0, 0))
 	data.xp = math.floor(finiteNumber(data.xp, 0, 0))
@@ -1758,17 +1876,9 @@ function DataSchema.normalize(data)
 		data.questStats[statName] = math.floor(finiteNumber(data.questStats[statName], defaultValue, 0))
 	end
 	if type(data.upgrades) ~= "table" then data.upgrades = {} end
-	local normalizedTreePurchases = {}
-	if type(data.upgradeTreePurchases) == "table" then
-		for upgradeId, isPurchased in pairs(data.upgradeTreePurchases) do
-			if type(upgradeId) == "string" and #upgradeId > 0 and #upgradeId <= 64 and isPurchased == true then
-				normalizedTreePurchases[upgradeId] = true
-			end
-		end
-	end
-	data.upgradeTreePurchases = normalizedTreePurchases
+	data.upgradeTreePurchases = normalizeBooleanMap(data.upgradeTreePurchases, 64)
 	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
-	if type(data.discoveredPets) ~= "table" then data.discoveredPets = {} end
+	data.discoveredPets = normalizeBooleanMap(data.discoveredPets, 128)
 	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
 	if type(data.shopPurchases) ~= "table" then data.shopPurchases = {} end
 	data.shopPurchases.extraEquipSlots = math.clamp(
@@ -1777,26 +1887,28 @@ function DataSchema.normalize(data)
 		Config.MaxExtraEquipSlots or 5
 	)
 
+	data.potionInventory = normalizePotionInventory(data.potionInventory)
+	data.activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
+	data.potionUpgrades = normalizePotionUpgrades(data.potionUpgrades)
+
 	data.schemaVersion = DataSchema.VERSION
 	data.xpNeeded = nil
 	return data
 end
 
-function DataSchema.migrate(rawData)
+function DataSchema.migrate(rawData, currentTime)
 	if type(rawData) ~= "table" then
 		return DataSchema.getDefaultData()
 	end
 
 	local data = deepCopy(rawData)
 	mergeDefaults(data, DataSchema.getDefaultData())
-	return DataSchema.normalize(data)
+	return DataSchema.normalize(data, currentTime)
 end
 
-function DataSchema.cloneForPersistence(data)
+function DataSchema.cloneForPersistence(data, currentTime)
 	local snapshot = deepCopy(data)
-	snapshot.xpNeeded = nil
-	snapshot.schemaVersion = DataSchema.VERSION
-	return snapshot
+	return DataSchema.normalize(snapshot, currentTime)
 end
 
 function DataSchema.deepCopy(value)
@@ -2061,6 +2173,7 @@ function DataService.getClientData(player)
 	end
 
 	return {
+		schemaVersion = data.schemaVersion,
 		coins = data.coins,
 		diamonds = data.diamonds,
 		pets = DataSchema.deepCopy(data.pets),
@@ -2077,6 +2190,9 @@ function DataService.getClientData(player)
 		masteryBuffs = DataSchema.deepCopy(data.masteryBuffs),
 		discoveredPets = DataSchema.deepCopy(data.discoveredPets or {}),
 		shopPurchases = DataSchema.deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
+		potionInventory = DataSchema.deepCopy(data.potionInventory or {}),
+		activeBuffs = DataSchema.deepCopy(data.activeBuffs or {}),
+		potionUpgrades = DataSchema.deepCopy(data.potionUpgrades or {}),
 	}
 end
 
@@ -2491,7 +2607,9 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		return nil, "Invalid pet in pool"
 	end
 
-	-- Roll for Shiny/Rainbow variant
+	-- Roll the active legacy exclusive Shiny/Rainbow outcome. QOF-03 stores
+	-- Shiny independently but intentionally preserves the current probabilities,
+	-- names, and baked damage until QOF-04 activates canonical variant math.
 	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
 	-- BetterLuck mastery bonus also improves variant roll
@@ -2533,7 +2651,9 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		name = petName,
 		rarity = petDef.rarity,
 		damage = petDamage,
-		variant = variant,
+		variant = variant == "Shiny" and "Normal" or variant,
+		shiny = variant == "Shiny",
+		golden = false,
 		favorite = false,
 		equipped = false,
 	}
@@ -2917,6 +3037,10 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			return nil, "Cannot sacrifice a golden pet"
 		end
 
+		if foundPet.shiny == true then
+			return nil, "Shiny pets cannot be sacrificed"
+		end
+
 		local variant = foundPet.variant or "Normal"
 		if variant ~= "Normal" then
 			return nil, "Only normal pets can be converted; keep Shiny and Rainbow pets safe"
@@ -2990,6 +3114,7 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			rarity = petDef.rarity,
 			damage = petDef.baseDamage * 2,
 			variant = "Golden",
+			shiny = false,
 			golden = true,
 			favorite = false,
 			equipped = false,
@@ -8283,7 +8408,8 @@ local VARIANT_RANK = {
 }
 
 local function resolvePetVariant(petData)
-	if petData.golden == true then return "Golden" end
+	if petData.shiny == true or petData.variant == "Shiny" then return "Shiny" end
+	if petData.golden == true or petData.variant == "Golden" then return "Golden" end
 	local variant = petData.variant
 	if VARIANT_RANK[variant] then return variant end
 	return "Normal"
@@ -9506,8 +9632,12 @@ function UIController:_showGoldenConversionConfirm()
 					self:_showGoldenError("Favorite pets are protected!")
 					return
 				end
-				if pet.golden then
+				if pet.golden == true or pet.variant == "Golden" then
 					self:_showGoldenError("Cannot use golden pets!")
+					return
+				end
+				if pet.shiny == true or pet.variant == "Shiny" then
+					self:_showGoldenError("Shiny pets are protected!")
 					return
 				end
 				local variant = pet.variant or "Normal"
@@ -11502,7 +11632,7 @@ end
 function UIController:enqueueDiscoveryToast(petData)
 	if not self._playerGui or type(petData) ~= "table" then return end
 
-	local variant = petData.variant or (petData.golden and "Golden") or "Normal"
+	local variant = resolvePetVariant(petData)
 	table.insert(self._discoveryToastQueue, {
 		name = petData.name or "Pet",
 		rarity = petData.rarity or "Common",
@@ -12379,7 +12509,7 @@ function PetController:createPetModel(petData)
 	end
 
 	-- Golden pets get extra sparkle effect (larger size, extra glow)
-	if petData.golden then
+	if petData.golden == true or petData.variant == "Golden" then
 		body.Size = Vector3.new(2.6, 2.6, 2.6)
 		body.Material = Enum.Material.Neon
 		body.Color = Color3.fromRGB(255, 215, 0)
@@ -14641,7 +14771,14 @@ function EffectsController:completeEggHatch(petData)
 
 	local rarity = petData and petData.rarity or "Common"
 	local petName = petData and petData.name or "Pet"
-	local variant = petData and petData.variant or "Normal"
+	local variant = "Normal"
+	if petData and (petData.shiny == true or petData.variant == "Shiny") then
+		variant = "Shiny"
+	elseif petData and (petData.golden == true or petData.variant == "Golden") then
+		variant = "Golden"
+	elseif petData and petData.variant == "Rainbow" then
+		variant = "Rainbow"
+	end
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
 	-- Variant-specific color overrides
@@ -16046,6 +16183,10 @@ local BalanceConfig = {
 
 	Potions = {
 		RuntimeEnabled = false,
+		Persistence = {
+			MaxInventoryPerPotion = 999,
+			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
+		},
 		Catalog = {
 			LuckPotion = {
 				cost = { currency = "diamonds", amount = 100 },
@@ -16337,6 +16478,26 @@ function BalanceConfig.Validate()
 	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.PotionSlots, "Potion Slots")
 	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.Duration, "Potion Duration")
 	validateCost(BalanceConfig.Potions.Upgrades.AutoDrink.cost, "Auto-Drink")
+
+	local potionPersistence = BalanceConfig.Potions.Persistence
+	assert(
+		isFiniteNumber(potionPersistence.MaxInventoryPerPotion)
+			and potionPersistence.MaxInventoryPerPotion > 0
+			and potionPersistence.MaxInventoryPerPotion % 1 == 0,
+		"potion inventory cap is invalid"
+	)
+	assert(
+		isFiniteNumber(potionPersistence.MaxTimedBuffSeconds)
+			and potionPersistence.MaxTimedBuffSeconds > 0
+			and potionPersistence.MaxTimedBuffSeconds % 1 == 0,
+		"timed buff persistence cap is invalid"
+	)
+	assert(
+		isFiniteNumber(BalanceConfig.Potions.Upgrades.MaxShinyCharges)
+			and BalanceConfig.Potions.Upgrades.MaxShinyCharges > 0
+			and BalanceConfig.Potions.Upgrades.MaxShinyCharges % 1 == 0,
+		"Shiny charge cap is invalid"
+	)
 
 	for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
 		validateCost(potion.cost, potionId)

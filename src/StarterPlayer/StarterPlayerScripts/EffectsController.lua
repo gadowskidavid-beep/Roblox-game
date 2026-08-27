@@ -308,7 +308,14 @@ function EffectsController:completeEggHatch(petData)
 
 	local rarity = petData and petData.rarity or "Common"
 	local petName = petData and petData.name or "Pet"
-	local variant = petData and petData.variant or "Normal"
+	local variant = "Normal"
+	if petData and (petData.shiny == true or petData.variant == "Shiny") then
+		variant = "Shiny"
+	elseif petData and (petData.golden == true or petData.variant == "Golden") then
+		variant = "Golden"
+	elseif petData and petData.variant == "Rainbow" then
+		variant = "Rainbow"
+	end
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
 
 	-- Variant-specific color overrides

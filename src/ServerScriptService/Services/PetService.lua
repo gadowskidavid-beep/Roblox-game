@@ -157,7 +157,9 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		return nil, "Invalid pet in pool"
 	end
 
-	-- Roll for Shiny/Rainbow variant
+	-- Roll the active legacy exclusive Shiny/Rainbow outcome. QOF-03 stores
+	-- Shiny independently but intentionally preserves the current probabilities,
+	-- names, and baked damage until QOF-04 activates canonical variant math.
 	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
 	-- BetterLuck mastery bonus also improves variant roll
@@ -199,7 +201,9 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		name = petName,
 		rarity = petDef.rarity,
 		damage = petDamage,
-		variant = variant,
+		variant = variant == "Shiny" and "Normal" or variant,
+		shiny = variant == "Shiny",
+		golden = false,
 		favorite = false,
 		equipped = false,
 	}
@@ -583,6 +587,10 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			return nil, "Cannot sacrifice a golden pet"
 		end
 
+		if foundPet.shiny == true then
+			return nil, "Shiny pets cannot be sacrificed"
+		end
+
 		local variant = foundPet.variant or "Normal"
 		if variant ~= "Normal" then
 			return nil, "Only normal pets can be converted; keep Shiny and Rainbow pets safe"
@@ -656,6 +664,7 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			rarity = petDef.rarity,
 			damage = petDef.baseDamage * 2,
 			variant = "Golden",
+			shiny = false,
 			golden = true,
 			favorite = false,
 			equipped = false,

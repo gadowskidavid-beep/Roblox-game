@@ -425,7 +425,7 @@ function PetController:createPetModel(petData)
 	end
 
 	-- Golden pets get extra sparkle effect (larger size, extra glow)
-	if petData.golden then
+	if petData.golden == true or petData.variant == "Golden" then
 		body.Size = Vector3.new(2.6, 2.6, 2.6)
 		body.Material = Enum.Material.Neon
 		body.Color = Color3.fromRGB(255, 215, 0)

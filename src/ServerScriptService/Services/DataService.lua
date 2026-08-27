@@ -248,6 +248,7 @@ function DataService.getClientData(player)
 	end
 
 	return {
+		schemaVersion = data.schemaVersion,
 		coins = data.coins,
 		diamonds = data.diamonds,
 		pets = DataSchema.deepCopy(data.pets),
@@ -264,6 +265,9 @@ function DataService.getClientData(player)
 		masteryBuffs = DataSchema.deepCopy(data.masteryBuffs),
 		discoveredPets = DataSchema.deepCopy(data.discoveredPets or {}),
 		shopPurchases = DataSchema.deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
+		potionInventory = DataSchema.deepCopy(data.potionInventory or {}),
+		activeBuffs = DataSchema.deepCopy(data.activeBuffs or {}),
+		potionUpgrades = DataSchema.deepCopy(data.potionUpgrades or {}),
 	}
 end
 

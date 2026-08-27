@@ -188,6 +188,10 @@ local BalanceConfig = {
 
 	Potions = {
 		RuntimeEnabled = false,
+		Persistence = {
+			MaxInventoryPerPotion = 999,
+			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
+		},
 		Catalog = {
 			LuckPotion = {
 				cost = { currency = "diamonds", amount = 100 },
@@ -479,6 +483,26 @@ function BalanceConfig.Validate()
 	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.PotionSlots, "Potion Slots")
 	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.Duration, "Potion Duration")
 	validateCost(BalanceConfig.Potions.Upgrades.AutoDrink.cost, "Auto-Drink")
+
+	local potionPersistence = BalanceConfig.Potions.Persistence
+	assert(
+		isFiniteNumber(potionPersistence.MaxInventoryPerPotion)
+			and potionPersistence.MaxInventoryPerPotion > 0
+			and potionPersistence.MaxInventoryPerPotion % 1 == 0,
+		"potion inventory cap is invalid"
+	)
+	assert(
+		isFiniteNumber(potionPersistence.MaxTimedBuffSeconds)
+			and potionPersistence.MaxTimedBuffSeconds > 0
+			and potionPersistence.MaxTimedBuffSeconds % 1 == 0,
+		"timed buff persistence cap is invalid"
+	)
+	assert(
+		isFiniteNumber(BalanceConfig.Potions.Upgrades.MaxShinyCharges)
+			and BalanceConfig.Potions.Upgrades.MaxShinyCharges > 0
+			and BalanceConfig.Potions.Upgrades.MaxShinyCharges % 1 == 0,
+		"Shiny charge cap is invalid"
+	)
 
 	for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
 		validateCost(potion.cost, potionId)
