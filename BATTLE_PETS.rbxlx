@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000045">
+	<Item class="ServerScriptService" referent="RBX00000044">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000044">
+			<Item class="Script" referent="RBX00000043">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -741,7 +741,6 @@ local ShopService = require(script.Parent.Services.ShopService)
 ----------------------------------------------
 
 local rateLimits = {}
-local burstLimits = {}
 local function canCall(player, action, cooldown)
 	rateLimits[player.UserId] = rateLimits[player.UserId] or {}
 	local now = os.clock()
@@ -751,25 +750,6 @@ local function canCall(player, action, cooldown)
 	end
 	rateLimits[player.UserId][action] = now
 	return true
-end
-
-local function canCallBurst(player, action, maxCalls, windowSeconds)
-	burstLimits[player.UserId] = burstLimits[player.UserId] or {}
-	local now = os.clock()
-	local bucket = burstLimits[player.UserId][action]
-	if not bucket or now - bucket.startedAt >= windowSeconds then
-		burstLimits[player.UserId][action] = { startedAt = now, count = 1 }
-		return true
-	end
-	if bucket.count >= maxCalls then
-		return false
-	end
-	bucket.count = bucket.count + 1
-	return true
-end
-
-local function isValidIdentifier(value)
-	return type(value) == "string" and #value > 0 and #value <= 64
 end
 
 ----------------------------------------------
@@ -816,7 +796,6 @@ local remoteFunctions = {
 	"UnequipPet",
 	"DeletePet",
 	"DeletePets",
-	"SetPetFavorite",
 	"UnlockZone",
 	"PurchaseUpgrade",
 	"GetPlayerData",
@@ -920,13 +899,6 @@ getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
-	if not canCall(player, "GetPlayerData", 0.2) then
-		return nil
-	end
-	local deadline = os.clock() + 15
-	while player.Parent and not DataService.getPlayerData(player) and os.clock() < deadline do
-		task.wait(0.1)
-	end
 	return DataService.getClientData(player)
 end
 
@@ -986,7 +958,7 @@ getRemoteFunction("DeletePet").OnServerInvoke = function(player, petInstanceId)
 	return PetService.deletePet(player, petInstanceId)
 end
 
--- DeletePets (bulk delete, 1 second cooldown, bounded by inventory capacity)
+-- DeletePets (bulk delete, 1 second cooldown, max 100 pets)
 getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
@@ -997,8 +969,8 @@ getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds
 	if type(petInstanceIds) ~= "table" then
 		return false, "Invalid pet IDs parameter"
 	end
-	-- Bulk delete size limit is bounded by the server-authoritative inventory capacity.
-	if #petInstanceIds > PetService.getMaxInventory(player) then
+	-- Bulk delete size limit
+	if #petInstanceIds > 100 then
 		return false, "Too many pets"
 	end
 	-- Validate each ID is a string
@@ -1008,20 +980,6 @@ getRemoteFunction("DeletePets").OnServerInvoke = function(player, petInstanceIds
 		end
 	end
 	return PetService.deletePets(player, petInstanceIds)
-end
-
--- SetPetFavorite (idempotent favorite state, 0.25 second cooldown)
-getRemoteFunction("SetPetFavorite").OnServerInvoke = function(player, petInstanceId, isFavorite)
-	if not player or not player:IsA("Player") then
-		return false, "Invalid player"
-	end
-	if not canCall(player, "SetPetFavorite", 0.25) then
-		return false, "Please wait before changing favorites again"
-	end
-	if not isValidIdentifier(petInstanceId) or type(isFavorite) ~= "boolean" then
-		return false, "Invalid favorite parameters"
-	end
-	return PetService.setPetFavorite(player, petInstanceId, isFavorite)
 end
 
 -- UnlockZone (2 second cooldown)
@@ -1057,7 +1015,6 @@ getRemoteFunction("GetQuestProgress").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
-	if not canCall(player, "GetQuestProgress", 0.25) then return {} end
 	return QuestService.getQuestProgress(player)
 end
 
@@ -1085,7 +1042,6 @@ getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
-	if not canCall(player, "GetMasteryState", 0.25) then return {} end
 	return MasteryService.getMasteryState(player)
 end
 
@@ -1151,7 +1107,7 @@ getRemoteFunction("AttackDestructible").OnServerInvoke = function(player, destru
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if not isValidIdentifier(destructibleId) then
+	if type(destructibleId) ~= "string" then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.attackDestructible(player, destructibleId)
@@ -1162,7 +1118,7 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if not isValidIdentifier(destructibleId) then
+	if type(destructibleId) ~= "string" then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.clickAttackDestructible(player, destructibleId)
@@ -1176,7 +1132,7 @@ getRemoteFunction("CritAttackDestructible").OnServerInvoke = function(player, de
 	if not canCall(player, "CritAttackDestructible", 0.2) then
 		return false, "Please wait before crit attacking again"
 	end
-	if not isValidIdentifier(destructibleId) then
+	if type(destructibleId) ~= "string" then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.critAttackDestructible(player, destructibleId)
@@ -1187,14 +1143,11 @@ getRemoteFunction("AssignPetTarget").OnServerInvoke = function(player, petInstan
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if not canCallBurst(player, "AssignPetTarget", 30, 1) then
-		return false, "Too many target changes"
-	end
-	if not isValidIdentifier(petInstanceId) then
+	if type(petInstanceId) ~= "string" then
 		return false, "Invalid pet ID parameter"
 	end
-	-- destructibleId can be nil (clearing target) or a bounded identifier.
-	if destructibleId ~= nil and not isValidIdentifier(destructibleId) then
+	-- destructibleId can be nil (clearing target) or string
+	if destructibleId ~= nil and type(destructibleId) ~= "string" then
 		return false, "Invalid destructible ID parameter"
 	end
 	return ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
@@ -1205,7 +1158,6 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
-	if not canCall(player, "GetDiscoveredPets", 0.25) then return {} end
 	local data = DataService.getPlayerData(player)
 	if not data then
 		return {}
@@ -1237,7 +1189,6 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return {}
 	end
-	if not canCall(player, "GetShopBuffs", 0.25) then return {} end
 	return ShopService.getActiveBuffs(player)
 end
 
@@ -1249,12 +1200,8 @@ end
 local _sessionJoinTimes = {}
 
 Players.PlayerAdded:Connect(function(player)
-	-- Acquire the player's profile before any gameplay system can mutate it.
-	local loadedData, loadError = DataService.loadPlayerData(player)
-	if not loadedData then
-		player:Kick(loadError or "Your data could not be loaded safely. Please rejoin.")
-		return
-	end
+	-- Load player data when they join
+	DataService.loadPlayerData(player)
 
 	-- Auto-give currency to admins (workaround: TextChatService does NOT fire player.Chatted)
 	local ADMIN_IDS = {357069526}
@@ -1334,7 +1281,7 @@ Players.PlayerAdded:Connect(function(player)
 				if remotes then
 					local xpEvent = remotes:FindFirstChild("XPUpdated")
 					if xpEvent then
-						xpEvent:FireClient(player, level, pData.xp or 0, level * 100)
+						xpEvent:FireClient(player, pData.xp or 0, level)
 					end
 				end
 				-- Update leaderstats
@@ -1381,7 +1328,6 @@ Players.PlayerRemoving:Connect(function(player)
 
 	-- Cleanup rate limits
 	rateLimits[player.UserId] = nil
-	burstLimits[player.UserId] = nil
 
 	-- Cleanup ShopService player state (active buffs)
 	ShopService._activeBuffs[player.UserId] = nil
@@ -1398,11 +1344,7 @@ end)
 -- Handle players who joined before script loaded
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(function()
-		local loadedData, loadError = DataService.loadPlayerData(player)
-		if not loadedData then
-			player:Kick(loadError or "Your data could not be loaded safely. Please rejoin.")
-			return
-		end
+		DataService.loadPlayerData(player)
 		_sessionJoinTimes[player.UserId] = os.time()
 
 		-- Create leaderstats for already-connected players
@@ -1508,284 +1450,44 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX00000043">
+			<Item class="Folder" referent="RBX00000042">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
 				<Item class="ModuleScript" referent="RBX00000038">
 					<Properties>
-						<string name="Name">DataSchema</string>
-						<Content name="LinkedSource"><null></null></Content>
-						<ProtectedString name="Source"><![CDATA[--[[
-	DataSchema.lua - Versioned player data schema and migration helpers
-	Keeps array fields atomic, repairs cross-field invariants, and removes
-	transient values before persistence.
-]]
-
-local Config = require(game.ReplicatedStorage.Shared.Config)
-
-local DataSchema = {}
-
-DataSchema.VERSION = 4
-
-local ARRAY_FIELDS = {
-	pets = true,
-	unlockedZones = true,
-	campaignProgress = true,
-	equippedPets = true,
-}
-
-local function deepCopy(value)
-	if type(value) ~= "table" then
-		return value
-	end
-
-	local result = {}
-	for key, child in pairs(value) do
-		result[deepCopy(key)] = deepCopy(child)
-	end
-	return result
-end
-
-local function finiteNumber(value, fallback, minimum)
-	if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
-		return fallback
-	end
-	if minimum ~= nil and value < minimum then
-		return minimum
-	end
-	return value
-end
-
-local function mergeObjectDefaults(data, defaults)
-	for key, defaultValue in pairs(defaults) do
-		local currentValue = data[key]
-		if currentValue == nil then
-			data[key] = deepCopy(defaultValue)
-		elseif type(defaultValue) == "table" then
-			if type(currentValue) ~= "table" then
-				data[key] = deepCopy(defaultValue)
-			else
-				mergeObjectDefaults(currentValue, defaultValue)
-			end
-		end
-	end
-end
-
-function DataSchema.getDefaultData()
-	local starterPet = {
-		id = "starter_pet_1",
-		petId = "Buddy",
-		name = "Buddy",
-		rarity = "Common",
-		damage = 1,
-		variant = "Normal",
-		favorite = false,
-		equipped = true,
-	}
-
-	return {
-		schemaVersion = DataSchema.VERSION,
-		coins = 0,
-		diamonds = 0,
-		xp = 0,
-		level = 1,
-		pets = { starterPet },
-		unlockedZones = { 1 },
-		campaignProgress = {},
-		campaignBossRewards = {},
-		upgrades = {},
-		equippedPets = { "starter_pet_1" },
-		questStats = {
-			destroyDestructibles = 0,
-			hatchEggs = 0,
-			earnCoins = 0,
-			playtime = 0,
-			reachLevel = 0,
-			goldenPetsConverted = 0,
-		},
-		masteryPoints = 0,
-		masteryBuffs = {},
-		discoveredPets = {},
-		shopPurchases = {
-			extraEquipSlots = 0,
-		},
-	}
-end
-
-local function mergeDefaults(data, defaults)
-	for key, defaultValue in pairs(defaults) do
-		local currentValue = data[key]
-		if currentValue == nil then
-			data[key] = deepCopy(defaultValue)
-		elseif type(defaultValue) == "table" then
-			if type(currentValue) ~= "table" then
-				data[key] = deepCopy(defaultValue)
-			elseif not ARRAY_FIELDS[key] then
-				mergeObjectDefaults(currentValue, defaultValue)
-			end
-		end
-	end
-end
-
-local function normalizePets(data)
-	if type(data.pets) ~= "table" then
-		data.pets = {}
-	end
-	if type(data.equippedPets) ~= "table" then
-		data.equippedPets = {}
-	end
-
-	local normalizedPets = {}
-	local petById = {}
-	for _, pet in ipairs(data.pets) do
-		if type(pet) == "table" and type(pet.id) == "string" and pet.id ~= "" and not petById[pet.id] then
-			pet.damage = math.floor(finiteNumber(pet.damage, 0, 0))
-			if pet.golden == true then
-				pet.variant = "Golden"
-			else
-				pet.variant = type(pet.variant) == "string" and pet.variant or "Normal"
-			end
-			pet.favorite = pet.favorite == true
-			pet.equipped = pet.equipped == true
-			petById[pet.id] = pet
-			table.insert(normalizedPets, pet)
-		end
-	end
-	data.pets = normalizedPets
-
-	local equipped = {}
-	local equippedSet = {}
-	for _, petId in ipairs(data.equippedPets) do
-		if type(petId) == "string" and petById[petId] and not equippedSet[petId] then
-			equippedSet[petId] = true
-			table.insert(equipped, petId)
-		end
-	end
-
-	-- Repair older saves where the per-pet flag and equippedPets list diverged.
-	for _, pet in ipairs(normalizedPets) do
-		if pet.equipped and not equippedSet[pet.id] then
-			equippedSet[pet.id] = true
-			table.insert(equipped, pet.id)
-		end
-	end
-	for _, pet in ipairs(normalizedPets) do
-		pet.equipped = equippedSet[pet.id] == true
-	end
-	data.equippedPets = equipped
-end
-
-local function normalizeNumberArray(values, minimum, maximum, requiredValue)
-	local normalized = {}
-	local seen = {}
-	if type(values) == "table" then
-		for _, value in ipairs(values) do
-			if type(value) == "number" then
-				value = math.floor(value)
-				if value >= minimum and value <= maximum and not seen[value] then
-					seen[value] = true
-				table.insert(normalized, value)
-				end
-			end
-		end
-	end
-	if requiredValue and not seen[requiredValue] then
-		table.insert(normalized, requiredValue)
-	end
-	table.sort(normalized)
-	return normalized
-end
-
-function DataSchema.normalize(data)
-	data.coins = math.floor(finiteNumber(data.coins, 0, 0))
-	data.diamonds = math.floor(finiteNumber(data.diamonds, 0, 0))
-	data.xp = math.floor(finiteNumber(data.xp, 0, 0))
-	data.level = math.floor(finiteNumber(data.level, 1, 1))
-	data.masteryPoints = math.floor(finiteNumber(data.masteryPoints, 0, 0))
-
-	normalizePets(data)
-	data.unlockedZones = normalizeNumberArray(data.unlockedZones, 1, 8, 1)
-	data.campaignProgress = normalizeNumberArray(data.campaignProgress, 1, 48)
-
-	if type(data.questStats) ~= "table" then data.questStats = {} end
-	for statName, defaultValue in pairs(DataSchema.getDefaultData().questStats) do
-		data.questStats[statName] = math.floor(finiteNumber(data.questStats[statName], defaultValue, 0))
-	end
-	if type(data.upgrades) ~= "table" then data.upgrades = {} end
-	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
-	if type(data.discoveredPets) ~= "table" then data.discoveredPets = {} end
-	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
-	if type(data.shopPurchases) ~= "table" then data.shopPurchases = {} end
-	data.shopPurchases.extraEquipSlots = math.clamp(
-		math.floor(finiteNumber(data.shopPurchases.extraEquipSlots, 0, 0)),
-		0,
-		Config.MaxExtraEquipSlots or 5
-	)
-
-	data.schemaVersion = DataSchema.VERSION
-	data.xpNeeded = nil
-	return data
-end
-
-function DataSchema.migrate(rawData)
-	if type(rawData) ~= "table" then
-		return DataSchema.getDefaultData()
-	end
-
-	local data = deepCopy(rawData)
-	mergeDefaults(data, DataSchema.getDefaultData())
-	return DataSchema.normalize(data)
-end
-
-function DataSchema.cloneForPersistence(data)
-	local snapshot = deepCopy(data)
-	snapshot.xpNeeded = nil
-	snapshot.schemaVersion = DataSchema.VERSION
-	return snapshot
-end
-
-function DataSchema.deepCopy(value)
-	return deepCopy(value)
-end
-
-return DataSchema
-]]></ProtectedString>
-					</Properties>
-				</Item>
-				<Item class="ModuleScript" referent="RBX00000039">
-					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	DataService.lua - Conflict-safe player data persistence
-	Uses versioned migrations, atomic session locks, retries, autosave heartbeats,
-	and parallel shutdown saves. Studio falls back to memory-only data when API
-	access is unavailable; production never overwrites a profile after load failure.
+	DataService.lua - Player data persistence service
+	Handles save/load with DataStoreService, caching, and auto-save.
+	Falls back to memory-only (session) storage when DataStore is unavailable
+	(e.g. unpublished places or Studio testing).
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
-local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
-local DataSchema = require(script.Parent.DataSchema)
+
+local SCHEMA_VERSION = 2
 
 local DataService = {}
 
-local MAX_RETRIES = 3
-local AUTOSAVE_INTERVAL = Config.AutoSaveInterval or 60
-local SESSION_LOCK_TIMEOUT = Config.SessionLockTimeout or 180
-local SHUTDOWN_TIMEOUT = 25
-local SESSION_ID = game.JobId ~= "" and game.JobId or ("studio_" .. HttpService:GenerateGUID(false))
-
+-- In-memory cache of player data
 DataService._cache = {}
+
+-- Track whether a player's data loaded successfully (prevents overwriting real saves with defaults)
 DataService._canSave = {}
-DataService._saving = {}
+
+-- Flag: if true, DataStore is unavailable and we operate in memory-only mode
 DataService._useMemoryOnly = false
 
+-- DataStore reference (may be nil if unavailable)
 local dataStore = nil
+
+-- Attempt to acquire DataStore handle safely
 local dsSuccess, dsResult = pcall(function()
 	return DataStoreService:GetDataStore(Config.DataStoreName)
 end)
@@ -1794,281 +1496,267 @@ if dsSuccess then
 	dataStore = dsResult
 else
 	DataService._useMemoryOnly = true
-	warn("[DataService] DataStore unavailable; using session-only data: " .. tostring(dsResult))
+	warn("[DataService] DataStore unavailable - running in memory-only mode (session data will not persist). Reason: " .. tostring(dsResult))
+	print("[Battle Pets] Memory-only mode - publish game to enable saving")
 end
 
-local function profileKey(userId)
-	return "Player_" .. tostring(userId)
-end
+-- Default player data schema
+local function getDefaultData()
+	local starterPet = {
+		id = "starter_pet_1",
+		petId = "Buddy",
+		name = "Buddy",
+		rarity = "Common",
+		damage = 1,
+		equipped = true,
+	}
 
-local function newSessionMetadata()
 	return {
-		id = SESSION_ID,
-		placeId = game.PlaceId,
-		updatedAt = os.time(),
+		schemaVersion = SCHEMA_VERSION,
+		coins = 0,
+		diamonds = 0,
+		xp = 0,
+		level = 1,
+		pets = { starterPet },
+		unlockedZones = {1},
+		campaignProgress = {},
+		upgrades = {},
+		equippedPets = { "starter_pet_1" },
+		-- Quest progress tracking
+		questStats = {
+			destroyDestructibles = 0,
+			hatchEggs = 0,
+			earnCoins = 0,
+			playtime = 0,
+			reachLevel = 0,
+			goldenPetsConverted = 0,
+		},
+		-- Mastery system
+		masteryPoints = 0,
+		masteryBuffs = {},
+		-- Pet discovery tracking (collection book)
+		discoveredPets = {},
+		-- Shop purchases (permanent effects)
+		shopPurchases = {
+			extraEquipSlots = 0,
+		},
 	}
 end
 
-local function isForeignActiveSession(session)
-	if type(session) ~= "table" or type(session.id) ~= "string" then
-		return false
+-- Deep copy a table
+local function deepCopy(original)
+	local copy = {}
+	for key, value in pairs(original) do
+		if type(value) == "table" then
+			copy[key] = deepCopy(value)
+		else
+			copy[key] = value
+		end
 	end
-	if session.id == SESSION_ID then
-		return false
-	end
-	local updatedAt = type(session.updatedAt) == "number" and session.updatedAt or 0
-	return os.time() - updatedAt < SESSION_LOCK_TIMEOUT
+	return copy
 end
 
-local function ownsStoredSession(storedData)
-	return type(storedData) == "table"
-		and type(storedData._session) == "table"
-		and storedData._session.id == SESSION_ID
-end
-
-local function waitForCurrentSave(userId)
-	local deadline = os.clock() + 10
-	while DataService._saving[userId] and os.clock() < deadline do
-		task.wait(0.05)
+-- Deep merge defaults into existing data (recurse into nested tables)
+-- Only fills in missing keys; never overwrites existing player values.
+local function deepMerge(data, defaults)
+	for key, defaultValue in pairs(defaults) do
+		if data[key] == nil then
+			-- Field missing entirely, copy the default
+			if type(defaultValue) == "table" then
+				data[key] = deepCopy(defaultValue)
+			else
+				data[key] = defaultValue
+			end
+		elseif type(defaultValue) == "table" and type(data[key]) == "table" then
+			-- Both are tables, recurse to fill missing sub-keys
+			deepMerge(data[key], defaultValue)
+		end
 	end
-	return not DataService._saving[userId]
 end
 
-local function useStudioFallback(player)
-	if not RunService:IsStudio() then
-		return nil
-	end
-	DataService._useMemoryOnly = true
-	local data = DataSchema.getDefaultData()
-	DataService._cache[player.UserId] = data
-	DataService._canSave[player.UserId] = false
-	warn("[DataService] Studio API access unavailable; switched to memory-only mode")
-	return data
-end
-
--- Atomically loads and locks a profile. A live lock from another server is never overwritten.
+-- Load player data from DataStore with retry logic
 function DataService.loadPlayerData(player)
 	if not player or not player:IsA("Player") then
-		return nil, "Invalid player"
+		return nil
 	end
 
-	if DataService._cache[player.UserId] then
+	-- Memory-only mode: just give defaults immediately
+	if DataService._useMemoryOnly then
+		DataService._cache[player.UserId] = getDefaultData()
+		DataService._canSave[player.UserId] = false
+		print("[Battle Pets] Memory-only mode - publish game to enable saving")
 		return DataService._cache[player.UserId]
 	end
 
-	if DataService._useMemoryOnly then
-		local data = DataSchema.getDefaultData()
-		DataService._cache[player.UserId] = data
-		DataService._canSave[player.UserId] = false
-		return data
-	end
-
-	local key = profileKey(player.UserId)
-	local loadedData = nil
-	local lockConflict = nil
-	local lastError = nil
+	local key = "Player_" .. tostring(player.UserId)
+	local MAX_RETRIES = 3
+	local success, data = false, nil
 
 	for attempt = 1, MAX_RETRIES do
-		local success, result = pcall(function()
-			return dataStore:UpdateAsync(key, function(storedData)
-				local existingSession = type(storedData) == "table" and storedData._session or nil
-				if isForeignActiveSession(existingSession) then
-					lockConflict = existingSession
-					return nil
-				end
-
-				local migrated = DataSchema.migrate(storedData)
-				migrated._session = newSessionMetadata()
-				return migrated
-			end)
+		success, data = pcall(function()
+			return dataStore:GetAsync(key)
 		end)
-
-		if success and type(result) == "table" and result._session and result._session.id == SESSION_ID then
-			loadedData = result
+		if success then
 			break
 		end
-		if lockConflict then
-			break
-		end
-		lastError = result
 		if attempt < MAX_RETRIES then
-			task.wait(2 ^ attempt)
+			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
 		end
 	end
 
-	if loadedData then
-		DataService._cache[player.UserId] = loadedData
+	if success and data then
+		-- Deep merge with defaults (handles new fields and nested sub-fields added after save)
+		local defaults = getDefaultData()
+		deepMerge(data, defaults)
+		-- Stamp current schema version
+		data.schemaVersion = SCHEMA_VERSION
+		DataService._cache[player.UserId] = data
 		DataService._canSave[player.UserId] = true
-		return loadedData
+	elseif success and not data then
+		-- No existing save, new player - safe to save defaults
+		DataService._cache[player.UserId] = getDefaultData()
+		DataService._canSave[player.UserId] = true
+	else
+		-- Load failed after all retries - use defaults but do NOT allow saving
+		DataService._cache[player.UserId] = getDefaultData()
+		DataService._canSave[player.UserId] = false
+		warn("[DataService] Failed to load data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(data))
 	end
 
-	DataService._canSave[player.UserId] = false
-	if lockConflict then
-		local message = "Your data is still active on another server. Please wait a moment and rejoin."
-		warn("[DataService] Refused concurrent session for " .. player.Name)
-		return nil, message
-	end
-
-	local fallback = useStudioFallback(player)
-	if fallback then
-		return fallback
-	end
-
-	warn("[DataService] Failed to load " .. player.Name .. ": " .. tostring(lastError))
-	return nil, "Your data could not be loaded safely. Please rejoin later."
+	return DataService._cache[player.UserId]
 end
 
--- Saves only while this server still owns the profile lock.
--- releaseLock is used on leave/shutdown so a new server can load immediately.
-function DataService.savePlayerData(player, releaseLock)
+-- Save player data to DataStore
+function DataService.savePlayerData(player)
 	if not player or not player:IsA("Player") then
-		return false, "Invalid player"
+		return false
 	end
+
+	-- Guard: skip save in memory-only mode
 	if DataService._useMemoryOnly then
-		return false, "Memory-only mode"
+		return false
 	end
+
+	-- Guard: do not save if initial load failed (prevents overwriting real data with defaults)
 	if not DataService._canSave[player.UserId] then
-		return false, "Profile is not saveable"
-	end
-	if not waitForCurrentSave(player.UserId) then
-		return false, "Save already in progress"
+		warn("[DataService] Skipping save for " .. player.Name .. " - initial load failed")
+		return false
 	end
 
 	local data = DataService._cache[player.UserId]
 	if not data then
-		return false, "No cached data"
+		return false
 	end
 
-	DataService._saving[player.UserId] = true
-	local key = profileKey(player.UserId)
-	local snapshot = DataSchema.cloneForPersistence(data)
-	local sessionLost = false
-	local lastError = nil
-	local saved = false
+	local key = "Player_" .. tostring(player.UserId)
+	local MAX_RETRIES = 3
+	local success, err = false, nil
 
 	for attempt = 1, MAX_RETRIES do
-		local success, result = pcall(function()
-			return dataStore:UpdateAsync(key, function(storedData)
-				if not ownsStoredSession(storedData) then
-					sessionLost = true
-					return nil
-				end
-
-				if releaseLock then
-					snapshot._session = nil
-				else
-					snapshot._session = newSessionMetadata()
-				end
-				return snapshot
+		success, err = pcall(function()
+			dataStore:UpdateAsync(key, function(oldData)
+				return data
 			end)
 		end)
-
-		if success and not sessionLost and type(result) == "table" then
-			saved = true
-			if not releaseLock then
-				data._session = DataSchema.deepCopy(snapshot._session)
-			end
+		if success then
 			break
 		end
-		if sessionLost then
-			break
-		end
-		lastError = result
 		if attempt < MAX_RETRIES then
-			task.wait(2 ^ attempt)
+			task.wait(2 ^ attempt) -- Exponential backoff: 2s, 4s
 		end
 	end
 
-	DataService._saving[player.UserId] = nil
+	if not success then
+		warn("[DataService] Failed to save data for " .. player.Name .. " after " .. MAX_RETRIES .. " retries: " .. tostring(err))
+	end
 
-	if sessionLost then
-		DataService._canSave[player.UserId] = false
-		warn("[DataService] Session ownership lost for " .. player.Name .. "; refusing stale save")
-		return false, "Session ownership lost"
-	end
-	if not saved then
-		warn("[DataService] Failed to save " .. player.Name .. ": " .. tostring(lastError))
-		return false, tostring(lastError)
-	end
-	return true
+	return success
 end
 
+-- Get cached player data (does not hit DataStore)
 function DataService.getPlayerData(player)
 	if not player or not player:IsA("Player") then
 		return nil
 	end
-	return DataService._cache[player.UserId]
+	local data = DataService._cache[player.UserId]
+	if data then
+		-- Include computed xpNeeded for client XP bar
+		data.xpNeeded = (data.level or 1) * 100
+	end
+	return data
 end
 
+-- Get a sanitized COPY of player data for client consumption
+-- Returns only client-relevant fields; never exposes the cache reference directly
 function DataService.getClientData(player)
-	local data = DataService.getPlayerData(player)
+	if not player or not player:IsA("Player") then
+		return nil
+	end
+	local data = DataService._cache[player.UserId]
 	if not data then
 		return nil
 	end
 
-	return {
+	-- Build a clean copy with only client-relevant fields
+	local clientData = {
 		coins = data.coins,
 		diamonds = data.diamonds,
-		pets = DataSchema.deepCopy(data.pets),
+		pets = deepCopy(data.pets),
 		level = data.level,
 		xp = data.xp,
 		xpNeeded = (data.level or 1) * 100,
-		equippedPets = DataSchema.deepCopy(data.equippedPets),
-		unlockedZones = DataSchema.deepCopy(data.unlockedZones),
-		upgrades = DataSchema.deepCopy(data.upgrades),
-		questStats = DataSchema.deepCopy(data.questStats),
-		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
+		equippedPets = deepCopy(data.equippedPets),
+		unlockedZones = deepCopy(data.unlockedZones),
+		upgrades = deepCopy(data.upgrades),
+		questStats = deepCopy(data.questStats),
+		campaignProgress = deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,
-		masteryBuffs = DataSchema.deepCopy(data.masteryBuffs),
-		discoveredPets = DataSchema.deepCopy(data.discoveredPets or {}),
-		shopPurchases = DataSchema.deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
+		masteryBuffs = deepCopy(data.masteryBuffs),
+		discoveredPets = deepCopy(data.discoveredPets or {}),
+		shopPurchases = deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
 	}
+
+	return clientData
 end
 
+-- Called when player leaves - save and cleanup
 function DataService.onPlayerRemoving(player)
-	DataService.savePlayerData(player, true)
+	DataService.savePlayerData(player)
 	DataService._cache[player.UserId] = nil
 	DataService._canSave[player.UserId] = nil
-	DataService._saving[player.UserId] = nil
 end
 
+-- Periodic auto-save for all online players (every 60 seconds)
 function DataService.startAutoSave()
+	-- No need to auto-save in memory-only mode
 	if DataService._useMemoryOnly then
 		return
 	end
 
 	task.spawn(function()
 		while true do
-			task.wait(AUTOSAVE_INTERVAL)
+			task.wait(60)
 			for _, player in ipairs(Players:GetPlayers()) do
-				if DataService._cache[player.UserId] and not DataService._saving[player.UserId] then
-					task.spawn(DataService.savePlayerData, player, false)
+				if DataService._cache[player.UserId] then
+					DataService.savePlayerData(player)
 				end
 			end
 		end
 	end)
 end
 
+-- Bind to server shutdown: save all players before the server exits
 function DataService.bindToClose()
+	-- No need to bind in memory-only mode
 	if DataService._useMemoryOnly then
 		return
 	end
 
 	game:BindToClose(function()
-		local pending = 0
 		for _, player in ipairs(Players:GetPlayers()) do
 			if DataService._cache[player.UserId] then
-				pending = pending + 1
-				task.spawn(function()
-					DataService.savePlayerData(player, true)
-					pending = pending - 1
-				end)
+				DataService.savePlayerData(player)
 			end
-		end
-
-		local deadline = os.clock() + SHUTDOWN_TIMEOUT
-		while pending > 0 and os.clock() < deadline do
-			task.wait(0.1)
 		end
 	end)
 end
@@ -2077,7 +1765,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003A">
+				<Item class="ModuleScript" referent="RBX00000039">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2157,7 +1845,7 @@ function CurrencyService.addCoins(player, amount)
 		end
 	end
 
-	return true, finalAmount
+	return true
 end
 
 -- Remove coins from player (no bonuses applied to deductions)
@@ -2222,7 +1910,7 @@ function CurrencyService.addDiamonds(player, amount)
 		end
 	end
 
-	return true, finalAmount
+	return true
 end
 
 -- Remove diamonds from player
@@ -2273,7 +1961,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003B">
+				<Item class="ModuleScript" referent="RBX0000003A">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2363,31 +2051,6 @@ local function weightedRandomPet(petPool, player)
 	return adjustedPool[#adjustedPool].petId
 end
 
--- Get the server-authoritative inventory capacity for a player.
-function PetService.getMaxInventory(player)
-	local bonus = 0
-	if PetService._upgradeService then
-		bonus = PetService._upgradeService.getUpgradeBonus(player, "ExtraSlots") or 0
-	end
-	return math.clamp(
-		(Config.MaxPetInventoryBase or 100) + bonus,
-		Config.MaxPetInventoryBase or 100,
-		Config.MaxPetInventoryAbsolute or 250
-	)
-end
-
-function PetService.canAddPet(player)
-	local data = PetService._dataService.getPlayerData(player)
-	if not data or type(data.pets) ~= "table" then
-		return false, "No player data"
-	end
-	local capacity = PetService.getMaxInventory(player)
-	if #data.pets >= capacity then
-		return false, "Pet inventory full (" .. tostring(capacity) .. ")"
-	end
-	return true
-end
-
 -- Hatch an egg and return the new pet
 -- If skipCostDeduction is true, assumes cost was already deducted by the caller (EggService)
 function PetService.hatchEgg(player, eggType, skipCostDeduction)
@@ -2404,11 +2067,6 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
 		return nil, "No player data"
-	end
-
-	local hasSpace, capacityError = PetService.canAddPet(player)
-	if not hasSpace then
-		return nil, capacityError
 	end
 
 	-- Get egg cost from config based on zone
@@ -2478,7 +2136,6 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		rarity = petDef.rarity,
 		damage = petDamage,
 		variant = variant,
-		favorite = false,
 		equipped = false,
 	}
 
@@ -2523,9 +2180,9 @@ local function getMaxEquipped(player)
 	local extraSlots = 0
 	local data = PetService._dataService.getPlayerData(player)
 	if data and data.shopPurchases then
-		extraSlots = math.clamp(data.shopPurchases.extraEquipSlots or 0, 0, Config.MaxExtraEquipSlots or 5)
+		extraSlots = data.shopPurchases.extraEquipSlots or 0
 	end
-	return math.min(base + (bonus or 0) + extraSlots, Config.MaxEquippedPetsAbsolute or 12)
+	return base + (bonus or 0) + extraSlots
 end
 
 -- Equip a pet by instance ID
@@ -2638,37 +2295,6 @@ function PetService.unequipPet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
-local function fireInventoryUpdate(player, pets)
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if not remotes then return end
-	local event = remotes:FindFirstChild("PetInventoryUpdated")
-	if event then
-		event:FireClient(player, pets)
-	end
-end
-
--- Set a pet's favorite state by instance ID.
-function PetService.setPetFavorite(player, petInstanceId, isFavorite)
-	if not player or type(petInstanceId) ~= "string" or type(isFavorite) ~= "boolean" then
-		return false, "Invalid parameters"
-	end
-
-	local data = PetService._dataService.getPlayerData(player)
-	if not data then
-		return false, "No player data"
-	end
-
-	for _, pet in ipairs(data.pets) do
-		if pet.id == petInstanceId then
-			pet.favorite = isFavorite
-			fireInventoryUpdate(player, data.pets)
-			return true, nil
-		end
-	end
-
-	return false, "Pet not found in inventory"
-end
-
 -- Delete a single pet by instance ID
 function PetService.deletePet(player, petInstanceId)
 	if not player or type(petInstanceId) ~= "string" then
@@ -2682,10 +2308,6 @@ function PetService.deletePet(player, petInstanceId)
 
 	for i, pet in ipairs(data.pets) do
 		if pet.id == petInstanceId then
-			if pet.favorite == true then
-				return false, "Favorited pets cannot be deleted"
-			end
-
 			-- Unequip if equipped
 			if pet.equipped then
 				for j, id in ipairs(data.equippedPets) do
@@ -2697,7 +2319,14 @@ function PetService.deletePet(player, petInstanceId)
 			end
 			table.remove(data.pets, i)
 
-			fireInventoryUpdate(player, data.pets)
+			-- Fire inventory update
+			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+			if remotes then
+				local event = remotes:FindFirstChild("PetInventoryUpdated")
+				if event then
+					event:FireClient(player, data.pets)
+				end
+			end
 
 			return true, nil
 		end
@@ -2712,45 +2341,24 @@ function PetService.deletePets(player, petInstanceIds)
 		return false, "Invalid parameters"
 	end
 
-	local count = #petInstanceIds
-	if count < 1 or count > (Config.MaxPetInventoryAbsolute or 250) then
-		return false, "Invalid number of pets"
-	end
-
 	local data = PetService._dataService.getPlayerData(player)
 	if not data then
 		return false, "No player data"
 	end
 
-	-- Preflight the entire request before mutating anything, so a protected or
-	-- stale ID cannot cause a partial delete.
-	local petById = {}
-	for _, pet in ipairs(data.pets) do
-		petById[pet.id] = pet
-	end
-
+	-- Validate all IDs exist and belong to player
 	local idsToDelete = {}
 	for _, id in ipairs(petInstanceIds) do
-		if type(id) ~= "string" or id == "" then
-			return false, "Invalid pet ID in list"
+		if type(id) == "string" then
+			idsToDelete[id] = true
 		end
-		if idsToDelete[id] then
-			return false, "Duplicate pet ID in list"
-		end
-		local pet = petById[id]
-		if not pet then
-			return false, "Pet not found in inventory: " .. tostring(id)
-		end
-		if pet.favorite == true then
-			return false, "Favorited pets cannot be deleted"
-		end
-		idsToDelete[id] = true
 	end
 
-	-- Remove pets from inventory (iterate in reverse to safely remove).
+	-- Remove pets from inventory (iterate in reverse to safely remove)
 	for i = #data.pets, 1, -1 do
 		local pet = data.pets[i]
 		if idsToDelete[pet.id] then
+			-- Unequip if equipped
 			if pet.equipped then
 				for j, id in ipairs(data.equippedPets) do
 					if id == pet.id then
@@ -2763,7 +2371,15 @@ function PetService.deletePets(player, petInstanceIds)
 		end
 	end
 
-	fireInventoryUpdate(player, data.pets)
+	-- Fire inventory update
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if remotes then
+		local event = remotes:FindFirstChild("PetInventoryUpdated")
+		if event then
+			event:FireClient(player, data.pets)
+		end
+	end
+
 	return true, nil
 end
 
@@ -2813,7 +2429,7 @@ local GOLDEN_CHANCES = {
 
 -- Convert pets into a golden pet (multi-pet sacrifice with chance)
 -- petInstanceIds: table of 1-7 pet instance IDs (all must be same petId/type)
--- Returns: { success = bool, goldenPet = pet|nil, chance = number, isNewDiscovery = bool }
+-- Returns: { success = bool, goldenPet = pet|nil, chance = number }
 function PetService.convertToGoldenPet(player, petInstanceIds)
 	if not player or type(petInstanceIds) ~= "table" then
 		return nil, "Invalid parameters"
@@ -2850,17 +2466,8 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			return nil, "Pet not found in inventory: " .. tostring(instanceId)
 		end
 
-		if foundPet.favorite == true then
-			return nil, "Favorited pets cannot be sacrificed"
-		end
-
 		if foundPet.golden then
 			return nil, "Cannot sacrifice a golden pet"
-		end
-
-		local variant = foundPet.variant or "Normal"
-		if variant ~= "Normal" then
-			return nil, "Only normal pets can be converted; keep Shiny and Rainbow pets safe"
 		end
 
 		if foundPet.equipped then
@@ -2884,11 +2491,6 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			return nil, "Duplicate pet ID in list"
 		end
 		idSet[instanceId] = true
-	end
-
-	local petDef = PetData.Pets[requiredPetId]
-	if not petDef then
-		return nil, "Invalid pet type"
 	end
 
 	-- Calculate chance
@@ -2920,31 +2522,30 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 	end
 
 	local goldenPet = nil
-	local isNewDiscovery = false
 
 	if success then
 		-- Create a new golden pet based on the sacrificed type
-		goldenPet = {
-			id = HttpService:GenerateGUID(false),
-			petId = requiredPetId,
-			name = "Golden " .. petDef.name,
-			rarity = petDef.rarity,
-			damage = petDef.baseDamage * 2,
-			variant = "Golden",
-			golden = true,
-			favorite = false,
-			equipped = false,
-		}
-		table.insert(data.pets, goldenPet)
+		local petDef = PetData.Pets[requiredPetId]
+		if petDef then
+			goldenPet = {
+				id = HttpService:GenerateGUID(false),
+				petId = requiredPetId,
+				name = "Golden " .. petDef.name,
+				rarity = petDef.rarity,
+				damage = petDef.baseDamage * 2,
+				golden = true,
+				equipped = false,
+			}
+			table.insert(data.pets, goldenPet)
 
-		-- Track golden discovery (collection book)
-		local goldenKey = "Golden_" .. requiredPetId
-		if not data.discoveredPets then
-			data.discoveredPets = {}
-		end
-		if not data.discoveredPets[goldenKey] then
-			data.discoveredPets[goldenKey] = true
-			isNewDiscovery = true
+			-- Track golden discovery (collection book)
+			local goldenKey = "Golden_" .. requiredPetId
+			if not data.discoveredPets then
+				data.discoveredPets = {}
+			end
+			if not data.discoveredPets[goldenKey] then
+				data.discoveredPets[goldenKey] = true
+			end
 		end
 	end
 
@@ -2957,19 +2558,14 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 		end
 	end
 
-	return {
-		success = success,
-		goldenPet = goldenPet,
-		chance = chance,
-		isNewDiscovery = isNewDiscovery,
-	}, nil
+	return { success = success, goldenPet = goldenPet, chance = chance }, nil
 end
 
 return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003C">
+				<Item class="ModuleScript" referent="RBX0000003B">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3065,7 +2661,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003D">
+				<Item class="ModuleScript" referent="RBX0000003C">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3075,7 +2671,6 @@ return UpgradeService
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ZoneData = require(game.ReplicatedStorage.Shared.ZoneData)
@@ -3136,9 +2731,8 @@ function ZoneService.init(dataService, currencyService, petService)
 	end
 	ZoneService._zonesFolder = zonesFolder
 
-	-- Create the complete runtime world from one authoritative source.
+	-- Spawn the lobby island (safe spawn hub before Zone 1)
 	ZoneService._spawnLobby()
-	ZoneService._spawnCampaignPortal()
 
 	-- Spawn destructibles for all 8 zones
 	for zoneId = 1, 8 do
@@ -3423,7 +3017,6 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 		hp = dDef.hp,
 		maxHp = dDef.hp,
 		drops = dDef.drops,
-		contributors = {},
 		part = mainPart,
 		model = model,
 		position = mainPart.Position,
@@ -4650,11 +4243,6 @@ function ZoneService.unlockZone(player, zoneId)
 		end
 	end
 
-	-- Progression is strictly sequential; clients cannot skip directly to later eggs.
-	if zoneId > 1 and not table.find(data.unlockedZones, zoneId - 1) then
-		return false, "Unlock zone " .. tostring(zoneId - 1) .. " first"
-	end
-
 	-- Validate cost
 	local cost = Config.ZoneGateCosts[zoneId]
 	if not cost then
@@ -4669,9 +4257,8 @@ function ZoneService.unlockZone(player, zoneId)
 		end
 	end
 
-	-- Add zone to player unlocked list in stable order.
+	-- Add zone to player unlocked list
 	table.insert(data.unlockedZones, zoneId)
-	table.sort(data.unlockedZones)
 
 	-- Fire client event
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -4744,133 +4331,6 @@ function ZoneService.onPlayerRemoving(player)
 		ZoneService._critCooldowns[userId] = nil
 		ZoneService._critWindows[userId] = nil
 		ZoneService._petTargets[userId] = nil
-	end
-end
-
-local function recordContribution(destructible, player, damage)
-	local appliedDamage = math.max(0, math.min(damage, destructible.hp))
-	destructible.contributors = destructible.contributors or {}
-	destructible.contributors[player.UserId] = (destructible.contributors[player.UserId] or 0) + appliedDamage
-	return appliedDamage
-end
-
-local function allocateProportionally(totalAmount, contributors, totalContribution)
-	local allocations = {}
-	if totalAmount <= 0 or totalContribution <= 0 or #contributors == 0 then
-		return allocations
-	end
-
-	local allocated = 0
-	local topContributor = contributors[1]
-	for _, entry in ipairs(contributors) do
-		if entry.damage > topContributor.damage then
-			topContributor = entry
-		end
-		local share = math.floor(totalAmount * (entry.damage / totalContribution))
-		allocations[entry.userId] = share
-		allocated = allocated + share
-	end
-	allocations[topContributor.userId] = (allocations[topContributor.userId] or 0) + (totalAmount - allocated)
-	return allocations
-end
-
--- Split rewards by actual damage contribution instead of giving everything to the
--- last hitter. Disconnected contributors are excluded and their share is reallocated.
-function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedDrops)
-	local contributors = {}
-	local totalContribution = 0
-	for userId, damage in pairs(destructible.contributors or {}) do
-		local contributor = Players:GetPlayerByUserId(userId)
-		if contributor and damage > 0 then
-			table.insert(contributors, { userId = userId, player = contributor, damage = damage })
-			totalContribution = totalContribution + damage
-		end
-	end
-
-	if #contributors == 0 and fallbackPlayer then
-		contributors = { { userId = fallbackPlayer.UserId, player = fallbackPlayer, damage = 1 } }
-		totalContribution = 1
-	end
-
-	local coinAllocations = allocateProportionally(resolvedDrops.Coins or 0, contributors, totalContribution)
-	local diamondAllocations = allocateProportionally(resolvedDrops.Diamonds or 0, contributors, totalContribution)
-	local xpAllocations = allocateProportionally(destructible.zoneId * 5, contributors, totalContribution)
-	local rewardsByUserId = {}
-
-	for _, entry in ipairs(contributors) do
-		local player = entry.player
-		local playerRewards = { Coins = 0, Diamonds = 0 }
-		local coinShare = coinAllocations[entry.userId] or 0
-		if coinShare > 0 then
-			local success, actualCoins = ZoneService._currencyService.addCoins(player, coinShare)
-			if success then
-				playerRewards.Coins = actualCoins or coinShare
-				if ZoneService._questService then
-					ZoneService._questService.incrementStat(player, "earnCoins", playerRewards.Coins)
-				end
-			end
-		end
-
-		local diamondShare = diamondAllocations[entry.userId] or 0
-		if diamondShare > 0 then
-			local success, actualDiamonds = ZoneService._currencyService.addDiamonds(player, diamondShare)
-			if success then
-				playerRewards.Diamonds = actualDiamonds or diamondShare
-			end
-		end
-
-		local xpShare = xpAllocations[entry.userId] or 0
-		if xpShare > 0 then
-			ZoneService._awardXP(player, xpShare)
-		end
-		if ZoneService._questService then
-			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
-		end
-		rewardsByUserId[entry.userId] = playerRewards
-	end
-
-	return rewardsByUserId
-end
-
-local function isPlayerNearPosition(player, position)
-	local character = player.Character
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-	if not root then return false end
-	return (root.Position - position).Magnitude <= (Config.DestructibleReplicationDistance or 300)
-end
-
-function ZoneService._fireDamageNearby(destructibleId, destructible, damage)
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	local event = remotes and remotes:FindFirstChild("DestructibleDamaged")
-	if not event then return end
-	for _, player in ipairs(Players:GetPlayers()) do
-		if isPlayerNearPosition(player, destructible.position) then
-			event:FireClient(player, destructibleId, destructible.hp, destructible.maxHp, damage)
-		end
-	end
-end
-
-function ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	local event = remotes and remotes:FindFirstChild("DestructibleDestroyed")
-	if not event then return end
-	for _, player in ipairs(Players:GetPlayers()) do
-		if isPlayerNearPosition(player, destructible.position) then
-			event:FireClient(player, destructibleId, rewardsByUserId[player.UserId] or {})
-		end
-	end
-end
-
-function ZoneService._clearDestroyedTargetState(destructibleId)
-	for _, targets in pairs(ZoneService._petTargets) do
-		for petId, targetId in pairs(targets) do
-			if targetId == destructibleId then
-				targets[petId] = nil
-			end
-		end
-	end
-	for _, windows in pairs(ZoneService._critWindows) do
-		windows[destructibleId] = nil
 	end
 end
 
@@ -4949,9 +4409,8 @@ function ZoneService.attackDestructible(player, destructibleId)
 		totalDamage = totalDamage + ZoneService._petService.getPetDamage(pet, player)
 	end
 
-	-- Apply only remaining HP as contribution so overkill cannot steal reward share.
-	local appliedDamage = recordContribution(destructible, player, totalDamage)
-	destructible.hp = destructible.hp - appliedDamage
+	-- Apply damage
+	destructible.hp = destructible.hp - totalDamage
 
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 
@@ -4969,11 +4428,35 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
+		end
 
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
+		-- Award XP for destroying a destructible
+		local xpReward = destructible.zoneId * 5
+		ZoneService._awardXP(player, xpReward)
+
+		-- Track quest progress: destructible destroyed
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+
+		-- Track coins earned for quest progress
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
+		end
+
+		-- Fire destroyed event to all clients so everyone sees the destruction
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDestroyed")
+			if event then
+				event:FireAllClients(destructibleId, resolvedDrops)
+			end
+		end
 
 		-- Remove model (or part) from workspace
 		if destructible.model and destructible.model.Parent then
@@ -5007,7 +4490,13 @@ function ZoneService.attackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
+		-- Fire damaged event to all clients so everyone sees HP changes
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDamaged")
+			if event then
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, totalDamage)
+			end
+		end
 	end
 
 	return true, nil
@@ -5076,9 +4565,8 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 	end
 	ZoneService._critWindows[userId][destructibleId] = os.clock() + CRIT_WINDOW_DURATION
 
-	-- Apply damage and record fair-share contribution.
-	local appliedDamage = recordContribution(destructible, player, clickDamage)
-	destructible.hp = destructible.hp - appliedDamage
+	-- Apply damage
+	destructible.hp = destructible.hp - clickDamage
 
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 
@@ -5096,11 +4584,33 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
+		end
 
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
+		-- Award XP
+		local xpReward = destructible.zoneId * 5
+		ZoneService._awardXP(player, xpReward)
+
+		-- Track quest progress
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
+		end
+
+		-- Fire destroyed event
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDestroyed")
+			if event then
+				event:FireAllClients(destructibleId, resolvedDrops)
+			end
+		end
 
 		-- Remove model from workspace
 		if destructible.model and destructible.model.Parent then
@@ -5131,7 +4641,13 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
+		-- Fire damaged event with click damage
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDamaged")
+			if event then
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, clickDamage)
+			end
+		end
 	end
 
 	return true, nil
@@ -5208,9 +4724,8 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 	-- Crit deals 2 damage
 	local critDamage = 2
 
-	-- Apply damage and record fair-share contribution.
-	local appliedDamage = recordContribution(destructible, player, critDamage)
-	destructible.hp = destructible.hp - appliedDamage
+	-- Apply damage
+	destructible.hp = destructible.hp - critDamage
 
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 
@@ -5228,11 +4743,33 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 			end
 		end
 
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
+		-- Award drops
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 then
+			ZoneService._currencyService.addCoins(player, resolvedDrops.Coins)
+		end
+		if resolvedDrops.Diamonds and resolvedDrops.Diamonds > 0 then
+			ZoneService._currencyService.addDiamonds(player, resolvedDrops.Diamonds)
+		end
 
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
+		-- Award XP
+		local xpReward = destructible.zoneId * 5
+		ZoneService._awardXP(player, xpReward)
+
+		-- Track quest progress
+		if ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "destroyDestructibles", 1)
+		end
+		if resolvedDrops.Coins and resolvedDrops.Coins > 0 and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", resolvedDrops.Coins)
+		end
+
+		-- Fire destroyed event
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDestroyed")
+			if event then
+				event:FireAllClients(destructibleId, resolvedDrops)
+			end
+		end
 
 		-- Remove model from workspace
 		if destructible.model and destructible.model.Parent then
@@ -5268,7 +4805,13 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 			end
 		end)
 	else
-		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
+		-- Fire damaged event with crit damage
+		if remotes then
+			local event = remotes:FindFirstChild("DestructibleDamaged")
+			if event then
+				event:FireAllClients(destructibleId, destructible.hp, destructible.maxHp, critDamage)
+			end
+		end
 	end
 
 	return true, nil
@@ -5674,7 +5217,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003E">
+				<Item class="ModuleScript" referent="RBX0000003D">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -5784,7 +5327,7 @@ function CampaignService.startLevel(player, levelNum)
 	local battleState = {
 		levelNum = levelNum,
 		levelDef = levelDef,
-		energy = math.max(0, Config.Campaign.MaxEnergy - (levelDef.energyCost or 0)),
+		energy = Config.Campaign.MaxEnergy,
 		maxEnergy = Config.Campaign.MaxEnergy,
 		energyRegenRate = Config.Campaign.EnergyRegenRate,
 		playerBaseHP = Config.Campaign.BaseHealth,
@@ -6126,20 +5669,21 @@ function CampaignService._onVictory(userId, battle)
 		return
 	end
 
-	local rewardsForClient = {}
-	for key, value in pairs(battle.levelDef.rewards) do
-		rewardsForClient[key] = value
-	end
-
 	local data = CampaignService._dataService.getPlayerData(player)
 	if data then
-		local alreadyCompleted = table.find(data.campaignProgress, battle.levelNum) ~= nil
+		-- Record level completion
+		local alreadyCompleted = false
+		for _, completedLevel in ipairs(data.campaignProgress) do
+			if completedLevel == battle.levelNum then
+				alreadyCompleted = true
+				break
+			end
+		end
 		if not alreadyCompleted then
 			table.insert(data.campaignProgress, battle.levelNum)
-			table.sort(data.campaignProgress)
 		end
 
-		-- Currency remains replayable; the boss egg is a one-time persistent claim.
+		-- Award rewards
 		local rewards = battle.levelDef.rewards
 		if rewards.Coins then
 			CampaignService._currencyService.addCoins(player, rewards.Coins)
@@ -6147,35 +5691,18 @@ function CampaignService._onVictory(userId, battle)
 		if rewards.Diamonds then
 			CampaignService._currencyService.addDiamonds(player, rewards.Diamonds)
 		end
-
-		if rewards.SpecialEgg then
-			data.campaignBossRewards = data.campaignBossRewards or {}
-			local claimKey = tostring(battle.levelNum)
-			if not data.campaignBossRewards[claimKey] then
-				local rewardPet, rewardError = CampaignService._petService.hatchEgg(player, rewards.SpecialEgg, true)
-				if rewardPet then
-					data.campaignBossRewards[claimKey] = true
-					rewardsForClient.SpecialPet = rewardPet.name
-					rewardsForClient.SpecialEggClaimed = true
-					rewardPet.isNewDiscovery = nil
-				else
-					rewardsForClient.SpecialEggPending = true
-					rewardsForClient.SpecialEggError = rewardError or "Reward could not be claimed"
-				end
-			else
-				rewardsForClient.SpecialEggAlreadyClaimed = true
-			end
-		end
 	end
 
+	-- Fire victory event
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("CampaignVictory")
 		if event then
-			event:FireClient(player, battle.levelNum, rewardsForClient)
+			event:FireClient(player, battle.levelNum, battle.levelDef.rewards)
 		end
 	end
 
+	-- Cleanup
 	CampaignService._activeBattles[userId] = nil
 end
 
@@ -6264,7 +5791,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003F">
+				<Item class="ModuleScript" referent="RBX0000003E">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6318,11 +5845,6 @@ function EggService.purchaseAndHatch(player, eggType)
 		local data = EggService._dataService.getPlayerData(player)
 		if not data then
 			return nil, "No player data"
-		end
-
-		local hasSpace, capacityError = EggService._petService.canAddPet(player)
-		if not hasSpace then
-			return nil, capacityError
 		end
 
 		-- Validate player has unlocked the required zone for this egg
@@ -6422,11 +5944,6 @@ function EggService.hatchFree(player, eggType)
 			return nil, "No player data"
 		end
 
-		local hasSpace, capacityError = EggService._petService.canAddPet(player)
-		if not hasSpace then
-			return nil, capacityError
-		end
-
 		-- Validate player has unlocked the required zone for this egg
 		local zoneRequired = eggDef.zone
 		local zoneUnlocked = false
@@ -6517,7 +6034,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000040">
+				<Item class="ModuleScript" referent="RBX0000003F">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6592,20 +6109,19 @@ function QuestService._checkQuestCompletions(player, data)
 
 	for questId, questDef in pairs(QuestData.Quests) do
 		local statType = questDef.requirement.type
+		local currentLevel = data.upgrades[questId] or 0
 		local maxLevel = #questDef.levels
-		local currentLevel = math.clamp(math.floor(tonumber(data.upgrades[questId]) or 0), 0, maxLevel)
 
-		-- Award every milestone already covered by the current stat. This matters for
-		-- migrated profiles and large one-shot progress gains.
-		local currentStat = data.questStats[statType] or 0
-		while currentLevel < maxLevel do
+		-- Check if current stat meets any unachieved level requirement
+		if currentLevel < maxLevel then
+			local currentStat = data.questStats[statType] or 0
 			local requiredForNext = questDef.levelRequirements[currentLevel + 1]
-			if not requiredForNext or currentStat < requiredForNext then
-				break
+
+			if currentStat >= requiredForNext then
+				-- Award the upgrade level
+				data.upgrades[questId] = currentLevel + 1
+				upgradesChanged = true
 			end
-			currentLevel = currentLevel + 1
-			data.upgrades[questId] = currentLevel
-			upgradesChanged = true
 		end
 	end
 
@@ -6717,7 +6233,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000041">
+				<Item class="ModuleScript" referent="RBX00000040">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6867,7 +6383,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000042">
+				<Item class="ModuleScript" referent="RBX00000041">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6882,7 +6398,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
-local Config = require(game.ReplicatedStorage.Shared.Config)
 
 local ShopService = {}
 
@@ -6918,7 +6433,7 @@ ShopService.Items = {
 	},
 	AutoHatch = {
 		displayName = "Auto-Hatch",
-		description = "Automatically buys your highest unlocked egg for 10 minutes",
+		description = "Auto-hatch eggs for 10 minutes",
 		cost = 500,
 		currency = "diamonds",
 		buffType = "autoHatch",
@@ -6928,7 +6443,7 @@ ShopService.Items = {
 	},
 	ExtraEquipSlot = {
 		displayName = "Extra Equip Slot",
-		description = "Permanently equip +1 pet (maximum 5 purchases)",
+		description = "Permanently equip +1 pet",
 		cost = 1000,
 		currency = "diamonds",
 		buffType = "equipSlot",
@@ -6945,7 +6460,7 @@ function ShopService.init(dataService, currencyService)
 	-- Start auto-hatch loop
 	task.spawn(function()
 		while true do
-			task.wait(Config.AutoHatchInterval or 3)
+			task.wait(3)
 			ShopService._processAutoHatch()
 		end
 	end)
@@ -6972,15 +6487,6 @@ function ShopService.purchaseItem(player, itemId)
 		return false, "No player data"
 	end
 
-	-- Validate permanent purchase limits before charging the player.
-	if itemId == "ExtraEquipSlot" then
-		local purchases = data.shopPurchases and data.shopPurchases.extraEquipSlots or 0
-		local maxPurchases = Config.MaxExtraEquipSlots or 5
-		if purchases >= maxPurchases then
-			return false, "Maximum extra equip slots reached (" .. tostring(maxPurchases) .. ")"
-		end
-	end
-
 	-- Deduct currency
 	local success = ShopService._currencyService.removeDiamonds(player, itemDef.cost)
 	if not success then
@@ -6993,11 +6499,7 @@ function ShopService.purchaseItem(player, itemId)
 		if not data.shopPurchases then
 			data.shopPurchases = { extraEquipSlots = 0 }
 		end
-		data.shopPurchases.extraEquipSlots = math.clamp(
-			(data.shopPurchases.extraEquipSlots or 0) + 1,
-			0,
-			Config.MaxExtraEquipSlots or 5
-		)
+		data.shopPurchases.extraEquipSlots = (data.shopPurchases.extraEquipSlots or 0) + 1
 	else
 		-- Timed buff
 		local userId = player.UserId
@@ -7102,11 +6604,10 @@ function ShopService._processAutoHatch()
 								break
 							end
 						end
-						-- Auto-hatch is automation, not a free-egg faucet: every hatch
-						-- uses the normal server-authoritative coin price and inventory limit.
+						-- Hatch the egg for free (cost already paid via buff purchase)
 						if targetEgg then
 							task.spawn(function()
-								ShopService._eggService.purchaseAndHatch(player, targetEgg)
+								ShopService._eggService.hatchFree(player, targetEgg)
 							end)
 						end
 					end
@@ -7125,15 +6626,15 @@ return ShopService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX0000004D">
+	<Item class="StarterPlayer" referent="RBX0000004C">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX0000004C">
+		<Item class="StarterPlayerScripts" referent="RBX0000004B">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX0000004B">
+				<Item class="LocalScript" referent="RBX0000004A">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -7155,7 +6656,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local ProximityPromptService = game:GetService("ProximityPromptService")
 
 -- Get remotes folder from ReplicatedStorage
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
@@ -7232,7 +6732,6 @@ local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
 -- INITIALIZATION
 --------------------------------------------------------------------------------
 local playerData = GetPlayerData:InvokeServer()
-local hasLoadedPlayerData = playerData ~= nil
 if not playerData then
 	playerData = {
 		coins = 0,
@@ -7269,221 +6768,27 @@ local function buildEquippedListFromData(data)
 	return list
 end
 
--- O(1) destructible lookup shared with PetController. The index follows runtime
--- spawns/respawns and avoids a GetDescendants scan on every hit or heartbeat.
-local destructibleIndex = {}
-local refreshOnboardingHint = function() end
-
-local function indexDestructibleDescendant(obj)
-	local part = nil
-	local idValue = nil
-	if obj:IsA("BasePart") then
-		part = obj
-		idValue = obj:FindFirstChild("DestructibleId")
-	elseif obj:IsA("StringValue") and obj.Name == "DestructibleId" and obj.Parent and obj.Parent:IsA("BasePart") then
-		part = obj.Parent
-		idValue = obj
-	end
-	if part and idValue and idValue.Value ~= "" then
-		destructibleIndex[idValue.Value] = part
-		task.defer(refreshOnboardingHint)
-	end
-end
-
-local function removeDestructibleDescendant(obj)
-	if obj:IsA("StringValue") and obj.Name == "DestructibleId" then
-		destructibleIndex[obj.Value] = nil
-		task.defer(refreshOnboardingHint)
-	elseif obj:IsA("BasePart") then
-		local idValue = obj:FindFirstChild("DestructibleId")
-		if idValue then
-			destructibleIndex[idValue.Value] = nil
-			task.defer(refreshOnboardingHint)
-		end
-	end
-end
-
-local function attachDestructibleIndex(zonesFolder)
-	for _, obj in ipairs(zonesFolder:GetDescendants()) do
-		indexDestructibleDescendant(obj)
-	end
-	zonesFolder.DescendantAdded:Connect(indexDestructibleDescendant)
-	zonesFolder.DescendantRemoving:Connect(removeDestructibleDescendant)
-end
-
-local zonesFolder = workspace:FindFirstChild("Zones")
-if zonesFolder then
-	attachDestructibleIndex(zonesFolder)
-else
-	workspace.ChildAdded:Connect(function(child)
-		if child.Name == "Zones" then
-			attachDestructibleIndex(child)
-		end
-	end)
-end
-
+-- Helper: find a Part in workspace.Zones that has a DestructibleId StringValue matching the given ID
 local function resolveDestructiblePart(destructibleId)
-	local part = destructibleIndex[destructibleId]
-	if part and part.Parent then
-		return part
+	local zonesFolder = workspace:FindFirstChild("Zones")
+	if not zonesFolder then return nil end
+	for _, obj in ipairs(zonesFolder:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local idValue = obj:FindFirstChild("DestructibleId")
+			if idValue and idValue.Value == destructibleId then
+				return obj
+			end
+		end
 	end
-	destructibleIndex[destructibleId] = nil
 	return nil
 end
 
 -- Initialize all controllers
 effectsController:init()
 petController:init(Remotes)
-petController:setDestructibleIndex(destructibleIndex)
 campaignController:init(Remotes)
 uiController:init(Remotes, playerData)
 musicController:init()
-
---------------------------------------------------------------------------------
--- LIGHTWEIGHT NEW-PLAYER ONBOARDING
---------------------------------------------------------------------------------
-local ONBOARDING_STEPS = {
-	{ key = "click", text = "Click a breakable to attack it." },
-	{ key = "coins", text = "Destroy breakables to earn Coins." },
-	{ key = "egg", text = "Go to the Basic Egg and press E." },
-	{ key = "equip", text = "Open Pets and equip a pet." },
-	{ key = "zone", text = "Earn 500 Coins and walk through the City gate." },
-}
-
-local onboardingCompleted = {}
-local onboardingActive = hasLoadedPlayerData
-
-local questStats = playerData.questStats or {}
-local hasUnlockedLaterZone = false
-for _, zoneId in ipairs(playerData.unlockedZones or {}) do
-	local numericZoneId = tonumber(zoneId)
-	if numericZoneId and numericZoneId > 1 then
-		hasUnlockedLaterZone = true
-		break
-	end
-end
-
-local hasEquippedNonStarter = false
-for _, petId in ipairs(playerData.equippedPets or {}) do
-	if petId ~= "starter_pet_1" then
-		hasEquippedNonStarter = true
-		break
-	end
-end
-
--- Later persisted milestones imply the earlier onboarding context. Session facts
--- below remain monotonic so a completed hint never returns during this join.
-onboardingCompleted.zone = hasUnlockedLaterZone
-onboardingCompleted.equip = hasUnlockedLaterZone or hasEquippedNonStarter
-onboardingCompleted.egg = hasUnlockedLaterZone or (tonumber(questStats.hatchEggs) or 0) > 0
-onboardingCompleted.coins = onboardingCompleted.egg or (tonumber(questStats.earnCoins) or 0) > 0
-onboardingCompleted.click = onboardingCompleted.coins
-	or (tonumber(questStats.destroyDestructibles) or 0) > 0
-
-local function findNearestDestructible()
-	local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-	local nearestPart = nil
-	local nearestDistance = math.huge
-	for _, part in pairs(destructibleIndex) do
-		if part and part.Parent then
-			local distance = rootPart and (part.Position - rootPart.Position).Magnitude or 0
-			if distance < nearestDistance then
-				nearestDistance = distance
-				nearestPart = part
-			end
-		end
-	end
-	return nearestPart
-end
-
-local function findBasicEgg()
-	local stations = workspace:FindFirstChild("EggStations")
-	if not stations then return nil end
-	for _, obj in ipairs(stations:GetDescendants()) do
-		if obj:IsA("StringValue") and obj.Name == "PromptEggType" and obj.Value == "BasicEgg"
-			and obj.Parent and obj.Parent:IsA("BasePart") then
-			return obj.Parent
-		end
-	end
-	return nil
-end
-
-local function findCityGate()
-	local gates = workspace:FindFirstChild("ZoneGates")
-	local gateModel = gates and gates:FindFirstChild("ZoneGateModel_2")
-	if not gateModel then return nil end
-	return gateModel:FindFirstChild("GateBarrier_2", true)
-		or gateModel:FindFirstChild("TopArch", true)
-end
-
-local function getOnboardingTarget(stepKey)
-	if stepKey == "click" or stepKey == "coins" then
-		return findNearestDestructible()
-	elseif stepKey == "egg" then
-		return findBasicEgg()
-	elseif stepKey == "zone" then
-		return findCityGate()
-	end
-	return nil
-end
-
-refreshOnboardingHint = function()
-	if not onboardingActive then
-		uiController:clearOnboardingHint()
-		return
-	end
-
-	for stepNumber, step in ipairs(ONBOARDING_STEPS) do
-		if not onboardingCompleted[step.key] then
-			uiController:setOnboardingHint(
-				stepNumber,
-				#ONBOARDING_STEPS,
-				step.text,
-				getOnboardingTarget(step.key)
-			)
-			return
-		end
-	end
-
-	onboardingActive = false
-	uiController:clearOnboardingHint()
-end
-
-local function completeOnboardingStep(stepKey)
-	if not onboardingActive or onboardingCompleted[stepKey] then return end
-	onboardingCompleted[stepKey] = true
-	refreshOnboardingHint()
-end
-
-refreshOnboardingHint()
--- World folders can arrive shortly after the HUD; refresh the same hint instead
--- of creating another tutorial system or blocking the player.
-task.delay(2, refreshOnboardingHint)
-
--- Track the egg station whose hatch prompt is currently visible. This keeps the
--- HUD target scoped to the active station and falls back when the player leaves.
-local function getEggTypeFromPrompt(prompt)
-	if prompt.Name ~= "HatchPrompt" or not prompt.Parent then return nil end
-	local eggTypeTag = prompt.Parent:FindFirstChild("PromptEggType")
-	if eggTypeTag and eggTypeTag:IsA("StringValue") then
-		return eggTypeTag.Value
-	end
-	return nil
-end
-
-ProximityPromptService.PromptShown:Connect(function(prompt)
-	local eggType = getEggTypeFromPrompt(prompt)
-	if eggType then
-		uiController:showEggStationPrompt(eggType)
-	end
-end)
-
-ProximityPromptService.PromptHidden:Connect(function(prompt)
-	local eggType = getEggTypeFromPrompt(prompt)
-	if eggType then
-		uiController:hideEggStationPrompt(eggType)
-	end
-end)
 
 -- Initialize equipped pets visuals from initial data (called ONCE)
 if playerData and playerData.equippedPets then
@@ -7526,7 +6831,6 @@ end)
 PetEquipped.OnClientEvent:Connect(function(petData)
 	print("[Client] PetEquipped event received: " .. tostring(petData and petData.name or "nil"))
 	if petData and type(petData) == "table" and petData.id then
-		completeOnboardingStep("equip")
 		for i = #localEquippedPets, 1, -1 do
 			if localEquippedPets[i].id == petData.id then
 				table.remove(localEquippedPets, i)
@@ -7553,11 +6857,6 @@ PetUnequipped.OnClientEvent:Connect(function(petInstanceId)
 end)
 
 ZoneUnlocked.OnClientEvent:Connect(function(zoneId, gatePosition)
-	uiController:unlockZone(zoneId)
-	local numericZoneId = tonumber(zoneId)
-	if numericZoneId and numericZoneId > 1 then
-		completeOnboardingStep("zone")
-	end
 	if gatePosition then
 		effectsController:showZoneUnlock(gatePosition)
 	end
@@ -7595,16 +6894,12 @@ DestructibleDamaged.OnClientEvent:Connect(function(destructibleId, currentHP, ma
 	if destructiblePart then
 		effectsController:showProgressBar(destructiblePart, currentHP, maxHP)
 		if damage and damage > 0 then
-			petController:showDamageText(destructiblePart.Position, damage, damage == 2)
+			petController:showDamageText(destructiblePart.Position, damage)
 		end
 	end
 end)
 
 DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId, drops)
-	if drops and drops.Coins and drops.Coins > 0 then
-		completeOnboardingStep("coins")
-	end
-
 	local destructiblePart = resolveDestructiblePart(destructibleId)
 	if destructiblePart then
 		effectsController:removeProgressBar(destructiblePart)
@@ -7643,14 +6938,6 @@ end)
 
 EggHatchResult.OnClientEvent:Connect(function(petData)
 	effectsController._lastHatchPosition = nil
-
-	if petData then
-		completeOnboardingStep("egg")
-	end
-
-	if petData and petData.isNewDiscovery == true then
-		uiController:enqueueDiscoveryToast(petData)
-	end
 
 	-- Complete the egg hatch animation (cancels wobble, does shakes + reveal)
 	effectsController:completeEggHatch(petData)
@@ -7787,12 +7074,7 @@ local function fireClickDamage(target)
 	lastClickDamageTime = now
 
 	-- Fire click attack to server (always 1 damage)
-	local invoked, clickSucceeded = pcall(function()
-		return ClickAttackDestructible:InvokeServer(target.destructibleId)
-	end)
-	if invoked and clickSucceeded == true then
-		completeOnboardingStep("click")
-	end
+	ClickAttackDestructible:InvokeServer(target.destructibleId)
 
 	-- Spawn a crit button only if there is NOT already one active
 	-- Prevents spammy rapid spawn/destroy cycles on every click
@@ -7910,8 +7192,7 @@ end)
 -- CHARACTER SETUP (campaign portal, egg stations, ProximityPrompt)
 --------------------------------------------------------------------------------
 local function onCharacterAdded(character)
-	character:WaitForChild("HumanoidRootPart")
-	refreshOnboardingHint()
+	local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 
 	-- Campaign portal proximity (touch detection)
 	local campaignPortal = workspace:FindFirstChild("CampaignPortal")
@@ -7921,6 +7202,23 @@ local function onCharacterAdded(character)
 				campaignController:showCampaignSelect(CampaignData, playerData and playerData.campaignProgress)
 			end
 		end)
+	end
+
+	-- Egg station proximity detection (touch-based fallback)
+	local eggStationsFolder = workspace:FindFirstChild("EggStations")
+	if eggStationsFolder then
+		for _, obj in ipairs(eggStationsFolder:GetChildren()) do
+			if obj:IsA("BasePart") and obj.Name:find("InteractZone_") then
+				local eggTypeTag = obj:FindFirstChild("EggType")
+				if eggTypeTag then
+					obj.Touched:Connect(function(hit)
+						if hit:IsDescendantOf(character) then
+							uiController:showEggStationPrompt(eggTypeTag.Value)
+						end
+					end)
+				end
+			end
+		end
 	end
 
 	-- ProximityPrompt interaction for egg stations (E-key)
@@ -7962,7 +7260,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000046">
+				<Item class="ModuleScript" referent="RBX00000045">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7992,7 +7290,6 @@ local Config = require(Shared:WaitForChild("Config"))
 local PetData = require(Shared:WaitForChild("PetData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
-local ZoneData = require(Shared:WaitForChild("ZoneData"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -8028,53 +7325,6 @@ local RARITY_COLORS = {
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
 
-local VARIANT_COLORS = {
-	Normal = Color3.fromRGB(160, 170, 190),
-	Golden = Color3.fromRGB(255, 200, 0),
-	Shiny = Color3.fromRGB(80, 230, 255),
-	Rainbow = Color3.fromRGB(255, 100, 210),
-}
-
-local PET_SORT_MODES = { "Default", "Rarity", "Variant", "Damage" }
-local PET_VARIANT_FILTERS = { "All", "Normal", "Golden", "Shiny", "Rainbow" }
-local RARITY_RANK = {
-	Common = 1,
-	Uncommon = 2,
-	Rare = 3,
-	Epic = 4,
-	Legendary = 5,
-}
-local VARIANT_RANK = {
-	Normal = 1,
-	Golden = 2,
-	Shiny = 3,
-	Rainbow = 4,
-}
-
-local function resolvePetVariant(petData)
-	if petData.golden == true then return "Golden" end
-	local variant = petData.variant
-	if VARIANT_RANK[variant] then return variant end
-	return "Normal"
-end
-
-local function getPetDamage(petData)
-	return tonumber(petData.damage) or tonumber(petData.baseDamage) or 0
-end
-
-local function normalizeZoneId(zoneId)
-	local numericZoneId = tonumber(zoneId)
-	if not numericZoneId
-		or numericZoneId ~= numericZoneId
-		or numericZoneId == math.huge
-		or numericZoneId == -math.huge
-		or numericZoneId % 1 ~= 0
-		or not ZoneData.Zones[numericZoneId] then
-		return nil
-	end
-	return numericZoneId
-end
-
 function UIController.new()
 	local self = setmetatable({}, UIController)
 	self._remotes = nil
@@ -8083,26 +7333,14 @@ function UIController.new()
 	self._screens = {}
 	self._coinLabel = nil
 	self._diamondLabel = nil
-	self._eggShortfallLabel = nil
-	self._zoneProgressLabel = nil
-	self._coins = 0
-	self._diamonds = 0
-	self._unlockedZones = { [1] = true }
-	self._selectedEggType = nil
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
-	self._inventoryTitle = nil
-	self._petSortMode = "Default"
-	self._petVariantFilter = "All"
-	self._petSortButton = nil
-	self._petVariantFilterButton = nil
 	self._upgradeData = {}
 	self._equippedPets = {}
 	self._equippedBar = nil
 	self._multiSelectMode = false
 	self._selectedPets = {}
-	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
 	-- Quest and mastery state
@@ -8112,15 +7350,6 @@ function UIController.new()
 	self._discoveredPets = {}
 	-- Shop buffs state
 	self._shopBuffs = {}
-	-- New pet discovery toast queue
-	self._discoveryToastQueue = {}
-	self._discoveryToastActive = false
-	self._activeDiscoveryToast = nil
-	-- Lightweight onboarding hint state
-	self._onboardingCard = nil
-	self._onboardingTitle = nil
-	self._onboardingText = nil
-	self._onboardingArrow = nil
 	return self
 end
 
@@ -8134,16 +7363,6 @@ function UIController:init(remotes, playerData)
 
 	-- Apply initial player data
 	if playerData then
-		self._coins = tonumber(playerData.coins) or 0
-		self._diamonds = tonumber(playerData.diamonds) or 0
-		self._unlockedZones = {}
-		for _, zoneId in ipairs(playerData.unlockedZones or { 1 }) do
-			local numericZoneId = normalizeZoneId(zoneId)
-			if numericZoneId then
-				self._unlockedZones[numericZoneId] = true
-			end
-		end
-		self._unlockedZones[1] = true
 		self._petInventoryData = playerData.pets or {}
 		self._equippedPets = playerData.equippedPets or {}
 		self._upgradeData = playerData.upgrades or {}
@@ -8187,128 +7406,17 @@ function UIController:_createMainHUD(playerData)
 
 	-- ===== BOTTOM-RIGHT: Navigation Buttons =====
 	self:_createNavButtons(screenGui)
-
-	-- ===== NON-BLOCKING ONBOARDING HINT =====
-	self:_createOnboardingHint(screenGui)
-end
-
-function UIController:_createOnboardingHint(parent)
-	local card = Instance.new("Frame")
-	card.Name = "OnboardingHint"
-	card.Size = UDim2.new(0.3, 0, 0, 82)
-	card.Position = UDim2.fromScale(0.02, 0.16)
-	card.BackgroundColor3 = COLORS.DarkBg
-	card.BackgroundTransparency = 0.08
-	card.BorderSizePixel = 0
-	card.Visible = false
-	card.Active = false
-	card.Parent = parent
-	self._onboardingCard = card
-
-	local sizeConstraint = Instance.new("UISizeConstraint")
-	sizeConstraint.MinSize = Vector2.new(190, 82)
-	sizeConstraint.MaxSize = Vector2.new(360, 82)
-	sizeConstraint.Parent = card
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 12)
-	corner.Parent = card
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = 3
-	stroke.Color = COLORS.CoinYellow
-	stroke.Parent = card
-
-	local title = Instance.new("TextLabel")
-	title.Name = "StepTitle"
-	title.Size = UDim2.new(1, -16, 0, 24)
-	title.Position = UDim2.fromOffset(8, 6)
-	title.BackgroundTransparency = 1
-	title.TextColor3 = COLORS.CoinYellow
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Font = Enum.Font.GothamBold
-	title.TextScaled = true
-	title.Active = false
-	title.Parent = card
-	self._onboardingTitle = title
-
-	local instruction = Instance.new("TextLabel")
-	instruction.Name = "Instruction"
-	instruction.Size = UDim2.new(1, -16, 0, 42)
-	instruction.Position = UDim2.fromOffset(8, 32)
-	instruction.BackgroundTransparency = 1
-	instruction.TextColor3 = COLORS.White
-	instruction.TextXAlignment = Enum.TextXAlignment.Left
-	instruction.TextYAlignment = Enum.TextYAlignment.Top
-	instruction.Font = Enum.Font.GothamBold
-	instruction.TextScaled = true
-	instruction.TextWrapped = true
-	instruction.Active = false
-	instruction.Parent = card
-	self._onboardingText = instruction
-
-	local arrow = Instance.new("BillboardGui")
-	arrow.Name = "OnboardingWorldArrow"
-	arrow.Size = UDim2.fromOffset(120, 70)
-	arrow.StudsOffset = Vector3.new(0, 5, 0)
-	arrow.AlwaysOnTop = true
-	arrow.Enabled = false
-	arrow.Parent = self._playerGui
-	self._onboardingArrow = arrow
-
-	local arrowText = Instance.new("TextLabel")
-	arrowText.Size = UDim2.fromScale(1, 1)
-	arrowText.BackgroundTransparency = 1
-	arrowText.Text = "GO HERE\n▼"
-	arrowText.TextColor3 = COLORS.CoinYellow
-	arrowText.TextStrokeColor3 = COLORS.DarkBg
-	arrowText.TextStrokeTransparency = 0
-	arrowText.Font = Enum.Font.GothamBold
-	arrowText.TextScaled = true
-	arrowText.TextWrapped = true
-	arrowText.Active = false
-	arrowText.Parent = arrow
-end
-
-function UIController:setOnboardingHint(stepNumber, totalSteps, instruction, targetPart)
-	if not self._onboardingCard then return end
-
-	self._onboardingTitle.Text = "GETTING STARTED  " .. tostring(stepNumber) .. "/" .. tostring(totalSteps)
-	self._onboardingText.Text = instruction
-	self._onboardingCard.Visible = true
-
-	local hasTarget = targetPart and targetPart:IsA("BasePart") and targetPart.Parent ~= nil
-	if self._onboardingArrow then
-		self._onboardingArrow.Adornee = hasTarget and targetPart or nil
-		self._onboardingArrow.Enabled = hasTarget == true
-	end
-end
-
-function UIController:clearOnboardingHint()
-	if self._onboardingCard then
-		self._onboardingCard.Visible = false
-	end
-	if self._onboardingArrow then
-		self._onboardingArrow.Enabled = false
-		self._onboardingArrow.Adornee = nil
-	end
 end
 
 function UIController:_createCurrencyDisplay(parent, playerData)
 	local frame = Instance.new("Frame")
 	frame.Name = "CurrencyDisplay"
-	frame.AnchorPoint = Vector2.new(1, 0)
-	frame.Size = UDim2.new(0.3, 0, 0, 140)
-	frame.Position = UDim2.fromScale(0.98, 0.02)
+	frame.Size = UDim2.fromScale(0.18, 0.12)
+	frame.Position = UDim2.fromScale(0.8, 0.02)
 	frame.BackgroundColor3 = COLORS.Background
 	frame.BackgroundTransparency = 0.3
 	frame.BorderSizePixel = 0
 	frame.Parent = parent
-
-	local sizeConstraint = Instance.new("UISizeConstraint")
-	sizeConstraint.MinSize = Vector2.new(210, 140)
-	sizeConstraint.MaxSize = Vector2.new(340, 140)
-	sizeConstraint.Parent = frame
 
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 12)
@@ -8403,56 +7511,6 @@ function UIController:_createCurrencyDisplay(parent, playerData)
 	diamondLabel.TextScaled = true
 	diamondLabel.Parent = diamondRow
 	self._diamondLabel = diamondLabel
-
-	-- Distance to the next hatch for the selected or latest unlocked egg
-	local eggShortfallLabel = Instance.new("TextLabel")
-	eggShortfallLabel.Name = "EggShortfall"
-	eggShortfallLabel.Size = UDim2.new(1, 0, 0, 34)
-	eggShortfallLabel.BackgroundColor3 = COLORS.DarkBg
-	eggShortfallLabel.BackgroundTransparency = 0.25
-	eggShortfallLabel.BorderSizePixel = 0
-	eggShortfallLabel.TextColor3 = COLORS.White
-	eggShortfallLabel.Font = Enum.Font.GothamBold
-	eggShortfallLabel.TextScaled = true
-	eggShortfallLabel.TextWrapped = true
-	eggShortfallLabel.Parent = frame
-
-	local eggShortfallCorner = Instance.new("UICorner")
-	eggShortfallCorner.CornerRadius = UDim.new(0, 8)
-	eggShortfallCorner.Parent = eggShortfallLabel
-
-	local eggShortfallPadding = Instance.new("UIPadding")
-	eggShortfallPadding.PaddingLeft = UDim.new(0, 5)
-	eggShortfallPadding.PaddingRight = UDim.new(0, 5)
-	eggShortfallPadding.Parent = eggShortfallLabel
-
-	self._eggShortfallLabel = eggShortfallLabel
-	self:_updateEggShortfall()
-
-	-- Live progress toward the first zone that has not been unlocked yet
-	local zoneProgressLabel = Instance.new("TextLabel")
-	zoneProgressLabel.Name = "ZoneProgress"
-	zoneProgressLabel.Size = UDim2.new(1, 0, 0, 34)
-	zoneProgressLabel.BackgroundColor3 = COLORS.DarkBg
-	zoneProgressLabel.BackgroundTransparency = 0.25
-	zoneProgressLabel.BorderSizePixel = 0
-	zoneProgressLabel.TextColor3 = COLORS.White
-	zoneProgressLabel.Font = Enum.Font.GothamBold
-	zoneProgressLabel.TextScaled = true
-	zoneProgressLabel.TextWrapped = true
-	zoneProgressLabel.Parent = frame
-
-	local zoneProgressCorner = Instance.new("UICorner")
-	zoneProgressCorner.CornerRadius = UDim.new(0, 8)
-	zoneProgressCorner.Parent = zoneProgressLabel
-
-	local zoneProgressPadding = Instance.new("UIPadding")
-	zoneProgressPadding.PaddingLeft = UDim.new(0, 5)
-	zoneProgressPadding.PaddingRight = UDim.new(0, 5)
-	zoneProgressPadding.Parent = zoneProgressLabel
-
-	self._zoneProgressLabel = zoneProgressLabel
-	self:_updateZoneProgress()
 end
 
 function UIController:_createXPBar(parent, playerData)
@@ -8635,7 +7693,6 @@ function UIController:_createPetInventory()
 	title.Font = Enum.Font.GothamBold
 	title.TextScaled = true
 	title.Parent = mainFrame
-	self._inventoryTitle = title
 
 	local closeBtn = Instance.new("TextButton")
 	closeBtn.Name = "CloseBtn"
@@ -8676,64 +7733,6 @@ function UIController:_createPetInventory()
 		multiSelectBtn.BackgroundColor3 = self._multiSelectMode
 			and Color3.fromRGB(200, 100, 0)
 			or Color3.fromRGB(80, 100, 160)
-		self:_refreshPetGrid()
-	end)
-
-	local toolbar = Instance.new("Frame")
-	toolbar.Name = "InventoryToolbar"
-	toolbar.Size = UDim2.fromScale(0.58, 0.06)
-	toolbar.Position = UDim2.fromScale(0.21, 0.095)
-	toolbar.BackgroundTransparency = 1
-	toolbar.Parent = mainFrame
-
-	local toolbarLayout = Instance.new("UIListLayout")
-	toolbarLayout.FillDirection = Enum.FillDirection.Horizontal
-	toolbarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	toolbarLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	toolbarLayout.Padding = UDim.new(0.03, 0)
-	toolbarLayout.Parent = toolbar
-
-	local sortBtn = Instance.new("TextButton")
-	sortBtn.Name = "SortButton"
-	sortBtn.Size = UDim2.fromScale(0.46, 1)
-	sortBtn.BackgroundColor3 = Color3.fromRGB(65, 90, 150)
-	sortBtn.Text = "Sort: " .. self._petSortMode
-	sortBtn.TextColor3 = COLORS.White
-	sortBtn.Font = Enum.Font.GothamBold
-	sortBtn.TextScaled = true
-	sortBtn.Parent = toolbar
-	self._petSortButton = sortBtn
-
-	local sortCorner = Instance.new("UICorner")
-	sortCorner.CornerRadius = UDim.new(0, 8)
-	sortCorner.Parent = sortBtn
-
-	sortBtn.MouseButton1Click:Connect(function()
-		local currentIndex = table.find(PET_SORT_MODES, self._petSortMode) or 1
-		self._petSortMode = PET_SORT_MODES[(currentIndex % #PET_SORT_MODES) + 1]
-		sortBtn.Text = "Sort: " .. self._petSortMode
-		self:_refreshPetGrid()
-	end)
-
-	local filterBtn = Instance.new("TextButton")
-	filterBtn.Name = "VariantFilterButton"
-	filterBtn.Size = UDim2.fromScale(0.46, 1)
-	filterBtn.BackgroundColor3 = Color3.fromRGB(90, 70, 145)
-	filterBtn.Text = "Variant: " .. self._petVariantFilter
-	filterBtn.TextColor3 = COLORS.White
-	filterBtn.Font = Enum.Font.GothamBold
-	filterBtn.TextScaled = true
-	filterBtn.Parent = toolbar
-	self._petVariantFilterButton = filterBtn
-
-	local filterCorner = Instance.new("UICorner")
-	filterCorner.CornerRadius = UDim.new(0, 8)
-	filterCorner.Parent = filterBtn
-
-	filterBtn.MouseButton1Click:Connect(function()
-		local currentIndex = table.find(PET_VARIANT_FILTERS, self._petVariantFilter) or 1
-		self._petVariantFilter = PET_VARIANT_FILTERS[(currentIndex % #PET_VARIANT_FILTERS) + 1]
-		filterBtn.Text = "Variant: " .. self._petVariantFilter
 		self:_refreshPetGrid()
 	end)
 
@@ -8794,30 +7793,10 @@ function UIController:_createPetInventory()
 		}):Play()
 	end)
 
-	local duplicatesBtn = Instance.new("TextButton")
-	duplicatesBtn.Name = "SelectDuplicatesBtn"
-	duplicatesBtn.Size = UDim2.fromScale(0.2, 0.06)
-	duplicatesBtn.Position = UDim2.fromScale(0.35, 0.92)
-	duplicatesBtn.BackgroundColor3 = Color3.fromRGB(70, 130, 200)
-	duplicatesBtn.Text = "Select All Duplicates"
-	duplicatesBtn.TextColor3 = COLORS.White
-	duplicatesBtn.Font = Enum.Font.GothamBold
-	duplicatesBtn.TextScaled = true
-	duplicatesBtn.Visible = false
-	duplicatesBtn.Parent = mainFrame
-
-	local duplicatesCorner = Instance.new("UICorner")
-	duplicatesCorner.CornerRadius = UDim.new(0, 8)
-	duplicatesCorner.Parent = duplicatesBtn
-
-	duplicatesBtn.MouseButton1Click:Connect(function()
-		self:_selectDuplicatePets()
-	end)
-
 	local scrollFrame = Instance.new("ScrollingFrame")
 	scrollFrame.Name = "PetGrid"
-	scrollFrame.Size = UDim2.fromScale(0.94, 0.69)
-	scrollFrame.Position = UDim2.fromScale(0.03, 0.17)
+	scrollFrame.Size = UDim2.fromScale(0.94, 0.78)
+	scrollFrame.Position = UDim2.fromScale(0.03, 0.1)
 	scrollFrame.BackgroundTransparency = 1
 	scrollFrame.ScrollBarThickness = 0
 	scrollFrame.CanvasSize = UDim2.fromScale(0, 0)
@@ -8834,126 +7813,6 @@ function UIController:_createPetInventory()
 		scrollFrame.CanvasSize = UDim2.fromOffset(0, gridLayout.AbsoluteContentSize.Y + 20)
 	end)
 
-	self:_updateInventoryTitle()
-	self:_refreshPetGrid()
-end
-
-function UIController:_updateInventoryTitle()
-	if not self._inventoryTitle then return end
-	local bonus = 0
-	local level = self._upgradeData.ExtraSlots or 0
-	local quest = QuestData.Quests.ExtraSlots
-	if quest and level > 0 and quest.levels[level] then
-		bonus = quest.levels[level].bonus or 0
-	end
-	local capacity = math.min(
-		(Config.MaxPetInventoryBase or 100) + bonus,
-		Config.MaxPetInventoryAbsolute or 250
-	)
-	self._inventoryTitle.Text = "My Pets  " .. tostring(#self._petInventoryData) .. "/" .. tostring(capacity)
-end
-
-function UIController:_buildPetDisplayList()
-	local displayPets = {}
-	for sourceIndex, petData in ipairs(self._petInventoryData) do
-		local variant = resolvePetVariant(petData)
-		if self._petVariantFilter == "All" or variant == self._petVariantFilter then
-			table.insert(displayPets, {
-				pet = petData,
-				sourceIndex = sourceIndex,
-				variant = variant,
-			})
-		end
-	end
-
-	if self._petSortMode == "Default" then
-		return displayPets
-	end
-
-	table.sort(displayPets, function(a, b)
-		local petA = a.pet
-		local petB = b.pet
-		local rarityA = RARITY_RANK[petA.rarity] or 0
-		local rarityB = RARITY_RANK[petB.rarity] or 0
-		local variantA = VARIANT_RANK[a.variant] or 0
-		local variantB = VARIANT_RANK[b.variant] or 0
-		local damageA = getPetDamage(petA)
-		local damageB = getPetDamage(petB)
-
-		if self._petSortMode == "Rarity" and rarityA ~= rarityB then
-			return rarityA > rarityB
-		elseif self._petSortMode == "Variant" and variantA ~= variantB then
-			return variantA > variantB
-		elseif self._petSortMode == "Damage" and damageA ~= damageB then
-			return damageA > damageB
-		end
-
-		if self._petSortMode ~= "Rarity" and rarityA ~= rarityB then
-			return rarityA > rarityB
-		end
-		if self._petSortMode ~= "Variant" and variantA ~= variantB then
-			return variantA > variantB
-		end
-		if self._petSortMode ~= "Damage" and damageA ~= damageB then
-			return damageA > damageB
-		end
-
-		local nameA = string.lower(tostring(petA.petId or petA.name or ""))
-		local nameB = string.lower(tostring(petB.petId or petB.name or ""))
-		if nameA ~= nameB then return nameA < nameB end
-
-		local idA = tostring(petA.uniqueId or petA.id or "")
-		local idB = tostring(petB.uniqueId or petB.id or "")
-		if idA ~= idB then return idA < idB end
-		return a.sourceIndex < b.sourceIndex
-	end)
-
-	return displayPets
-end
-
-function UIController:_selectDuplicatePets()
-	if not self._multiSelectMode then return end
-
-	local groupCounts = {}
-	local keepers = {}
-	for sourceIndex, petData in ipairs(self._petInventoryData) do
-		local petType = petData.petId
-		local petId = petData.uniqueId or petData.id
-		if type(petType) == "string" and petType ~= "" and type(petId) == "string" and petId ~= "" then
-			groupCounts[petType] = (groupCounts[petType] or 0) + 1
-			local candidate = {
-				pet = petData,
-				id = petId,
-				damage = getPetDamage(petData),
-				variantRank = VARIANT_RANK[resolvePetVariant(petData)] or 0,
-				sourceIndex = sourceIndex,
-			}
-			local keeper = keepers[petType]
-			if not keeper
-				or candidate.damage > keeper.damage
-				or (candidate.damage == keeper.damage and candidate.variantRank > keeper.variantRank)
-				or (candidate.damage == keeper.damage and candidate.variantRank == keeper.variantRank
-					and candidate.id < keeper.id)
-				or (candidate.damage == keeper.damage and candidate.variantRank == keeper.variantRank
-					and candidate.id == keeper.id and candidate.sourceIndex < keeper.sourceIndex) then
-				keepers[petType] = candidate
-			end
-		end
-	end
-
-	local selectedPets = {}
-	for _, petData in ipairs(self._petInventoryData) do
-		local petType = petData.petId
-		local petId = petData.uniqueId or petData.id
-		local keeper = petType and keepers[petType]
-		if type(petType) == "string" and groupCounts[petType] and groupCounts[petType] > 1
-			and petId and keeper and petId ~= keeper.id
-			and petData.favorite ~= true then
-			selectedPets[petId] = true
-		end
-	end
-
-	self._selectedPets = selectedPets
 	self:_refreshPetGrid()
 end
 
@@ -8975,24 +7834,17 @@ function UIController:_refreshPetGrid()
 		goldenBtn.Visible = self._multiSelectMode
 	end
 
-	local duplicatesBtn = mainFrame:FindFirstChild("SelectDuplicatesBtn")
-	if duplicatesBtn then
-		duplicatesBtn.Visible = self._multiSelectMode
-	end
-
 	for _, child in ipairs(scrollFrame:GetChildren()) do
 		if child:IsA("Frame") then
 			child:Destroy()
 		end
 	end
 
-	local displayPets = self:_buildPetDisplayList()
-	for displayIndex, entry in ipairs(displayPets) do
-		local petData = entry.pet
+	for i, petData in ipairs(self._petInventoryData) do
 		local card = Instance.new("Frame")
-		card.Name = "PetCard_" .. tostring(petData.uniqueId or petData.id or displayIndex)
+		card.Name = "PetCard_" .. i
 		card.BackgroundColor3 = COLORS.DarkBg
-		card.LayoutOrder = displayIndex
+		card.LayoutOrder = i
 		card.Parent = scrollFrame
 
 		local cardCorner = Instance.new("UICorner")
@@ -9039,42 +7891,17 @@ function UIController:_refreshPetGrid()
 		dmgLabel.Parent = card
 
 		local petUniqueId = petData.uniqueId or petData.id
-		local isFavorite = petData.favorite == true
-		local favoriteBtn = Instance.new("TextButton")
-		favoriteBtn.Name = "FavoriteBtn"
-		favoriteBtn.Size = UDim2.fromScale(0.24, 0.2)
-		favoriteBtn.Position = UDim2.fromScale(0.73, 0.02)
-		favoriteBtn.BackgroundTransparency = 1
-		favoriteBtn.Text = isFavorite and "★" or "☆"
-		favoriteBtn.TextColor3 = isFavorite and COLORS.CoinYellow or COLORS.White
-		favoriteBtn.TextStrokeColor3 = COLORS.DarkBg
-		favoriteBtn.TextStrokeTransparency = 0.25
-		favoriteBtn.Font = Enum.Font.GothamBold
-		favoriteBtn.TextScaled = true
-		favoriteBtn.ZIndex = 2
-		favoriteBtn.Active = petUniqueId ~= nil and not self._favoriteRequests[petUniqueId]
-		favoriteBtn.AutoButtonColor = favoriteBtn.Active
-		favoriteBtn.Parent = card
-
-		favoriteBtn.MouseButton1Click:Connect(function()
-			if not petUniqueId or self._favoriteRequests[petUniqueId] then return end
-			self:_setPetFavorite(petUniqueId, not isFavorite)
-		end)
-
 		if self._multiSelectMode then
-			local isSelected = not isFavorite and self._selectedPets[petUniqueId] ~= nil
+			local isSelected = self._selectedPets[petUniqueId] ~= nil
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
 			selectBox.Position = UDim2.fromScale(0.1, 0.75)
-			selectBox.BackgroundColor3 = isFavorite and Color3.fromRGB(150, 120, 35)
-				or (isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110))
-			selectBox.Text = isFavorite and "Favorite" or (isSelected and "Selected" or "Select")
+			selectBox.BackgroundColor3 = isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110)
+			selectBox.Text = isSelected and "Selected" or "Select"
 			selectBox.TextColor3 = COLORS.White
 			selectBox.Font = Enum.Font.GothamBold
 			selectBox.TextScaled = true
-			selectBox.Active = not isFavorite
-			selectBox.AutoButtonColor = not isFavorite
 			selectBox.Parent = card
 
 			local selectCorner = Instance.new("UICorner")
@@ -9083,7 +7910,6 @@ function UIController:_refreshPetGrid()
 
 			local petId = petUniqueId
 			selectBox.MouseButton1Click:Connect(function()
-				if isFavorite or not petId then return end
 				if self._selectedPets[petId] then
 					self._selectedPets[petId] = nil
 				else
@@ -9129,40 +7955,6 @@ function UIController:_refreshPetGrid()
 			end)
 		end
 	end
-end
-
-function UIController:_setPetFavorite(uniqueId, isFavorite)
-	if not self._remotes or self._favoriteRequests[uniqueId] then return end
-	local remote = self._remotes:FindFirstChild("SetPetFavorite")
-	if not remote then return end
-
-	local wasSelected = self._selectedPets[uniqueId] ~= nil
-	self._favoriteRequests[uniqueId] = true
-	if isFavorite then
-		self._selectedPets[uniqueId] = nil
-	end
-	self:_refreshPetGrid()
-
-	local invoked, success, err = pcall(function()
-		return remote:InvokeServer(uniqueId, isFavorite)
-	end)
-	self._favoriteRequests[uniqueId] = nil
-	if invoked and success then
-		for _, petData in ipairs(self._petInventoryData) do
-			local petId = petData.uniqueId or petData.id
-			if petId == uniqueId then
-				petData.favorite = isFavorite
-				break
-			end
-		end
-	else
-		if wasSelected then
-			self._selectedPets[uniqueId] = true
-		end
-		local message = invoked and err or success
-		self:_showGoldenError(message or "Could not update favorite")
-	end
-	self:_refreshPetGrid()
 end
 
 function UIController:_isPetEquipped(uniqueId)
@@ -9223,14 +8015,10 @@ function UIController:_deleteSelectedPets()
 	if self._remotes then
 		local remote = self._remotes:FindFirstChild("DeletePets")
 		if remote then
-			local success, err = remote:InvokeServer(ids)
-			if success then
-				self._selectedPets = {}
-			else
-				self:_showGoldenError(err or "Could not delete selected pets")
-			end
+			remote:InvokeServer(ids)
 		end
 	end
+	self._selectedPets = {}
 end
 
 --------------------------------------------------------------------------------
@@ -9255,17 +8043,8 @@ function UIController:_showGoldenConversionConfirm()
 		for _, pet in ipairs(self._petInventoryData) do
 			local petUniqueId = pet.uniqueId or pet.id
 			if petUniqueId == selId then
-				if pet.favorite == true then
-					self:_showGoldenError("Favorite pets are protected!")
-					return
-				end
 				if pet.golden then
 					self:_showGoldenError("Cannot use golden pets!")
-					return
-				end
-				local variant = pet.variant or "Normal"
-				if variant ~= "Normal" then
-					self:_showGoldenError("Only normal pets can become Golden!")
 					return
 				end
 				if pet.equipped then
@@ -9498,9 +8277,6 @@ function UIController:_convertToGolden(petInstanceIds, resultLabel, overlay)
 			local goldenName = result.goldenPet and result.goldenPet.name or "Golden Pet"
 			resultLabel.Text = "SUCCESS! Got " .. goldenName .. "!"
 			resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
-		end
-		if result.goldenPet and result.isNewDiscovery == true then
-			self:enqueueDiscoveryToast(result.goldenPet)
 		end
 	else
 		if resultLabel then
@@ -10103,128 +8879,8 @@ function UIController:_createShopWindow()
 	self._screens.ShopWindow = screenGui
 end
 
-local function formatWholeNumber(value)
-	local formatted = tostring(math.max(0, math.floor(tonumber(value) or 0)))
-	while true do
-		local replacements
-		formatted, replacements = string.gsub(formatted, "^(%d+)(%d%d%d)", "%1.%2")
-		if replacements == 0 then
-			return formatted
-		end
-	end
-end
-
-function UIController:_resolveNextZone()
-	for zoneId, zoneDef in ipairs(ZoneData.Zones) do
-		if not self._unlockedZones[zoneId] then
-			return zoneId, zoneDef
-		end
-	end
-	return nil, nil
-end
-
-function UIController:_updateZoneProgress()
-	if not self._zoneProgressLabel then return end
-
-	local zoneId, zoneDef = self:_resolveNextZone()
-	if not zoneDef then
-		self._zoneProgressLabel.Text = "All zones unlocked!"
-		self._zoneProgressLabel.TextColor3 = COLORS.ButtonGreen
-		return
-	end
-
-	local cost = math.max(0, tonumber(zoneDef.unlockCost) or 0)
-	local progress = math.min(math.max(0, self._coins), cost)
-	local missing = math.max(0, cost - self._coins)
-	local progressText = "Zone " .. tostring(zoneId) .. ": "
-		.. formatWholeNumber(progress) .. " / " .. formatWholeNumber(cost) .. " Coins"
-
-	local remainingText = formatWholeNumber(missing) .. " Coins remaining"
-	if missing > 0 then
-		self._zoneProgressLabel.Text = progressText .. "\n" .. remainingText
-		self._zoneProgressLabel.TextColor3 = COLORS.White
-	else
-		self._zoneProgressLabel.Text = progressText .. "\n" .. remainingText .. " - READY!"
-		self._zoneProgressLabel.TextColor3 = COLORS.ButtonGreen
-	end
-end
-
-function UIController:_resolveTargetEgg()
-	local selectedEgg = self._selectedEggType and PetData.Eggs[self._selectedEggType]
-	if selectedEgg and self._unlockedZones[selectedEgg.zone] then
-		return self._selectedEggType, selectedEgg
-	end
-
-	local targetEggType = nil
-	local targetEgg = nil
-	for eggType, eggDef in pairs(PetData.Eggs) do
-		if self._unlockedZones[eggDef.zone]
-			and (not targetEgg
-				or eggDef.zone > targetEgg.zone
-				or (eggDef.zone == targetEgg.zone and eggType < targetEggType)) then
-			targetEggType = eggType
-			targetEgg = eggDef
-		end
-	end
-	return targetEggType, targetEgg
-end
-
-function UIController:_updateEggShortfall()
-	if not self._eggShortfallLabel then return end
-
-	local _, eggDef = self:_resolveTargetEgg()
-	local cost = eggDef and Config.EggCosts[eggDef.zone]
-	if not eggDef or not cost then
-		self._eggShortfallLabel.Text = "Egg progress unavailable"
-		self._eggShortfallLabel.TextColor3 = COLORS.White
-		return
-	end
-
-	local missing = {}
-	if cost.Coins then
-		local missingCoins = math.max(0, cost.Coins - self._coins)
-		if missingCoins > 0 then
-			table.insert(missing, tostring(missingCoins) .. " Coins")
-		end
-	end
-	if cost.Diamonds then
-		local missingDiamonds = math.max(0, cost.Diamonds - self._diamonds)
-		if missingDiamonds > 0 then
-			table.insert(missing, tostring(missingDiamonds) .. " Diamonds")
-		end
-	end
-
-	if #missing == 0 then
-		self._eggShortfallLabel.Text = eggDef.name .. ": READY TO HATCH!"
-		self._eggShortfallLabel.TextColor3 = COLORS.ButtonGreen
-	else
-		self._eggShortfallLabel.Text = eggDef.name .. ": Need " .. table.concat(missing, " + ")
-		self._eggShortfallLabel.TextColor3 = COLORS.White
-	end
-end
-
 function UIController:showEggStationPrompt(eggType)
-	local eggDef = PetData.Eggs[eggType]
-	if not eggDef or not self._unlockedZones[eggDef.zone] then return end
-
-	self._selectedEggType = eggType
-	self:_updateEggShortfall()
-end
-
-function UIController:hideEggStationPrompt(eggType)
-	if self._selectedEggType ~= eggType then return end
-
-	self._selectedEggType = nil
-	self:_updateEggShortfall()
-end
-
-function UIController:unlockZone(zoneId)
-	zoneId = normalizeZoneId(zoneId)
-	if not zoneId then return end
-
-	self._unlockedZones[zoneId] = true
-	self:_updateEggShortfall()
-	self:_updateZoneProgress()
+	-- No-op: E-key ProximityPrompt handles hatching directly
 end
 
 --------------------------------------------------------------------------------
@@ -10339,8 +8995,8 @@ function UIController:_refreshShopGrid()
 	local shopItems = {
 		{ id = "LuckyPotion", name = "Lucky Potion", icon = "L", description = "2x egg luck for 5 min", cost = 100, color = Color3.fromRGB(0, 220, 100), durationText = "5 min" },
 		{ id = "SpeedPotion", name = "Speed Potion", icon = "S", description = "2x walkspeed for 5 min", cost = 50, color = Color3.fromRGB(0, 180, 255), durationText = "5 min" },
-		{ id = "AutoHatch", name = "Auto-Hatch", icon = "A", description = "Automatically buys eggs for 10 min", cost = 500, color = Color3.fromRGB(255, 150, 0), durationText = "10 min" },
-		{ id = "ExtraEquipSlot", name = "Extra Equip Slot", icon = "+", description = "Permanently equip +1 pet (max 5)", cost = 1000, color = Color3.fromRGB(255, 80, 200), durationText = "Permanent" },
+		{ id = "AutoHatch", name = "Auto-Hatch", icon = "A", description = "Auto-hatch eggs for 10 min", cost = 500, color = Color3.fromRGB(255, 150, 0), durationText = "10 min" },
+		{ id = "ExtraEquipSlot", name = "Extra Equip Slot", icon = "+", description = "Permanently equip +1 pet", cost = 1000, color = Color3.fromRGB(255, 80, 200), durationText = "Permanent" },
 	}
 
 	local activeBuffs = self._shopBuffs or {}
@@ -10763,37 +9419,16 @@ end
 --------------------------------------------------------------------------------
 
 function UIController:updateCurrency(coins, diamonds)
-	self._coins = tonumber(coins) or 0
-	self._diamonds = tonumber(diamonds) or 0
 	if self._coinLabel then
-		self._coinLabel.Text = tostring(self._coins)
+		self._coinLabel.Text = tostring(coins or 0)
 	end
 	if self._diamondLabel then
-		self._diamondLabel.Text = tostring(self._diamonds)
+		self._diamondLabel.Text = tostring(diamonds or 0)
 	end
-	self:_updateEggShortfall()
-	self:_updateZoneProgress()
 end
 
 function UIController:updatePetInventory(pets)
 	self._petInventoryData = pets or {}
-
-	-- Drop stale or newly protected selections while preserving valid selections
-	-- across sorting and filtering refreshes.
-	local selectableIds = {}
-	for _, petData in ipairs(self._petInventoryData) do
-		local id = petData.uniqueId or petData.id
-		if id and petData.favorite ~= true then
-			selectableIds[id] = true
-		end
-	end
-	for id in pairs(self._selectedPets) do
-		if not selectableIds[id] then
-			self._selectedPets[id] = nil
-		end
-	end
-
-	self:_updateInventoryTitle()
 	self:_refreshPetGrid()
 end
 
@@ -10822,7 +9457,6 @@ end
 
 function UIController:updateUpgrades(upgrades)
 	self._upgradeData = upgrades or {}
-	self:_updateInventoryTitle()
 	self:_refreshQuestGrid()
 end
 
@@ -10834,128 +9468,6 @@ end
 function UIController:updateMastery(masteryState)
 	self._masteryState = masteryState or { masteryPoints = 0, level = 1, buffs = {} }
 	self:_refreshMasteryGrid()
-end
-
---------------------------------------------------------------------------------
--- NEW PET DISCOVERY TOASTS
---------------------------------------------------------------------------------
-function UIController:enqueueDiscoveryToast(petData)
-	if not self._playerGui or type(petData) ~= "table" then return end
-
-	local variant = petData.variant or (petData.golden and "Golden") or "Normal"
-	table.insert(self._discoveryToastQueue, {
-		name = petData.name or "Pet",
-		rarity = petData.rarity or "Common",
-		variant = variant,
-	})
-	self:_showNextDiscoveryToast()
-end
-
-function UIController:_showNextDiscoveryToast()
-	if self._discoveryToastActive or not self._playerGui then return end
-
-	local petData = table.remove(self._discoveryToastQueue, 1)
-	if not petData then return end
-	self._discoveryToastActive = true
-
-	local toast = Instance.new("ScreenGui")
-	toast.Name = "DiscoveryToast"
-	toast.ResetOnSpawn = false
-	toast.DisplayOrder = 100
-	toast.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	toast.Parent = self._playerGui
-	self._activeDiscoveryToast = toast
-
-	local card = Instance.new("Frame")
-	card.Name = "Card"
-	card.Size = UDim2.fromScale(0.38, 0.11)
-	card.Position = UDim2.fromScale(0.31, -0.13)
-	card.BackgroundColor3 = COLORS.DarkBg
-	card.BackgroundTransparency = 0.08
-	card.BorderSizePixel = 0
-	card.Parent = toast
-
-	local cardCorner = Instance.new("UICorner")
-	cardCorner.CornerRadius = UDim.new(0, 14)
-	cardCorner.Parent = card
-
-	local cardStroke = Instance.new("UIStroke")
-	cardStroke.Thickness = 3
-	cardStroke.Color = RARITY_COLORS[petData.rarity] or RARITY_COLORS.Common
-	cardStroke.Parent = card
-
-	local title = Instance.new("TextLabel")
-	title.Name = "Title"
-	title.Size = UDim2.fromScale(0.68, 0.35)
-	title.Position = UDim2.fromScale(0.05, 0.08)
-	title.BackgroundTransparency = 1
-	title.Text = "NEW PET DISCOVERED!"
-	title.TextColor3 = COLORS.CoinYellow
-	title.Font = Enum.Font.GothamBold
-	title.TextScaled = true
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Parent = card
-
-	local petName = Instance.new("TextLabel")
-	petName.Name = "PetName"
-	petName.Size = UDim2.fromScale(0.68, 0.38)
-	petName.Position = UDim2.fromScale(0.05, 0.5)
-	petName.BackgroundTransparency = 1
-	petName.Text = petData.name
-	petName.TextColor3 = RARITY_COLORS[petData.rarity] or COLORS.White
-	petName.Font = Enum.Font.GothamBold
-	petName.TextScaled = true
-	petName.TextXAlignment = Enum.TextXAlignment.Left
-	petName.Parent = card
-
-	local variantColor = VARIANT_COLORS[petData.variant] or VARIANT_COLORS.Normal
-	local variantBadge = Instance.new("TextLabel")
-	variantBadge.Name = "VariantBadge"
-	variantBadge.Size = UDim2.fromScale(0.22, 0.42)
-	variantBadge.Position = UDim2.fromScale(0.74, 0.29)
-	variantBadge.BackgroundColor3 = variantColor
-	variantBadge.BorderSizePixel = 0
-	variantBadge.Text = string.upper(petData.variant)
-	variantBadge.TextColor3 = COLORS.DarkBg
-	variantBadge.Font = Enum.Font.GothamBold
-	variantBadge.TextScaled = true
-	variantBadge.Parent = card
-
-	local badgeCorner = Instance.new("UICorner")
-	badgeCorner.CornerRadius = UDim.new(0, 9)
-	badgeCorner.Parent = variantBadge
-
-	local badgePadding = Instance.new("UIPadding")
-	badgePadding.PaddingLeft = UDim.new(0, 5)
-	badgePadding.PaddingRight = UDim.new(0, 5)
-	badgePadding.Parent = variantBadge
-
-	TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		Position = UDim2.fromScale(0.31, 0.05),
-	}):Play()
-
-	-- Keep exactly one discovery toast visible at a time, then advance the queue.
-	task.delay(2.75, function()
-		if self._activeDiscoveryToast ~= toast then return end
-		if not toast.Parent or not card.Parent then
-			self._activeDiscoveryToast = nil
-			self._discoveryToastActive = false
-			self:_showNextDiscoveryToast()
-			return
-		end
-
-		local hideTween = TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-			Position = UDim2.fromScale(0.31, -0.13),
-		})
-		hideTween.Completed:Connect(function()
-			if self._activeDiscoveryToast ~= toast then return end
-			toast:Destroy()
-			self._activeDiscoveryToast = nil
-			self._discoveryToastActive = false
-			self:_showNextDiscoveryToast()
-		end)
-		hideTween:Play()
-	end)
 end
 
 function UIController:_showHatchToast(petData)
@@ -11213,26 +9725,13 @@ function UIController:cleanup()
 		screen:Destroy()
 	end
 	self._screens = {}
-	self._discoveryToastQueue = {}
-	if self._activeDiscoveryToast then
-		self._activeDiscoveryToast:Destroy()
-	end
-	self._activeDiscoveryToast = nil
-	self._discoveryToastActive = false
-	if self._onboardingArrow then
-		self._onboardingArrow:Destroy()
-	end
-	self._onboardingCard = nil
-	self._onboardingTitle = nil
-	self._onboardingText = nil
-	self._onboardingArrow = nil
 end
 
 return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000047">
+				<Item class="ModuleScript" referent="RBX00000046">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11290,7 +9789,6 @@ function PetController.new()
 	self._autoAttackConnection = nil
 	-- Per-pet targeting: each pet has its own assigned target
 	self._petTargets = {} -- { uniqueId = { destructibleId = string, part = BasePart, lastAttackTime = number } }
-	self._destructibleIndex = {}
 	-- Manual targeting mode
 	self._manualTargetMode = false -- when true, pets follow manual orders instead of auto
 	self._manualTargetExpiry = 0 -- tick() when manual mode expires
@@ -11308,8 +9806,7 @@ function PetController:init(remotes)
 	self._remotes = remotes
 	self._player = Players.LocalPlayer
 	self._assignPetTarget = remotes:WaitForChild("AssignPetTarget")
-	self._serverAssignments = {} -- desired/confirmed target per pet
-	self._assignmentVersions = {}
+	self._serverAssignments = {} -- track current server-side assignments to avoid redundant calls
 
 	-- Create folder for pet models in workspace (destroy any pre-existing one)
 	local existingFolder = workspace:FindFirstChild("ClientPets")
@@ -11330,35 +9827,6 @@ function PetController:init(remotes)
 
 	-- Start auto-attack loop (distributed targeting)
 	self:_startAutoAttack()
-end
-
-function PetController:setDestructibleIndex(index)
-	self._destructibleIndex = index or {}
-end
-
--- Reconciles optimistic visuals with the authoritative server response. A version
--- guard prevents a delayed response for an old target from undoing a newer order.
-function PetController:_requestPetTarget(uniqueId, destructibleId)
-	if not self._assignPetTarget then return end
-	local version = (self._assignmentVersions[uniqueId] or 0) + 1
-	self._assignmentVersions[uniqueId] = version
-	self._serverAssignments[uniqueId] = destructibleId
-
-	task.spawn(function()
-		local invoked, accepted = pcall(function()
-			return self._assignPetTarget:InvokeServer(uniqueId, destructibleId)
-		end)
-		if self._assignmentVersions[uniqueId] ~= version then
-			return
-		end
-		if not invoked or not accepted then
-			self._serverAssignments[uniqueId] = nil
-			if destructibleId and self._attackingPets[uniqueId] == destructibleId then
-				self._attackingPets[uniqueId] = nil
-				self._petTargets[uniqueId] = nil
-			end
-		end
-	end)
 end
 
 --------------------------------------------------------------------------------
@@ -11707,9 +10175,12 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 	-- Mark as attacking this specific destructible
 	self._attackingPets[uniqueId] = destructibleId
 
-	-- Notify server of pet assignment (only if changed).
+	-- Notify server of pet assignment (only if changed)
 	if self._assignPetTarget and self._serverAssignments[uniqueId] ~= destructibleId then
-		self:_requestPetTarget(uniqueId, destructibleId)
+		self._serverAssignments[uniqueId] = destructibleId
+		task.spawn(function()
+			self._assignPetTarget:InvokeServer(uniqueId, destructibleId)
+		end)
 	end
 
 	local model = petInfo.model
@@ -11734,7 +10205,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		else
 			self._attackingPets[uniqueId] = nil
 			if self._assignPetTarget and self._serverAssignments[uniqueId] then
-				self:_requestPetTarget(uniqueId, nil)
+				self._serverAssignments[uniqueId] = nil
+				task.spawn(function()
+					self._assignPetTarget:InvokeServer(uniqueId, nil)
+				end)
 			end
 			return
 		end
@@ -11753,7 +10227,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
 					self._attackingPets[uniqueId] = nil
 					if self._assignPetTarget and self._serverAssignments[uniqueId] then
-						self:_requestPetTarget(uniqueId, nil)
+						self._serverAssignments[uniqueId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(uniqueId, nil)
+						end)
 					end
 					return
 				end
@@ -11764,7 +10241,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 						-- Destructible was destroyed, return to follow
 						self._attackingPets[uniqueId] = nil
 						if self._assignPetTarget and self._serverAssignments[uniqueId] then
-							self:_requestPetTarget(uniqueId, nil)
+							self._serverAssignments[uniqueId] = nil
+							task.spawn(function()
+								self._assignPetTarget:InvokeServer(uniqueId, nil)
+							end)
 						end
 						return
 					end
@@ -11780,7 +10260,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 							-- Too far from player, return
 							self._attackingPets[uniqueId] = nil
 							if self._assignPetTarget and self._serverAssignments[uniqueId] then
-								self:_requestPetTarget(uniqueId, nil)
+								self._serverAssignments[uniqueId] = nil
+								task.spawn(function()
+									self._assignPetTarget:InvokeServer(uniqueId, nil)
+								end)
 							end
 							return
 						end
@@ -11822,7 +10305,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
 					self._attackingPets[uniqueId] = nil
 					if self._assignPetTarget and self._serverAssignments[uniqueId] then
-						self:_requestPetTarget(uniqueId, nil)
+						self._serverAssignments[uniqueId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(uniqueId, nil)
+						end)
 					end
 					return
 				end
@@ -11833,7 +10319,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 						-- Destructible destroyed, return to follow
 						self._attackingPets[uniqueId] = nil
 						if self._assignPetTarget and self._serverAssignments[uniqueId] then
-							self:_requestPetTarget(uniqueId, nil)
+							self._serverAssignments[uniqueId] = nil
+							task.spawn(function()
+								self._assignPetTarget:InvokeServer(uniqueId, nil)
+							end)
 						end
 						return
 					end
@@ -11848,7 +10337,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 						if playerDist > MAX_PLAYER_DIST then
 							self._attackingPets[uniqueId] = nil
 							if self._assignPetTarget and self._serverAssignments[uniqueId] then
-								self:_requestPetTarget(uniqueId, nil)
+								self._serverAssignments[uniqueId] = nil
+								task.spawn(function()
+									self._assignPetTarget:InvokeServer(uniqueId, nil)
+								end)
 							end
 							return
 						end
@@ -11881,7 +10373,10 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 	else
 		self._attackingPets[uniqueId] = nil
 		if self._assignPetTarget and self._serverAssignments[uniqueId] then
-			self:_requestPetTarget(uniqueId, nil)
+			self._serverAssignments[uniqueId] = nil
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(uniqueId, nil)
+			end)
 		end
 	end
 end
@@ -11984,18 +10479,19 @@ function PetController:getAllDestructiblesInRange(maxDistance)
 	local playerPos = rootPart.Position
 	local results = {}
 
-	for id, part in pairs(self._destructibleIndex) do
-		if part and part.Parent then
-			local dist = (part.Position - playerPos).Magnitude
+	local zonesFolder = workspace:FindFirstChild("Zones")
+	if not zonesFolder then return {} end
+
+	for _, obj in ipairs(zonesFolder:GetDescendants()) do
+		if obj:IsA("BasePart") and obj:FindFirstChild("DestructibleId") then
+			local dist = (obj.Position - playerPos).Magnitude
 			if dist < (maxDistance or 40) then
 				table.insert(results, {
-					part = part,
-					id = id,
+					part = obj,
+					id = obj:FindFirstChild("DestructibleId").Value,
 					distance = dist,
 				})
 			end
-		else
-			self._destructibleIndex[id] = nil
 		end
 	end
 
@@ -12051,7 +10547,10 @@ function PetController:_startAutoAttack()
 				if self._attackingPets[petId] then
 					self._attackingPets[petId] = nil
 					if self._assignPetTarget and self._serverAssignments[petId] then
-						self:_requestPetTarget(petId, nil)
+						self._serverAssignments[petId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(petId, nil)
+						end)
 					end
 				end
 			end
@@ -12090,7 +10589,10 @@ function PetController:_startAutoAttack()
 				if self._attackingPets[uniqueId] then
 					self._attackingPets[uniqueId] = nil
 					if self._assignPetTarget and self._serverAssignments[uniqueId] then
-						self:_requestPetTarget(uniqueId, nil)
+						self._serverAssignments[uniqueId] = nil
+						task.spawn(function()
+							self._assignPetTarget:InvokeServer(uniqueId, nil)
+						end)
 					end
 				end
 				-- Remove from targeted set
@@ -12230,12 +10732,10 @@ function PetController:clearManualTarget()
 	self._manualTargetMode = false
 	-- Clear server assignments for all pets
 	if self._assignPetTarget then
-		local assignedPetIds = {}
-		for petId in pairs(self._serverAssignments) do
-			table.insert(assignedPetIds, petId)
-		end
-		for _, petId in ipairs(assignedPetIds) do
-			self:_requestPetTarget(petId, nil)
+		for petId, _ in pairs(self._serverAssignments) do
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(petId, nil)
+			end)
 		end
 		self._serverAssignments = {}
 	end
@@ -12252,12 +10752,10 @@ function PetController:cancelAllAttacks()
 	self._manualTargetMode = false
 	-- Clear server assignments for all pets
 	if self._assignPetTarget then
-		local assignedPetIds = {}
-		for petId in pairs(self._serverAssignments) do
-			table.insert(assignedPetIds, petId)
-		end
-		for _, petId in ipairs(assignedPetIds) do
-			self:_requestPetTarget(petId, nil)
+		for petId, _ in pairs(self._serverAssignments) do
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(petId, nil)
+			end)
 		end
 		self._serverAssignments = {}
 	end
@@ -12279,12 +10777,10 @@ function PetController:cleanup()
 	self:_stopAutoAttack()
 	-- Clear server assignments for all pets
 	if self._assignPetTarget then
-		local assignedPetIds = {}
-		for petId in pairs(self._serverAssignments) do
-			table.insert(assignedPetIds, petId)
-		end
-		for _, petId in ipairs(assignedPetIds) do
-			self:_requestPetTarget(petId, nil)
+		for petId, _ in pairs(self._serverAssignments) do
+			task.spawn(function()
+				self._assignPetTarget:InvokeServer(petId, nil)
+			end)
 		end
 		self._serverAssignments = {}
 	end
@@ -12305,7 +10801,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000048">
+				<Item class="ModuleScript" referent="RBX00000047">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -13054,15 +11550,7 @@ function CampaignController:onVictory(rewards)
 			rewardsText = rewardsText .. "Diamonds: +" .. tostring(rewards.Diamonds) .. "\n"
 		end
 		if rewards.SpecialEgg then
-			if rewards.SpecialPet then
-				rewardsText = rewardsText .. "Boss Egg: " .. tostring(rewards.SpecialPet) .. "!\n"
-			elseif rewards.SpecialEggPending then
-				rewardsText = rewardsText .. "Boss Egg pending: make inventory space and replay.\n"
-			elseif rewards.SpecialEggAlreadyClaimed then
-				rewardsText = rewardsText .. "Boss Egg already claimed.\n"
-			else
-				rewardsText = rewardsText .. "Regional Boss Egg earned!\n"
-			end
+			rewardsText = rewardsText .. "Special Egg Earned!\n"
 		end
 	end
 
@@ -13220,7 +11708,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000049">
+				<Item class="ModuleScript" referent="RBX00000048">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -14402,7 +12890,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000004A">
+				<Item class="ModuleScript" referent="RBX00000049">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -14608,16 +13096,6 @@ local Config = {}
 -- General
 Config.GameName = "Battle Pets"
 Config.DataStoreName = "BattlePets_v1"
-Config.AutoSaveInterval = 60
-Config.SessionLockTimeout = 180
-
--- Hard limits protect DataStore size, rendering cost, and combat balance.
-Config.MaxPetInventoryBase = 100
-Config.MaxPetInventoryAbsolute = 250
-Config.MaxExtraEquipSlots = 5
-Config.MaxEquippedPetsAbsolute = 12
-Config.AutoHatchInterval = 3
-Config.DestructibleReplicationDistance = 300
 
 -- Currency types
 Config.Currencies = {
@@ -15204,19 +13682,6 @@ CampaignData.Regions = {
 	[8] = "Cosmic Void",
 }
 
--- Bosses award one real egg from their region. Claim state is persisted separately,
--- so old profiles and players with a full inventory can claim it on a later replay.
-CampaignData.RegionRewardEggs = {
-	[1] = "BasicEgg",
-	[2] = "PremiumEgg",
-	[3] = "StrandEgg",
-	[4] = "WuesteEgg",
-	[5] = "EisweltEgg",
-	[6] = "VulkanEgg",
-	[7] = "HimmelEgg",
-	[8] = "WeltraumEgg",
-}
-
 -- Helper to compute the scale factor for a given level
 local function getScaleFactor(level)
 	return 1 + (level - 1) * 0.15
@@ -15294,9 +13759,9 @@ for region = 1, 8 do
 			Diamonds = math.floor(5 * scale * region),
 		}
 
-		-- Boss levels give a one-time regional egg reward.
+		-- Boss levels give special egg rewards
 		if isBoss then
-			rewards.SpecialEgg = CampaignData.RegionRewardEggs[region]
+			rewards.SpecialEgg = true
 			rewards.Coins = rewards.Coins * 3
 			rewards.Diamonds = rewards.Diamonds * 3
 		end
@@ -15778,7 +14243,7 @@ return MasteryData
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX0000004E">
+	<Item class="StarterGui" referent="RBX0000004D">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -15813,7 +14278,7 @@ return MasteryData
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000004F">
+	<Item class="SoundService" referent="RBX0000004E">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>
