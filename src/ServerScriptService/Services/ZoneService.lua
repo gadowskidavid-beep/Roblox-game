@@ -383,6 +383,50 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 end
 
 --------------------------------------------------------------------------------
+-- CAMPAIGN PORTAL: Entry point for the campaign side mode
+--------------------------------------------------------------------------------
+
+function ZoneService._spawnCampaignPortal()
+	local workspace = game:GetService("Workspace")
+	local portal = workspace:FindFirstChild("CampaignPortal")
+
+	-- The generated .rbxlx already contains this part. Reuse and normalize it so
+	-- Rojo-synced and standalone places behave the same without duplicate portals.
+	if portal and not portal:IsA("BasePart") then
+		warn("[Battle Pets] Replacing invalid Workspace.CampaignPortal instance")
+		portal:Destroy()
+		portal = nil
+	end
+
+	if not portal then
+		portal = Instance.new("Part")
+		portal.Name = "CampaignPortal"
+		portal.Shape = Enum.PartType.Block
+		portal.Size = Vector3.new(2, 16, 12)
+		portal.Position = Vector3.new(50, 10, -100)
+		portal.Color = Color3.fromRGB(153, 25, 230)
+		portal.Material = Enum.Material.Neon
+		portal.Transparency = 0.2
+		portal.Parent = workspace
+	end
+
+	portal.Anchored = true
+	portal.CanCollide = false
+	portal.CanTouch = true
+
+	if not portal:FindFirstChild("CampaignGlow") then
+		local glow = Instance.new("PointLight")
+		glow.Name = "CampaignGlow"
+		glow.Color = Color3.fromRGB(190, 80, 255)
+		glow.Brightness = 2
+		glow.Range = 20
+		glow.Parent = portal
+	end
+
+	return portal
+end
+
+--------------------------------------------------------------------------------
 -- LOBBY ISLAND: Safe spawn hub before Zone 1 (Pet Simulator 1 style)
 -- Players spawn here and walk through a portal/archway to enter Zone 1.
 -- No destructibles spawn in the lobby - it is a safe area.
@@ -1703,6 +1747,15 @@ local function allocateProportionally(totalAmount, contributors, totalContributi
 	return allocations
 end
 
+local function fireCollectCurrency(player, position, amount, currencyType)
+	if amount <= 0 then return end
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("CollectCurrency")
+	if event then
+		event:FireClient(player, position, amount, currencyType)
+	end
+end
+
 -- Split rewards by actual damage contribution instead of giving everything to the
 -- last hitter. Disconnected contributors are excluded and their share is reallocated.
 function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedDrops)
@@ -1734,6 +1787,7 @@ function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedD
 			local success, actualCoins = ZoneService._currencyService.addCoins(player, coinShare)
 			if success then
 				playerRewards.Coins = actualCoins or coinShare
+				fireCollectCurrency(player, destructible.position, playerRewards.Coins, "Coins")
 				if ZoneService._questService then
 					ZoneService._questService.incrementStat(player, "earnCoins", playerRewards.Coins)
 				end
@@ -1745,6 +1799,7 @@ function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedD
 			local success, actualDiamonds = ZoneService._currencyService.addDiamonds(player, diamondShare)
 			if success then
 				playerRewards.Diamonds = actualDiamonds or diamondShare
+				fireCollectCurrency(player, destructible.position, playerRewards.Diamonds, "Diamonds")
 			end
 		end
 

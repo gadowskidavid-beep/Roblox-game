@@ -51,7 +51,8 @@ function PetController.new()
 	self._autoAttackRange = 40 -- studs detection range
 	self._autoAttackConnection = nil
 	-- Per-pet targeting: each pet has its own assigned target
-	self._petTargets = {} -- { uniqueId = { destructibleId = string, part = BasePart, lastAttackTime = number } }
+	self._petTargets = {} -- { uniqueId = { destructibleId, part, lastAttackTime, assignedAt, assignmentConfirmed } }
+	self._assignmentSequence = 0 -- monotonic order for deterministic queue stealing
 	self._destructibleIndex = {}
 	-- Manual targeting mode
 	self._manualTargetMode = false -- when true, pets follow manual orders instead of auto
@@ -70,8 +71,13 @@ function PetController:init(remotes)
 	self._remotes = remotes
 	self._player = Players.LocalPlayer
 	self._assignPetTarget = remotes:WaitForChild("AssignPetTarget")
-	self._serverAssignments = {} -- desired/confirmed target per pet
+	self._serverAssignments = {} -- last target confirmed by the server per pet
+	self._desiredAssignments = {} -- newest requested target per pet
 	self._assignmentVersions = {}
+	self._confirmedAssignmentVersions = {}
+	self._assignmentStates = {} -- serializes/coalesces RemoteFunction calls per pet
+	self._clearRetryCounts = {}
+	self._manualOrderVersion = 0
 
 	-- Create folder for pet models in workspace (destroy any pre-existing one)
 	local existingFolder = workspace:FindFirstChild("ClientPets")
@@ -98,29 +104,166 @@ function PetController:setDestructibleIndex(index)
 	self._destructibleIndex = index or {}
 end
 
--- Reconciles optimistic visuals with the authoritative server response. A version
--- guard prevents a delayed response for an old target from undoing a newer order.
-function PetController:_requestPetTarget(uniqueId, destructibleId)
-	if not self._assignPetTarget then return end
-	local version = (self._assignmentVersions[uniqueId] or 0) + 1
-	self._assignmentVersions[uniqueId] = version
-	self._serverAssignments[uniqueId] = destructibleId
-
-	task.spawn(function()
-		local invoked, accepted = pcall(function()
-			return self._assignPetTarget:InvokeServer(uniqueId, destructibleId)
-		end)
-		if self._assignmentVersions[uniqueId] ~= version then
-			return
-		end
-		if not invoked or not accepted then
-			self._serverAssignments[uniqueId] = nil
-			if destructibleId and self._attackingPets[uniqueId] == destructibleId then
-				self._attackingPets[uniqueId] = nil
-				self._petTargets[uniqueId] = nil
-			end
+local function deferAssignmentCallback(callback, accepted)
+	if not callback then return end
+	task.defer(function()
+		local ok, err = pcall(callback, accepted)
+		if not ok then
+			warn("[Battle Pets] Pet assignment callback failed: " .. tostring(err))
 		end
 	end)
+end
+
+-- Queue assignment changes per pet so RemoteFunction calls cannot arrive at the
+-- server out of order. Pending requests are coalesced to the newest target, and
+-- every callback receives one terminal result (accepted or superseded/failed).
+function PetController:_requestPetTarget(uniqueId, destructibleId, onSettled)
+	if not self._assignPetTarget then
+		deferAssignmentCallback(onSettled, false)
+		return
+	end
+
+	local state = self._assignmentStates[uniqueId]
+	if not state then
+		state = { inFlight = nil, queued = nil }
+		self._assignmentStates[uniqueId] = state
+	end
+
+	-- Join an equivalent queued request. For A -> B -> A, supersede B and
+	-- promote the already in-flight A operation instead of sending A twice.
+	if state.queued and state.queued.target == destructibleId then
+		if onSettled then table.insert(state.queued.callbacks, onSettled) end
+		return
+	end
+	if state.inFlight and state.inFlight.target == destructibleId then
+		if state.queued then
+			for _, callback in ipairs(state.queued.callbacks) do
+				deferAssignmentCallback(callback, false)
+			end
+			state.queued = nil
+
+			for _, callback in ipairs(state.inFlight.callbacks) do
+				deferAssignmentCallback(callback, false)
+			end
+			local promotedVersion = (self._assignmentVersions[uniqueId] or 0) + 1
+			self._assignmentVersions[uniqueId] = promotedVersion
+			self._desiredAssignments[uniqueId] = destructibleId
+			state.inFlight.version = promotedVersion
+			state.inFlight.callbacks = onSettled and { onSettled } or {}
+		elseif onSettled then
+			table.insert(state.inFlight.callbacks, onSettled)
+		end
+		return
+	end
+
+	local version = (self._assignmentVersions[uniqueId] or 0) + 1
+	self._assignmentVersions[uniqueId] = version
+	self._desiredAssignments[uniqueId] = destructibleId
+	if destructibleId ~= nil then
+		self._clearRetryCounts[uniqueId] = nil
+	end
+
+	-- Only the newest not-yet-sent target matters. Superseded callbacks still
+	-- complete so Hold aggregations cannot remain pending forever.
+	if state.queued then
+		for _, callback in ipairs(state.queued.callbacks) do
+			deferAssignmentCallback(callback, false)
+		end
+	end
+	state.queued = {
+		target = destructibleId,
+		version = version,
+		callbacks = onSettled and { onSettled } or {},
+	}
+
+	if state.inFlight then return end
+
+	local function processNext()
+		local operation = state.queued
+		if not operation then
+			self._assignmentStates[uniqueId] = nil
+			return
+		end
+		state.queued = nil
+		state.inFlight = operation
+
+		task.spawn(function()
+			local invoked, accepted = pcall(function()
+				return self._assignPetTarget:InvokeServer(uniqueId, operation.target)
+			end)
+			local serverAccepted = invoked and accepted == true
+			if serverAccepted then
+				self._serverAssignments[uniqueId] = operation.target
+				self._confirmedAssignmentVersions[uniqueId] = operation.version
+				if operation.target == nil then
+					self._clearRetryCounts[uniqueId] = nil
+				end
+			end
+
+			local isCurrent = self._assignmentVersions[uniqueId] == operation.version
+				and self._desiredAssignments[uniqueId] == operation.target
+			local currentAccepted = serverAccepted and isCurrent
+			local shouldRetryClear = false
+			if isCurrent and not serverAccepted then
+				if operation.target == nil and self._serverAssignments[uniqueId] ~= nil then
+					local retryCount = (self._clearRetryCounts[uniqueId] or 0) + 1
+					self._clearRetryCounts[uniqueId] = retryCount
+					shouldRetryClear = retryCount <= 3
+				else
+					self._desiredAssignments[uniqueId] = nil
+					if operation.target and self._attackingPets[uniqueId] == operation.target then
+						self._attackingPets[uniqueId] = nil
+						self._petTargets[uniqueId] = nil
+					end
+				end
+			end
+
+			-- Release the serializer before user callbacks run. Callback errors or
+			-- slow AttackDestructible calls cannot block later target changes.
+			local callbacks = operation.callbacks
+			state.inFlight = nil
+			processNext()
+			for _, callback in ipairs(callbacks) do
+				deferAssignmentCallback(callback, currentAccepted)
+			end
+
+			if shouldRetryClear then
+				local failedVersion = operation.version
+				local retryDelay = 0.2 * (self._clearRetryCounts[uniqueId] or 1)
+				task.delay(retryDelay, function()
+					if self._assignmentVersions[uniqueId] == failedVersion
+						and self._serverAssignments[uniqueId] ~= nil then
+						self:_requestPetTarget(uniqueId, nil)
+					end
+				end)
+			end
+		end)
+	end
+
+	processNext()
+end
+
+function PetController:_clearAllPetTargetRequests()
+	local assignedPetIds = {}
+	for petId in pairs(self._serverAssignments) do
+		assignedPetIds[petId] = true
+	end
+	for petId in pairs(self._desiredAssignments) do
+		assignedPetIds[petId] = true
+	end
+	for petId in pairs(assignedPetIds) do
+		self:_requestPetTarget(petId, nil)
+	end
+end
+
+function PetController:_hasPetTargetRequest(uniqueId)
+	return self._desiredAssignments[uniqueId] ~= nil or self._serverAssignments[uniqueId] ~= nil
+end
+
+function PetController:_isPetTargetConfirmed(uniqueId, destructibleId)
+	return self._serverAssignments[uniqueId] == destructibleId
+		and self._desiredAssignments[uniqueId] == destructibleId
+		and self._confirmedAssignmentVersions[uniqueId] == self._assignmentVersions[uniqueId]
 end
 
 --------------------------------------------------------------------------------
@@ -299,8 +442,13 @@ function PetController:updateEquippedPets(equippedList)
 				petInfo.model:Destroy()
 			end
 			self._equippedPets[uniqueId] = nil
-			-- Clear targeting info for removed pet
 			self._petTargets[uniqueId] = nil
+			self._attackingPets[uniqueId] = nil
+			-- Serialize a clear after any in-flight assignment so an unequipped
+			-- pet cannot remain authoritative on the server.
+			if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
+				self:_requestPetTarget(uniqueId, nil)
+			end
 		end
 	end
 
@@ -319,25 +467,27 @@ function PetController:updateEquippedPets(equippedList)
 		end
 	end
 
-	-- Create new models ONLY for newly equipped pets (not already tracked)
+	-- Create new models and synchronize existing entries in the stable order
+	-- supplied by equippedList. Never derive followIndex from pairs(), because
+	-- dictionary iteration order is not guaranteed in Luau.
 	for i, petData in ipairs(equippedList) do
-		if petData.id and not self._equippedPets[petData.id] then
-			local model = self:createPetModel(petData)
-			model.Parent = self._petsFolder
+		if petData.id then
+			local petInfo = self._equippedPets[petData.id]
+			if not petInfo then
+				local model = self:createPetModel(petData)
+				model.Parent = self._petsFolder
 
-			self._equippedPets[petData.id] = {
-				model = model,
-				data = petData,
-				followIndex = i,
-			}
+				petInfo = {
+					model = model,
+					data = petData,
+					followIndex = i,
+				}
+				self._equippedPets[petData.id] = petInfo
+			else
+				petInfo.data = petData
+				petInfo.followIndex = i
+			end
 		end
-	end
-
-	-- Reassign follow indices to ensure proper formation
-	local idx = 1
-	for _, petInfo in pairs(self._equippedPets) do
-		petInfo.followIndex = idx
-		idx = idx + 1
 	end
 end
 
@@ -457,21 +607,38 @@ end
 -- destructible is destroyed or the player moves >60 studs away.
 -- Pet hovers ~1 stud beside the destructible (offset so it is not inside it).
 --------------------------------------------------------------------------------
-function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePart)
-	if not self._initialized then return end
+function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePart, onAssigned)
+	if not self._initialized then
+		if onAssigned then task.defer(onAssigned, false) end
+		return
+	end
 	local petInfo = self._equippedPets[uniqueId]
-	if not petInfo or not petInfo.model then return end
-	-- If already stationed at THIS destructible, do not restart the movement
-	if self._attackingPets[uniqueId] and self._attackingPets[uniqueId] == destructibleId then
+	if not petInfo or not petInfo.model then
+		if onAssigned then task.defer(onAssigned, false) end
+		return
+	end
+	-- If already stationed at THIS destructible, do not restart the movement.
+	-- Still settle the caller so queued attacks cannot wait forever.
+	if self._attackingPets[uniqueId] == destructibleId then
+		if self:_isPetTargetConfirmed(uniqueId, destructibleId) then
+			if onAssigned then task.defer(onAssigned, true) end
+		elseif self._assignPetTarget then
+			self:_requestPetTarget(uniqueId, destructibleId, onAssigned)
+		elseif onAssigned then
+			task.defer(onAssigned, false)
+		end
 		return
 	end
 
 	-- Mark as attacking this specific destructible
 	self._attackingPets[uniqueId] = destructibleId
 
-	-- Notify server of pet assignment (only if changed).
-	if self._assignPetTarget and self._serverAssignments[uniqueId] ~= destructibleId then
-		self:_requestPetTarget(uniqueId, destructibleId)
+	-- Notify server of pet assignment (only if changed). The optional callback
+	-- lets manual attacks wait until the authoritative assignment is accepted.
+	if self._assignPetTarget and not self:_isPetTargetConfirmed(uniqueId, destructibleId) then
+		self:_requestPetTarget(uniqueId, destructibleId, onAssigned)
+	elseif onAssigned then
+		task.defer(onAssigned, self:_isPetTargetConfirmed(uniqueId, destructibleId))
 	end
 
 	local model = petInfo.model
@@ -495,7 +662,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			targetPos = character.HumanoidRootPart.Position + character.HumanoidRootPart.CFrame.LookVector * 5
 		else
 			self._attackingPets[uniqueId] = nil
-			if self._assignPetTarget and self._serverAssignments[uniqueId] then
+			if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 				self:_requestPetTarget(uniqueId, nil)
 			end
 			return
@@ -511,10 +678,11 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			local MAX_PLAYER_DIST = 60 -- return threshold
 
 			-- Phase 1: Slow approach to the destructible
-			while self._attackingPets[uniqueId] == destructibleId do
+			while self._attackingPets[uniqueId] == destructibleId
+				and self._equippedPets[uniqueId] == petInfo do
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
 					self._attackingPets[uniqueId] = nil
-					if self._assignPetTarget and self._serverAssignments[uniqueId] then
+					if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 						self:_requestPetTarget(uniqueId, nil)
 					end
 					return
@@ -525,7 +693,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 					if not destructiblePart.Parent then
 						-- Destructible was destroyed, return to follow
 						self._attackingPets[uniqueId] = nil
-						if self._assignPetTarget and self._serverAssignments[uniqueId] then
+						if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 							self:_requestPetTarget(uniqueId, nil)
 						end
 						return
@@ -541,7 +709,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 						if playerDist > MAX_PLAYER_DIST then
 							-- Too far from player, return
 							self._attackingPets[uniqueId] = nil
-							if self._assignPetTarget and self._serverAssignments[uniqueId] then
+							if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 								self:_requestPetTarget(uniqueId, nil)
 							end
 							return
@@ -580,10 +748,11 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 
 			-- Phase 2: Stay at destructible with bounce animation (attack wobble)
 			local bounceTime = 0
-			while self._attackingPets[uniqueId] == destructibleId do
+			while self._attackingPets[uniqueId] == destructibleId
+				and self._equippedPets[uniqueId] == petInfo do
 				if not model or not model.PrimaryPart or not model.PrimaryPart.Parent then
 					self._attackingPets[uniqueId] = nil
-					if self._assignPetTarget and self._serverAssignments[uniqueId] then
+					if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 						self:_requestPetTarget(uniqueId, nil)
 					end
 					return
@@ -594,7 +763,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 					if not destructiblePart.Parent then
 						-- Destructible destroyed, return to follow
 						self._attackingPets[uniqueId] = nil
-						if self._assignPetTarget and self._serverAssignments[uniqueId] then
+						if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 							self:_requestPetTarget(uniqueId, nil)
 						end
 						return
@@ -609,7 +778,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 						local playerDist = (rootPart.Position - model.PrimaryPart.Position).Magnitude
 						if playerDist > MAX_PLAYER_DIST then
 							self._attackingPets[uniqueId] = nil
-							if self._assignPetTarget and self._serverAssignments[uniqueId] then
+							if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 								self:_requestPetTarget(uniqueId, nil)
 							end
 							return
@@ -642,7 +811,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end)
 	else
 		self._attackingPets[uniqueId] = nil
-		if self._assignPetTarget and self._serverAssignments[uniqueId] then
+		if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 			self:_requestPetTarget(uniqueId, nil)
 		end
 	end
@@ -780,6 +949,75 @@ function PetController:getNearestDestructible(maxDistance)
 	return nil
 end
 
+function PetController:_nextAssignmentSequence()
+	self._assignmentSequence = self._assignmentSequence + 1
+	return self._assignmentSequence
+end
+
+-- Return equipped pet IDs in the same stable order used by the follow formation.
+function PetController:_getQueuedPetIds()
+	local queuedPets = {}
+	for uniqueId, petInfo in pairs(self._equippedPets) do
+		table.insert(queuedPets, {
+			uniqueId = uniqueId,
+			followIndex = petInfo.followIndex or math.huge,
+		})
+	end
+	table.sort(queuedPets, function(a, b)
+		if a.followIndex == b.followIndex then
+			return tostring(a.uniqueId) < tostring(b.uniqueId)
+		end
+		return a.followIndex < b.followIndex
+	end)
+
+	local queuedIds = {}
+	for _, entry in ipairs(queuedPets) do
+		table.insert(queuedIds, entry.uniqueId)
+	end
+	return queuedIds
+end
+
+-- Prefer the first idle pet in follow order. If every pet is assigned, steal
+-- the oldest assignment; followIndex remains the deterministic tie-breaker.
+function PetController:_getNextQueuedPet()
+	local queuedIds = self:_getQueuedPetIds()
+	local oldestPetId = nil
+	local oldestAssignment = math.huge
+
+	for _, uniqueId in ipairs(queuedIds) do
+		local targetInfo = self._petTargets[uniqueId]
+		local targetIsValid = targetInfo
+			and targetInfo.part
+			and targetInfo.part.Parent
+			and self._attackingPets[uniqueId] == targetInfo.destructibleId
+
+		if not targetIsValid then
+			return uniqueId
+		end
+
+		local assignedAt = targetInfo.assignedAt or -math.huge
+		if assignedAt < oldestAssignment then
+			oldestAssignment = assignedAt
+			oldestPetId = uniqueId
+		end
+	end
+
+	return oldestPetId
+end
+
+function PetController:_sendAutoPetToTarget(uniqueId, targetInfo)
+	local assignmentId = targetInfo.assignedAt
+	self:sendPetToAttack(uniqueId, targetInfo.destructibleId, targetInfo.part, function(accepted)
+		local currentTarget = self._petTargets[uniqueId]
+		if currentTarget and currentTarget.assignedAt == assignmentId then
+			currentTarget.assignmentConfirmed = accepted
+			if accepted then
+				currentTarget.lastAttackTime = tick()
+			end
+		end
+	end)
+end
+
 --------------------------------------------------------------------------------
 -- DISTRIBUTED AUTO-ATTACK: Each pet picks its own unique target
 -- Pets spread out to different destructibles instead of all attacking the same one.
@@ -812,7 +1050,7 @@ function PetController:_startAutoAttack()
 				-- Release the pet from stationed state
 				if self._attackingPets[petId] then
 					self._attackingPets[petId] = nil
-					if self._assignPetTarget and self._serverAssignments[petId] then
+					if self._assignPetTarget and self:_hasPetTargetRequest(petId) then
 						self:_requestPetTarget(petId, nil)
 					end
 				end
@@ -829,9 +1067,9 @@ function PetController:_startAutoAttack()
 			end
 		end
 
-		-- For each equipped pet, assign a target if it does not have one or its target is gone
+		-- Process pets in stable follow order so target distribution is deterministic.
 		local now = tick()
-		for uniqueId, _ in pairs(self._equippedPets) do
+		for _, uniqueId in ipairs(self:_getQueuedPetIds()) do
 			local currentTarget = self._petTargets[uniqueId]
 
 			-- Check if current target is still valid (exists in destructibles list)
@@ -851,7 +1089,7 @@ function PetController:_startAutoAttack()
 				-- Release stationing
 				if self._attackingPets[uniqueId] then
 					self._attackingPets[uniqueId] = nil
-					if self._assignPetTarget and self._serverAssignments[uniqueId] then
+					if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
 						self:_requestPetTarget(uniqueId, nil)
 					end
 				end
@@ -867,12 +1105,14 @@ function PetController:_startAutoAttack()
 						self._petTargets[uniqueId] = {
 							destructibleId = d.id,
 							part = d.part,
-							lastAttackTime = 0,
+							lastAttackTime = now,
+							assignedAt = self:_nextAssignmentSequence(),
+							assignmentConfirmed = false,
 						}
 						targetedIds[d.id] = true
 						assigned = true
-						-- Send pet to the new target (it will station there)
-						self:sendPetToAttack(uniqueId, d.id, d.part)
+						-- Send pet only after tracking the assignment confirmation.
+						self:_sendAutoPetToTarget(uniqueId, self._petTargets[uniqueId])
 						break
 					end
 				end
@@ -883,20 +1123,25 @@ function PetController:_startAutoAttack()
 					self._petTargets[uniqueId] = {
 						destructibleId = nearest.id,
 						part = nearest.part,
-						lastAttackTime = 0,
+						lastAttackTime = now,
+						assignedAt = self:_nextAssignmentSequence(),
+						assignmentConfirmed = false,
 					}
-					self:sendPetToAttack(uniqueId, nearest.id, nearest.part)
+					self:_sendAutoPetToTarget(uniqueId, self._petTargets[uniqueId])
 				end
 			else
 				-- Target is still valid; ensure the pet is sent there (idempotent)
 				if currentTarget and not self._attackingPets[uniqueId] then
-					self:sendPetToAttack(uniqueId, currentTarget.destructibleId, currentTarget.part)
+					self:_sendAutoPetToTarget(uniqueId, currentTarget)
 				end
 			end
 
 			-- Fire attack remote periodically for damage while stationed
 			local targetInfo = self._petTargets[uniqueId]
-			if targetInfo and (now - targetInfo.lastAttackTime >= self._autoAttackInterval) then
+			if targetInfo
+				and targetInfo.assignmentConfirmed
+				and self:_isPetTargetConfirmed(uniqueId, targetInfo.destructibleId)
+				and (now - targetInfo.lastAttackTime >= self._autoAttackInterval) then
 				targetInfo.lastAttackTime = now
 				self:fireAttackRemote(targetInfo.destructibleId)
 			end
@@ -913,49 +1158,42 @@ end
 
 --------------------------------------------------------------------------------
 -- MANUAL TARGETING: Send exactly 1 pet to a target (single click)
--- Picks the first available (non-attacking) pet
+-- Uses a deterministic queue: idle pets by followIndex, then oldest assignment.
 --------------------------------------------------------------------------------
 function PetController:sendOnePetToTarget(destructibleId, destructiblePart)
 	if not self._initialized then return end
 
-	-- Find the first pet that is not currently stationed at a target
-	local sentPetId = nil
-	for uniqueId, _ in pairs(self._equippedPets) do
-		if not self._attackingPets[uniqueId] then
-			sentPetId = uniqueId
-			break
-		end
-	end
-
-	-- If all pets are busy, pick the first one (will re-assign it)
-	if not sentPetId then
-		for uniqueId, _ in pairs(self._equippedPets) do
-			sentPetId = uniqueId
-			break
-		end
-	end
-
+	local sentPetId = self:_getNextQueuedPet()
 	if not sentPetId then return end
 
-	-- Release from previous station if any
-	self._attackingPets[sentPetId] = nil
+	self._manualOrderVersion = self._manualOrderVersion + 1
 
-	-- Assign this pet's target manually
+	-- Release from previous station if any and create a fresh queue assignment.
+	self._attackingPets[sentPetId] = nil
+	local now = tick()
 	self._petTargets[sentPetId] = {
 		destructibleId = destructibleId,
 		part = destructiblePart,
-		lastAttackTime = tick(),
+		lastAttackTime = now,
+		assignedAt = self:_nextAssignmentSequence(),
+		assignmentConfirmed = false,
 	}
 
-	-- Send the pet visually (it will station there)
-	self:sendPetToAttack(sentPetId, destructibleId, destructiblePart)
-
-	-- Fire ONE attack remote (server calculates damage for 1 pet)
-	self:fireAttackRemote(destructibleId)
+	-- Fire only after the server accepted this pet's target, avoiding the race
+	-- where AttackDestructible arrives before AssignPetTarget.
+	self:sendPetToAttack(sentPetId, destructibleId, destructiblePart, function(accepted)
+		local currentTarget = self._petTargets[sentPetId]
+		if accepted
+			and currentTarget
+			and currentTarget.destructibleId == destructibleId then
+			currentTarget.assignmentConfirmed = true
+			self:fireAttackRemote(destructibleId)
+		end
+	end)
 
 	-- Enter manual target mode briefly so auto-attack doesn't immediately override
 	self._manualTargetMode = true
-	self._manualTargetExpiry = tick() + self._manualTargetDuration
+	self._manualTargetExpiry = now + self._manualTargetDuration
 end
 
 --------------------------------------------------------------------------------
@@ -964,42 +1202,82 @@ end
 function PetController:sendAllPetsToTarget(destructibleId, destructiblePart)
 	if not self._initialized then return end
 
-	-- Assign all pets to the same target
-	for uniqueId, _ in pairs(self._equippedPets) do
-		-- Release from previous station
-		self._attackingPets[uniqueId] = nil
+	local queuedIds = self:_getQueuedPetIds()
+	local pendingAssignments = #queuedIds
+	local expectedAssignments = #queuedIds
+	local acceptedAssignments = 0
+	local holdAssignments = {}
+	local now = tick()
+	self._manualOrderVersion = self._manualOrderVersion + 1
+	local orderVersion = self._manualOrderVersion
 
-		self._petTargets[uniqueId] = {
+	-- Assign in stable follow order. Sequential assignedAt values make the queue
+	-- after a hold deterministic if a later single click must steal a busy pet.
+	for _, uniqueId in ipairs(queuedIds) do
+		local petId = uniqueId
+		self._attackingPets[petId] = nil
+		local assignmentId = self:_nextAssignmentSequence()
+		holdAssignments[petId] = assignmentId
+		self._petTargets[petId] = {
 			destructibleId = destructibleId,
 			part = destructiblePart,
-			lastAttackTime = tick(),
+			lastAttackTime = now,
+			assignedAt = assignmentId,
+			assignmentConfirmed = false,
 		}
-		self:sendPetToAttack(uniqueId, destructibleId, destructiblePart)
+		self:sendPetToAttack(petId, destructibleId, destructiblePart, function(accepted)
+			pendingAssignments = pendingAssignments - 1
+			local currentTarget = self._petTargets[petId]
+			if accepted
+				and self._manualOrderVersion == orderVersion
+				and currentTarget
+				and currentTarget.assignedAt == holdAssignments[petId]
+				and currentTarget.destructibleId == destructibleId then
+				currentTarget.assignmentConfirmed = true
+				acceptedAssignments = acceptedAssignments + 1
+			end
+			if pendingAssignments == 0 then
+				local holdSucceeded = self._manualOrderVersion == orderVersion
+					and expectedAssignments > 0
+					and acceptedAssignments == expectedAssignments
+				if holdSucceeded then
+					self:fireAttackRemote(destructibleId)
+				else
+					-- Hold is atomic: if any member failed or a newer order replaced it,
+					-- roll back only pets that still belong to this exact hold.
+					for rollbackPetId, rollbackAssignment in pairs(holdAssignments) do
+						local rollbackTarget = self._petTargets[rollbackPetId]
+						if rollbackTarget and rollbackTarget.assignedAt == rollbackAssignment then
+							self._petTargets[rollbackPetId] = nil
+							self._attackingPets[rollbackPetId] = nil
+							if self._assignPetTarget and self:_hasPetTargetRequest(rollbackPetId) then
+								self:_requestPetTarget(rollbackPetId, nil)
+							end
+						end
+					end
+					if self._manualOrderVersion == orderVersion then
+						self._manualOrderVersion = self._manualOrderVersion + 1
+						self._manualTargetMode = false
+					end
+				end
+			end
+		end)
 	end
-
-	-- Fire attack remote (server sums all equipped pet damage)
-	self:fireAttackRemote(destructibleId)
 
 	-- Enter manual target mode
 	self._manualTargetMode = true
-	self._manualTargetExpiry = tick() + self._manualTargetDuration
+	self._manualTargetExpiry = now + self._manualTargetDuration
 end
 
 --------------------------------------------------------------------------------
 -- Clear manual targeting (return to auto-distribute)
 --------------------------------------------------------------------------------
 function PetController:clearManualTarget()
+	self._manualOrderVersion = self._manualOrderVersion + 1
 	self._manualTargetMode = false
 	-- Clear server assignments for all pets
 	if self._assignPetTarget then
-		local assignedPetIds = {}
-		for petId in pairs(self._serverAssignments) do
-			table.insert(assignedPetIds, petId)
-		end
-		for _, petId in ipairs(assignedPetIds) do
-			self:_requestPetTarget(petId, nil)
-		end
-		self._serverAssignments = {}
+		self:_clearAllPetTargetRequests()
 	end
 	-- Clear all pet targets and release stationing so they re-distribute on next frame
 	self._petTargets = {}
@@ -1011,17 +1289,11 @@ end
 -- Called when player clicks elsewhere or moves away
 --------------------------------------------------------------------------------
 function PetController:cancelAllAttacks()
+	self._manualOrderVersion = self._manualOrderVersion + 1
 	self._manualTargetMode = false
 	-- Clear server assignments for all pets
 	if self._assignPetTarget then
-		local assignedPetIds = {}
-		for petId in pairs(self._serverAssignments) do
-			table.insert(assignedPetIds, petId)
-		end
-		for _, petId in ipairs(assignedPetIds) do
-			self:_requestPetTarget(petId, nil)
-		end
-		self._serverAssignments = {}
+		self:_clearAllPetTargetRequests()
 	end
 	self._petTargets = {}
 	self._attackingPets = {}
@@ -1038,17 +1310,11 @@ end
 -- Cleanup
 --------------------------------------------------------------------------------
 function PetController:cleanup()
+	self._manualOrderVersion = self._manualOrderVersion + 1
 	self:_stopAutoAttack()
 	-- Clear server assignments for all pets
 	if self._assignPetTarget then
-		local assignedPetIds = {}
-		for petId in pairs(self._serverAssignments) do
-			table.insert(assignedPetIds, petId)
-		end
-		for _, petId in ipairs(assignedPetIds) do
-			self:_requestPetTarget(petId, nil)
-		end
-		self._serverAssignments = {}
+		self:_clearAllPetTargetRequests()
 	end
 	for _, petInfo in pairs(self._equippedPets) do
 		if petInfo.model then
