@@ -1165,7 +1165,8 @@ getRemoteFunction("AttackDestructible").OnServerInvoke = function(player, destru
 	return ZoneService.attackDestructible(player, destructibleId)
 end
 
--- ClickAttackDestructible (player tap/click damage - always 1 per click)
+-- ClickAttackDestructible now only authorizes one Crit-QTE and deals zero damage.
+-- The legacy remote name is retained for place/client compatibility.
 getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, destructibleId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
@@ -1173,7 +1174,7 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 	if not isValidIdentifier(destructibleId) then
 		return false, "Invalid destructible ID parameter"
 	end
-	return ZoneService.clickAttackDestructible(player, destructibleId)
+	return ZoneService.requestCritWindow(player, destructibleId)
 end
 
 -- CritAttackDestructible (player clicked a crit circle - deals 2 damage if crit window active)
@@ -3102,9 +3103,9 @@ ZoneService._destructibles = {}
 ZoneService._zonesFolder = nil
 
 -- Rate limiting for attacks (per player)
-ZoneService._attackCooldowns = {} -- [userId] = last attack time (os.clock)
-ZoneService._clickCooldowns = {} -- [userId] = last click attack time (os.clock)
-ZoneService._critCooldowns = {} -- [userId] = last crit attack time (os.clock)
+ZoneService._attackCooldowns = {} -- [userId] = last pet attack time (os.clock)
+ZoneService._critWindowCooldowns = {} -- [userId] = last Crit-QTE request time (os.clock)
+ZoneService._critCooldowns = {} -- [userId] = last successful crit attempt time (os.clock)
 
 -- Crit window tracking: [userId] = { [destructibleId] = expiry time (os.clock) }
 ZoneService._critWindows = {}
@@ -3114,9 +3115,9 @@ ZoneService._petTargets = {}
 
 -- Constants for security
 local ATTACK_COOLDOWN = 0.5 -- seconds between pet attacks per player
-local CLICK_ATTACK_COOLDOWN = 0.2 -- seconds between click attacks per player
+local CRIT_WINDOW_REQUEST_COOLDOWN = 0.2 -- seconds between Crit-QTE requests
 local CRIT_ATTACK_COOLDOWN = 0.2 -- seconds between crit attacks per player
-local CRIT_WINDOW_DURATION = 3 -- seconds a crit window stays active after click attack
+local CRIT_WINDOW_DURATION = 3 -- seconds a requested Crit-QTE remains valid
 local MAX_ATTACK_DISTANCE = 50 -- maximum studs between player and destructible
 
 -- Zone position offsets (each zone is spaced apart - no gap between zones)
@@ -4791,7 +4792,7 @@ function ZoneService.onPlayerRemoving(player)
 	if player then
 		local userId = player.UserId
 		ZoneService._attackCooldowns[userId] = nil
-		ZoneService._clickCooldowns[userId] = nil
+		ZoneService._critWindowCooldowns[userId] = nil
 		ZoneService._critCooldowns[userId] = nil
 		ZoneService._critWindows[userId] = nil
 		ZoneService._petTargets[userId] = nil
@@ -5075,9 +5076,9 @@ function ZoneService.attackDestructible(player, destructibleId)
 	return true, nil
 end
 
--- Click-attack a destructible (player tap/click damage, always 1 damage per click)
--- This is separate from pet auto-attack and does not require equipped pets.
-function ZoneService.clickAttackDestructible(player, destructibleId)
+-- Authorize one Crit-QTE for a nearby, unlocked destructible.
+-- This intentionally deals zero damage; only critAttackDestructible mutates HP.
+function ZoneService.requestCritWindow(player, destructibleId)
 	if not player or type(destructibleId) ~= "string" then
 		return false, "Invalid parameters"
 	end
@@ -5087,28 +5088,20 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 		return false, "Destructible not found"
 	end
 
-	-- Rate limiting: 0.2 second cooldown between click attacks per player
 	local userId = player.UserId
 	local now = os.clock()
-	local lastClick = ZoneService._clickCooldowns[userId] or 0
-	if now - lastClick < CLICK_ATTACK_COOLDOWN then
-		return false, "Click attack on cooldown"
+	local lastRequest = ZoneService._critWindowCooldowns[userId] or 0
+	if now - lastRequest < CRIT_WINDOW_REQUEST_COOLDOWN then
+		return false, "Crit window request on cooldown"
 	end
-	ZoneService._clickCooldowns[userId] = now
+	ZoneService._critWindowCooldowns[userId] = now
 
-	-- Distance check: player must be within 50 studs of the destructible
 	local character = player.Character
-	if not character then
-		return false, "No character"
-	end
-	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
 	if not humanoidRootPart then
 		return false, "No HumanoidRootPart"
 	end
-	local playerPos = humanoidRootPart.Position
-	local destructiblePos = destructible.position
-	local distance = (playerPos - destructiblePos).Magnitude
-	if distance > MAX_ATTACK_DISTANCE then
+	if (humanoidRootPart.Position - destructible.position).Magnitude > MAX_ATTACK_DISTANCE then
 		return false, "Too far from destructible"
 	end
 
@@ -5116,86 +5109,12 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 	if not data then
 		return false, "No player data"
 	end
-
-	-- Validate player has unlocked the zone
-	local zoneUnlocked = false
-	for _, unlockedId in ipairs(data.unlockedZones) do
-		if unlockedId == destructible.zoneId then
-			zoneUnlocked = true
-			break
-		end
-	end
-	if not zoneUnlocked then
+	if not table.find(data.unlockedZones, destructible.zoneId) then
 		return false, "Zone not unlocked"
 	end
 
-	-- Player click always deals exactly 1 damage
-	local clickDamage = 1
-
-	-- Open a crit window for this player on this destructible (lasts CRIT_WINDOW_DURATION seconds)
-	if not ZoneService._critWindows[userId] then
-		ZoneService._critWindows[userId] = {}
-	end
-	ZoneService._critWindows[userId][destructibleId] = os.clock() + CRIT_WINDOW_DURATION
-
-	-- Apply damage and record fair-share contribution.
-	local appliedDamage = recordContribution(destructible, player, clickDamage)
-	destructible.hp = destructible.hp - appliedDamage
-
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
-	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Schedule respawn
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		ZoneService._destructibles[destructibleId] = nil
-
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
-	else
-		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
-	end
-
+	ZoneService._critWindows[userId] = ZoneService._critWindows[userId] or {}
+	ZoneService._critWindows[userId][destructibleId] = now + CRIT_WINDOW_DURATION
 	return true, nil
 end
 
@@ -7263,7 +7182,8 @@ local PurchaseUpgrade = Remotes:WaitForChild("PurchaseUpgrade")
 local StartCampaignLevel = Remotes:WaitForChild("StartCampaignLevel")
 local DeployPetInCampaign = Remotes:WaitForChild("DeployPetInCampaign")
 local AttackDestructible = Remotes:WaitForChild("AttackDestructible")
-local ClickAttackDestructible = Remotes:WaitForChild("ClickAttackDestructible")
+-- Legacy remote name; it now only requests a server-authorized Crit-QTE window.
+local RequestCritWindow = Remotes:WaitForChild("ClickAttackDestructible")
 local CritAttackDestructible = Remotes:WaitForChild("CritAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
@@ -7780,20 +7700,15 @@ RunService.RenderStepped:Connect(function(deltaTime)
 end)
 
 --------------------------------------------------------------------------------
--- INPUT HANDLING - Pet Simulator 1 style targeting + QTE Click-to-Damage
--- Single click: send 1 pet to target + deal 1 click damage
--- Hold click (0.3s+): send ALL pets to target + auto-click every 0.2s for damage
--- Each click deals 1 damage (player click damage, separate from pet auto-attack)
+-- INPUT HANDLING - manual pet targeting + Crit-QTE
+-- Short click: assign one pet and offer one Crit-QTE (zero direct click damage)
+-- Hold (0.3s+): assign all pets once (no auto-click and no player damage)
 --------------------------------------------------------------------------------
 local HOLD_THRESHOLD = 0.3 -- seconds to distinguish click from hold
-local CLICK_COOLDOWN = 0.2 -- seconds between click damage (spam protection)
-local AUTO_CLICK_INTERVAL = 0.2 -- seconds between auto-clicks when holding
 local mouseDownTime = 0
 local mouseDownTarget = nil -- { destructibleId, part }
 local isMouseDown = false
 local holdFired = false -- whether we already sent all-pets command during this hold
-local lastClickDamageTime = 0 -- cooldown tracker for click damage
-local autoClickActive = false -- whether auto-click is running from hold
 
 -- Helper: Raycast from screen position to find a destructible
 local function raycastForDestructible(screenPosition)
@@ -7836,57 +7751,35 @@ local function raycastForDestructible(screenPosition)
 	}
 end
 
--- Helper: fire click damage to server and show effects
-local function fireClickDamage(target)
+-- Request one server-authorized Crit-QTE. Selecting a breakable never mutates
+-- HP; only a successful click on the spawned weak-point circle can deal damage.
+local function offerCritQTE(target)
 	if not target or not target.destructibleId then return end
+	if not target.part or not target.part.Parent then return end
+	if effectsController:hasCritButtonActive() then return end
 
-	local now = tick()
-	if (now - lastClickDamageTime) < CLICK_COOLDOWN then return end
-	lastClickDamageTime = now
-
-	-- Fire click attack to server (always 1 damage)
-	local invoked, clickSucceeded = pcall(function()
-		return ClickAttackDestructible:InvokeServer(target.destructibleId)
+	local invoked, windowOpened = pcall(function()
+		return RequestCritWindow:InvokeServer(target.destructibleId)
 	end)
-	if invoked and clickSucceeded == true then
-		completeOnboardingStep("click")
-	end
+	if not invoked or windowOpened ~= true then return end
+	if not target.part or not target.part.Parent then return end
 
-	-- Spawn a crit button only if there is NOT already one active
-	-- Prevents spammy rapid spawn/destroy cycles on every click
-	if target.part and target.part.Parent and not effectsController:hasCritButtonActive() then
-		effectsController:spawnCritButton(target.part, target.destructibleId, function()
-			-- Crit button was clicked: fire crit attack to server
-			CritAttackDestructible:InvokeServer(target.destructibleId)
-
-			-- Show crit visual feedback
-			effectsController:playCritSound(target.part.Position)
-
-			-- Show gold "CRIT! 2" popup
-			local critPos = target.part.Position + Vector3.new(0, 2, 0)
-			petController:showDamageText(critPos, 2, true)
+	completeOnboardingStep("click")
+	effectsController:spawnCritButton(target.part, target.destructibleId, function()
+		local critInvoked, critSucceeded = pcall(function()
+			return CritAttackDestructible:InvokeServer(target.destructibleId)
 		end)
-	end
-
-	-- Show visual effects for the click
-	if target.part and target.part.Parent then
-		-- Show "1" damage popup at the destructible position
-		local popupPos = target.part.Position + Vector3.new(
-			(math.random() - 0.5) * 2,
-			1,
-			(math.random() - 0.5) * 2
-		)
-		petController:showDamageText(popupPos, 1)
-
-		-- Show hit effect (shake/flash) on the destructible
-		effectsController:showClickHitEffect(target.part)
-
-		-- Play satisfying click sound
-		effectsController:playClickSound(target.part.Position)
-	end
+		if not critInvoked or critSucceeded ~= true then return end
+		if target.part and target.part.Parent then
+			effectsController:playCritSound(target.part.Position)
+		end
+		-- Authoritative damage text comes from DestructibleDamaged; do not create
+		-- a second local popup here.
+	end)
 end
 
--- Mouse/Touch down: start tracking for click vs hold + immediate click damage
+-- Mouse/Touch down: track click vs hold and offer one Crit-QTE.
+-- This input never deals direct damage.
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 
@@ -7899,74 +7792,53 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			mouseDownTarget = target
 			isMouseDown = true
 			holdFired = false
-			autoClickActive = false
-
-			-- Immediate click damage on first press
-			fireClickDamage(target)
+			offerCritQTE(target)
 		else
 			-- Clicked on empty space: cancel all pet attacks, return them to player
 			petController:cancelAllAttacks()
 			isMouseDown = false
 			mouseDownTarget = nil
 			holdFired = false
-			autoClickActive = false
 		end
 	end
 end)
 
--- Mouse/Touch up: if released before hold threshold, it is a single click (send 1 pet)
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
+-- Mouse/Touch up: if released before hold threshold, send exactly one pet.
+UserInputService.InputEnded:Connect(function(input, _gameProcessed)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 
 		if isMouseDown and mouseDownTarget and not holdFired then
 			local elapsed = tick() - mouseDownTime
 			if elapsed < HOLD_THRESHOLD then
-				-- SINGLE CLICK: send only 1 pet to the target
 				petController:sendOnePetToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
 			else
-				-- Heartbeat may not have observed the threshold before release. Treat
-				-- this as a hold so the exact frame boundary never drops the order.
+				-- Heartbeat may not have observed the threshold before release.
 				holdFired = true
 				petController:sendAllPetsToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
 			end
 		end
 
-		-- Reset state
 		isMouseDown = false
 		mouseDownTarget = nil
 		holdFired = false
-		autoClickActive = false
 	end
 end)
 
--- Per-frame check: detect hold (0.3s+) while mouse is still down
--- Also handles auto-click damage every 0.2s while holding
+-- Detect hold once. Holding never repeats QTE requests or player attacks.
 RunService.Heartbeat:Connect(function()
 	if not isMouseDown or not mouseDownTarget then return end
 
-	local elapsed = tick() - mouseDownTime
-
-	-- Send all pets once when hold threshold reached
-	if not holdFired and elapsed >= HOLD_THRESHOLD then
-		holdFired = true
-		autoClickActive = true
-		petController:sendAllPetsToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
+	if not mouseDownTarget.part or not mouseDownTarget.part.Parent then
+		isMouseDown = false
+		mouseDownTarget = nil
+		holdFired = false
+		return
 	end
 
-	-- Auto-click damage while holding (every AUTO_CLICK_INTERVAL seconds)
-	if autoClickActive and mouseDownTarget
-		and (tick() - lastClickDamageTime) >= AUTO_CLICK_INTERVAL then
-		-- Check if the target still exists
-		if mouseDownTarget.part and mouseDownTarget.part.Parent then
-			fireClickDamage(mouseDownTarget)
-		else
-			-- Target destroyed, stop auto-clicking
-			autoClickActive = false
-			isMouseDown = false
-			mouseDownTarget = nil
-			holdFired = false
-		end
+	if not holdFired and (tick() - mouseDownTime) >= HOLD_THRESHOLD then
+		holdFired = true
+		petController:sendAllPetsToTarget(mouseDownTarget.destructibleId, mouseDownTarget.part)
 	end
 end)
 

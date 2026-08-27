@@ -23,9 +23,9 @@ ZoneService._destructibles = {}
 ZoneService._zonesFolder = nil
 
 -- Rate limiting for attacks (per player)
-ZoneService._attackCooldowns = {} -- [userId] = last attack time (os.clock)
-ZoneService._clickCooldowns = {} -- [userId] = last click attack time (os.clock)
-ZoneService._critCooldowns = {} -- [userId] = last crit attack time (os.clock)
+ZoneService._attackCooldowns = {} -- [userId] = last pet attack time (os.clock)
+ZoneService._critWindowCooldowns = {} -- [userId] = last Crit-QTE request time (os.clock)
+ZoneService._critCooldowns = {} -- [userId] = last successful crit attempt time (os.clock)
 
 -- Crit window tracking: [userId] = { [destructibleId] = expiry time (os.clock) }
 ZoneService._critWindows = {}
@@ -35,9 +35,9 @@ ZoneService._petTargets = {}
 
 -- Constants for security
 local ATTACK_COOLDOWN = 0.5 -- seconds between pet attacks per player
-local CLICK_ATTACK_COOLDOWN = 0.2 -- seconds between click attacks per player
+local CRIT_WINDOW_REQUEST_COOLDOWN = 0.2 -- seconds between Crit-QTE requests
 local CRIT_ATTACK_COOLDOWN = 0.2 -- seconds between crit attacks per player
-local CRIT_WINDOW_DURATION = 3 -- seconds a crit window stays active after click attack
+local CRIT_WINDOW_DURATION = 3 -- seconds a requested Crit-QTE remains valid
 local MAX_ATTACK_DISTANCE = 50 -- maximum studs between player and destructible
 
 -- Zone position offsets (each zone is spaced apart - no gap between zones)
@@ -1712,7 +1712,7 @@ function ZoneService.onPlayerRemoving(player)
 	if player then
 		local userId = player.UserId
 		ZoneService._attackCooldowns[userId] = nil
-		ZoneService._clickCooldowns[userId] = nil
+		ZoneService._critWindowCooldowns[userId] = nil
 		ZoneService._critCooldowns[userId] = nil
 		ZoneService._critWindows[userId] = nil
 		ZoneService._petTargets[userId] = nil
@@ -1996,9 +1996,9 @@ function ZoneService.attackDestructible(player, destructibleId)
 	return true, nil
 end
 
--- Click-attack a destructible (player tap/click damage, always 1 damage per click)
--- This is separate from pet auto-attack and does not require equipped pets.
-function ZoneService.clickAttackDestructible(player, destructibleId)
+-- Authorize one Crit-QTE for a nearby, unlocked destructible.
+-- This intentionally deals zero damage; only critAttackDestructible mutates HP.
+function ZoneService.requestCritWindow(player, destructibleId)
 	if not player or type(destructibleId) ~= "string" then
 		return false, "Invalid parameters"
 	end
@@ -2008,28 +2008,20 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 		return false, "Destructible not found"
 	end
 
-	-- Rate limiting: 0.2 second cooldown between click attacks per player
 	local userId = player.UserId
 	local now = os.clock()
-	local lastClick = ZoneService._clickCooldowns[userId] or 0
-	if now - lastClick < CLICK_ATTACK_COOLDOWN then
-		return false, "Click attack on cooldown"
+	local lastRequest = ZoneService._critWindowCooldowns[userId] or 0
+	if now - lastRequest < CRIT_WINDOW_REQUEST_COOLDOWN then
+		return false, "Crit window request on cooldown"
 	end
-	ZoneService._clickCooldowns[userId] = now
+	ZoneService._critWindowCooldowns[userId] = now
 
-	-- Distance check: player must be within 50 studs of the destructible
 	local character = player.Character
-	if not character then
-		return false, "No character"
-	end
-	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
 	if not humanoidRootPart then
 		return false, "No HumanoidRootPart"
 	end
-	local playerPos = humanoidRootPart.Position
-	local destructiblePos = destructible.position
-	local distance = (playerPos - destructiblePos).Magnitude
-	if distance > MAX_ATTACK_DISTANCE then
+	if (humanoidRootPart.Position - destructible.position).Magnitude > MAX_ATTACK_DISTANCE then
 		return false, "Too far from destructible"
 	end
 
@@ -2037,86 +2029,12 @@ function ZoneService.clickAttackDestructible(player, destructibleId)
 	if not data then
 		return false, "No player data"
 	end
-
-	-- Validate player has unlocked the zone
-	local zoneUnlocked = false
-	for _, unlockedId in ipairs(data.unlockedZones) do
-		if unlockedId == destructible.zoneId then
-			zoneUnlocked = true
-			break
-		end
-	end
-	if not zoneUnlocked then
+	if not table.find(data.unlockedZones, destructible.zoneId) then
 		return false, "Zone not unlocked"
 	end
 
-	-- Player click always deals exactly 1 damage
-	local clickDamage = 1
-
-	-- Open a crit window for this player on this destructible (lasts CRIT_WINDOW_DURATION seconds)
-	if not ZoneService._critWindows[userId] then
-		ZoneService._critWindows[userId] = {}
-	end
-	ZoneService._critWindows[userId][destructibleId] = os.clock() + CRIT_WINDOW_DURATION
-
-	-- Apply damage and record fair-share contribution.
-	local appliedDamage = recordContribution(destructible, player, clickDamage)
-	destructible.hp = destructible.hp - appliedDamage
-
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
-	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Schedule respawn
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		ZoneService._destructibles[destructibleId] = nil
-
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
-	else
-		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
-	end
-
+	ZoneService._critWindows[userId] = ZoneService._critWindows[userId] or {}
+	ZoneService._critWindows[userId][destructibleId] = now + CRIT_WINDOW_DURATION
 	return true, nil
 end
 

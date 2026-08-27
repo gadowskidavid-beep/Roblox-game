@@ -448,7 +448,8 @@ getRemoteFunction("AttackDestructible").OnServerInvoke = function(player, destru
 	return ZoneService.attackDestructible(player, destructibleId)
 end
 
--- ClickAttackDestructible (player tap/click damage - always 1 per click)
+-- ClickAttackDestructible now only authorizes one Crit-QTE and deals zero damage.
+-- The legacy remote name is retained for place/client compatibility.
 getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, destructibleId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
@@ -456,7 +457,7 @@ getRemoteFunction("ClickAttackDestructible").OnServerInvoke = function(player, d
 	if not isValidIdentifier(destructibleId) then
 		return false, "Invalid destructible ID parameter"
 	end
-	return ZoneService.clickAttackDestructible(player, destructibleId)
+	return ZoneService.requestCritWindow(player, destructibleId)
 end
 
 -- CritAttackDestructible (player clicked a crit circle - deals 2 damage if crit window active)
