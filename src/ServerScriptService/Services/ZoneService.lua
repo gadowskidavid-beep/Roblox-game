@@ -210,6 +210,7 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 	local uniqueId = game:GetService("HttpService"):GenerateGUID(false)
 	local model = Instance.new("Model")
 	model.Name = "Destructible_" .. uniqueId
+	model:SetAttribute("DestructibleId", uniqueId)
 
 	local mainPart = nil
 
@@ -357,11 +358,45 @@ function ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, position, par
 		position = mainPart.Position,
 	}
 
-	-- Tag the main part with the destructible ID for client lookup
+	-- Retain the legacy main-part StringValue for canonical visual lookup.
 	local idValue = Instance.new("StringValue")
 	idValue.Name = "DestructibleId"
 	idValue.Value = uniqueId
 	idValue.Parent = mainPart
+
+	-- A generous invisible query-only volume makes every visual breakable easy
+	-- to click without changing pet grounding, touches, or physical collisions.
+	local boundsCFrame, boundsSize = model:GetBoundingBox()
+	local boundsRight = boundsCFrame.RightVector
+	local boundsUp = boundsCFrame.UpVector
+	local boundsForward = boundsCFrame.LookVector
+	local worldBoundsSize = Vector3.new(
+		math.abs(boundsRight.X) * boundsSize.X
+			+ math.abs(boundsUp.X) * boundsSize.Y
+			+ math.abs(boundsForward.X) * boundsSize.Z,
+		math.abs(boundsRight.Y) * boundsSize.X
+			+ math.abs(boundsUp.Y) * boundsSize.Y
+			+ math.abs(boundsForward.Y) * boundsSize.Z,
+		math.abs(boundsRight.Z) * boundsSize.X
+			+ math.abs(boundsUp.Z) * boundsSize.Y
+			+ math.abs(boundsForward.Z) * boundsSize.Z
+	)
+	local clickHitbox = Instance.new("Part")
+	clickHitbox.Name = "ClickHitbox"
+	clickHitbox.Size = Vector3.new(
+		worldBoundsSize.X + 2,
+		math.max(worldBoundsSize.Y + 1, 5),
+		worldBoundsSize.Z + 2
+	)
+	clickHitbox.CFrame = CFrame.new(boundsCFrame.Position)
+	clickHitbox.Anchored = true
+	clickHitbox.Transparency = 1
+	clickHitbox.CanQuery = true
+	clickHitbox.CanCollide = false
+	clickHitbox.CanTouch = false
+	clickHitbox.CastShadow = false
+	clickHitbox:SetAttribute("DestructibleId", uniqueId)
+	clickHitbox.Parent = model
 
 	-- Fade-in animation for respawned destructibles (Transparency 1 -> 0 over 0.5 seconds)
 	if fadeIn then
