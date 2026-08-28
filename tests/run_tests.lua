@@ -128,12 +128,14 @@ local specFiles = {
 	"tests/PickupService.spec",
 	"tests/PetService.spec",
 	"tests/EggService.spec",
+	"tests/AutoHatchService.spec",
 	"tests/ShopService.spec",
 	"tests/PotionService.spec",
 	"tests/MachineService.spec",
 	"tests/MachineStation.spec",
 	"tests/MachineBootstrap.spec",
 	"tests/MachineClient.spec",
+	"tests/AutoHatchClient.spec",
 }
 
 local function loadSpec(specPath)

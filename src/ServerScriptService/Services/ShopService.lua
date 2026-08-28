@@ -119,16 +119,9 @@ function ShopService.init(dataService, currencyService)
 	ShopService._dataService = dataService
 	ShopService._currencyService = currencyService
 
-	-- The legacy timed Auto-Hatch loop remains gated off until its complete
-	-- behavior ships. Persisted hatch preferences remain untouched.
-	if BalanceConfig.Shop.AutoHatchRuntimeEnabled then
-		task.spawn(function()
-			while true do
-				task.wait(Config.AutoHatchInterval or 3)
-				ShopService._processAutoHatch()
-			end
-		end)
-	end
+	-- QOF-18 is owned exclusively by AutoHatchService. This legacy highest-zone
+	-- scheduler is intentionally never started, even while the new feature gate is
+	-- active, so both loops cannot coexist during rolling deployments.
 end
 
 function ShopService.setPotionService(potionService)
@@ -485,43 +478,10 @@ function ShopService.onPlayerRemoving(player)
 	ShopService._activeBuffs[player.UserId] = nil
 end
 
--- Process auto-hatch for players with active AutoHatch buff.
+-- Rolling compatibility symbol only. QOF-18 never reads legacy buffs, chooses a
+-- highest zone, or schedules from ShopService.
 function ShopService._processAutoHatch()
-	if not BalanceConfig.Shop.AutoHatchRuntimeEnabled then
-		return false
-	end
-	local now = os.clock()
-	for _, player in ipairs(Players:GetPlayers()) do
-		local buffs = removeExpiredBuffs(player, now)
-		if buffs and buffs.autoHatch then
-			if ShopService._eggService and ShopService._dataService then
-				local data = ShopService._dataService.getPlayerData(player)
-				if data and data.unlockedZones then
-					local highestZone = 1
-					for _, zoneId in ipairs(data.unlockedZones) do
-						if zoneId > highestZone then
-							highestZone = zoneId
-						end
-					end
-					local targetEgg = nil
-					for eggType, eggDef in pairs(PetData.Eggs) do
-						if eggDef.zone == highestZone then
-							targetEgg = eggType
-							break
-						end
-					end
-					if targetEgg then
-						task.spawn(function()
-							local batchCount = ShopService._eggService.getSelectedBatchCount(player)
-							ShopService._eggService.purchaseAndHatch(player, targetEgg, batchCount, {
-								bypassStation = true,
-							})
-						end)
-					end
-				end
-			end
-		end
-	end
+	return false
 end
 
 return ShopService

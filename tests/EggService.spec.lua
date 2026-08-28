@@ -230,6 +230,9 @@ local function resetState()
 	resultEvents = {}
 	EggService._hatchLock[player.UserId] = nil
 	EggService._transactionHook = nil
+	EggService._stationValidator = function()
+		return stationNear
+	end
 end
 
 describe("EggService QOF-08 atomic batches", function()
@@ -325,6 +328,22 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(spentCoins):toBe(200)
 	end)
 
+	it("fails manual quotes and purchases closed when private station authority is absent", function()
+		resetState()
+		EggService.setStationAuthority(nil)
+		local quote, quoteError = EggService.getHatchPurchaseOptions(player, "BasicEgg")
+		expect(quote):toBeNil()
+		expect(quoteError):toBe("Move closer to this egg station")
+		local result, purchaseError = EggService.purchaseAndHatch(player, "BasicEgg", 1, {
+			bypassStation = false,
+		})
+		expect(result):toBeNil()
+		expect(purchaseError):toBe("Move closer to this egg station")
+		expect(spentCoins):toBe(0)
+		expect(profile.coins):toBe(10000)
+		expect(#profile.pets):toBe(0)
+	end)
+
 	it("preflights zone, total capacity, and total price without partial hatches", function()
 		resetState()
 		profile.unlockedZones = {}
@@ -391,24 +410,19 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(EggService.getSelectedBatchCount(player)):toBe(5)
 	end)
 
-	it("repairs saved preferences after entitlement loss to the highest allowed tier", function()
+	it("preserves a valid paid tier after entitlement loss without smaller fallback", function()
 		resetState()
 		profile.hatchPreferences.preferredBatchCount = 10
 		maximumBatchCount = 5
-		expect(EggService.getSelectedBatchCount(player)):toBe(5)
-		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+		expect(EggService.getSelectedBatchCount(player)):toBe(10)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(10)
 
 		profile.hatchPreferences.preferredBatchCount = 5
 		maximumBatchCount = 2
 		local state = EggService.getBatchState(player)
-		expect(state.selectedCount):toBe(2)
+		expect(state.selectedCount):toBe(5)
 		expect(state.maximumCount):toBe(2)
-		expect(profile.hatchPreferences.preferredBatchCount):toBe(2)
-
-		profile.hatchPreferences.preferredBatchCount = 10
-		maximumBatchCount = 1
-		expect(EggService.getSelectedBatchCount(player)):toBe(1)
-		expect(profile.hatchPreferences.preferredBatchCount):toBe(1)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
 	end)
 
 	it("repairs invalid saved values to x1 and rejects locked sets without persisting them", function()
@@ -435,9 +449,9 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(10)
 
 		local autoResult, autoError = EggService.purchaseAndHatch(player, "BasicEgg", nil, true)
-		expect(autoError):toBeNil()
-		expect(autoResult.count):toBe(5)
-		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+		expect(autoResult):toBeNil()
+		expect(autoError):toBe("Multi-Open upgrade required")
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(10)
 	end)
 
 	it("quotes x1, x3, and feasible Max from fresh server resources", function()

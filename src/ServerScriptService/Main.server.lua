@@ -17,6 +17,7 @@ local MachineAuthorityBootstrap = require(script.Parent.Services.MachineAuthorit
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
+local AutoHatchService = require(script.Parent.Services.AutoHatchService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
@@ -143,6 +144,7 @@ local remoteEvents = {
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
 	"PotionStateUpdated",
+	"AutoHatchStateUpdated",
 	"UpgradeTreeUpdated",
 }
 
@@ -157,6 +159,11 @@ local remoteFunctions = {
 	"HatchEgg",
 	"GetHatchPurchaseOptions",
 	"SetHatchBatchSize",
+	"PurchaseAutoHatch",
+	"GetAutoHatchState",
+	"SetAutoHatchBatch",
+	"StartAutoHatch",
+	"StopAutoHatch",
 	"EquipPet",
 	"UnequipPet",
 	"DeletePet",
@@ -231,7 +238,7 @@ ShopService.setEggService(EggService)
 -- World generation should not prevent remotes, player data, and the GUI from
 -- starting if a future world builder fails. The current failure is still logged
 -- with a traceback so it is visible in the Roblox Studio server output.
-local zoneInitSucceeded, activationValidatorOrError = xpcall(function()
+local zoneInitSucceeded, activationValidatorOrError, eggStationAuthority = xpcall(function()
 	return ZoneService.init(DataService, CurrencyService, PetService)
 end, debug.traceback)
 if not zoneInitSucceeded then
@@ -243,6 +250,17 @@ elseif not MachineAuthorityBootstrap.install(
 ) then
 	warn("[Battle Pets] ZoneService did not provide machine activation authority")
 end
+if zoneInitSucceeded and type(eggStationAuthority) == "table"
+	and type(eggStationAuthority.validateManual) == "function"
+	and type(eggStationAuthority.validateSelection) == "function" then
+	EggService.setStationAuthority(eggStationAuthority)
+	AutoHatchService.init(DataService, CurrencyService, EggService, eggStationAuthority)
+	if not AutoHatchService.start() then
+		warn("[Battle Pets] AutoHatchService did not start")
+	end
+else
+	warn("[Battle Pets] ZoneService did not provide egg station authority")
+end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
@@ -253,8 +271,12 @@ CampaignService.init(DataService, CurrencyService, PetService)
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Settle transient pickup rewards before shutdown snapshots cached profiles.
-DataService.bindToClose(PickupService.settleAllPlayers)
+-- Settle transient owners before shutdown snapshots cached profiles. Auto-Hatch
+-- cancellation runs before Egg/Data cleanup and never consumes remaining access.
+DataService.bindToClose(function()
+	AutoHatchService.prepareForShutdown()
+	return PickupService.settleAllPlayers()
+end)
 
 -- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
 MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
@@ -318,19 +340,60 @@ getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, intent)
 	return nil, "Invalid hatch parameters"
 end
 
--- The compatibility remote remains present for rolling clients, but is fail-closed
--- and cannot mutate persisted Auto-Hatch preferences before the owning QOF ships.
-getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
+-- The old preference remote remains discoverable for rolling clients but is
+-- permanently fail-closed. QOF-18 uses strict Contract V1 remotes instead.
+getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if BalanceConfig.Shop.AutoHatchRuntimeEnabled ~= true then
-		return false, "Auto-Hatch is not available yet", EggService.getBatchState(player)
+	return false, "Legacy Auto-Hatch contract unavailable", EggService.getBatchState(player)
+end
+
+-- QOF-18 strict Contract V1 surface. Every method validates its exact table
+-- shape again inside AutoHatchService and returns a fresh full-state DTO.
+getRemoteFunction("GetAutoHatchState").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "GetAutoHatchState", 0.15)
+		or not canCallBurst(player, "GetAutoHatchState", 12, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
 	end
-	if not canCall(player, "SetHatchBatchSize", 0.15) then
-		return false, "Please wait before changing batch size", EggService.getBatchState(player)
+	return AutoHatchService.getStateFromRequest(player, request)
+end
+
+getRemoteFunction("PurchaseAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "PurchaseAutoHatch", 1)
+		or not canCallBurst(player, "PurchaseAutoHatch", 4, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
 	end
-	return EggService.setSelectedBatchCount(player, requestedCount)
+	return AutoHatchService.purchase(player, request)
+end
+
+getRemoteFunction("SetAutoHatchBatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "SetAutoHatchBatch", 0.15)
+		or not canCallBurst(player, "SetAutoHatchBatch", 10, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.setBatch(player, request)
+end
+
+getRemoteFunction("StartAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "StartAutoHatch", 0.35)
+		or not canCallBurst(player, "StartAutoHatch", 6, 10) then
+		return AutoHatchService.rejectStart(player, request, "RATE_LIMITED")
+	end
+	return AutoHatchService.startSession(player, request)
+end
+
+getRemoteFunction("StopAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "StopAutoHatch", 0.2)
+		or not canCallBurst(player, "StopAutoHatch", 8, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.stopSession(player, request)
 end
 
 -- EquipPet (0.5 second cooldown)
@@ -727,6 +790,7 @@ Players.PlayerAdded:Connect(function(player)
 	-- Reconcile persisted absolute potion timers and online-only Auto-Drink before
 	-- binding movement so the first character speed uses authoritative state.
 	PotionService.onPlayerAdded(player)
+	AutoHatchService.onPlayerAdded(player)
 	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
@@ -843,6 +907,10 @@ Players.PlayerRemoving:Connect(function(player)
 		warn("[Battle Pets] Pending pickup settlement did not complete before player data cleanup for " .. player.Name)
 	end
 
+	-- Invalidate QOF-18 target/generation before Egg locks or profile cleanup.
+	-- The absolute paid expiry remains in the cached profile for the final save.
+	AutoHatchService.onPlayerRemoving(player)
+
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
@@ -874,6 +942,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
 		PotionService.onPlayerAdded(player)
+		AutoHatchService.onPlayerAdded(player)
 		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players

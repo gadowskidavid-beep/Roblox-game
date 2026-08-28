@@ -10,7 +10,7 @@ local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 8
+DataSchema.VERSION = 9
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -104,6 +104,7 @@ function DataSchema.getDefaultData()
 		hatchPreferences = {
 			preferredBatchCount = 1,
 		},
+		autoHatchExpiresAt = 0,
 		equippedPets = { "starter_pet_1" },
 		questStats = {
 			destroyDestructibles = 0,
@@ -401,6 +402,24 @@ local function normalizeHatchPreferences(values)
 	}
 end
 
+local function normalizeAutoHatchExpiry(value, currentTime)
+	if type(value) ~= "number"
+		or value ~= value
+		or value == math.huge
+		or value == -math.huge
+		or value % 1 ~= 0 then
+		return 0
+	end
+	local expiresAt = value
+	local maximumExpiry = currentTime + BalanceConfig.Shop.AutoHatch.durationSeconds
+	-- Paid access is always exactly one non-stackable ten-minute grant. Values
+	-- outside the only possible live window fail closed instead of being capped.
+	if expiresAt <= currentTime or expiresAt > maximumExpiry then
+		return 0
+	end
+	return expiresAt
+end
+
 local function normalizePotionUpgrades(values)
 	if type(values) ~= "table" then
 		values = {}
@@ -467,6 +486,7 @@ function DataSchema.normalize(data, currentTime)
 		end
 	end
 	data.hatchPreferences = normalizeHatchPreferences(data.hatchPreferences)
+	data.autoHatchExpiresAt = normalizeAutoHatchExpiry(data.autoHatchExpiresAt, currentTime)
 
 	data.schemaVersion = DataSchema.VERSION
 	data.xpNeeded = nil

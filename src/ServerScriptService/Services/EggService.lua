@@ -66,6 +66,14 @@ function EggService.setQuestService(questService)
 	EggService._questService = questService
 end
 
+function EggService.setStationAuthority(authority)
+	if type(authority) == "table" and type(authority.validateManual) == "function" then
+		EggService._stationValidator = authority.validateManual
+	else
+		EggService._stationValidator = nil
+	end
+end
+
 local function isUnlockedZone(data, zoneId)
 	for _, unlockedId in ipairs(data.unlockedZones or {}) do
 		if unlockedId == zoneId then
@@ -113,11 +121,12 @@ local function reconcilePreferredBatchCount(player, maximum)
 		data.hatchPreferences = { preferredBatchCount = 1 }
 	end
 
+	-- QOF-18 repairs only structurally invalid persisted values. A valid tier that
+	-- later loses entitlement is preserved and must pause Auto-Hatch rather than
+	-- silently mutating or executing a smaller paid batch.
 	local selected = data.hatchPreferences.preferredBatchCount
 	if not isValidBatchCount(selected) then
 		selected = 1
-	elseif selected > maximum then
-		selected = highestAllowedBatchCount(maximum)
 	end
 	data.hatchPreferences.preferredBatchCount = selected
 	return selected
@@ -183,38 +192,12 @@ function EggService.setSelectedBatchCount(player, requestedCount)
 	return true, nil, EggService.getBatchState(player)
 end
 
-local function defaultStationValidator(player, eggType)
-	local character = player and player.Character
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	if not rootPart or not rootPart:IsA("BasePart") then
-		return false
-	end
-	local workspaceService = game:GetService("Workspace")
-	local stations = workspaceService:FindFirstChild("EggStations")
-	if not stations then
-		return false
-	end
-	for _, station in ipairs(stations:GetChildren()) do
-		if station:IsA("BasePart") and station.Name == "EggModel" then
-			local tag = station:FindFirstChild("PromptEggType")
-			local prompt = station:FindFirstChild("HatchPrompt")
-			if tag and tag:IsA("StringValue") and tag.Value == eggType
-				and prompt and prompt:IsA("ProximityPrompt") then
-				local allowedDistance = math.max(1, prompt.MaxActivationDistance) + 2
-				if (station.Position - rootPart.Position).Magnitude <= allowedDistance then
-					return true
-				end
-			end
-		end
-	end
-	return false
-end
-
 local function isNearStation(player, eggType)
-	if type(EggService._stationValidator) == "function" then
-		return EggService._stationValidator(player, eggType) == true
-	end
-	return defaultStationValidator(player, eggType)
+	-- QOF-18 requires the private registry authority for every manual quote and
+	-- purchase. A partial world bootstrap must never fall back to replicated
+	-- names, tags, prompts, or client-visible distances.
+	return type(EggService._stationValidator) == "function"
+		and EggService._stationValidator(player, eggType) == true
 end
 
 local function getManualQuoteContext(player, eggType)

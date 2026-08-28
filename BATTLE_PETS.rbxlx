@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX0000007A">
+	<Item class="ServerScriptService" referent="RBX0000007C">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000079">
+			<Item class="Script" referent="RBX0000007B">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -734,6 +734,7 @@ local MachineAuthorityBootstrap = require(script.Parent.Services.MachineAuthorit
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
+local AutoHatchService = require(script.Parent.Services.AutoHatchService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
@@ -860,6 +861,7 @@ local remoteEvents = {
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
 	"PotionStateUpdated",
+	"AutoHatchStateUpdated",
 	"UpgradeTreeUpdated",
 }
 
@@ -874,6 +876,11 @@ local remoteFunctions = {
 	"HatchEgg",
 	"GetHatchPurchaseOptions",
 	"SetHatchBatchSize",
+	"PurchaseAutoHatch",
+	"GetAutoHatchState",
+	"SetAutoHatchBatch",
+	"StartAutoHatch",
+	"StopAutoHatch",
 	"EquipPet",
 	"UnequipPet",
 	"DeletePet",
@@ -948,7 +955,7 @@ ShopService.setEggService(EggService)
 -- World generation should not prevent remotes, player data, and the GUI from
 -- starting if a future world builder fails. The current failure is still logged
 -- with a traceback so it is visible in the Roblox Studio server output.
-local zoneInitSucceeded, activationValidatorOrError = xpcall(function()
+local zoneInitSucceeded, activationValidatorOrError, eggStationAuthority = xpcall(function()
 	return ZoneService.init(DataService, CurrencyService, PetService)
 end, debug.traceback)
 if not zoneInitSucceeded then
@@ -960,6 +967,17 @@ elseif not MachineAuthorityBootstrap.install(
 ) then
 	warn("[Battle Pets] ZoneService did not provide machine activation authority")
 end
+if zoneInitSucceeded and type(eggStationAuthority) == "table"
+	and type(eggStationAuthority.validateManual) == "function"
+	and type(eggStationAuthority.validateSelection) == "function" then
+	EggService.setStationAuthority(eggStationAuthority)
+	AutoHatchService.init(DataService, CurrencyService, EggService, eggStationAuthority)
+	if not AutoHatchService.start() then
+		warn("[Battle Pets] AutoHatchService did not start")
+	end
+else
+	warn("[Battle Pets] ZoneService did not provide egg station authority")
+end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
@@ -970,8 +988,12 @@ CampaignService.init(DataService, CurrencyService, PetService)
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Settle transient pickup rewards before shutdown snapshots cached profiles.
-DataService.bindToClose(PickupService.settleAllPlayers)
+-- Settle transient owners before shutdown snapshots cached profiles. Auto-Hatch
+-- cancellation runs before Egg/Data cleanup and never consumes remaining access.
+DataService.bindToClose(function()
+	AutoHatchService.prepareForShutdown()
+	return PickupService.settleAllPlayers()
+end)
 
 -- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
 MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
@@ -1035,19 +1057,60 @@ getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, intent)
 	return nil, "Invalid hatch parameters"
 end
 
--- The compatibility remote remains present for rolling clients, but is fail-closed
--- and cannot mutate persisted Auto-Hatch preferences before the owning QOF ships.
-getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
+-- The old preference remote remains discoverable for rolling clients but is
+-- permanently fail-closed. QOF-18 uses strict Contract V1 remotes instead.
+getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
 	end
-	if BalanceConfig.Shop.AutoHatchRuntimeEnabled ~= true then
-		return false, "Auto-Hatch is not available yet", EggService.getBatchState(player)
+	return false, "Legacy Auto-Hatch contract unavailable", EggService.getBatchState(player)
+end
+
+-- QOF-18 strict Contract V1 surface. Every method validates its exact table
+-- shape again inside AutoHatchService and returns a fresh full-state DTO.
+getRemoteFunction("GetAutoHatchState").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "GetAutoHatchState", 0.15)
+		or not canCallBurst(player, "GetAutoHatchState", 12, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
 	end
-	if not canCall(player, "SetHatchBatchSize", 0.15) then
-		return false, "Please wait before changing batch size", EggService.getBatchState(player)
+	return AutoHatchService.getStateFromRequest(player, request)
+end
+
+getRemoteFunction("PurchaseAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "PurchaseAutoHatch", 1)
+		or not canCallBurst(player, "PurchaseAutoHatch", 4, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
 	end
-	return EggService.setSelectedBatchCount(player, requestedCount)
+	return AutoHatchService.purchase(player, request)
+end
+
+getRemoteFunction("SetAutoHatchBatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "SetAutoHatchBatch", 0.15)
+		or not canCallBurst(player, "SetAutoHatchBatch", 10, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.setBatch(player, request)
+end
+
+getRemoteFunction("StartAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "StartAutoHatch", 0.35)
+		or not canCallBurst(player, "StartAutoHatch", 6, 10) then
+		return AutoHatchService.rejectStart(player, request, "RATE_LIMITED")
+	end
+	return AutoHatchService.startSession(player, request)
+end
+
+getRemoteFunction("StopAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "StopAutoHatch", 0.2)
+		or not canCallBurst(player, "StopAutoHatch", 8, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.stopSession(player, request)
 end
 
 -- EquipPet (0.5 second cooldown)
@@ -1444,6 +1507,7 @@ Players.PlayerAdded:Connect(function(player)
 	-- Reconcile persisted absolute potion timers and online-only Auto-Drink before
 	-- binding movement so the first character speed uses authoritative state.
 	PotionService.onPlayerAdded(player)
+	AutoHatchService.onPlayerAdded(player)
 	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
@@ -1560,6 +1624,10 @@ Players.PlayerRemoving:Connect(function(player)
 		warn("[Battle Pets] Pending pickup settlement did not complete before player data cleanup for " .. player.Name)
 	end
 
+	-- Invalidate QOF-18 target/generation before Egg locks or profile cleanup.
+	-- The absolute paid expiry remains in the cached profile for the final save.
+	AutoHatchService.onPlayerRemoving(player)
+
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
@@ -1591,6 +1659,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
 		PotionService.onPlayerAdded(player)
+		AutoHatchService.onPlayerAdded(player)
 		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players
@@ -1685,11 +1754,11 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX00000078">
+			<Item class="Folder" referent="RBX0000007A">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000067">
+				<Item class="ModuleScript" referent="RBX00000068">
 					<Properties>
 						<string name="Name">DataSchema</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1705,7 +1774,7 @@ local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 8
+DataSchema.VERSION = 9
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -1799,6 +1868,7 @@ function DataSchema.getDefaultData()
 		hatchPreferences = {
 			preferredBatchCount = 1,
 		},
+		autoHatchExpiresAt = 0,
 		equippedPets = { "starter_pet_1" },
 		questStats = {
 			destroyDestructibles = 0,
@@ -2096,6 +2166,24 @@ local function normalizeHatchPreferences(values)
 	}
 end
 
+local function normalizeAutoHatchExpiry(value, currentTime)
+	if type(value) ~= "number"
+		or value ~= value
+		or value == math.huge
+		or value == -math.huge
+		or value % 1 ~= 0 then
+		return 0
+	end
+	local expiresAt = value
+	local maximumExpiry = currentTime + BalanceConfig.Shop.AutoHatch.durationSeconds
+	-- Paid access is always exactly one non-stackable ten-minute grant. Values
+	-- outside the only possible live window fail closed instead of being capped.
+	if expiresAt <= currentTime or expiresAt > maximumExpiry then
+		return 0
+	end
+	return expiresAt
+end
+
 local function normalizePotionUpgrades(values)
 	if type(values) ~= "table" then
 		values = {}
@@ -2162,6 +2250,7 @@ function DataSchema.normalize(data, currentTime)
 		end
 	end
 	data.hatchPreferences = normalizeHatchPreferences(data.hatchPreferences)
+	data.autoHatchExpiresAt = normalizeAutoHatchExpiry(data.autoHatchExpiresAt, currentTime)
 
 	data.schemaVersion = DataSchema.VERSION
 	data.xpNeeded = nil
@@ -2191,7 +2280,7 @@ return DataSchema
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000068">
+				<Item class="ModuleScript" referent="RBX00000069">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2457,6 +2546,7 @@ function DataService.getClientData(player)
 		upgrades = DataSchema.deepCopy(data.upgrades),
 		upgradeTreePurchases = DataSchema.deepCopy(data.upgradeTreePurchases or {}),
 		hatchPreferences = DataSchema.deepCopy(data.hatchPreferences or { preferredBatchCount = 1 }),
+		autoHatchExpiresAt = data.autoHatchExpiresAt or 0,
 		questStats = DataSchema.deepCopy(data.questStats),
 		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,
@@ -2531,7 +2621,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000069">
+				<Item class="ModuleScript" referent="RBX0000006A">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2805,7 +2895,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006A">
+				<Item class="ModuleScript" referent="RBX0000006B">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4028,7 +4118,7 @@ return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006B">
+				<Item class="ModuleScript" referent="RBX0000006C">
 					<Properties>
 						<string name="Name">MachineService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4366,7 +4456,7 @@ return MachineService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">MachineAuthorityBootstrap</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4389,7 +4479,7 @@ return MachineAuthorityBootstrap
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006D">
+				<Item class="ModuleScript" referent="RBX0000006E">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4485,7 +4575,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006E">
+				<Item class="ModuleScript" referent="RBX0000006F">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4501,6 +4591,7 @@ local HttpService = game:GetService("HttpService")
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ZoneData = require(game.ReplicatedStorage.Shared.ZoneData)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local PetData = require(game.ReplicatedStorage.Shared.PetData)
 
 local ZoneService = {}
 
@@ -4565,8 +4656,177 @@ local MACHINE_PRESENTATION = {
 	},
 }
 local machineRegistry = {}
+local profileHasUnlockedZone
 
-local function profileHasUnlockedZone(data, zoneId)
+-- QOF-18 egg authority mirrors the machine registry but binds every auto-hatch
+-- session to one exact server-created station. IDs are stable presentation keys;
+-- GUIDs are per-server capabilities and exact Instance references remain private.
+local EGG_MAX_DISTANCE = 10
+local eggStationRegistry = {}
+
+local function eggRegistryContainsToken(identityToken)
+	for _, record in pairs(eggStationRegistry) do
+		if record.identityToken == identityToken then
+			return true
+		end
+	end
+	return false
+end
+
+local function hasConflictingEggStationIdentity(record)
+	if not record.stationsFolder or not record.stationsFolder:IsA("Folder") then
+		return true
+	end
+	for _, candidate in ipairs(record.stationsFolder:GetDescendants()) do
+		if candidate:IsA("BasePart") and candidate ~= record.egg then
+			if candidate:GetAttribute("EggStationId") == record.stationId
+				or candidate:GetAttribute("EggStationIdentityToken") == record.identityToken then
+				return true
+			end
+		elseif candidate:IsA("ProximityPrompt")
+			and candidate ~= record.prompt
+			and candidate:IsDescendantOf(record.egg) then
+			return true
+		end
+	end
+	return false
+end
+
+local function validateEggRecordIntegrity(record)
+	if not record or hasConflictingEggStationIdentity(record) then
+		return false, "STATION_INVALID"
+	end
+	local folder = record.stationsFolder
+	local pedestal = record.pedestal
+	local egg = record.egg
+	local prompt = record.prompt
+	if folder.Parent ~= record.workspace
+		or record.workspace:FindFirstChild("EggStations") ~= folder
+		or pedestal.Parent ~= folder
+		or pedestal.Name ~= record.pedestalName
+		or pedestal.Shape ~= record.pedestalShape
+		or pedestal.Anchored ~= record.pedestalAnchored
+		or pedestal.CanCollide ~= record.pedestalCanCollide
+		or pedestal.Size ~= record.pedestalSize
+		or pedestal.CFrame ~= record.pedestalCFrame
+		or pedestal.Color ~= record.pedestalColor
+		or pedestal.Material ~= record.pedestalMaterial
+		or egg.Parent ~= folder
+		or egg.Name ~= "EggModel"
+		or egg.Shape ~= record.eggShape
+		or egg.Anchored ~= record.eggAnchored
+		or egg.CanCollide ~= record.eggCanCollide
+		or egg.Size ~= record.eggSize
+		or egg.CFrame ~= record.eggCFrame
+		or egg.Color ~= record.eggColor
+		or egg.Material ~= record.eggMaterial
+		or egg:GetAttribute("EggStationId") ~= record.stationId
+		or egg:GetAttribute("EggStationIdentityToken") ~= record.identityToken
+		or egg:GetAttribute("EggType") ~= record.eggType
+		or egg:GetAttribute("EggZoneId") ~= record.zoneId then
+		return false, "STATION_INVALID"
+	end
+	if not record.eggTypeTag or record.eggTypeTag.Parent ~= egg
+		or record.eggTypeTag.Name ~= "EggType" or record.eggTypeTag.Value ~= record.eggType
+		or not record.zoneTag or record.zoneTag.Parent ~= egg
+		or record.zoneTag.Name ~= "StationZone" or record.zoneTag.Value ~= record.zoneId
+		or not record.promptEggTag or record.promptEggTag.Parent ~= egg
+		or record.promptEggTag.Name ~= "PromptEggType" or record.promptEggTag.Value ~= record.eggType then
+		return false, "STATION_INVALID"
+	end
+	if not prompt or not prompt:IsA("ProximityPrompt")
+		or prompt.Parent ~= egg or prompt.Name ~= "HatchPrompt"
+		or prompt.Enabled ~= true or prompt.ActionText ~= "Hatch"
+		or prompt.ObjectText ~= record.promptObjectText
+		or prompt.KeyboardKeyCode ~= Enum.KeyCode.E
+		or prompt.HoldDuration ~= 0
+		or prompt.MaxActivationDistance ~= EGG_MAX_DISTANCE
+		or prompt.RequiresLineOfSight ~= false then
+		return false, "STATION_INVALID"
+	end
+	if not record.interactZone or record.interactZone.Parent ~= folder
+		or record.interactZone.Name ~= record.interactZoneName
+		or record.interactZone.Shape ~= record.interactZoneShape
+		or record.interactZone.Anchored ~= record.interactZoneAnchored
+		or record.interactZone.CanCollide ~= record.interactZoneCanCollide
+		or record.interactZone.Transparency ~= record.interactZoneTransparency
+		or record.interactZone.Size ~= record.interactZoneSize
+		or record.interactZone.CFrame ~= record.interactZoneCFrame
+		or record.interactZone.Color ~= record.interactZoneColor
+		or record.interactZone.Material ~= record.interactZoneMaterial
+		or not record.interactTag or record.interactTag.Parent ~= record.interactZone
+		or record.interactTag.Value ~= record.eggType then
+		return false, "STATION_INVALID"
+	end
+	return true
+end
+
+local function validateEggSelection(player, stationId, identityToken, expectedEggType, expectedZone, requireProximity)
+	if type(stationId) ~= "string" or #stationId < 1 or #stationId > 64
+		or type(identityToken) ~= "string" or #identityToken < 1 or #identityToken > 128 then
+		return nil, "STATION_INVALID"
+	end
+	local record = eggStationRegistry[stationId]
+	if not record or record.stationId ~= stationId or record.identityToken ~= identityToken then
+		return nil, "STATION_INVALID"
+	end
+	if expectedEggType ~= nil and expectedEggType ~= record.eggType then
+		return nil, "STATION_INVALID"
+	end
+	if expectedZone ~= nil and expectedZone ~= record.zoneId then
+		return nil, "STATION_INVALID"
+	end
+	if not player or not player:IsA("Player") then
+		return nil, "INVALID_PLAYER"
+	end
+	local integrityOk, integrityError = validateEggRecordIntegrity(record)
+	if not integrityOk then
+		return nil, integrityError
+	end
+	local data = ZoneService._dataService and ZoneService._dataService.getPlayerData(player)
+	if not profileHasUnlockedZone(data, record.zoneId) then
+		return nil, "ZONE_LOCKED"
+	end
+	if requireProximity == true then
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if not character or not root or not root:IsA("BasePart") or not root:IsDescendantOf(character) then
+			return nil, "CHARACTER_UNAVAILABLE"
+		end
+		local distance = (root.Position - record.egg.Position).Magnitude
+		if distance ~= distance or distance > EGG_MAX_DISTANCE then
+			return nil, "TOO_FAR"
+		end
+	end
+	return {
+		stationId = record.stationId,
+		eggType = record.eggType,
+		zone = record.zoneId,
+	}, nil
+end
+
+local function buildEggAuthority()
+	return {
+		validateManual = function(player, eggType)
+			for stationId, record in pairs(eggStationRegistry) do
+				if record.eggType == eggType then
+					local station = validateEggSelection(
+						player, stationId, record.identityToken, eggType, record.zoneId, true
+					)
+					return station ~= nil
+				end
+			end
+			return false
+		end,
+		validateSelection = function(player, stationId, identityToken, expectedEggType, expectedZone, requireProximity)
+			return validateEggSelection(
+				player, stationId, identityToken, expectedEggType, expectedZone, requireProximity == true
+			)
+		end,
+	}
+end
+
+profileHasUnlockedZone = function(data, zoneId)
 	if type(data) ~= "table" or type(data.unlockedZones) ~= "table" then
 		return false
 	end
@@ -4766,6 +5026,7 @@ function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._petService = petService
 	ZoneService._questService = nil -- set later via setQuestService
 	machineRegistry = {}
+	eggStationRegistry = {}
 
 	-- Create zones folder in workspace
 	local workspace = game:GetService("Workspace")
@@ -4802,7 +5063,7 @@ function ZoneService.init(dataService, currencyService, petService)
 	-- MachineService without world authority.
 	spawnMachineStation(zonesFolder, "Gold")
 	spawnMachineStation(zonesFolder, "Rainbow")
-	return validateMachineActivation
+	return validateMachineActivation, buildEggAuthority()
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -5700,6 +5961,9 @@ function ZoneService._spawnEggStations()
 		stationsFolder = Instance.new("Folder")
 		stationsFolder.Name = "EggStations"
 		stationsFolder.Parent = workspace
+	elseif not stationsFolder:IsA("Folder") or stationsFolder.Parent ~= workspace
+		or #stationsFolder:GetChildren() > 0 then
+		error("Egg station authority requires one empty canonical folder")
 	end
 
 	-- Egg station definitions per zone (type maps to PetData.Eggs keys)
@@ -5715,6 +5979,15 @@ function ZoneService._spawnEggStations()
 	}
 
 	for zoneId, stationDef in pairs(stationDefs) do
+		local stationId = "EggStation-" .. tostring(zoneId) .. "-" .. stationDef.eggType
+		if #stationId > 64 or eggStationRegistry[stationId] then
+			error("Duplicate or invalid egg station ID: " .. stationId)
+		end
+		local identityToken = HttpService:GenerateGUID(false)
+		if type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128
+			or eggRegistryContainsToken(identityToken) then
+			error("Egg station identity generation failed")
+		end
 		-- Position the egg station at a prominent spot near the zone entrance
 		local zoneCenter = (zoneId - 1) * ZONE_SPACING
 		local stationPos = Vector3.new(zoneCenter - 40, 0, -70)
@@ -5735,6 +6008,10 @@ function ZoneService._spawnEggStations()
 		-- Egg on top (ball)
 		local egg = Instance.new("Part")
 		egg.Name = "EggModel"
+		egg:SetAttribute("EggStationId", stationId)
+		egg:SetAttribute("EggStationIdentityToken", identityToken)
+		egg:SetAttribute("EggType", stationDef.eggType)
+		egg:SetAttribute("EggZoneId", zoneId)
 		egg.Shape = Enum.PartType.Ball
 		egg.Size = Vector3.new(4, 5, 4)
 		egg.Position = stationPos + Vector3.new(0, 5, 0)
@@ -5801,7 +6078,6 @@ function ZoneService._spawnEggStations()
 		costLabel.Parent = billboard
 
 		-- BillboardGui showing which pets are in this egg with their % chance
-		local PetData = require(game.ReplicatedStorage.Shared.PetData)
 		local eggDef = PetData.Eggs[stationDef.eggType]
 		if eggDef and eggDef.petPool then
 			-- Calculate total weight for percentage
@@ -5897,6 +6173,7 @@ function ZoneService._spawnEggStations()
 		proximityPrompt.ActionText = "Hatch"
 		proximityPrompt.ObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)"
 		proximityPrompt.KeyboardKeyCode = Enum.KeyCode.E
+		proximityPrompt.Enabled = true
 		proximityPrompt.HoldDuration = 0
 		proximityPrompt.MaxActivationDistance = 10
 		proximityPrompt.RequiresLineOfSight = false
@@ -5907,6 +6184,48 @@ function ZoneService._spawnEggStations()
 		promptEggTag.Name = "PromptEggType"
 		promptEggTag.Value = stationDef.eggType
 		promptEggTag.Parent = egg
+
+		eggStationRegistry[stationId] = {
+			workspace = workspace,
+			stationsFolder = stationsFolder,
+			stationId = stationId,
+			identityToken = identityToken,
+			eggType = stationDef.eggType,
+			zoneId = zoneId,
+			pedestal = pedestal,
+			pedestalName = pedestal.Name,
+			pedestalShape = pedestal.Shape,
+			pedestalAnchored = pedestal.Anchored,
+			pedestalCanCollide = pedestal.CanCollide,
+			pedestalSize = pedestal.Size,
+			pedestalCFrame = pedestal.CFrame,
+			pedestalColor = pedestal.Color,
+			pedestalMaterial = pedestal.Material,
+			egg = egg,
+			eggShape = egg.Shape,
+			eggAnchored = egg.Anchored,
+			eggCanCollide = egg.CanCollide,
+			eggSize = egg.Size,
+			eggCFrame = egg.CFrame,
+			eggColor = egg.Color,
+			eggMaterial = egg.Material,
+			eggTypeTag = eggTypeTag,
+			zoneTag = zoneTag,
+			promptEggTag = promptEggTag,
+			prompt = proximityPrompt,
+			promptObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)",
+			interactZone = interactZone,
+			interactZoneName = interactZone.Name,
+			interactZoneShape = interactZone.Shape,
+			interactZoneAnchored = interactZone.Anchored,
+			interactZoneCanCollide = interactZone.CanCollide,
+			interactZoneTransparency = interactZone.Transparency,
+			interactZoneSize = interactZone.Size,
+			interactZoneCFrame = interactZone.CFrame,
+			interactZoneColor = interactZone.Color,
+			interactZoneMaterial = interactZone.Material,
+			interactTag = interactTag,
+		}
 	end
 end
 
@@ -7334,7 +7653,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006F">
+				<Item class="ModuleScript" referent="RBX00000070">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7936,7 +8255,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000070">
+				<Item class="ModuleScript" referent="RBX00000071">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8008,6 +8327,14 @@ function EggService.setQuestService(questService)
 	EggService._questService = questService
 end
 
+function EggService.setStationAuthority(authority)
+	if type(authority) == "table" and type(authority.validateManual) == "function" then
+		EggService._stationValidator = authority.validateManual
+	else
+		EggService._stationValidator = nil
+	end
+end
+
 local function isUnlockedZone(data, zoneId)
 	for _, unlockedId in ipairs(data.unlockedZones or {}) do
 		if unlockedId == zoneId then
@@ -8055,11 +8382,12 @@ local function reconcilePreferredBatchCount(player, maximum)
 		data.hatchPreferences = { preferredBatchCount = 1 }
 	end
 
+	-- QOF-18 repairs only structurally invalid persisted values. A valid tier that
+	-- later loses entitlement is preserved and must pause Auto-Hatch rather than
+	-- silently mutating or executing a smaller paid batch.
 	local selected = data.hatchPreferences.preferredBatchCount
 	if not isValidBatchCount(selected) then
 		selected = 1
-	elseif selected > maximum then
-		selected = highestAllowedBatchCount(maximum)
 	end
 	data.hatchPreferences.preferredBatchCount = selected
 	return selected
@@ -8125,38 +8453,12 @@ function EggService.setSelectedBatchCount(player, requestedCount)
 	return true, nil, EggService.getBatchState(player)
 end
 
-local function defaultStationValidator(player, eggType)
-	local character = player and player.Character
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	if not rootPart or not rootPart:IsA("BasePart") then
-		return false
-	end
-	local workspaceService = game:GetService("Workspace")
-	local stations = workspaceService:FindFirstChild("EggStations")
-	if not stations then
-		return false
-	end
-	for _, station in ipairs(stations:GetChildren()) do
-		if station:IsA("BasePart") and station.Name == "EggModel" then
-			local tag = station:FindFirstChild("PromptEggType")
-			local prompt = station:FindFirstChild("HatchPrompt")
-			if tag and tag:IsA("StringValue") and tag.Value == eggType
-				and prompt and prompt:IsA("ProximityPrompt") then
-				local allowedDistance = math.max(1, prompt.MaxActivationDistance) + 2
-				if (station.Position - rootPart.Position).Magnitude <= allowedDistance then
-					return true
-				end
-			end
-		end
-	end
-	return false
-end
-
 local function isNearStation(player, eggType)
-	if type(EggService._stationValidator) == "function" then
-		return EggService._stationValidator(player, eggType) == true
-	end
-	return defaultStationValidator(player, eggType)
+	-- QOF-18 requires the private registry authority for every manual quote and
+	-- purchase. A partial world bootstrap must never fall back to replicated
+	-- names, tags, prompts, or client-visible distances.
+	return type(EggService._stationValidator) == "function"
+		and EggService._stationValidator(player, eggType) == true
 end
 
 local function getManualQuoteContext(player, eggType)
@@ -8566,7 +8868,670 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000071">
+				<Item class="ModuleScript" referent="RBX00000072">
+					<Properties>
+						<string name="Name">AutoHatchService</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	AutoHatchService.lua - QOF-18 paid, station-bound Auto-Hatch authority.
+	Persistent state is limited to an absolute os.time() expiry and EggService's
+	batch preference. Targets, generations, revisions, pause state and in-flight
+	work are server-session-only and never resume remotely after rejoin.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+
+local AutoHatchService = {}
+
+local DEFINITION = BalanceConfig.Shop.AutoHatch
+local CONTRACT_VERSION = 1
+local AVAILABLE_COUNTS = { 1, 2, 5, 10 }
+
+AutoHatchService._dataService = nil
+AutoHatchService._currencyService = nil
+AutoHatchService._eggService = nil
+AutoHatchService._stationAuthority = nil
+AutoHatchService._sessions = {}
+AutoHatchService._purchaseLocks = {}
+AutoHatchService._revisions = {}
+AutoHatchService._generations = {}
+AutoHatchService._rejoinRequired = {}
+AutoHatchService._stoppedReasons = {}
+AutoHatchService._actionFeedback = {}
+AutoHatchService._started = false
+AutoHatchService._nextGlobalTickAt = nil
+AutoHatchService._transactionHook = nil
+AutoHatchService._now = os.time
+AutoHatchService._spawn = task.spawn
+AutoHatchService._schedulerSpawn = task.spawn
+
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function deepCopy(value)
+	if type(value) ~= "table" then return value end
+	local copy = {}
+	for key, child in pairs(value) do
+		copy[deepCopy(key)] = deepCopy(child)
+	end
+	return copy
+end
+
+local function userIdFor(player)
+	return player and player.UserId
+end
+
+local function isPlayer(player)
+	return player ~= nil
+		and player.UserId ~= nil
+		and type(player.IsA) == "function"
+		and player:IsA("Player")
+end
+
+local function getData(player)
+	if type(AutoHatchService._dataService) ~= "table"
+		or type(AutoHatchService._dataService.getPlayerData) ~= "function" then
+		return nil
+	end
+	return AutoHatchService._dataService.getPlayerData(player)
+end
+
+local function dependenciesReady()
+	local dataService = AutoHatchService._dataService
+	local currencyService = AutoHatchService._currencyService
+	local eggService = AutoHatchService._eggService
+	local authority = AutoHatchService._stationAuthority
+	return BalanceConfig.Shop.AutoHatchRuntimeEnabled == true
+		and DEFINITION.RuntimeEnabled == true
+		and type(dataService) == "table"
+		and type(dataService.getPlayerData) == "function"
+		and type(currencyService) == "table"
+		and type(currencyService.beginSpendTransaction) == "function"
+		and type(currencyService.commitSpendTransaction) == "function"
+		and type(currencyService.rollbackSpendTransaction) == "function"
+		and type(eggService) == "table"
+		and type(eggService.getBatchState) == "function"
+		and type(eggService.setSelectedBatchCount) == "function"
+		and type(eggService.purchaseAndHatch) == "function"
+		and type(authority) == "table"
+		and type(authority.validateSelection) == "function"
+end
+
+local function runtimeAvailable()
+	return AutoHatchService._started == true and dependenciesReady()
+end
+
+local function normalizeLiveExpiry(data, now)
+	if type(data) ~= "table" then return 0 end
+	local value = data.autoHatchExpiresAt
+	if not isFiniteNumber(value) or value % 1 ~= 0 then
+		data.autoHatchExpiresAt = 0
+		return 0
+	end
+	local expiresAt = value
+	if expiresAt <= now or expiresAt > now + DEFINITION.durationSeconds then
+		data.autoHatchExpiresAt = 0
+		return 0
+	end
+	data.autoHatchExpiresAt = expiresAt
+	return expiresAt
+end
+
+local function nextGeneration(userId)
+	local generation = (AutoHatchService._generations[userId] or 0) + 1
+	AutoHatchService._generations[userId] = generation
+	return generation
+end
+
+local function bumpRevision(userId)
+	local revision = (AutoHatchService._revisions[userId] or 0) + 1
+	AutoHatchService._revisions[userId] = revision
+	return revision
+end
+
+local function currentRevision(userId)
+	return AutoHatchService._revisions[userId] or 0
+end
+
+local function exactRequest(request, action, allowedFields, expectedCount)
+	if type(request) ~= "table" or getmetatable(request) ~= nil then return false end
+	local count = 0
+	for key in pairs(request) do
+		if allowedFields[key] ~= true then return false end
+		count = count + 1
+	end
+	return count == expectedCount
+		and request.contractVersion == CONTRACT_VERSION
+		and request.action == action
+end
+
+local function validIdentifier(value, maximum)
+	return type(value) == "string" and #value > 0 and #value <= maximum
+end
+
+local function requestIsGet(request)
+	return exactRequest(request, "GET_STATE", { contractVersion = true, action = true }, 2)
+end
+
+local function requestIsPurchase(request)
+	return exactRequest(request, "PURCHASE", { contractVersion = true, action = true }, 2)
+end
+
+local function requestIsSetBatch(request)
+	return exactRequest(request, "SET_BATCH", {
+		contractVersion = true,
+		action = true,
+		selectedCount = true,
+	}, 3) and isFiniteNumber(request.selectedCount) and request.selectedCount % 1 == 0
+end
+
+local function requestIsStart(request)
+	return exactRequest(request, "START", {
+		contractVersion = true,
+		action = true,
+		stationId = true,
+		stationToken = true,
+	}, 4)
+		and validIdentifier(request.stationId, 64)
+		and validIdentifier(request.stationToken, 128)
+end
+
+local function requestIsStop(request)
+	return exactRequest(request, "STOP", { contractVersion = true, action = true }, 2)
+end
+
+local function getBatchState(player)
+	if type(AutoHatchService._eggService) ~= "table"
+		or type(AutoHatchService._eggService.getBatchState) ~= "function" then
+		return { selectedCount = 1, maximumCount = 1, availableCounts = deepCopy(AVAILABLE_COUNTS) }
+	end
+	local state = AutoHatchService._eggService.getBatchState(player)
+	return {
+		selectedCount = type(state) == "table" and state.selectedCount or 1,
+		maximumCount = type(state) == "table" and state.maximumCount or 1,
+		availableCounts = deepCopy(AVAILABLE_COUNTS),
+	}
+end
+
+function AutoHatchService.getState(player)
+	local now = math.floor(AutoHatchService._now())
+	local data = getData(player)
+	local expiresAt = normalizeLiveExpiry(data, now)
+	local userId = userIdFor(player)
+	local session = userId and AutoHatchService._sessions[userId] or nil
+	local batchState = getBatchState(player)
+	local active = expiresAt > now
+	local status = "STOPPED"
+	local pauseReason = nil
+	local generation = userId and (AutoHatchService._generations[userId] or 0) or 0
+	local station = nil
+	local nextHatchAt = nil
+	local inFlight = false
+	if session then
+		status = session.status
+		pauseReason = session.pauseReason
+		generation = session.generation
+		station = deepCopy(session.station)
+		nextHatchAt = session.nextHatchAt
+		inFlight = session.inFlight == true
+	elseif active and userId and AutoHatchService._rejoinRequired[userId] then
+		pauseReason = "REJOIN_REQUIRES_STATION"
+	elseif userId then
+		pauseReason = AutoHatchService._stoppedReasons[userId]
+	end
+
+	return {
+		contractVersion = CONTRACT_VERSION,
+		stateRevision = userId and currentRevision(userId) or 0,
+		serverTime = now,
+		runtimeEnabled = runtimeAvailable(),
+		economy = {
+			currency = DEFINITION.cost.currency,
+			price = DEFINITION.cost.amount,
+			durationSeconds = DEFINITION.durationSeconds,
+			intervalSeconds = DEFINITION.intervalSeconds,
+		},
+		expiresAt = expiresAt,
+		remainingSeconds = math.max(0, expiresAt - now),
+		selectedCount = batchState.selectedCount,
+		maximumCount = batchState.maximumCount,
+		availableCounts = batchState.availableCounts,
+		generation = generation,
+		status = status,
+		station = station,
+		nextHatchAt = nextHatchAt,
+		pauseReason = pauseReason,
+		actionFeedback = userId and deepCopy(AutoHatchService._actionFeedback[userId]) or nil,
+		inFlight = inFlight,
+	}
+end
+
+local function fireStateUpdated(player, state)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("AutoHatchStateUpdated")
+	if event then
+		pcall(function()
+			event:FireClient(player, deepCopy(state))
+		end)
+	end
+end
+
+local function publish(player)
+	local userId = userIdFor(player)
+	if userId then
+		AutoHatchService._actionFeedback[userId] = nil
+		bumpRevision(userId)
+	end
+	local state = AutoHatchService.getState(player)
+	fireStateUpdated(player, state)
+	return deepCopy(state)
+end
+
+local function rejectedStartState(player, request, reason)
+	local userId = userIdFor(player)
+	if userId then
+		AutoHatchService._actionFeedback[userId] = {
+			action = "START",
+			reason = reason,
+			stationId = type(request) == "table" and request.stationId or nil,
+		}
+		bumpRevision(userId)
+	end
+	local state = AutoHatchService.getState(player)
+	-- Rejections are canonical state updates: GET_STATE and the action response
+	-- expose identical bytes for this revision regardless of arrival order.
+	fireStateUpdated(player, state)
+	return deepCopy(state)
+end
+
+local function invokeTransactionHook(stage, context)
+	if type(AutoHatchService._transactionHook) == "function" then
+		AutoHatchService._transactionHook(stage, context)
+	end
+end
+
+function AutoHatchService.init(dataService, currencyService, eggService, stationAuthority)
+	AutoHatchService._dataService = dataService
+	AutoHatchService._currencyService = currencyService
+	AutoHatchService._eggService = eggService
+	AutoHatchService._stationAuthority = stationAuthority
+end
+
+function AutoHatchService.getStateFromRequest(player, request)
+	if not isPlayer(player) or not requestIsGet(request) then
+		return false, "INVALID_REQUEST", AutoHatchService.getState(player)
+	end
+	return true, nil, AutoHatchService.getState(player)
+end
+
+function AutoHatchService.rejectStart(player, request, reason)
+	if not isPlayer(player) or not requestIsStart(request)
+		or type(reason) ~= "string" or reason == "" then
+		return false, "INVALID_REQUEST", AutoHatchService.getState(player)
+	end
+	return false, reason, rejectedStartState(player, request, reason)
+end
+
+function AutoHatchService.purchase(player, request)
+	if not isPlayer(player) or not requestIsPurchase(request) then
+		return false, "INVALID_REQUEST", AutoHatchService.getState(player)
+	end
+	if not runtimeAvailable() then
+		return false, "RUNTIME_UNAVAILABLE", AutoHatchService.getState(player)
+	end
+	local userId = player.UserId
+	if AutoHatchService._purchaseLocks[userId] then
+		return false, "PURCHASE_IN_FLIGHT", AutoHatchService.getState(player)
+	end
+	AutoHatchService._purchaseLocks[userId] = true
+
+	local success = false
+	local reason = "TECHNICAL_ERROR"
+	local state = nil
+	local callOk = pcall(function()
+		local data = getData(player)
+		if type(data) ~= "table" then reason = "NO_PROFILE" return end
+		local now = math.floor(AutoHatchService._now())
+		if normalizeLiveExpiry(data, now) > now then reason = "ACCESS_ALREADY_ACTIVE" return end
+
+		local currencyTransaction = AutoHatchService._currencyService.beginSpendTransaction(
+			player, DEFINITION.cost.currency, DEFINITION.cost.amount
+		)
+		if type(currencyTransaction) ~= "table" then reason = "INSUFFICIENT_DIAMONDS" return end
+		local oldExpiry = data.autoHatchExpiresAt
+		local context = { player = player, oldExpiry = oldExpiry, currencyTransaction = currencyTransaction }
+		local transactionOk = pcall(function()
+			invokeTransactionHook("afterSpend", context)
+			data.autoHatchExpiresAt = now + DEFINITION.durationSeconds
+			invokeTransactionHook("afterMutation", context)
+			-- Build the full DTO before the commit boundary so serialization faults
+			-- restore both the silent debit and the prior profile state.
+			AutoHatchService.getState(player)
+			if AutoHatchService._currencyService.commitSpendTransaction(currencyTransaction) ~= true then
+				error("currency commit failed")
+			end
+		end)
+		if not transactionOk then
+			data.autoHatchExpiresAt = oldExpiry
+			local rollbackOk = AutoHatchService._currencyService.rollbackSpendTransaction(currencyTransaction)
+			if rollbackOk ~= true then reason = "ROLLBACK_FAILED" end
+			return
+		end
+		AutoHatchService._rejoinRequired[userId] = false
+		AutoHatchService._stoppedReasons[userId] = nil
+		success = true
+		reason = nil
+		state = publish(player)
+	end)
+	AutoHatchService._purchaseLocks[userId] = nil
+	if not callOk then
+		return false, "TECHNICAL_ERROR", AutoHatchService.getState(player)
+	end
+	return success, reason, state or AutoHatchService.getState(player)
+end
+
+function AutoHatchService.setBatch(player, request)
+	if not isPlayer(player) or not requestIsSetBatch(request) then
+		return false, "INVALID_REQUEST", AutoHatchService.getState(player)
+	end
+	if not runtimeAvailable() then
+		return false, "RUNTIME_UNAVAILABLE", AutoHatchService.getState(player)
+	end
+	local selected, message = AutoHatchService._eggService.setSelectedBatchCount(
+		player, request.selectedCount
+	)
+	if not selected then
+		local reason = message == "Multi-Open upgrade required" and "BATCH_NOT_ENTITLED"
+			or "INVALID_BATCH"
+		return false, reason, AutoHatchService.getState(player)
+	end
+	return true, nil, publish(player)
+end
+
+local function nextRegularTick(now)
+	local candidate = AutoHatchService._nextGlobalTickAt
+	if not isFiniteNumber(candidate) or candidate <= now then
+		candidate = now + DEFINITION.intervalSeconds
+	end
+	return math.floor(candidate)
+end
+
+function AutoHatchService.startSession(player, request)
+	if not isPlayer(player) or not requestIsStart(request) then
+		return false, "INVALID_REQUEST", AutoHatchService.getState(player)
+	end
+	if not runtimeAvailable() then
+		return false, "RUNTIME_UNAVAILABLE", rejectedStartState(player, request, "RUNTIME_UNAVAILABLE")
+	end
+	local now = math.floor(AutoHatchService._now())
+	local data = getData(player)
+	if normalizeLiveExpiry(data, now) <= now then
+		return false, "ACCESS_REQUIRED", rejectedStartState(player, request, "ACCESS_REQUIRED")
+	end
+	local authority = AutoHatchService._stationAuthority
+	local station, stationError = authority.validateSelection(
+		player, request.stationId, request.stationToken, nil, nil, true
+	)
+	if type(station) ~= "table" then
+		local reason = stationError or "STATION_INVALID"
+		return false, reason, rejectedStartState(player, request, reason)
+	end
+	local userId = player.UserId
+	local generation = nextGeneration(userId)
+	local batchState = getBatchState(player)
+	local pauseReason = nil
+	local status = "RUNNING"
+	if batchState.selectedCount > batchState.maximumCount then
+		status = "PAUSED"
+		pauseReason = "BATCH_NOT_ENTITLED"
+	end
+	AutoHatchService._rejoinRequired[userId] = false
+	AutoHatchService._stoppedReasons[userId] = nil
+	AutoHatchService._sessions[userId] = {
+		player = player,
+		generation = generation,
+		stationToken = request.stationToken,
+		station = deepCopy(station),
+		status = status,
+		pauseReason = pauseReason,
+		nextHatchAt = nextRegularTick(now),
+		inFlight = false,
+	}
+	return true, nil, publish(player)
+end
+
+function AutoHatchService.stopSession(player, request)
+	if not isPlayer(player) or not requestIsStop(request) then
+		return false, "INVALID_REQUEST", AutoHatchService.getState(player)
+	end
+	local userId = player.UserId
+	nextGeneration(userId)
+	AutoHatchService._sessions[userId] = nil
+	AutoHatchService._rejoinRequired[userId] = false
+	AutoHatchService._stoppedReasons[userId] = nil
+	return true, nil, publish(player)
+end
+
+local function reasonForHatchError(message)
+	local text = tostring(message or "")
+	if string.find(text, "Not enough coins", 1, true) then return "INSUFFICIENT_COINS" end
+	if string.find(text, "inventory", 1, true) or string.find(text, "Inventory", 1, true) then
+		return "INVENTORY_FULL"
+	end
+	if text == "Already hatching eggs" then return "HATCH_LOCKED" end
+	if text == "Multi-Open upgrade required" then return "BATCH_NOT_ENTITLED" end
+	if string.find(text, "Zone", 1, true) then return "ZONE_LOCKED" end
+	return "TECHNICAL_ERROR"
+end
+
+local function finishBatch(player, generation, result, hatchError, callOk)
+	local userId = player.UserId
+	local session = AutoHatchService._sessions[userId]
+	if not session or session.generation ~= generation then return end
+	session.inFlight = false
+	local now = math.floor(AutoHatchService._now())
+	if normalizeLiveExpiry(getData(player), now) <= now then
+		nextGeneration(userId)
+		AutoHatchService._sessions[userId] = nil
+		AutoHatchService._stoppedReasons[userId] = "ACCESS_EXPIRED"
+		publish(player)
+		return
+	end
+	if callOk and type(result) == "table" then
+		session.status = "RUNNING"
+		session.pauseReason = nil
+	else
+		session.status = "PAUSED"
+		session.pauseReason = callOk and reasonForHatchError(hatchError) or "TECHNICAL_ERROR"
+	end
+	publish(player)
+end
+
+local function processPlayerTick(session, now)
+	local player = session.player
+	local userId = player and player.UserId
+	if not userId or AutoHatchService._sessions[userId] ~= session then return end
+	if session.inFlight or now < session.nextHatchAt then return end
+	local data = getData(player)
+	local expiresAt = normalizeLiveExpiry(data, now)
+	if now >= expiresAt then
+		nextGeneration(userId)
+		AutoHatchService._sessions[userId] = nil
+		AutoHatchService._rejoinRequired[userId] = false
+		AutoHatchService._stoppedReasons[userId] = "ACCESS_EXPIRED"
+		publish(player)
+		return
+	end
+
+	-- One regular tick is consumed regardless of outcome. No missed interval is
+	-- queued and a stalled callback can never trigger catch-up work.
+	session.nextHatchAt = now + DEFINITION.intervalSeconds
+	local station, stationError = AutoHatchService._stationAuthority.validateSelection(
+		player,
+		session.station.stationId,
+		session.stationToken,
+		session.station.eggType,
+		session.station.zone,
+		false
+	)
+	if type(station) ~= "table" then
+		session.status = "PAUSED"
+		session.pauseReason = stationError or "STATION_INVALID"
+		publish(player)
+		return
+	end
+	local batchState = getBatchState(player)
+	if batchState.selectedCount > batchState.maximumCount then
+		session.status = "PAUSED"
+		session.pauseReason = "BATCH_NOT_ENTITLED"
+		publish(player)
+		return
+	end
+
+	local generation = session.generation
+	session.inFlight = true
+	session.status = "RUNNING"
+	session.pauseReason = nil
+	publish(player)
+	AutoHatchService._spawn(function()
+		local callOk, result, hatchError = pcall(function()
+			return AutoHatchService._eggService.purchaseAndHatch(
+				player,
+				station.eggType,
+				batchState.selectedCount,
+				{
+					bypassStation = true,
+					consumeShinyCharges = false,
+					autoHatch = true,
+				}
+			)
+		end)
+		finishBatch(player, generation, result, hatchError, callOk)
+	end)
+end
+
+function AutoHatchService._processTick(now)
+	now = math.floor(isFiniteNumber(now) and now or AutoHatchService._now())
+	AutoHatchService._nextGlobalTickAt = now + DEFINITION.intervalSeconds
+	for _, session in pairs(AutoHatchService._sessions) do
+		processPlayerTick(session, now)
+	end
+end
+
+local function disableRuntimeAfterSchedulerFailure()
+	local wasStarted = AutoHatchService._started == true
+	AutoHatchService._started = false
+	AutoHatchService._nextGlobalTickAt = nil
+	if not wasStarted then return end
+
+	local recipients = {}
+	for _, session in pairs(AutoHatchService._sessions) do
+		local player = session and session.player
+		if isPlayer(player) then recipients[player.UserId] = player end
+	end
+	if type(Players) == "table" or type(Players) == "userdata" then
+		local getPlayersOk, connectedPlayers = pcall(function()
+			return Players:GetPlayers()
+		end)
+		if getPlayersOk and type(connectedPlayers) == "table" then
+			for _, player in ipairs(connectedPlayers) do
+				if isPlayer(player) then recipients[player.UserId] = player end
+			end
+		end
+	end
+	for _, player in pairs(recipients) do
+		pcall(function()
+			publish(player)
+		end)
+	end
+end
+
+local function runSchedulerLoop()
+	local loopOk = pcall(function()
+		while AutoHatchService._started do
+			task.wait(DEFINITION.intervalSeconds)
+			if not AutoHatchService._started then break end
+			AutoHatchService._processTick(AutoHatchService._now())
+		end
+	end)
+	if not loopOk then
+		disableRuntimeAfterSchedulerFailure()
+	end
+end
+
+function AutoHatchService.start()
+	if AutoHatchService._started or not dependenciesReady()
+		or type(AutoHatchService._schedulerSpawn) ~= "function" then
+		return false
+	end
+	AutoHatchService._started = true
+	AutoHatchService._nextGlobalTickAt = math.floor(AutoHatchService._now()) + DEFINITION.intervalSeconds
+	local spawnOk, spawnResult = pcall(AutoHatchService._schedulerSpawn, runSchedulerLoop)
+	if not spawnOk or spawnResult == false or AutoHatchService._started ~= true then
+		disableRuntimeAfterSchedulerFailure()
+		return false
+	end
+	return true
+end
+
+function AutoHatchService.onPlayerAdded(player)
+	if not isPlayer(player) then return end
+	local userId = player.UserId
+	nextGeneration(userId)
+	AutoHatchService._sessions[userId] = nil
+	local now = math.floor(AutoHatchService._now())
+	local expiresAt = normalizeLiveExpiry(getData(player), now)
+	AutoHatchService._rejoinRequired[userId] = expiresAt > now
+	AutoHatchService._stoppedReasons[userId] = nil
+	publish(player)
+end
+
+function AutoHatchService.onPlayerRemoving(player)
+	if not player or player.UserId == nil then return end
+	local userId = player.UserId
+	nextGeneration(userId)
+	AutoHatchService._sessions[userId] = nil
+	AutoHatchService._purchaseLocks[userId] = nil
+	AutoHatchService._rejoinRequired[userId] = nil
+	AutoHatchService._stoppedReasons[userId] = nil
+	AutoHatchService._actionFeedback[userId] = nil
+	normalizeLiveExpiry(getData(player), math.floor(AutoHatchService._now()))
+end
+
+function AutoHatchService.prepareForShutdown()
+	AutoHatchService._started = false
+	AutoHatchService._nextGlobalTickAt = nil
+	for userId, session in pairs(AutoHatchService._sessions) do
+		nextGeneration(userId)
+		AutoHatchService._sessions[userId] = nil
+		if session.player then
+			normalizeLiveExpiry(getData(session.player), math.floor(AutoHatchService._now()))
+		end
+	end
+	return true
+end
+
+function AutoHatchService._validateRequestForTests(kind, request)
+	if kind == "get" then return requestIsGet(request) end
+	if kind == "purchase" then return requestIsPurchase(request) end
+	if kind == "setBatch" then return requestIsSetBatch(request) end
+	if kind == "start" then return requestIsStart(request) end
+	if kind == "stop" then return requestIsStop(request) end
+	return false
+end
+
+return AutoHatchService
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000073">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8766,7 +9731,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000072">
+				<Item class="ModuleScript" referent="RBX00000074">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8916,7 +9881,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000073">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9041,16 +10006,9 @@ function ShopService.init(dataService, currencyService)
 	ShopService._dataService = dataService
 	ShopService._currencyService = currencyService
 
-	-- The legacy timed Auto-Hatch loop remains gated off until its complete
-	-- behavior ships. Persisted hatch preferences remain untouched.
-	if BalanceConfig.Shop.AutoHatchRuntimeEnabled then
-		task.spawn(function()
-			while true do
-				task.wait(Config.AutoHatchInterval or 3)
-				ShopService._processAutoHatch()
-			end
-		end)
-	end
+	-- QOF-18 is owned exclusively by AutoHatchService. This legacy highest-zone
+	-- scheduler is intentionally never started, even while the new feature gate is
+	-- active, so both loops cannot coexist during rolling deployments.
 end
 
 function ShopService.setPotionService(potionService)
@@ -9407,50 +10365,17 @@ function ShopService.onPlayerRemoving(player)
 	ShopService._activeBuffs[player.UserId] = nil
 end
 
--- Process auto-hatch for players with active AutoHatch buff.
+-- Rolling compatibility symbol only. QOF-18 never reads legacy buffs, chooses a
+-- highest zone, or schedules from ShopService.
 function ShopService._processAutoHatch()
-	if not BalanceConfig.Shop.AutoHatchRuntimeEnabled then
-		return false
-	end
-	local now = os.clock()
-	for _, player in ipairs(Players:GetPlayers()) do
-		local buffs = removeExpiredBuffs(player, now)
-		if buffs and buffs.autoHatch then
-			if ShopService._eggService and ShopService._dataService then
-				local data = ShopService._dataService.getPlayerData(player)
-				if data and data.unlockedZones then
-					local highestZone = 1
-					for _, zoneId in ipairs(data.unlockedZones) do
-						if zoneId > highestZone then
-							highestZone = zoneId
-						end
-					end
-					local targetEgg = nil
-					for eggType, eggDef in pairs(PetData.Eggs) do
-						if eggDef.zone == highestZone then
-							targetEgg = eggType
-							break
-						end
-					end
-					if targetEgg then
-						task.spawn(function()
-							local batchCount = ShopService._eggService.getSelectedBatchCount(player)
-							ShopService._eggService.purchaseAndHatch(player, targetEgg, batchCount, {
-								bypassStation = true,
-							})
-						end)
-					end
-				end
-			end
-		end
-	end
+	return false
 end
 
 return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000074">
+				<Item class="ModuleScript" referent="RBX00000076">
 					<Properties>
 						<string name="Name">PotionService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10217,7 +11142,7 @@ return PotionService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10633,7 +11558,7 @@ return UpgradeTreeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000076">
+				<Item class="ModuleScript" referent="RBX00000078">
 					<Properties>
 						<string name="Name">MovementService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10837,7 +11762,7 @@ return MovementService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000077">
+				<Item class="ModuleScript" referent="RBX00000079">
 					<Properties>
 						<string name="Name">PickupService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11228,15 +12153,15 @@ return PickupService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX00000083">
+	<Item class="StarterPlayer" referent="RBX00000085">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000082">
+		<Item class="StarterPlayerScripts" referent="RBX00000084">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000081">
+				<Item class="LocalScript" referent="RBX00000083">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -11272,6 +12197,10 @@ local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
 local MachineClientSession = require(Shared:WaitForChild("MachineClientSession"))
+-- Optional discovery keeps a QOF-18 client from waiting forever during rolling
+-- deployments where the server has not published the new contract yet.
+local autoHatchSessionModuleObject = Shared:FindFirstChild("AutoHatchClientSession")
+local AutoHatchClientSession = autoHatchSessionModuleObject and require(autoHatchSessionModuleObject) or nil
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -11323,6 +12252,12 @@ local GetPotionState = Remotes:WaitForChild("GetPotionState")
 local ConsumePotion = Remotes:WaitForChild("ConsumePotion")
 local PurchasePotionUpgrade = Remotes:WaitForChild("PurchasePotionUpgrade")
 local SetAutoDrinkSelection = Remotes:WaitForChild("SetAutoDrinkSelection")
+-- QOF-18 remotes are optional during rolling deployment. Missing references keep
+-- paid Auto-Hatch unavailable without blocking the rest of client startup.
+local PurchaseAutoHatch = Remotes:FindFirstChild("PurchaseAutoHatch")
+local SetAutoHatchBatch = Remotes:FindFirstChild("SetAutoHatchBatch")
+local StartAutoHatch = Remotes:FindFirstChild("StartAutoHatch")
+local StopAutoHatch = Remotes:FindFirstChild("StopAutoHatch")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -11341,6 +12276,7 @@ local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
 local PotionStateUpdated = Remotes:WaitForChild("PotionStateUpdated")
+local AutoHatchStateUpdated = Remotes:FindFirstChild("AutoHatchStateUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -11625,17 +12561,42 @@ local function getEggTypeFromPrompt(prompt)
 	return nil
 end
 
+local function getAutoHatchStationData(prompt)
+	local eggType = getEggTypeFromPrompt(prompt)
+	local egg = prompt and prompt.Parent
+	if not eggType or not egg then return nil end
+	local stationId = egg:GetAttribute("EggStationId")
+	local stationToken = egg:GetAttribute("EggStationIdentityToken")
+	local stationEggType = egg:GetAttribute("EggType")
+	if type(stationId) ~= "string" or #stationId < 1 or #stationId > 64
+		or type(stationToken) ~= "string" or #stationToken < 1 or #stationToken > 128
+		or stationEggType ~= eggType then
+		return nil
+	end
+	return stationId, stationToken, eggType
+end
+
 local activeEggPrompt = nil
 local activeEggType = nil
 local hatchOperationToken = 0
 local hatchQuoteInFlight = false
 local hatchPurchaseInFlight = false
+local autoHatchSession = nil
+local autoHatchGlobalToken = 0
 
 local function closeHatchPurchaseDialog()
 	hatchOperationToken += 1
 	hatchQuoteInFlight = false
 	hatchPurchaseInFlight = false
+	-- Cancel/navigation owns the same invalidation boundary as PromptHidden:
+	-- stale station actions and purchases cannot complete into a reopened UI.
+	if autoHatchSession and AutoHatchClientSession then
+		AutoHatchClientSession.close(autoHatchSession)
+	end
+	autoHatchGlobalToken += 1
+	uiController:setAutoHatchActionInFlight(nil)
 	uiController:closeHatchPurchaseDialog()
+	uiController:clearAutoHatchLocalStation()
 end
 
 local function describeHatchError(message, fallback)
@@ -11738,6 +12699,106 @@ uiController:setHatchPurchaseCallbacks(
 	requestFreshHatchQuote
 )
 
+local AUTO_HATCH_CONTRACT_VERSION = 1
+autoHatchSession = AutoHatchClientSession and AutoHatchClientSession.new() or nil
+
+local function applyAutoHatchState(state)
+	if type(state) == "table" and state.contractVersion == AUTO_HATCH_CONTRACT_VERSION then
+		if autoHatchSession
+			and not AutoHatchClientSession.acceptState(autoHatchSession, state) then
+			return false
+		end
+		return uiController:updateAutoHatchState(state)
+	end
+	return false
+end
+
+local function finishAutoAction(operation, invoked, success, reason, state)
+	if operation and autoHatchSession
+		and not AutoHatchClientSession.finishRequest(autoHatchSession, operation) then
+		return
+	end
+	uiController:setAutoHatchActionInFlight(nil)
+	local applied = applyAutoHatchState(state)
+	if not invoked or not applied then
+		-- Transport failures and malformed/stale DTOs get a display-only refresh.
+		-- Valid semantic failures carry revisioned authoritative actionFeedback.
+		uiController:_refreshAutoHatchStateFromServer()
+	end
+end
+
+local function runStationAutoAction(action, selectedCount)
+	if not autoHatchSession or not autoHatchSession.prompt or not autoHatchSession.prompt.Parent then return end
+	local remote = action == "SET_BATCH" and SetAutoHatchBatch
+		or action == "START" and StartAutoHatch
+		or action == "STOP" and StopAutoHatch or nil
+	if not remote then return end
+	local operation = AutoHatchClientSession.beginRequest(autoHatchSession, action)
+	if not operation then return end
+	uiController:setAutoHatchActionInFlight(
+		action == "SET_BATCH" and "batch" or string.lower(action)
+	)
+	local request = nil
+	if action == "SET_BATCH" then
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "SET_BATCH",
+			selectedCount = selectedCount,
+		}
+	elseif action == "START" then
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "START",
+			stationId = operation.stationId,
+			stationToken = operation.stationToken,
+		}
+	else
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "STOP",
+		}
+	end
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return remote:InvokeServer(request)
+		end)
+		finishAutoAction(operation, invoked, success, reason, state)
+	end)
+end
+
+local function purchaseAutoHatchAccess()
+	local remote = PurchaseAutoHatch
+	if not remote or not uiController:isAutoHatchRuntimeEnabled() then return end
+	autoHatchGlobalToken += 1
+	local token = autoHatchGlobalToken
+	uiController:setAutoHatchActionInFlight("buy")
+	task.spawn(function()
+		local invoked, success, _, state = pcall(function()
+			return remote:InvokeServer({
+				contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+				action = "PURCHASE",
+			})
+		end)
+		if token ~= autoHatchGlobalToken then return end
+		uiController:setAutoHatchActionInFlight(nil)
+		applyAutoHatchState(state)
+		if not invoked or not success then
+			uiController:_refreshAutoHatchStateFromServer()
+		end
+	end)
+end
+
+uiController:setAutoHatchCallbacks({
+	buy = purchaseAutoHatchAccess,
+	setBatch = function(count) runStationAutoAction("SET_BATCH", count) end,
+	start = function() runStationAutoAction("START") end,
+	stop = function() runStationAutoAction("STOP") end,
+})
+
+if AutoHatchStateUpdated then
+	AutoHatchStateUpdated.OnClientEvent:Connect(applyAutoHatchState)
+end
+
 -- QOF-17 Machine sessions are created only by the central runtime prompt router.
 -- Attributes are UX routing data; the server independently validates the private
 -- station registry, token, unlock, exact instances, and live distance.
@@ -11802,6 +12863,9 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	if activeEggPrompt and activeEggPrompt ~= prompt then
 		local previousEggType = activeEggType
 		closeHatchPurchaseDialog()
+		if autoHatchSession then AutoHatchClientSession.close(autoHatchSession) end
+		-- Direct A-to-B prompt switches revoke both request and busy UI ownership.
+		uiController:setAutoHatchActionInFlight(nil)
 		activeEggPrompt = nil
 		activeEggType = nil
 		if previousEggType then
@@ -11810,6 +12874,13 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	end
 	activeEggPrompt = prompt
 	activeEggType = eggType
+	local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+	if autoHatchSession and stationId
+		and AutoHatchClientSession.start(autoHatchSession, prompt, stationId, stationToken, stationEggType) then
+		uiController:setAutoHatchLocalStation(stationEggType, stationId)
+	else
+		uiController:clearAutoHatchLocalStation()
+	end
 	uiController:showEggStationPrompt(eggType)
 end)
 
@@ -11823,6 +12894,9 @@ ProximityPromptService.PromptHidden:Connect(function(prompt)
 	activeEggPrompt = nil
 	activeEggType = nil
 	closeHatchPurchaseDialog()
+	if autoHatchSession then AutoHatchClientSession.close(autoHatchSession) end
+	uiController:setAutoHatchActionInFlight(nil)
+	uiController:clearAutoHatchLocalStation()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end
@@ -11855,12 +12929,33 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 	if activeEggPrompt ~= prompt then
 		local previousEggType = activeEggType
 		closeHatchPurchaseDialog()
+		uiController:setAutoHatchActionInFlight(nil)
 		if previousEggType then
 			uiController:hideEggStationPrompt(previousEggType)
 		end
 		activeEggPrompt = prompt
 		activeEggType = eggType
+		local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+		if autoHatchSession and stationId
+			and AutoHatchClientSession.start(autoHatchSession, prompt, stationId, stationToken, stationEggType) then
+			uiController:setAutoHatchLocalStation(stationEggType, stationId)
+		end
 		uiController:showEggStationPrompt(eggType)
+	elseif autoHatchSession then
+		-- Cancel/navigation closes the capability while Roblox may keep the same
+		-- prompt active; re-triggering must reinstall it before controls reopen.
+		if autoHatchSession.prompt ~= prompt then
+			local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+			if stationId and AutoHatchClientSession.start(
+				autoHatchSession, prompt, stationId, stationToken, stationEggType
+			) then
+				uiController:setAutoHatchLocalStation(stationEggType, stationId)
+			else
+				uiController:clearAutoHatchLocalStation()
+			end
+		else
+			uiController:setAutoHatchLocalStation(autoHatchSession.eggType, autoHatchSession.stationId)
+		end
 	end
 	requestFreshHatchQuote()
 end)
@@ -12345,7 +13440,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007B">
+				<Item class="ModuleScript" referent="RBX0000007D">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -12574,6 +13669,32 @@ function UIController.new()
 	self._hatchPurchaseCallbacks = {}
 	self._hatchPurchaseConnections = {}
 	self._activeHatchPurchaseEggType = nil
+	self._autoHatchState = {
+		contractVersion = 0,
+		stateRevision = -1,
+		serverTime = 0,
+		runtimeEnabled = false,
+		economy = {},
+		expiresAt = 0,
+		remainingSeconds = 0,
+		selectedCount = 1,
+		maximumCount = 1,
+		availableCounts = { 1, 2, 5, 10 },
+		generation = 0,
+		status = "STOPPED",
+		station = nil,
+		nextHatchAt = nil,
+		pauseReason = nil,
+		actionFeedback = nil,
+		inFlight = false,
+	}
+	self._autoHatchStateRevision = -1
+	self._autoHatchServerOffset = 0
+	self._autoHatchCallbacks = {}
+	self._autoHatchControls = {}
+	self._autoHatchLocalStation = nil
+	self._autoHatchActionInFlight = nil
+	self._autoHatchUiGeneration = 0
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
@@ -12722,11 +13843,13 @@ function UIController:init(remotes, playerData)
 			if self._screens.ShopScreen and self._screens.ShopScreen.Enabled then
 				self:_updateShopCardStates()
 			end
+			self:_updateAutoHatchControls()
 		end
 	end)
 
 	self:_refreshShopStateFromServer()
 	self:_refreshPotionStateFromServer()
+	self:_refreshAutoHatchStateFromServer()
 	self._initialized = true
 end
 
@@ -12998,6 +14121,93 @@ function UIController:_createHatchPurchaseDialog()
 		}
 	end
 
+	-- QOF-18 reuses this one station-owned surface; no second modal or hatch
+	-- presentation path is created. Closing it only clears local configuration.
+	optionContainer.CanvasSize = UDim2.fromOffset(0, 440)
+	local autoPanel = Instance.new("Frame")
+	autoPanel.Name = "AutoHatchControls"
+	autoPanel.Size = UDim2.new(1, -8, 0, 210)
+	autoPanel.BackgroundColor3 = Color3.fromRGB(28, 48, 82)
+	autoPanel.BorderSizePixel = 0
+	autoPanel.Parent = optionContainer
+	local autoCorner = Instance.new("UICorner")
+	autoCorner.CornerRadius = UDim.new(0, 12)
+	autoCorner.Parent = autoPanel
+
+	local autoTitle = Instance.new("TextLabel")
+	autoTitle.Name = "Target"
+	autoTitle.Size = UDim2.new(1, -16, 0, 32)
+	autoTitle.Position = UDim2.fromOffset(8, 6)
+	autoTitle.BackgroundTransparency = 1
+	autoTitle.Text = "AUTO-HATCH • SELECT THIS STATION"
+	autoTitle.TextColor3 = COLORS.DiamondCyan
+	autoTitle.Font = Enum.Font.GothamBlack
+	autoTitle.TextScaled = true
+	autoTitle.Parent = autoPanel
+	self._autoHatchControls.target = autoTitle
+
+	local autoStatus = Instance.new("TextLabel")
+	autoStatus.Name = "Status"
+	autoStatus.Size = UDim2.new(1, -16, 0, 42)
+	autoStatus.Position = UDim2.fromOffset(8, 40)
+	autoStatus.BackgroundTransparency = 1
+	autoStatus.Text = "Auto-Hatch state is syncing…"
+	autoStatus.TextColor3 = COLORS.White
+	autoStatus.Font = Enum.Font.GothamBold
+	autoStatus.TextScaled = true
+	autoStatus.TextWrapped = true
+	autoStatus.Parent = autoPanel
+	self._autoHatchControls.status = autoStatus
+
+	for index, count in ipairs({ 1, 2, 5, 10 }) do
+		local tier = Instance.new("TextButton")
+		tier.Name = "AutoHatchTier" .. tostring(count)
+		tier.Size = UDim2.new(0.22, 0, 0, 38)
+		tier.Position = UDim2.new(0.025 + (index - 1) * 0.245, 0, 0, 88)
+		tier.BackgroundColor3 = COLORS.NavSettings
+		tier.Text = "x" .. tostring(count)
+		tier.TextColor3 = COLORS.White
+		tier.Font = Enum.Font.GothamBlack
+		tier.TextScaled = true
+		tier.AutoButtonColor = false
+		tier.Parent = autoPanel
+		local tierCorner = Instance.new("UICorner")
+		tierCorner.CornerRadius = UDim.new(0, 9)
+		tierCorner.Parent = tier
+		tier.Activated:Connect(function()
+			if tier.Active and self._autoHatchCallbacks.setBatch then
+				self._autoHatchCallbacks.setBatch(count)
+			end
+		end)
+		self._autoHatchControls["tier" .. tostring(count)] = tier
+	end
+
+	for index, definition in ipairs({
+		{ key = "buy", text = "BUY ◆500" },
+		{ key = "start", text = "START" },
+		{ key = "stop", text = "STOP" },
+	}) do
+		local actionButton = Instance.new("TextButton")
+		actionButton.Name = "AutoHatch" .. string.upper(string.sub(definition.key, 1, 1)) .. string.sub(definition.key, 2)
+		actionButton.Size = UDim2.new(0.3, 0, 0, 52)
+		actionButton.Position = UDim2.new(0.025 + (index - 1) * 0.325, 0, 0, 143)
+		actionButton.BackgroundColor3 = index == 3 and COLORS.ButtonRed or COLORS.ButtonGreen
+		actionButton.Text = definition.text
+		actionButton.TextColor3 = COLORS.White
+		actionButton.Font = Enum.Font.GothamBlack
+		actionButton.TextScaled = true
+		actionButton.AutoButtonColor = false
+		actionButton.Parent = autoPanel
+		local actionCorner = Instance.new("UICorner")
+		actionCorner.CornerRadius = UDim.new(0, 10)
+		actionCorner.Parent = actionButton
+		actionButton.Activated:Connect(function()
+			local callback = self._autoHatchCallbacks[definition.key]
+			if actionButton.Active and callback then callback() end
+		end)
+		self._autoHatchControls[definition.key] = actionButton
+	end
+
 	local feedback = Instance.new("TextLabel")
 	feedback.Name = "Feedback"
 	feedback.Size = UDim2.new(1, -28, 0.075, 0)
@@ -13099,6 +14309,188 @@ function UIController:_createHatchPurchaseDialog()
 			self:_requestHatchPurchaseCancel()
 		end
 	end))
+end
+
+local AUTO_HATCH_REASON_TEXT = {
+	REJOIN_REQUIRES_STATION = "Choose a nearby egg station again after rejoining.",
+	BATCH_NOT_ENTITLED = "Selected tier is no longer entitled; choose an entitled tier.",
+	INSUFFICIENT_COINS = "Paused: not enough Coins for the full selected batch.",
+	INVENTORY_FULL = "Paused: not enough pet inventory slots for the full batch.",
+	HATCH_LOCKED = "Paused: another hatch is currently committing.",
+	STATION_INVALID = "Paused: the selected egg station failed integrity checks.",
+	ZONE_LOCKED = "Paused: the station zone is no longer unlocked.",
+	ACCESS_REQUIRED = "Buy Auto-Hatch Access before starting.",
+	ACCESS_EXPIRED = "Auto-Hatch Access expired.",
+	TOO_FAR = "Move closer to this exact egg station to start.",
+	CHARACTER_UNAVAILABLE = "Character is unavailable; try again after spawning.",
+	TECHNICAL_ERROR = "Paused safely after a technical error; retrying next tick.",
+	RATE_LIMITED = "Please wait before trying that Auto-Hatch action again.",
+	RUNTIME_UNAVAILABLE = "Auto-Hatch is temporarily unavailable on this server.",
+}
+
+function UIController:isAutoHatchRuntimeEnabled()
+	return self._autoHatchState.runtimeEnabled == true
+end
+
+function UIController:setAutoHatchCallbacks(callbacks)
+	self._autoHatchCallbacks = type(callbacks) == "table" and callbacks or {}
+end
+
+function UIController:setAutoHatchLocalStation(eggType, stationId)
+	self._autoHatchUiGeneration += 1
+	self._autoHatchState.actionFeedback = nil
+	self._autoHatchLocalStation = type(eggType) == "string" and type(stationId) == "string" and {
+		eggType = eggType,
+		stationId = stationId,
+	} or nil
+	self:_updateAutoHatchControls()
+end
+
+function UIController:clearAutoHatchLocalStation()
+	self._autoHatchUiGeneration += 1
+	self._autoHatchState.actionFeedback = nil
+	self._autoHatchLocalStation = nil
+	self:_updateAutoHatchControls()
+end
+
+function UIController:_applyAutoHatchState(payload)
+	if type(payload) ~= "table" or payload.contractVersion ~= ShopData.AutoHatchContractVersion then
+		return false
+	end
+	local revision = tonumber(payload.stateRevision)
+	if not revision or revision ~= revision or revision % 1 ~= 0 or revision < 0
+		or revision <= self._autoHatchStateRevision then
+		return false
+	end
+	self._autoHatchStateRevision = revision
+	self._autoHatchServerOffset = (tonumber(payload.serverTime) or os.time()) - os.time()
+	self._autoHatchState = {
+		contractVersion = ShopData.AutoHatchContractVersion,
+		stateRevision = revision,
+		serverTime = tonumber(payload.serverTime) or os.time(),
+		runtimeEnabled = payload.runtimeEnabled == true,
+		economy = type(payload.economy) == "table" and payload.economy or {},
+		expiresAt = tonumber(payload.expiresAt) or 0,
+		remainingSeconds = tonumber(payload.remainingSeconds) or 0,
+		selectedCount = tonumber(payload.selectedCount) or 1,
+		maximumCount = tonumber(payload.maximumCount) or 1,
+		availableCounts = type(payload.availableCounts) == "table" and payload.availableCounts or { 1, 2, 5, 10 },
+		generation = tonumber(payload.generation) or 0,
+		status = type(payload.status) == "string" and payload.status or "STOPPED",
+		station = type(payload.station) == "table" and payload.station or nil,
+		nextHatchAt = tonumber(payload.nextHatchAt),
+		pauseReason = type(payload.pauseReason) == "string" and payload.pauseReason or nil,
+		actionFeedback = type(payload.actionFeedback) == "table"
+			and payload.actionFeedback.action == "START"
+			and type(payload.actionFeedback.reason) == "string"
+			and type(payload.actionFeedback.stationId) == "string"
+			and {
+				action = "START",
+				reason = payload.actionFeedback.reason,
+				stationId = payload.actionFeedback.stationId,
+			} or nil,
+		inFlight = payload.inFlight == true,
+	}
+	self:_updateAutoHatchControls()
+	self:_updateShopCardStates()
+	return true
+end
+
+function UIController:updateAutoHatchState(payload)
+	return self:_applyAutoHatchState(payload)
+end
+
+function UIController:_refreshAutoHatchStateFromServer()
+	if not self._remotes then return end
+	local remote = self._remotes:FindFirstChild("GetAutoHatchState")
+	if not remote then
+		self:_updateAutoHatchControls()
+		return
+	end
+	local generation = self._autoHatchUiGeneration
+	task.spawn(function()
+		local ok, success, _, state = pcall(function()
+			return remote:InvokeServer({
+				contractVersion = ShopData.AutoHatchContractVersion,
+				action = "GET_STATE",
+			})
+		end)
+		if generation ~= self._autoHatchUiGeneration then
+			return
+		end
+		if ok and success and type(state) == "table" then
+			-- Revision and prompt generation jointly protect local action feedback.
+			self:_applyAutoHatchState(state)
+		else
+			self:_updateAutoHatchControls()
+		end
+	end)
+end
+
+function UIController:_updateAutoHatchControls()
+	local state = self._autoHatchState or {}
+	local now = os.time() + self._autoHatchServerOffset
+	local remaining = math.max(0, math.ceil((tonumber(state.expiresAt) or 0) - now))
+	local nextSeconds = state.nextHatchAt and math.max(0, math.ceil(state.nextHatchAt - now)) or nil
+	local station = self._autoHatchLocalStation
+	local actionFeedback = state.actionFeedback
+	local reason = actionFeedback and station
+		and actionFeedback.stationId == station.stationId
+		and actionFeedback.reason or state.pauseReason
+	local reasonText = AUTO_HATCH_REASON_TEXT[reason] or reason
+	if self._autoHatchControls.target then
+		self._autoHatchControls.target.Text = station
+			and ("AUTO-HATCH TARGET • " .. tostring(station.eggType))
+			or "AUTO-HATCH • SELECT THIS STATION"
+	end
+	if self._autoHatchControls.status then
+		local countdown = string.format("%d:%02d", math.floor(remaining / 60), remaining % 60)
+		local statusText = tostring(state.status or "STOPPED") .. " • ACCESS " .. countdown
+		if nextSeconds then statusText ..= " • NEXT " .. tostring(nextSeconds) .. "s" end
+		if state.inFlight then statusText ..= " • BATCH IN FLIGHT" end
+		if reasonText then statusText ..= "\n" .. reasonText end
+		self._autoHatchControls.status.Text = statusText
+	end
+	local busy = self._autoHatchActionInFlight ~= nil
+	local runtimeEnabled = state.runtimeEnabled == true
+	for _, count in ipairs({ 1, 2, 5, 10 }) do
+		local button = self._autoHatchControls["tier" .. tostring(count)]
+		if button then
+			local entitled = count <= (tonumber(state.maximumCount) or 1)
+			button.Active = runtimeEnabled and entitled and not busy
+			button.Selectable = button.Active
+			button.BackgroundColor3 = count == state.selectedCount and runtimeEnabled and COLORS.DiamondCyan
+				or (runtimeEnabled and entitled and COLORS.NavSettings or Color3.fromRGB(90, 95, 108))
+		end
+	end
+	local buy = self._autoHatchControls.buy
+	local start = self._autoHatchControls.start
+	local stop = self._autoHatchControls.stop
+	if buy then
+		buy.Active = state.runtimeEnabled == true and remaining <= 0 and not busy and self._diamonds >= 500
+		buy.Selectable = buy.Active
+		buy.Text = busy == "buy" and "BUYING…"
+			or (not runtimeEnabled and "UNAVAILABLE" or (remaining > 0 and "ACCESS ACTIVE" or "BUY ◆500"))
+	end
+	if start then
+		start.Active = runtimeEnabled and remaining > 0 and station ~= nil and not busy
+		start.Selectable = start.Active
+		start.Text = busy == "start" and "STARTING…" or "START"
+	end
+	if stop then
+		stop.Active = runtimeEnabled and (state.status == "RUNNING" or state.status == "PAUSED") and not busy
+		stop.Selectable = stop.Active
+		stop.Text = busy == "stop" and "STOPPING…" or "STOP"
+	end
+end
+
+function UIController:setAutoHatchActionInFlight(action)
+	self._autoHatchActionInFlight = action
+	if action ~= nil then
+		self._autoHatchState.actionFeedback = nil
+	end
+	self:_updateAutoHatchControls()
+	self:_updateShopCardStates()
 end
 
 function UIController:setHatchPurchaseCallbacks(confirmCallback, cancelCallback, refreshCallback)
@@ -16096,14 +17488,25 @@ function UIController:_updateShopCardStates()
 		local item = ShopData.Items[itemId]
 		if item and card.button and card.button.Parent then
 			local isPotion = item.itemType == "potion"
+			local isAutoHatch = item.itemType == "autoHatch"
+			local autoNow = os.time() + self._autoHatchServerOffset
+			local autoRemaining = math.max(0, math.ceil(
+				(tonumber(self._autoHatchState.expiresAt) or 0) - autoNow
+			))
 			local potionCount = isPotion and safePotionCount(inventory[itemId], maxPotionInventory) or 0
 			local isMaxed = isPotion and potionCount >= maxPotionInventory
 				or item.permanent and ownedSlots >= maxSlots
-			local isPurchasing = self._shopPurchaseInFlight ~= nil
+			local isPurchasing = self._shopPurchaseInFlight ~= nil or self._autoHatchActionInFlight ~= nil
 			local isAffordable = self._diamonds >= item.cost
+			local autoRuntimeUnavailable = isAutoHatch
+				and self._autoHatchState.contractVersion == ShopData.AutoHatchContractVersion
+				and self._autoHatchState.runtimeEnabled ~= true
 			local contractBlocked = isPotion and not purchaseReady
-			local enabled = not contractBlocked and not isMaxed and not isPurchasing
+				or isAutoHatch and self._autoHatchState.contractVersion ~= ShopData.AutoHatchContractVersion
+			local enabled = not contractBlocked and not autoRuntimeUnavailable
+				and not isMaxed and not isPurchasing
 				and self._potionActionInFlight == nil and isAffordable
+				and (not isAutoHatch or autoRemaining <= 0)
 
 			if isPotion then
 				local buffState = activeBuffs[item.buffType]
@@ -16123,6 +17526,22 @@ function UIController:_updateShopCardStates()
 				card.status.Text = "OWNED " .. tostring(potionCount) .. " • " .. activeText
 				card.status.TextColor3 = activeText == "INACTIVE"
 					and Color3.fromRGB(70, 90, 105) or Color3.fromRGB(20, 115, 48)
+			elseif isAutoHatch then
+				if autoRuntimeUnavailable then
+					card.status.Text = "UNAVAILABLE • TRY ANOTHER SERVER"
+					card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
+				elseif autoRemaining > 0 then
+					card.status.Text = string.format(
+						"ACTIVE %d:%02d • %s",
+						math.floor(autoRemaining / 60),
+						autoRemaining % 60,
+						tostring(self._autoHatchState.status or "STOPPED")
+					)
+					card.status.TextColor3 = Color3.fromRGB(20, 115, 48)
+				else
+					card.status.Text = "INACTIVE • 10 MINUTES"
+					card.status.TextColor3 = Color3.fromRGB(70, 90, 105)
+				end
 			elseif isMaxed then
 				card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • MAXED"
 				card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
@@ -16131,10 +17550,14 @@ function UIController:_updateShopCardStates()
 				card.status.TextColor3 = Color3.fromRGB(88, 52, 78)
 			end
 
-			if self._shopPurchaseInFlight == itemId then
+			if self._shopPurchaseInFlight == itemId or (isAutoHatch and self._autoHatchActionInFlight == "buy") then
 				card.button.Text = "BUYING..."
 			elseif contractBlocked then
 				card.button.Text = "SYNCING..."
+			elseif autoRuntimeUnavailable then
+				card.button.Text = "UNAVAILABLE"
+			elseif isAutoHatch and autoRemaining > 0 then
+				card.button.Text = "ACCESS ACTIVE"
 			elseif isMaxed then
 				card.button.Text = "MAXED"
 			elseif not isAffordable then
@@ -16376,6 +17799,16 @@ function UIController:_purchaseShopItem(itemId)
 	local item = ShopData.Items[itemId]
 	if not item or self._shopPurchaseInFlight then return end
 	local isPotion = item.itemType == "potion"
+	local isAutoHatch = item.itemType == "autoHatch"
+	if isAutoHatch then
+		if self._diamonds < item.cost then
+			self:_setShopFeedback("You need more diamonds!", COLORS.ButtonRed)
+			return
+		end
+		local callback = self._autoHatchCallbacks.buy
+		if callback then callback() end
+		return
+	end
 	if isPotion and (self._shopState.contractVersion ~= ShopData.ContractVersion
 		or self._shopState.purchaseMode ~= ShopData.PurchaseMode) then
 		self:_setShopFeedback("Potion inventory is still syncing.", COLORS.ButtonRed)
@@ -17374,6 +18807,7 @@ function UIController:_refreshScreenData(screenName)
 	elseif screenName == "ShopScreen" then
 		self:_refreshShopStateFromServer()
 		self:_refreshPotionStateFromServer()
+		self:_refreshAutoHatchStateFromServer()
 	end
 end
 
@@ -17553,7 +18987,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007C">
+				<Item class="ModuleScript" referent="RBX0000007E">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19207,7 +20641,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007D">
+				<Item class="ModuleScript" referent="RBX0000007F">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -20122,7 +21556,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007E">
+				<Item class="ModuleScript" referent="RBX00000080">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -21725,7 +23159,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007F">
+				<Item class="ModuleScript" referent="RBX00000081">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -21907,7 +23341,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000080">
+				<Item class="ModuleScript" referent="RBX00000082">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -22212,11 +23646,11 @@ return UpgradeTreeController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX00000066">
+	<Item class="ReplicatedStorage" referent="RBX00000067">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX0000003D">
+			<Item class="Folder" referent="RBX0000003E">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
@@ -22658,10 +24092,17 @@ local BalanceConfig = {
 	},
 
 	Shop = {
-		-- The old timed Auto-Hatch product remains reserved in legacy balance and
-		-- persisted preferences remain intact, but no catalog or server processing
-		-- is permitted before its owning feature ships.
-		AutoHatchRuntimeEnabled = false,
+		-- QOF-18 paid Auto-Hatch is an independent, time-limited entitlement.
+		-- The explicit top-level alias remains for rolling source contracts while
+		-- the canonical definition below owns every runtime/economy constant.
+		AutoHatchRuntimeEnabled = true,
+		AutoHatch = {
+			RuntimeEnabled = true,
+			ContractVersion = 1,
+			cost = { currency = "diamonds", amount = 500 },
+			durationSeconds = 600,
+			intervalSeconds = 3,
+		},
 	},
 
 	Potions = {
@@ -22919,7 +24360,15 @@ function BalanceConfig.Validate()
 	assert(core.SpeedRuntimeEnabled == true, "Speed upgrades must be enabled in QOF-12")
 	assert(core.MagnetRuntimeEnabled == true, "Magnet upgrades must be enabled in QOF-12")
 	assert(core.DoubleLuckRuntimeEnabled == true, "Double Luck must be enabled in QOF-11")
-	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
+	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == true, "Shop Auto-Hatch must be enabled in QOF-18")
+	local autoHatch = BalanceConfig.Shop.AutoHatch
+	assert(type(autoHatch) == "table" and autoHatch.RuntimeEnabled == true, "Auto-Hatch gate is inactive")
+	assert(autoHatch.ContractVersion == 1, "Auto-Hatch contract version changed")
+	validateCost(autoHatch.cost, "Auto-Hatch access")
+	assert(autoHatch.cost.currency == "diamonds" and autoHatch.cost.amount == 500, "Auto-Hatch price changed")
+	assert(autoHatch.durationSeconds == 600, "Auto-Hatch duration changed")
+	assert(autoHatch.intervalSeconds == 3, "Auto-Hatch interval changed")
+	assert(BalanceConfig.Limits.AutoHatchInterval == autoHatch.intervalSeconds, "Auto-Hatch interval aliases diverged")
 
 	for name, value in pairs(BalanceConfig.Limits) do
 		assert(isFiniteNumber(value) and value > 0, name .. " limit must be positive")
@@ -24851,6 +26300,7 @@ local BalanceConfig = require(script.Parent.BalanceConfig)
 local ShopData = {
 	ContractVersion = 2,
 	PotionContractVersion = 1,
+	AutoHatchContractVersion = BalanceConfig.Shop.AutoHatch.ContractVersion,
 	PurchaseMode = "inventoryOnly",
 	MaxPotionInventory = BalanceConfig.Potions.Persistence.MaxInventoryPerPotion,
 }
@@ -24861,6 +26311,7 @@ ShopData.Order = {
 	"SpeedPotion",
 	"CoinPotion",
 	"ShinyPotion",
+	"AutoHatch",
 	"ExtraEquipSlot",
 }
 
@@ -24922,6 +26373,19 @@ ShopData.Items = {
 		color = { 245, 92, 191 },
 		accentColor = { 255, 202, 239 },
 	}),
+	AutoHatch = {
+		itemType = "autoHatch",
+		displayName = "Auto-Hatch Access",
+		description = "10 minutes of paid, station-bound automatic egg batches.",
+		permanent = false,
+		artType = "pawPlus",
+		color = { 68, 145, 220 },
+		accentColor = { 190, 225, 255 },
+		durationLabel = "10 minutes",
+		cost = BalanceConfig.Shop.AutoHatch.cost.amount,
+		currency = BalanceConfig.Shop.AutoHatch.cost.currency,
+		durationSeconds = BalanceConfig.Shop.AutoHatch.durationSeconds,
+	},
 	ExtraEquipSlot = {
 		itemType = "permanent",
 		displayName = "Extra Equip Slot",
@@ -25036,12 +26500,108 @@ return MachineClientSession
 ]]></ProtectedString>
 					</Properties>
 				</Item>
+				<Item class="ModuleScript" referent="RBX0000003D">
+					<Properties>
+						<string name="Name">AutoHatchClientSession</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	AutoHatchClientSession.lua - Pure generation/revision ownership for QOF-18 UI.
+	The station capability is local routing data only; the server revalidates the
+	exact private registry before every start and tick.
+]]
+
+local AutoHatchClientSession = {}
+
+local function validIdentifier(value, maximum)
+	return type(value) == "string" and #value > 0 and #value <= maximum
+end
+
+function AutoHatchClientSession.new()
+	return {
+		generation = 0,
+		prompt = nil,
+		stationId = nil,
+		stationToken = nil,
+		eggType = nil,
+		stateRevision = -1,
+		inFlight = false,
+	}
+end
+
+function AutoHatchClientSession.close(session)
+	session.generation = session.generation + 1
+	session.prompt = nil
+	session.stationId = nil
+	session.stationToken = nil
+	session.eggType = nil
+	session.inFlight = false
+	return session.generation
+end
+
+function AutoHatchClientSession.start(session, prompt, stationId, stationToken, eggType)
+	AutoHatchClientSession.close(session)
+	if prompt == nil
+		or not validIdentifier(stationId, 64)
+		or not validIdentifier(stationToken, 128)
+		or not validIdentifier(eggType, 64) then
+		return false
+	end
+	session.prompt = prompt
+	session.stationId = stationId
+	session.stationToken = stationToken
+	session.eggType = eggType
+	return true
+end
+
+function AutoHatchClientSession.beginRequest(session, action)
+	if session.inFlight or session.prompt == nil or type(action) ~= "string" then
+		return nil
+	end
+	session.inFlight = true
+	return {
+		generation = session.generation,
+		prompt = session.prompt,
+		stationId = session.stationId,
+		stationToken = session.stationToken,
+		eggType = session.eggType,
+		action = action,
+	}
+end
+
+function AutoHatchClientSession.finishRequest(session, operation)
+	if type(operation) ~= "table" or session.inFlight ~= true
+		or operation.generation ~= session.generation
+		or operation.prompt ~= session.prompt
+		or operation.stationId ~= session.stationId
+		or operation.stationToken ~= session.stationToken
+		or operation.eggType ~= session.eggType then
+		return false
+	end
+	session.inFlight = false
+	return true
+end
+
+function AutoHatchClientSession.acceptState(session, payload)
+	if type(payload) ~= "table" or payload.contractVersion ~= 1 then return false end
+	local revision = payload.stateRevision
+	if type(revision) ~= "number" or revision ~= revision or revision % 1 ~= 0
+		or revision < 0 or revision <= session.stateRevision then
+		return false
+	end
+	session.stateRevision = revision
+	return true
+end
+
+return AutoHatchClientSession
+]]></ProtectedString>
+					</Properties>
+				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000059">
+			<Item class="Folder" referent="RBX0000005A">
 				<Properties>
 					<string name="Name">packages</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000058">
+				<Item class="ModuleScript" referent="RBX00000059">
 					<Properties>
 						<string name="Name">vide</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -25057,7 +26617,7 @@ export type Context<T> = vide.Context<T>
 return vide
 ]]></ProtectedString>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX0000003E">
+					<Item class="ModuleScript" referent="RBX0000003F">
 						<Properties>
 							<string name="Name">action</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25089,7 +26649,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003F">
+					<Item class="ModuleScript" referent="RBX00000040">
 						<Properties>
 							<string name="Name">apply</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25258,7 +26818,7 @@ return apply
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000040">
+					<Item class="ModuleScript" referent="RBX00000041">
 						<Properties>
 							<string name="Name">batch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25288,7 +26848,7 @@ return batch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000041">
+					<Item class="ModuleScript" referent="RBX00000042">
 						<Properties>
 							<string name="Name">branch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25335,7 +26895,7 @@ return branch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000042">
+					<Item class="ModuleScript" referent="RBX00000043">
 						<Properties>
 							<string name="Name">changed</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25360,7 +26920,7 @@ return changed
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000043">
+					<Item class="ModuleScript" referent="RBX00000044">
 						<Properties>
 							<string name="Name">cleanup</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25410,7 +26970,7 @@ return cleanup ::
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000044">
+					<Item class="ModuleScript" referent="RBX00000045">
 						<Properties>
 							<string name="Name">context</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25491,7 +27051,7 @@ return context
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000045">
+					<Item class="ModuleScript" referent="RBX00000046">
 						<Properties>
 							<string name="Name">create</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25608,7 +27168,7 @@ return (create :: any) :: Create
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000046">
+					<Item class="ModuleScript" referent="RBX00000047">
 						<Properties>
 							<string name="Name">defaults</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25728,7 +27288,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000047">
+					<Item class="ModuleScript" referent="RBX00000048">
 						<Properties>
 							<string name="Name">derive</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25753,7 +27313,7 @@ return derive
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000048">
+					<Item class="ModuleScript" referent="RBX00000049">
 						<Properties>
 							<string name="Name">effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25772,7 +27332,7 @@ return effect :: (<T>(callback: (T) -> T, initial_value: T) -> ()) & ((callback:
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000049">
+					<Item class="ModuleScript" referent="RBX0000004A">
 						<Properties>
 							<string name="Name">flags</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25791,7 +27351,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004A">
+					<Item class="ModuleScript" referent="RBX0000004B">
 						<Properties>
 							<string name="Name">graph</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26119,7 +27679,7 @@ return table.freeze {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004B">
+					<Item class="ModuleScript" referent="RBX0000004C">
 						<Properties>
 							<string name="Name">implicit_effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26251,7 +27811,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004C">
+					<Item class="ModuleScript" referent="RBX0000004D">
 						<Properties>
 							<string name="Name">indexes</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26379,7 +27939,7 @@ return indexes
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004D">
+					<Item class="ModuleScript" referent="RBX0000004E">
 						<Properties>
 							<string name="Name">lib</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26506,7 +28066,7 @@ return vide
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004E">
+					<Item class="ModuleScript" referent="RBX0000004F">
 						<Properties>
 							<string name="Name">mount</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26524,7 +28084,7 @@ return mount :: (<T>(component: () -> T, target: Instance) -> () -> ()) & ((comp
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004F">
+					<Item class="ModuleScript" referent="RBX00000050">
 						<Properties>
 							<string name="Name">read</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26536,7 +28096,7 @@ return read
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000050">
+					<Item class="ModuleScript" referent="RBX00000051">
 						<Properties>
 							<string name="Name">root</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26578,7 +28138,7 @@ return root :: <T...>(fn: (destroy: () -> ()) -> T...) -> (() -> (), T...)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000051">
+					<Item class="ModuleScript" referent="RBX00000052">
 						<Properties>
 							<string name="Name">show</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26621,7 +28181,7 @@ return show
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000052">
+					<Item class="ModuleScript" referent="RBX00000053">
 						<Properties>
 							<string name="Name">source</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26659,7 +28219,7 @@ return source :: (<T>(initial_value: T) -> Source<T>) & (<T>() -> Source<T>)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000053">
+					<Item class="ModuleScript" referent="RBX00000054">
 						<Properties>
 							<string name="Name">spring</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26994,7 +28554,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000054">
+					<Item class="ModuleScript" referent="RBX00000055">
 						<Properties>
 							<string name="Name">switch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27115,7 +28675,7 @@ return switch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000055">
+					<Item class="ModuleScript" referent="RBX00000056">
 						<Properties>
 							<string name="Name">timeout</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27149,7 +28709,7 @@ return function() return timeout, update_timeouts end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000056">
+					<Item class="ModuleScript" referent="RBX00000057">
 						<Properties>
 							<string name="Name">untrack</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27181,7 +28741,7 @@ return untrack :: ( <T>(fn: () -> T) -> T ) & ( (fn: () -> ()) -> () )
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000057">
+					<Item class="ModuleScript" referent="RBX00000058">
 						<Properties>
 							<string name="Name">values</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27321,11 +28881,11 @@ return values
 					</Item>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000065">
+			<Item class="Folder" referent="RBX00000066">
 				<Properties>
 					<string name="Name">modules</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000064">
+				<Item class="ModuleScript" referent="RBX00000065">
 					<Properties>
 						<string name="Name">formatNumber</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -27377,11 +28937,11 @@ return formatNumber
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="Folder" referent="RBX00000063">
+				<Item class="Folder" referent="RBX00000064">
 					<Properties>
 						<string name="Name">upgradeTree</string>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX0000005A">
+					<Item class="ModuleScript" referent="RBX0000005B">
 						<Properties>
 							<string name="Name">upgradeState</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27484,7 +29044,7 @@ end
 return createUpgradeState]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005B">
+					<Item class="ModuleScript" referent="RBX0000005C">
 						<Properties>
 							<string name="Name">upgradeTree</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28653,7 +30213,7 @@ return createUpgradeTree
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005C">
+					<Item class="ModuleScript" referent="RBX0000005D">
 						<Properties>
 							<string name="Name">upgradeTreeData</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29516,7 +31076,7 @@ return upgradeTreeData
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005D">
+					<Item class="ModuleScript" referent="RBX0000005E">
 						<Properties>
 							<string name="Name">upgradeTreeSettings</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29594,29 +31154,29 @@ return upgradeTreeSettings
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="Folder" referent="RBX00000062">
+					<Item class="Folder" referent="RBX00000063">
 						<Properties>
 							<string name="Name">sounds</string>
 						</Properties>
-						<Item class="Sound" referent="RBX0000005E">
+						<Item class="Sound" referent="RBX0000005F">
 							<Properties>
 								<string name="Name">close</string>
 								<Content name="SoundId"><url>rbxassetid://134438769993456</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005F">
+						<Item class="Sound" referent="RBX00000060">
 							<Properties>
 								<string name="Name">hover</string>
 								<Content name="SoundId"><url>rbxassetid://86397706758188</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000060">
+						<Item class="Sound" referent="RBX00000061">
 							<Properties>
 								<string name="Name">open</string>
 								<Content name="SoundId"><url>rbxassetid://72320208051245</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000061">
+						<Item class="Sound" referent="RBX00000062">
 							<Properties>
 								<string name="Name">upgrade</string>
 								<Content name="SoundId"><url>rbxassetid://72362215248423</url></Content>
@@ -29626,7 +31186,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX00000084">
+	<Item class="StarterGui" referent="RBX00000086">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -29661,7 +31221,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX00000085">
+	<Item class="SoundService" referent="RBX00000087">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

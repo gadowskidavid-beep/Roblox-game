@@ -17,6 +17,7 @@ Open `BATTLE_PETS.rbxlx` in Roblox Studio to play or edit the game directly.
 - Upgrade your pets, speed, luck, and more through the upgrade system
 - Buy and drink persistent potions with timed Luck, Speed, Coin, and Shiny-charge effects
 - Use the live Gold Machine in Zone 3 (Normal → Golden, 750 Diamonds) and Rainbow Machine in Zone 6 (Golden → Rainbow, 2,500 Diamonds)
+- Buy QOF-18 Auto-Hatch Access for exactly 500 Diamonds: 10 minutes of station-bound x1/x2/x5/x10 paid egg batches every 3 seconds
 
 ### Side Mode: Campaign (Battle Cats-style)
 - Accessible through a portal in the main world
@@ -57,12 +58,13 @@ src/
       DataSchema.lua              -- Versioned player data schema and migrations
       PetService.lua              -- Pet hatching, inventory, canonical conversion mutations
       MachineService.lua          -- Atomic shared Gold/Rainbow payment, roll, conversion, and rollback authority
-      EggService.lua              -- Egg station logic and hatching
-      ShopService.lua             -- Inventory-only shop purchases
+      EggService.lua              -- Atomic paid egg batch transaction path
+      AutoHatchService.lua        -- Paid expiry, station sessions, scheduler, DTO/revision authority
+      ShopService.lua             -- Inventory-only shop purchases; legacy Auto-Hatch loop hard-disabled
       PotionService.lua           -- Potion consumption, effects, upgrades, Auto-Drink
       CampaignService.lua         -- Campaign level logic
       CurrencyService.lua         -- Coins and diamonds management
-      ZoneService.lua             -- Zone unlocking and destructibles
+      ZoneService.lua             -- Zone/destructible spawning plus private machine and egg-station registries
       QuestService.lua            -- Quest tracking and rewards
       MasteryService.lua          -- Mastery point buffs
       UpgradeService.lua          -- Player upgrades (delegates to QuestService)
@@ -84,11 +86,14 @@ src/
       CampaignData.lua            -- Campaign levels and enemies
       QuestData.lua               -- Quest definitions and rewards
       MasteryData.lua             -- Mastery tree definitions
+      AutoHatchClientSession.lua  -- Pure prompt generation and state-revision ownership
 
 tests/
   run_tests.lua                   -- Minimal test runner (describe/it/expect)
   DataSchema.spec.lua             -- Unit tests for schema and migrations
   PotionService.spec.lua          -- Potion consumption/effect transaction tests
+  AutoHatchService.spec.lua       -- Paid purchase/session/scheduler/expiry tests
+  AutoHatchClient.spec.lua        -- Rolling discovery and stale-response tests
 
 tools/
   generate_rbxlx.py               -- Generates BATTLE_PETS.rbxlx from src/ tree
@@ -107,10 +112,11 @@ The game uses a server-authoritative architecture where all state mutations happ
 | **DataSchema** | Defines the canonical player data shape, handles migrations and normalization |
 | **PetService** | Manages pet inventory and canonical mutation-free conversion preparation/rollback |
 | **MachineService** | Owns active Gold and Rainbow Machine admission, payment, consumption, roll, rollback, and Gold-only post-commit quest progress |
-| **EggService** | Handles egg hatching with rarity rolls and variant chances |
+| **EggService** | Owns atomic paid manual and automatic egg-batch economy, capacity, rollback, events, and quests |
+| **AutoHatchService** | Owns QOF-18 paid absolute expiry, strict Contract V1 DTOs, station sessions, revisions, cancellation, and the non-overlapping 3-second scheduler |
 | **ShopService** | Retains purchase ownership; potion purchases only add inventory |
 | **PotionService** | Owns timed potion sources, Shiny charges, upgrades, Auto-Drink, and effect state |
-| **ZoneService** | Spawns all zones plus private-authority Zone 3 Gold and Zone 6 Rainbow Machine stations, gates, egg stations, and destructibles |
+| **ZoneService** | Spawns all zones plus private-authority machine and concrete Egg-station registries, gates, and destructibles |
 | **CampaignService** | Runs campaign battles, energy system, and boss encounters |
 | **CurrencyService** | Awards and deducts coins/diamonds with validation |
 | **QuestService** | Tracks quest progress and distributes rewards |
@@ -144,7 +150,7 @@ Without Rojo, you can directly edit the `BATTLE_PETS.rbxlx` file in Roblox Studi
 python3 tools/generate_rbxlx.py
 ```
 
-This reads the entire `src/` tree and produces `BATTLE_PETS.rbxlx` with procedurally generated geometry for all 8 zones.
+The generator reads the explicit runtime manifests plus the dynamic package/module trees and produces `BATTLE_PETS.rbxlx` with procedurally generated geometry for all 8 zones.
 
 ## Testing & CI
 
@@ -164,7 +170,9 @@ Verify a freshly generated place against every runtime source with:
 python3 tests/verify_generated_place.py
 ```
 
-QOF-17's machine coverage includes both station registries, exact machine economics and chances, business-failure consumption, technical rollback, Shiny propagation, Gold-only quest progress, client generations, generic prompt routing, and byte-exact generated-place source parity.
+QOF-18 coverage adds Schema V9 absolute-expiry/offline boundaries, exact 500-Diamond atomic access purchases, strict V1 DTO/revision/deep-copy contracts, private Egg-station clone/token/property authority, x1/x2/x5/x10 no-fallback entitlements, first-tick/no-overlap/no-backlog scheduling, stop/leave/expiry generations, stable pause/resume reasons, rolling optional remote discovery, station UI generations, no Shiny-charge consumption, and 72-source generated-place parity. See [`docs/QOF-18-paid-auto-hatch.md`](docs/QOF-18-paid-auto-hatch.md).
+
+QOF-17's machine coverage remains in place for both station registries, exact machine economics and chances, business-failure consumption, technical rollback, Shiny propagation, Gold-only quest progress, client generations, and generic prompt routing.
 
 ### Linting
 

@@ -157,7 +157,14 @@ describe("BalanceConfig validation", function()
 		expect(BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled):toBeTrue()
-		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Shop.AutoHatch):toEqual({
+			RuntimeEnabled = true,
+			ContractVersion = 1,
+			cost = { currency = "diamonds", amount = 500 },
+			durationSeconds = 600,
+			intervalSeconds = 3,
+		})
 		expect(BalanceConfig.Potions.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Potions.ConsumeRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Enchanting.RuntimeEnabled):toBeFalse()

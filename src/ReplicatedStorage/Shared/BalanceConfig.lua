@@ -432,10 +432,17 @@ local BalanceConfig = {
 	},
 
 	Shop = {
-		-- The old timed Auto-Hatch product remains reserved in legacy balance and
-		-- persisted preferences remain intact, but no catalog or server processing
-		-- is permitted before its owning feature ships.
-		AutoHatchRuntimeEnabled = false,
+		-- QOF-18 paid Auto-Hatch is an independent, time-limited entitlement.
+		-- The explicit top-level alias remains for rolling source contracts while
+		-- the canonical definition below owns every runtime/economy constant.
+		AutoHatchRuntimeEnabled = true,
+		AutoHatch = {
+			RuntimeEnabled = true,
+			ContractVersion = 1,
+			cost = { currency = "diamonds", amount = 500 },
+			durationSeconds = 600,
+			intervalSeconds = 3,
+		},
 	},
 
 	Potions = {
@@ -693,7 +700,15 @@ function BalanceConfig.Validate()
 	assert(core.SpeedRuntimeEnabled == true, "Speed upgrades must be enabled in QOF-12")
 	assert(core.MagnetRuntimeEnabled == true, "Magnet upgrades must be enabled in QOF-12")
 	assert(core.DoubleLuckRuntimeEnabled == true, "Double Luck must be enabled in QOF-11")
-	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
+	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == true, "Shop Auto-Hatch must be enabled in QOF-18")
+	local autoHatch = BalanceConfig.Shop.AutoHatch
+	assert(type(autoHatch) == "table" and autoHatch.RuntimeEnabled == true, "Auto-Hatch gate is inactive")
+	assert(autoHatch.ContractVersion == 1, "Auto-Hatch contract version changed")
+	validateCost(autoHatch.cost, "Auto-Hatch access")
+	assert(autoHatch.cost.currency == "diamonds" and autoHatch.cost.amount == 500, "Auto-Hatch price changed")
+	assert(autoHatch.durationSeconds == 600, "Auto-Hatch duration changed")
+	assert(autoHatch.intervalSeconds == 3, "Auto-Hatch interval changed")
+	assert(BalanceConfig.Limits.AutoHatchInterval == autoHatch.intervalSeconds, "Auto-Hatch interval aliases diverged")
 
 	for name, value in pairs(BalanceConfig.Limits) do
 		assert(isFiniteNumber(value) and value > 0, name .. " limit must be positive")

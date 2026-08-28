@@ -223,6 +223,32 @@ function UIController.new()
 	self._hatchPurchaseCallbacks = {}
 	self._hatchPurchaseConnections = {}
 	self._activeHatchPurchaseEggType = nil
+	self._autoHatchState = {
+		contractVersion = 0,
+		stateRevision = -1,
+		serverTime = 0,
+		runtimeEnabled = false,
+		economy = {},
+		expiresAt = 0,
+		remainingSeconds = 0,
+		selectedCount = 1,
+		maximumCount = 1,
+		availableCounts = { 1, 2, 5, 10 },
+		generation = 0,
+		status = "STOPPED",
+		station = nil,
+		nextHatchAt = nil,
+		pauseReason = nil,
+		actionFeedback = nil,
+		inFlight = false,
+	}
+	self._autoHatchStateRevision = -1
+	self._autoHatchServerOffset = 0
+	self._autoHatchCallbacks = {}
+	self._autoHatchControls = {}
+	self._autoHatchLocalStation = nil
+	self._autoHatchActionInFlight = nil
+	self._autoHatchUiGeneration = 0
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
@@ -371,11 +397,13 @@ function UIController:init(remotes, playerData)
 			if self._screens.ShopScreen and self._screens.ShopScreen.Enabled then
 				self:_updateShopCardStates()
 			end
+			self:_updateAutoHatchControls()
 		end
 	end)
 
 	self:_refreshShopStateFromServer()
 	self:_refreshPotionStateFromServer()
+	self:_refreshAutoHatchStateFromServer()
 	self._initialized = true
 end
 
@@ -647,6 +675,93 @@ function UIController:_createHatchPurchaseDialog()
 		}
 	end
 
+	-- QOF-18 reuses this one station-owned surface; no second modal or hatch
+	-- presentation path is created. Closing it only clears local configuration.
+	optionContainer.CanvasSize = UDim2.fromOffset(0, 440)
+	local autoPanel = Instance.new("Frame")
+	autoPanel.Name = "AutoHatchControls"
+	autoPanel.Size = UDim2.new(1, -8, 0, 210)
+	autoPanel.BackgroundColor3 = Color3.fromRGB(28, 48, 82)
+	autoPanel.BorderSizePixel = 0
+	autoPanel.Parent = optionContainer
+	local autoCorner = Instance.new("UICorner")
+	autoCorner.CornerRadius = UDim.new(0, 12)
+	autoCorner.Parent = autoPanel
+
+	local autoTitle = Instance.new("TextLabel")
+	autoTitle.Name = "Target"
+	autoTitle.Size = UDim2.new(1, -16, 0, 32)
+	autoTitle.Position = UDim2.fromOffset(8, 6)
+	autoTitle.BackgroundTransparency = 1
+	autoTitle.Text = "AUTO-HATCH • SELECT THIS STATION"
+	autoTitle.TextColor3 = COLORS.DiamondCyan
+	autoTitle.Font = Enum.Font.GothamBlack
+	autoTitle.TextScaled = true
+	autoTitle.Parent = autoPanel
+	self._autoHatchControls.target = autoTitle
+
+	local autoStatus = Instance.new("TextLabel")
+	autoStatus.Name = "Status"
+	autoStatus.Size = UDim2.new(1, -16, 0, 42)
+	autoStatus.Position = UDim2.fromOffset(8, 40)
+	autoStatus.BackgroundTransparency = 1
+	autoStatus.Text = "Auto-Hatch state is syncing…"
+	autoStatus.TextColor3 = COLORS.White
+	autoStatus.Font = Enum.Font.GothamBold
+	autoStatus.TextScaled = true
+	autoStatus.TextWrapped = true
+	autoStatus.Parent = autoPanel
+	self._autoHatchControls.status = autoStatus
+
+	for index, count in ipairs({ 1, 2, 5, 10 }) do
+		local tier = Instance.new("TextButton")
+		tier.Name = "AutoHatchTier" .. tostring(count)
+		tier.Size = UDim2.new(0.22, 0, 0, 38)
+		tier.Position = UDim2.new(0.025 + (index - 1) * 0.245, 0, 0, 88)
+		tier.BackgroundColor3 = COLORS.NavSettings
+		tier.Text = "x" .. tostring(count)
+		tier.TextColor3 = COLORS.White
+		tier.Font = Enum.Font.GothamBlack
+		tier.TextScaled = true
+		tier.AutoButtonColor = false
+		tier.Parent = autoPanel
+		local tierCorner = Instance.new("UICorner")
+		tierCorner.CornerRadius = UDim.new(0, 9)
+		tierCorner.Parent = tier
+		tier.Activated:Connect(function()
+			if tier.Active and self._autoHatchCallbacks.setBatch then
+				self._autoHatchCallbacks.setBatch(count)
+			end
+		end)
+		self._autoHatchControls["tier" .. tostring(count)] = tier
+	end
+
+	for index, definition in ipairs({
+		{ key = "buy", text = "BUY ◆500" },
+		{ key = "start", text = "START" },
+		{ key = "stop", text = "STOP" },
+	}) do
+		local actionButton = Instance.new("TextButton")
+		actionButton.Name = "AutoHatch" .. string.upper(string.sub(definition.key, 1, 1)) .. string.sub(definition.key, 2)
+		actionButton.Size = UDim2.new(0.3, 0, 0, 52)
+		actionButton.Position = UDim2.new(0.025 + (index - 1) * 0.325, 0, 0, 143)
+		actionButton.BackgroundColor3 = index == 3 and COLORS.ButtonRed or COLORS.ButtonGreen
+		actionButton.Text = definition.text
+		actionButton.TextColor3 = COLORS.White
+		actionButton.Font = Enum.Font.GothamBlack
+		actionButton.TextScaled = true
+		actionButton.AutoButtonColor = false
+		actionButton.Parent = autoPanel
+		local actionCorner = Instance.new("UICorner")
+		actionCorner.CornerRadius = UDim.new(0, 10)
+		actionCorner.Parent = actionButton
+		actionButton.Activated:Connect(function()
+			local callback = self._autoHatchCallbacks[definition.key]
+			if actionButton.Active and callback then callback() end
+		end)
+		self._autoHatchControls[definition.key] = actionButton
+	end
+
 	local feedback = Instance.new("TextLabel")
 	feedback.Name = "Feedback"
 	feedback.Size = UDim2.new(1, -28, 0.075, 0)
@@ -748,6 +863,188 @@ function UIController:_createHatchPurchaseDialog()
 			self:_requestHatchPurchaseCancel()
 		end
 	end))
+end
+
+local AUTO_HATCH_REASON_TEXT = {
+	REJOIN_REQUIRES_STATION = "Choose a nearby egg station again after rejoining.",
+	BATCH_NOT_ENTITLED = "Selected tier is no longer entitled; choose an entitled tier.",
+	INSUFFICIENT_COINS = "Paused: not enough Coins for the full selected batch.",
+	INVENTORY_FULL = "Paused: not enough pet inventory slots for the full batch.",
+	HATCH_LOCKED = "Paused: another hatch is currently committing.",
+	STATION_INVALID = "Paused: the selected egg station failed integrity checks.",
+	ZONE_LOCKED = "Paused: the station zone is no longer unlocked.",
+	ACCESS_REQUIRED = "Buy Auto-Hatch Access before starting.",
+	ACCESS_EXPIRED = "Auto-Hatch Access expired.",
+	TOO_FAR = "Move closer to this exact egg station to start.",
+	CHARACTER_UNAVAILABLE = "Character is unavailable; try again after spawning.",
+	TECHNICAL_ERROR = "Paused safely after a technical error; retrying next tick.",
+	RATE_LIMITED = "Please wait before trying that Auto-Hatch action again.",
+	RUNTIME_UNAVAILABLE = "Auto-Hatch is temporarily unavailable on this server.",
+}
+
+function UIController:isAutoHatchRuntimeEnabled()
+	return self._autoHatchState.runtimeEnabled == true
+end
+
+function UIController:setAutoHatchCallbacks(callbacks)
+	self._autoHatchCallbacks = type(callbacks) == "table" and callbacks or {}
+end
+
+function UIController:setAutoHatchLocalStation(eggType, stationId)
+	self._autoHatchUiGeneration += 1
+	self._autoHatchState.actionFeedback = nil
+	self._autoHatchLocalStation = type(eggType) == "string" and type(stationId) == "string" and {
+		eggType = eggType,
+		stationId = stationId,
+	} or nil
+	self:_updateAutoHatchControls()
+end
+
+function UIController:clearAutoHatchLocalStation()
+	self._autoHatchUiGeneration += 1
+	self._autoHatchState.actionFeedback = nil
+	self._autoHatchLocalStation = nil
+	self:_updateAutoHatchControls()
+end
+
+function UIController:_applyAutoHatchState(payload)
+	if type(payload) ~= "table" or payload.contractVersion ~= ShopData.AutoHatchContractVersion then
+		return false
+	end
+	local revision = tonumber(payload.stateRevision)
+	if not revision or revision ~= revision or revision % 1 ~= 0 or revision < 0
+		or revision <= self._autoHatchStateRevision then
+		return false
+	end
+	self._autoHatchStateRevision = revision
+	self._autoHatchServerOffset = (tonumber(payload.serverTime) or os.time()) - os.time()
+	self._autoHatchState = {
+		contractVersion = ShopData.AutoHatchContractVersion,
+		stateRevision = revision,
+		serverTime = tonumber(payload.serverTime) or os.time(),
+		runtimeEnabled = payload.runtimeEnabled == true,
+		economy = type(payload.economy) == "table" and payload.economy or {},
+		expiresAt = tonumber(payload.expiresAt) or 0,
+		remainingSeconds = tonumber(payload.remainingSeconds) or 0,
+		selectedCount = tonumber(payload.selectedCount) or 1,
+		maximumCount = tonumber(payload.maximumCount) or 1,
+		availableCounts = type(payload.availableCounts) == "table" and payload.availableCounts or { 1, 2, 5, 10 },
+		generation = tonumber(payload.generation) or 0,
+		status = type(payload.status) == "string" and payload.status or "STOPPED",
+		station = type(payload.station) == "table" and payload.station or nil,
+		nextHatchAt = tonumber(payload.nextHatchAt),
+		pauseReason = type(payload.pauseReason) == "string" and payload.pauseReason or nil,
+		actionFeedback = type(payload.actionFeedback) == "table"
+			and payload.actionFeedback.action == "START"
+			and type(payload.actionFeedback.reason) == "string"
+			and type(payload.actionFeedback.stationId) == "string"
+			and {
+				action = "START",
+				reason = payload.actionFeedback.reason,
+				stationId = payload.actionFeedback.stationId,
+			} or nil,
+		inFlight = payload.inFlight == true,
+	}
+	self:_updateAutoHatchControls()
+	self:_updateShopCardStates()
+	return true
+end
+
+function UIController:updateAutoHatchState(payload)
+	return self:_applyAutoHatchState(payload)
+end
+
+function UIController:_refreshAutoHatchStateFromServer()
+	if not self._remotes then return end
+	local remote = self._remotes:FindFirstChild("GetAutoHatchState")
+	if not remote then
+		self:_updateAutoHatchControls()
+		return
+	end
+	local generation = self._autoHatchUiGeneration
+	task.spawn(function()
+		local ok, success, _, state = pcall(function()
+			return remote:InvokeServer({
+				contractVersion = ShopData.AutoHatchContractVersion,
+				action = "GET_STATE",
+			})
+		end)
+		if generation ~= self._autoHatchUiGeneration then
+			return
+		end
+		if ok and success and type(state) == "table" then
+			-- Revision and prompt generation jointly protect local action feedback.
+			self:_applyAutoHatchState(state)
+		else
+			self:_updateAutoHatchControls()
+		end
+	end)
+end
+
+function UIController:_updateAutoHatchControls()
+	local state = self._autoHatchState or {}
+	local now = os.time() + self._autoHatchServerOffset
+	local remaining = math.max(0, math.ceil((tonumber(state.expiresAt) or 0) - now))
+	local nextSeconds = state.nextHatchAt and math.max(0, math.ceil(state.nextHatchAt - now)) or nil
+	local station = self._autoHatchLocalStation
+	local actionFeedback = state.actionFeedback
+	local reason = actionFeedback and station
+		and actionFeedback.stationId == station.stationId
+		and actionFeedback.reason or state.pauseReason
+	local reasonText = AUTO_HATCH_REASON_TEXT[reason] or reason
+	if self._autoHatchControls.target then
+		self._autoHatchControls.target.Text = station
+			and ("AUTO-HATCH TARGET • " .. tostring(station.eggType))
+			or "AUTO-HATCH • SELECT THIS STATION"
+	end
+	if self._autoHatchControls.status then
+		local countdown = string.format("%d:%02d", math.floor(remaining / 60), remaining % 60)
+		local statusText = tostring(state.status or "STOPPED") .. " • ACCESS " .. countdown
+		if nextSeconds then statusText ..= " • NEXT " .. tostring(nextSeconds) .. "s" end
+		if state.inFlight then statusText ..= " • BATCH IN FLIGHT" end
+		if reasonText then statusText ..= "\n" .. reasonText end
+		self._autoHatchControls.status.Text = statusText
+	end
+	local busy = self._autoHatchActionInFlight ~= nil
+	local runtimeEnabled = state.runtimeEnabled == true
+	for _, count in ipairs({ 1, 2, 5, 10 }) do
+		local button = self._autoHatchControls["tier" .. tostring(count)]
+		if button then
+			local entitled = count <= (tonumber(state.maximumCount) or 1)
+			button.Active = runtimeEnabled and entitled and not busy
+			button.Selectable = button.Active
+			button.BackgroundColor3 = count == state.selectedCount and runtimeEnabled and COLORS.DiamondCyan
+				or (runtimeEnabled and entitled and COLORS.NavSettings or Color3.fromRGB(90, 95, 108))
+		end
+	end
+	local buy = self._autoHatchControls.buy
+	local start = self._autoHatchControls.start
+	local stop = self._autoHatchControls.stop
+	if buy then
+		buy.Active = state.runtimeEnabled == true and remaining <= 0 and not busy and self._diamonds >= 500
+		buy.Selectable = buy.Active
+		buy.Text = busy == "buy" and "BUYING…"
+			or (not runtimeEnabled and "UNAVAILABLE" or (remaining > 0 and "ACCESS ACTIVE" or "BUY ◆500"))
+	end
+	if start then
+		start.Active = runtimeEnabled and remaining > 0 and station ~= nil and not busy
+		start.Selectable = start.Active
+		start.Text = busy == "start" and "STARTING…" or "START"
+	end
+	if stop then
+		stop.Active = runtimeEnabled and (state.status == "RUNNING" or state.status == "PAUSED") and not busy
+		stop.Selectable = stop.Active
+		stop.Text = busy == "stop" and "STOPPING…" or "STOP"
+	end
+end
+
+function UIController:setAutoHatchActionInFlight(action)
+	self._autoHatchActionInFlight = action
+	if action ~= nil then
+		self._autoHatchState.actionFeedback = nil
+	end
+	self:_updateAutoHatchControls()
+	self:_updateShopCardStates()
 end
 
 function UIController:setHatchPurchaseCallbacks(confirmCallback, cancelCallback, refreshCallback)
@@ -3745,14 +4042,25 @@ function UIController:_updateShopCardStates()
 		local item = ShopData.Items[itemId]
 		if item and card.button and card.button.Parent then
 			local isPotion = item.itemType == "potion"
+			local isAutoHatch = item.itemType == "autoHatch"
+			local autoNow = os.time() + self._autoHatchServerOffset
+			local autoRemaining = math.max(0, math.ceil(
+				(tonumber(self._autoHatchState.expiresAt) or 0) - autoNow
+			))
 			local potionCount = isPotion and safePotionCount(inventory[itemId], maxPotionInventory) or 0
 			local isMaxed = isPotion and potionCount >= maxPotionInventory
 				or item.permanent and ownedSlots >= maxSlots
-			local isPurchasing = self._shopPurchaseInFlight ~= nil
+			local isPurchasing = self._shopPurchaseInFlight ~= nil or self._autoHatchActionInFlight ~= nil
 			local isAffordable = self._diamonds >= item.cost
+			local autoRuntimeUnavailable = isAutoHatch
+				and self._autoHatchState.contractVersion == ShopData.AutoHatchContractVersion
+				and self._autoHatchState.runtimeEnabled ~= true
 			local contractBlocked = isPotion and not purchaseReady
-			local enabled = not contractBlocked and not isMaxed and not isPurchasing
+				or isAutoHatch and self._autoHatchState.contractVersion ~= ShopData.AutoHatchContractVersion
+			local enabled = not contractBlocked and not autoRuntimeUnavailable
+				and not isMaxed and not isPurchasing
 				and self._potionActionInFlight == nil and isAffordable
+				and (not isAutoHatch or autoRemaining <= 0)
 
 			if isPotion then
 				local buffState = activeBuffs[item.buffType]
@@ -3772,6 +4080,22 @@ function UIController:_updateShopCardStates()
 				card.status.Text = "OWNED " .. tostring(potionCount) .. " • " .. activeText
 				card.status.TextColor3 = activeText == "INACTIVE"
 					and Color3.fromRGB(70, 90, 105) or Color3.fromRGB(20, 115, 48)
+			elseif isAutoHatch then
+				if autoRuntimeUnavailable then
+					card.status.Text = "UNAVAILABLE • TRY ANOTHER SERVER"
+					card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
+				elseif autoRemaining > 0 then
+					card.status.Text = string.format(
+						"ACTIVE %d:%02d • %s",
+						math.floor(autoRemaining / 60),
+						autoRemaining % 60,
+						tostring(self._autoHatchState.status or "STOPPED")
+					)
+					card.status.TextColor3 = Color3.fromRGB(20, 115, 48)
+				else
+					card.status.Text = "INACTIVE • 10 MINUTES"
+					card.status.TextColor3 = Color3.fromRGB(70, 90, 105)
+				end
 			elseif isMaxed then
 				card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • MAXED"
 				card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
@@ -3780,10 +4104,14 @@ function UIController:_updateShopCardStates()
 				card.status.TextColor3 = Color3.fromRGB(88, 52, 78)
 			end
 
-			if self._shopPurchaseInFlight == itemId then
+			if self._shopPurchaseInFlight == itemId or (isAutoHatch and self._autoHatchActionInFlight == "buy") then
 				card.button.Text = "BUYING..."
 			elseif contractBlocked then
 				card.button.Text = "SYNCING..."
+			elseif autoRuntimeUnavailable then
+				card.button.Text = "UNAVAILABLE"
+			elseif isAutoHatch and autoRemaining > 0 then
+				card.button.Text = "ACCESS ACTIVE"
 			elseif isMaxed then
 				card.button.Text = "MAXED"
 			elseif not isAffordable then
@@ -4025,6 +4353,16 @@ function UIController:_purchaseShopItem(itemId)
 	local item = ShopData.Items[itemId]
 	if not item or self._shopPurchaseInFlight then return end
 	local isPotion = item.itemType == "potion"
+	local isAutoHatch = item.itemType == "autoHatch"
+	if isAutoHatch then
+		if self._diamonds < item.cost then
+			self:_setShopFeedback("You need more diamonds!", COLORS.ButtonRed)
+			return
+		end
+		local callback = self._autoHatchCallbacks.buy
+		if callback then callback() end
+		return
+	end
 	if isPotion and (self._shopState.contractVersion ~= ShopData.ContractVersion
 		or self._shopState.purchaseMode ~= ShopData.PurchaseMode) then
 		self:_setShopFeedback("Potion inventory is still syncing.", COLORS.ButtonRed)
@@ -5023,6 +5361,7 @@ function UIController:_refreshScreenData(screenName)
 	elseif screenName == "ShopScreen" then
 		self:_refreshShopStateFromServer()
 		self:_refreshPotionStateFromServer()
+		self:_refreshAutoHatchStateFromServer()
 	end
 end
 

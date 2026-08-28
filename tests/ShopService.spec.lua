@@ -399,10 +399,11 @@ describe("ShopService retained shop contracts", function()
 		expect(#eventPayloads):toBe(0)
 	end)
 
-	it("keeps AutoHatch specifically gated and never processes stale state", function()
+	it("keeps legacy AutoHatch fail-closed while the dedicated service owns QOF-18", function()
 		resetState()
-		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
-		expect(ShopData.Items.AutoHatch):toBeNil()
+		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeTrue()
+		expect(ShopData.Items.AutoHatch.itemType):toBe("autoHatch")
+		expect(ShopData.Items.AutoHatch.cost):toBe(500)
 		local success, message = ShopService.purchaseItem(player, "AutoHatch")
 		expect(success):toBeFalse()
 		expect(message):toBe("Auto-Hatch is not available yet")
@@ -447,9 +448,10 @@ describe("ShopService retained shop contracts", function()
 end)
 
 
-describe("ShopData QOF-13 inventory-only presentation", function()
-	it("exposes only the five canonical potions plus ExtraEquipSlot", function()
+describe("ShopData QOF-18 presentation", function()
+	it("exposes five canonical potions, paid Auto-Hatch, and ExtraEquipSlot", function()
 		expect(ShopData.ContractVersion):toBe(2)
+		expect(ShopData.AutoHatchContractVersion):toBe(1)
 		expect(ShopData.PurchaseMode):toBe("inventoryOnly")
 		expect(ShopData.MaxPotionInventory):toBe(999)
 		expect(ShopData.Order):toEqual({
@@ -458,11 +460,13 @@ describe("ShopData QOF-13 inventory-only presentation", function()
 			"SpeedPotion",
 			"CoinPotion",
 			"ShinyPotion",
+			"AutoHatch",
 			"ExtraEquipSlot",
 		})
 		expect(ShopData.Items.LuckyPotion):toBeNil()
 		expect(ShopData.Items.PowerPotion):toBeNil()
-		expect(ShopData.Items.AutoHatch):toBeNil()
+		expect(ShopData.Items.AutoHatch.cost):toBe(500)
+		expect(ShopData.Items.AutoHatch.durationSeconds):toBe(600)
 		for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
 			local item = ShopData.Items[potionId]
 			expect(item.itemType):toBe("potion")

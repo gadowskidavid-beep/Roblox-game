@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that a generated Battle Pets place embeds every QOF-17 runtime source."""
+"""Verify that a generated Battle Pets place embeds every QOF-18 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -18,10 +18,12 @@ EXPECTED_SOURCES = {
     "PetVariantMath": "src/ReplicatedStorage/Shared/PetVariantMath.lua",
     "PetVariantPresentation": "src/ReplicatedStorage/Shared/PetVariantPresentation.lua",
     "HatchCinematicPolicy": "src/ReplicatedStorage/Shared/HatchCinematicPolicy.lua",
+    "AutoHatchClientSession": "src/ReplicatedStorage/Shared/AutoHatchClientSession.lua",
     "PetService": "src/ServerScriptService/Services/PetService.lua",
     "MachineService": "src/ServerScriptService/Services/MachineService.lua",
     "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
     "EggService": "src/ServerScriptService/Services/EggService.lua",
+    "AutoHatchService": "src/ServerScriptService/Services/AutoHatchService.lua",
     "ShopService": "src/ServerScriptService/Services/ShopService.lua",
     "PotionService": "src/ServerScriptService/Services/PotionService.lua",
     "UpgradeTreeService": "src/ServerScriptService/Services/UpgradeTreeService.lua",
@@ -34,7 +36,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 68, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 70, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -56,7 +58,7 @@ def all_expected_runtime_paths() -> list[Path]:
         *sorted((ROOT / "src/StarterPlayer/StarterPlayerScripts").glob("*Controller.lua")),
     ]
     assert len(paths) == EXPECTED_SCRIPT_COUNTS["ModuleScript"] + 2, (
-        f"expected 70 runtime source paths, found {len(paths)}"
+        f"expected {EXPECTED_SCRIPT_COUNTS['ModuleScript'] + 2} runtime source paths, found {len(paths)}"
     )
     return paths
 
@@ -79,7 +81,9 @@ def main() -> None:
     for required in (
         b"MovementService.bindPlayer(player)",
         b"PickupService.onPlayerRemoving(player)",
-        b"DataService.bindToClose(PickupService.settleAllPlayers)",
+        b"DataService.bindToClose(function()",
+        b"AutoHatchService.prepareForShutdown()",
+        b"return PickupService.settleAllPlayers()",
         b"request.contractVersion == 2",
         b"ShopService.onPlayerRemoving(player)",
         b"PotionService.onPlayerAdded(player)",
@@ -243,6 +247,143 @@ def main() -> None:
     assert b'FindFirstChild("MakeGoldenBtn")' not in ui_source
     assert b'FindFirstChild("ConvertToGoldenPet")' not in ui_source
 
+    # QOF-18 paid Auto-Hatch is a separate strict service; legacy ShopService
+    # compatibility symbols remain discoverable but can never schedule work.
+    auto_hatch_source = (
+        ROOT / "src/ServerScriptService/Services/AutoHatchService.lua"
+    ).read_bytes()
+    for required in (
+        b'local CONTRACT_VERSION = 1',
+        b'DEFINITION.cost.currency',
+        b'DEFINITION.cost.amount',
+        b'DEFINITION.durationSeconds',
+        b'DEFINITION.intervalSeconds',
+        b'beginSpendTransaction',
+        b'commitSpendTransaction',
+        b'rollbackSpendTransaction',
+        b'REJOIN_REQUIRES_STATION',
+        b'BATCH_NOT_ENTITLED',
+        b'consumeShinyCharges = false',
+        b'function AutoHatchService._processTick',
+        b'if session.inFlight or now < session.nextHatchAt then return end',
+        b'function AutoHatchService.onPlayerRemoving',
+        b'function AutoHatchService.prepareForShutdown',
+        b'or value % 1 ~= 0',
+        b'local function dependenciesReady()',
+        b'local function runtimeAvailable()',
+        b'RUNTIME_UNAVAILABLE',
+        b'AutoHatchService._schedulerSpawn',
+        b'AutoHatchService._actionFeedback[userId] = {',
+        b'local function disableRuntimeAfterSchedulerFailure()',
+        b'fireStateUpdated(player, state)',
+    ):
+        assert required in auto_hatch_source, f"missing QOF-18 service contract: {required!r}"
+
+    data_schema_source = (
+        ROOT / "src/ServerScriptService/Services/DataSchema.lua"
+    ).read_bytes()
+    assert b'DataSchema.VERSION = 9' in data_schema_source
+    assert b'autoHatchExpiresAt = 0' in data_schema_source
+    assert b'normalizeAutoHatchExpiry' in data_schema_source
+    assert b'or value % 1 ~= 0' in data_schema_source
+
+    for required in (
+        b'local eggStationRegistry = {}',
+        b'EggStationIdentityToken',
+        b'validateEggRecordIntegrity',
+        b'hasConflictingEggStationIdentity',
+        b'validateSelection = function',
+        b'requireProximity == true',
+        b'return validateMachineActivation, buildEggAuthority()',
+        b'pedestal.Color ~= record.pedestalColor',
+        b'pedestal.Material ~= record.pedestalMaterial',
+        b'interactZone.Shape ~= record.interactZoneShape',
+        b'interactZone.Color ~= record.interactZoneColor',
+        b'interactZone.Material ~= record.interactZoneMaterial',
+    ):
+        assert required in zone_service_source, f"missing QOF-18 egg authority: {required!r}"
+
+    for required in (
+        b'"AutoHatchStateUpdated"',
+        b'"PurchaseAutoHatch"',
+        b'"GetAutoHatchState"',
+        b'"SetAutoHatchBatch"',
+        b'"StartAutoHatch"',
+        b'"StopAutoHatch"',
+        b'AutoHatchService.onPlayerRemoving(player)',
+        b'AutoHatchService.onPlayerAdded(player)',
+        b'AutoHatchService.prepareForShutdown()',
+        b'AutoHatchService.rejectStart(player, request, "RATE_LIMITED")',
+        b'Legacy Auto-Hatch contract unavailable',
+    ):
+        assert required in main_source, f"missing QOF-18 server wiring: {required!r}"
+    assert main_source.count(b"AutoHatchService.onPlayerAdded(player)") == 2, (
+        "normal and already-connected player paths must both reconcile Auto-Hatch"
+    )
+    existing_player_bootstrap = main_source.split(
+        b"-- Handle players who joined before script loaded", 1
+    )[1].split(b"-- Helper: update leaderstats", 1)[0]
+    bootstrap_load = existing_player_bootstrap.index(b"DataService.loadPlayerData(player)")
+    bootstrap_potion = existing_player_bootstrap.index(b"PotionService.onPlayerAdded(player)")
+    bootstrap_auto_hatch = existing_player_bootstrap.index(b"AutoHatchService.onPlayerAdded(player)")
+    bootstrap_movement = existing_player_bootstrap.index(b"MovementService.bindPlayer(player)")
+    assert bootstrap_load < bootstrap_potion < bootstrap_auto_hatch < bootstrap_movement, (
+        "already-connected players must use profile -> potion -> Auto-Hatch -> movement order"
+    )
+    assert main_source.index(b"AutoHatchService.init(") < main_source.index(
+        b"AutoHatchService.start()"
+    ), "Auto-Hatch dependencies must be installed before scheduler startup"
+    assert main_source.index(b'AutoHatchService.onPlayerRemoving(player)') < main_source.index(
+        b'EggService.onPlayerRemoving(player)'
+    ), "Auto-Hatch must invalidate before EggService cleanup"
+
+    egg_service_source = (
+        ROOT / "src/ServerScriptService/Services/EggService.lua"
+    ).read_bytes()
+    assert b'local function defaultStationValidator' not in egg_service_source
+    assert b'return defaultStationValidator(player, eggType)' not in egg_service_source
+    assert b'partial world bootstrap must never fall back' in egg_service_source
+
+    assert b'function ShopService._processAutoHatch()\n\treturn false' in shop_service_source
+    assert b'local highestZone' not in shop_service_source
+    assert b'task.wait(Config.AutoHatchInterval' not in shop_service_source
+
+    for required in (
+        b'FindFirstChild("PurchaseAutoHatch")',
+        b'FindFirstChild("AutoHatchStateUpdated")',
+        b'GetAttribute("EggStationId")',
+        b'GetAttribute("EggStationIdentityToken")',
+        b'AutoHatchClientSession.finishRequest',
+        b'Direct A-to-B prompt switches revoke both request and busy UI ownership.',
+        b'Cancel/navigation owns the same invalidation boundary as PromptHidden:',
+        b're-triggering must reinstall it before controls reopen.',
+        b'if autoHatchSession.prompt ~= prompt then',
+        b'autoHatchGlobalToken += 1',
+        b'local applied = applyAutoHatchState(state)',
+        b'Valid semantic failures carry revisioned authoritative actionFeedback',
+        b'uiController:clearAutoHatchLocalStation()',
+        b'not uiController:isAutoHatchRuntimeEnabled()',
+    ):
+        assert required in client_source, f"missing QOF-18 rolling client contract: {required!r}"
+    assert b'WaitForChild("PurchaseAutoHatch")' not in client_source
+    assert b'WaitForChild("AutoHatchStateUpdated")' not in client_source
+    for required in (
+        b'autoPanel.Name = "AutoHatchControls"',
+        b'AUTO_HATCH_REASON_TEXT',
+        b'revision <= self._autoHatchStateRevision',
+        b'generation ~= self._autoHatchUiGeneration',
+        b'autoRuntimeUnavailable',
+        b'card.button.Text = "UNAVAILABLE"',
+        b'function UIController:isAutoHatchRuntimeEnabled()',
+        b'item.itemType == "autoHatch"',
+        b'self._autoHatchUiGeneration += 1',
+        b'actionFeedback = type(payload.actionFeedback) == "table"',
+        b'actionFeedback.stationId == station.stationId',
+        b'start.Active = runtimeEnabled and remaining > 0',
+        b'RUNTIME_UNAVAILABLE = "Auto-Hatch is temporarily unavailable on this server."',
+    ):
+        assert required in ui_source, f"missing QOF-18 UI contract: {required!r}"
+
     root = ET.parse(PLACE).getroot()
     scripts: dict[str, list[str]] = {}
     counts: dict[str, int] = {}
@@ -300,8 +441,8 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-17 runtime source exactly once")
-    print("PASS: all 70 generated script sources have byte-exact source parity")
+    print("PASS: generated place embeds every QOF-18 runtime source exactly once")
+    print(f"PASS: all {EXPECTED_SCRIPT_COUNTS['ModuleScript'] + 2} generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

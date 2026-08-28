@@ -260,6 +260,7 @@ function DataService.getClientData(player)
 		upgrades = DataSchema.deepCopy(data.upgrades),
 		upgradeTreePurchases = DataSchema.deepCopy(data.upgradeTreePurchases or {}),
 		hatchPreferences = DataSchema.deepCopy(data.hatchPreferences or { preferredBatchCount = 1 }),
+		autoHatchExpiresAt = data.autoHatchExpiresAt or 0,
 		questStats = DataSchema.deepCopy(data.questStats),
 		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,

@@ -27,11 +27,17 @@ end
 
 local cframeMt = {}
 cframeMt.__eq = function(left, right)
-	return left.Position == right.Position
+	return left.Position == right.Position and left._rotation == right._rotation
+end
+cframeMt.__mul = function(left, right)
+	return setmetatable({ Position = left.Position, _rotation = right._rotation }, cframeMt)
 end
 local CFrame = {}
 function CFrame.new(x, y, z)
-	return setmetatable({ Position = Vector3.new(x, y, z) }, cframeMt)
+	return setmetatable({ Position = Vector3.new(x, y, z), _rotation = "identity" }, cframeMt)
+end
+function CFrame.Angles(x, y, z)
+	return setmetatable({ Position = Vector3.new(0, 0, 0), _rotation = tostring(x) .. ":" .. tostring(y) .. ":" .. tostring(z) }, cframeMt)
 end
 
 local Color3 = {}
@@ -149,11 +155,15 @@ function HttpService:GenerateGUID()
 	guidCounter = guidCounter + 1
 	return "server-machine-token-" .. tostring(guidCounter)
 end
+local PetData = originalRequire("src/ReplicatedStorage/Shared/PetData")
+local eggCosts = {}
+for zoneId = 1, 8 do eggCosts[zoneId] = { Coins = zoneId * 100 } end
 local ReplicatedStorage = {
 	Shared = {
-		Config = {},
+		Config = { EggCosts = eggCosts },
 		ZoneData = { Zones = {} },
 		BalanceConfig = BalanceConfig,
+		PetData = PetData,
 	},
 }
 local gameMock = { ReplicatedStorage = ReplicatedStorage }
@@ -168,16 +178,27 @@ end
 rawset(_G, "Vector3", Vector3)
 rawset(_G, "CFrame", CFrame)
 rawset(_G, "Color3", Color3)
+rawset(_G, "UDim", { new = function(scale, offset) return { Scale = scale, Offset = offset } end })
+rawset(_G, "UDim2", {
+	fromOffset = function(x, y) return { X = x, Y = y } end,
+	fromScale = function(x, y) return { X = x, Y = y } end,
+	new = function(...) return { ... } end,
+})
 rawset(_G, "Instance", Instance)
 rawset(_G, "Enum", {
-	Material = { Metal = "Metal", Neon = "Neon" },
-	PartType = { Block = "Block" },
+	Material = { Metal = "Metal", Neon = "Neon", Marble = "Marble", SmoothPlastic = "SmoothPlastic" },
+	PartType = { Block = "Block", Cylinder = "Cylinder", Ball = "Ball" },
+	KeyCode = { E = "E" },
+	Font = { GothamBold = "GothamBold" },
+	FillDirection = { Vertical = "Vertical" },
+	HorizontalAlignment = { Center = "Center" },
 })
 rawset(_G, "game", gameMock)
 rawset(_G, "require", function(path)
 	if path == ReplicatedStorage.Shared.Config then return ReplicatedStorage.Shared.Config end
 	if path == ReplicatedStorage.Shared.ZoneData then return ReplicatedStorage.Shared.ZoneData end
 	if path == BalanceConfig then return BalanceConfig end
+	if path == PetData then return PetData end
 	return originalRequire(path)
 end)
 
@@ -198,7 +219,6 @@ rawset(_G, "require", originalRequire)
 
 ZoneService._spawnLobby = function() end
 ZoneService._spawnZoneGates = function() end
-ZoneService._spawnEggStations = function() end
 ZoneService._spawnWorldDecoration = function() end
 ZoneService._spawnBarriers = function() end
 ZoneService.spawnZone = function(zoneId)
@@ -241,7 +261,7 @@ local function createFixture()
 	workspace.Name = "Workspace"
 	profile = { unlockedZones = { 1, 2, 3, 4, 5, 6 } }
 	guidCounter = 0
-	local validator = ZoneService.init(dataService, {}, {})
+	local validator, eggAuthority = ZoneService.init(dataService, {}, {})
 	local zones = workspace:FindFirstChild("Zones")
 	local gold = station(zones, "Gold")
 	local rainbow = station(zones, "Rainbow")
@@ -258,6 +278,7 @@ local function createFixture()
 	player.Character = character
 	return {
 		validator = validator,
+		eggAuthority = eggAuthority,
 		zones = zones,
 		gold = gold,
 		rainbow = rainbow,
@@ -295,8 +316,8 @@ describe("QOF-17 machine station authority", function()
 		expect(fixture.gold.prompt.ObjectText):toBe("Gold Machine")
 		expect(fixture.rainbow.prompt.ObjectText):toBe("Rainbow Machine")
 		expect(fixture.gold.token ~= fixture.rainbow.token):toBeTrue()
-		expect(fixture.gold.token):toBe("server-machine-token-1")
-		expect(fixture.rainbow.token):toBe("server-machine-token-2")
+		expect(fixture.gold.token):toBe("server-machine-token-9")
+		expect(fixture.rainbow.token):toBe("server-machine-token-10")
 	end)
 
 	it("binds each machine ID to only its own GUID, unlock, HRP, and 12-stud radius", function()
@@ -412,5 +433,127 @@ describe("QOF-17 machine station authority", function()
 		expect(fixture.validator(fixture.player, "GoldMachine", fixture.gold.token)):toBeFalse()
 		fixture.root.Parent = fixture.character
 		expectAllowed(fixture, fixture.gold)
+	end)
+end)
+
+
+local function eggStationFixture(fixture, eggType)
+	local folder = workspace:FindFirstChild("EggStations")
+	for _, candidate in ipairs(folder:GetChildren()) do
+		if candidate:IsA("BasePart") and candidate.Name == "EggModel"
+			and candidate:GetAttribute("EggType") == eggType then
+			return {
+				folder = folder,
+				pedestal = folder:FindFirstChild("EggStation_" .. eggType),
+				egg = candidate,
+				interactZone = folder:FindFirstChild("InteractZone_" .. eggType),
+				stationId = candidate:GetAttribute("EggStationId"),
+				token = candidate:GetAttribute("EggStationIdentityToken"),
+				prompt = candidate:FindFirstChild("HatchPrompt"),
+				zone = candidate:GetAttribute("EggZoneId"),
+			}
+		end
+	end
+	return nil
+end
+
+describe("QOF-18 egg station authority", function()
+	it("creates stable bounded IDs with unique per-server capabilities", function()
+		local fixture = createFixture()
+		expect(type(fixture.eggAuthority)):toBe("table")
+		local basic = eggStationFixture(fixture, "BasicEgg")
+		local premium = eggStationFixture(fixture, "PremiumEgg")
+		expect(basic.stationId):toBe("EggStation-1-BasicEgg")
+		expect(#basic.stationId <= 64):toBeTrue()
+		expect(type(basic.token)):toBe("string")
+		expect(type(premium.token)):toBe("string")
+		expect(basic.token ~= premium.token):toBeTrue()
+	end)
+
+	it("requires exact station, token, zone, character, and start distance", function()
+		local fixture = createFixture()
+		local basic = eggStationFixture(fixture, "BasicEgg")
+		local premium = eggStationFixture(fixture, "PremiumEgg")
+		fixture.root.Position = basic.egg.Position
+		local selected = fixture.eggAuthority.validateSelection(
+			fixture.player, basic.stationId, basic.token, "BasicEgg", 1, true
+		)
+		expect(selected):toEqual({ stationId = basic.stationId, eggType = "BasicEgg", zone = 1 })
+		expect(fixture.eggAuthority.validateSelection(
+			fixture.player, basic.stationId, premium.token, "BasicEgg", 1, true
+		)):toBeNil()
+		expect(fixture.eggAuthority.validateSelection(
+			fixture.player, basic.stationId, basic.token, "PremiumEgg", 1, true
+		)):toBeNil()
+
+		fixture.root.Position = basic.egg.Position + Vector3.new(10.001, 0, 0)
+		expect(fixture.eggAuthority.validateSelection(
+			fixture.player, basic.stationId, basic.token, "BasicEgg", 1, true
+		)):toBeNil()
+		-- Follow-up ticks use only the private server call; no client flag can grant it.
+		expect(fixture.eggAuthority.validateSelection(
+			fixture.player, basic.stationId, basic.token, "BasicEgg", 1, false
+		).eggType):toBe("BasicEgg")
+		profile.unlockedZones = { 2 }
+		expect(fixture.eggAuthority.validateSelection(
+			fixture.player, basic.stationId, basic.token, "BasicEgg", 1, false
+		)):toBeNil()
+	end)
+
+	it("fails closed for clone, token-swap, prompt, property, and ancestry tampering", function()
+		local fixture = createFixture()
+		local basic = eggStationFixture(fixture, "BasicEgg")
+		local premium = eggStationFixture(fixture, "PremiumEgg")
+		fixture.root.Position = basic.egg.Position
+		local function allowed()
+			return fixture.eggAuthority.validateSelection(
+				fixture.player, basic.stationId, basic.token, "BasicEgg", 1, true
+			) ~= nil
+		end
+		expect(allowed()):toBeTrue()
+
+		local oldPromptDistance = basic.prompt.MaxActivationDistance
+		basic.prompt.MaxActivationDistance = 99
+		expect(allowed()):toBeFalse()
+		basic.prompt.MaxActivationDistance = oldPromptDistance
+		expect(allowed()):toBeTrue()
+
+		local oldSize = basic.egg.Size
+		basic.egg.Size = Vector3.new(1, 1, 1)
+		expect(allowed()):toBeFalse()
+		basic.egg.Size = oldSize
+		expect(allowed()):toBeTrue()
+
+		local function expectEggStationTamperDenied(target, property, forgedValue)
+			local original = target[property]
+			target[property] = forgedValue
+			expect(allowed()):toBeFalse()
+			target[property] = original
+			expect(allowed()):toBeTrue()
+		end
+		expectEggStationTamperDenied(basic.pedestal, "Color", Color3.fromRGB(1, 2, 3))
+		expectEggStationTamperDenied(basic.pedestal, "Material", "ForgedMaterial")
+		expectEggStationTamperDenied(basic.interactZone, "Shape", Enum.PartType.Ball)
+		expectEggStationTamperDenied(basic.interactZone, "Color", Color3.fromRGB(4, 5, 6))
+		expectEggStationTamperDenied(basic.interactZone, "Material", "ForgedMaterial")
+
+		local oldToken = basic.egg:GetAttribute("EggStationIdentityToken")
+		basic.egg:SetAttribute("EggStationIdentityToken", premium.token)
+		expect(allowed()):toBeFalse()
+		basic.egg:SetAttribute("EggStationIdentityToken", oldToken)
+
+		local clone = Instance.new("Part")
+		clone.Name = "EggModel"
+		clone:SetAttribute("EggStationId", basic.stationId)
+		clone:SetAttribute("EggStationIdentityToken", basic.token)
+		clone.Parent = basic.folder
+		expect(allowed()):toBeFalse()
+		clone:Destroy()
+		expect(allowed()):toBeTrue()
+
+		basic.prompt.Parent = basic.folder
+		expect(allowed()):toBeFalse()
+		basic.prompt.Parent = basic.egg
+		expect(allowed()):toBeTrue()
 	end)
 end)

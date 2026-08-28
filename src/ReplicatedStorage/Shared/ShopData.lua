@@ -9,6 +9,7 @@ local BalanceConfig = require(script.Parent.BalanceConfig)
 local ShopData = {
 	ContractVersion = 2,
 	PotionContractVersion = 1,
+	AutoHatchContractVersion = BalanceConfig.Shop.AutoHatch.ContractVersion,
 	PurchaseMode = "inventoryOnly",
 	MaxPotionInventory = BalanceConfig.Potions.Persistence.MaxInventoryPerPotion,
 }
@@ -19,6 +20,7 @@ ShopData.Order = {
 	"SpeedPotion",
 	"CoinPotion",
 	"ShinyPotion",
+	"AutoHatch",
 	"ExtraEquipSlot",
 }
 
@@ -80,6 +82,19 @@ ShopData.Items = {
 		color = { 245, 92, 191 },
 		accentColor = { 255, 202, 239 },
 	}),
+	AutoHatch = {
+		itemType = "autoHatch",
+		displayName = "Auto-Hatch Access",
+		description = "10 minutes of paid, station-bound automatic egg batches.",
+		permanent = false,
+		artType = "pawPlus",
+		color = { 68, 145, 220 },
+		accentColor = { 190, 225, 255 },
+		durationLabel = "10 minutes",
+		cost = BalanceConfig.Shop.AutoHatch.cost.amount,
+		currency = BalanceConfig.Shop.AutoHatch.cost.currency,
+		durationSeconds = BalanceConfig.Shop.AutoHatch.durationSeconds,
+	},
 	ExtraEquipSlot = {
 		itemType = "permanent",
 		displayName = "Extra Equip Slot",
