@@ -435,7 +435,10 @@ local BalanceConfig = {
 	},
 
 	Potions = {
-		RuntimeEnabled = false,
+		-- QOF-13 keeps purchases inventory-only; QOF-14 activates a separate
+		-- server-authoritative consume/effect contract.
+		RuntimeEnabled = true,
+		ConsumeRuntimeEnabled = true,
 		Persistence = {
 			MaxInventoryPerPotion = 999,
 			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
@@ -636,12 +639,50 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
 		Machines = BalanceConfig.Machines,
-		Potions = BalanceConfig.Potions,
 		Enchanting = BalanceConfig.Enchanting,
 	}
 	for name, section in pairs(futureSections) do
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
+
+	-- QOF-15 ships the complete machine transaction definition while keeping its
+	-- public runtime dormant. These exact values are the sole authority used by
+	-- MachineService and must not drift toward the retained legacy conversion.
+	local machines = BalanceConfig.Machines
+	assert(machines.RuntimeEnabled == false, "Machines must remain publicly dormant in QOF-15")
+	assert(machines.MinInputs == 1 and machines.MaxInputs == 7, "machine input bounds must be 1..7")
+	local expectedMachineChances = { 0.13, 0.26, 0.39, 0.50, 0.63, 0.88, 1.00 }
+	for count, expectedChance in ipairs(expectedMachineChances) do
+		assert(
+			machines.SuccessChanceByInput[count] == expectedChance,
+			"machine chance changed for " .. tostring(count) .. " inputs"
+		)
+	end
+	for key in pairs(machines.SuccessChanceByInput) do
+		assert(type(key) == "number" and key % 1 == 0 and key >= 1 and key <= 7, "unknown machine chance key")
+	end
+	local expectedMachines = {
+		Gold = { id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
+		Rainbow = { id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
+	}
+	for machineType, expected in pairs(expectedMachines) do
+		local machine = machines[machineType]
+		assert(type(machine) == "table", machineType .. " machine definition is missing")
+		assert(machine.id == expected.id, machineType .. " machine ID changed")
+		assert(machine.zoneId == expected.zoneId, machineType .. " machine zone changed")
+		assert(machine.inputVariant == expected.inputVariant, machineType .. " input variant changed")
+		assert(machine.outputVariant == expected.outputVariant, machineType .. " output variant changed")
+		validateCost(machine.cost, machineType .. " machine")
+		assert(machine.cost.currency == "diamonds", machineType .. " machine must cost diamonds")
+		assert(machine.cost.amount == expected.amount, machineType .. " machine price changed")
+		assert(machine.cost.amount % 1 == 0, machineType .. " machine price must be an integer")
+	end
+	assert(machines.Gold.id ~= machines.Rainbow.id, "machine IDs must be unique")
+	assert(BalanceConfig.Potions.RuntimeEnabled == true, "Potion inventory purchases must be enabled in QOF-13")
+	assert(
+		BalanceConfig.Potions.ConsumeRuntimeEnabled == true,
+		"Potion consumption must be enabled in QOF-14"
+	)
 	local core = BalanceConfig.CoreUpgrades
 	assert(core.RuntimeEnabled == true, "Core upgrades must be enabled")
 	assert(core.StorageRuntimeEnabled == true, "Storage upgrades must be enabled in QOF-10")
@@ -924,8 +965,25 @@ function BalanceConfig.Validate()
 		"Shiny charge cap is invalid"
 	)
 
+	local expectedPotions = {
+		LuckPotion = 100,
+		MegaLuckPotion = 350,
+		SpeedPotion = 50,
+		CoinPotion = 125,
+		ShinyPotion = 1000,
+	}
+	local potionCount = 0
 	for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
+		assert(type(potionId) == "string" and #potionId > 0 and #potionId <= 64, "potion ID is invalid")
+		assert(expectedPotions[potionId] ~= nil, "unknown canonical potion ID: " .. potionId)
 		validateCost(potion.cost, potionId)
+		assert(potion.cost.currency == "diamonds", potionId .. " must cost diamonds")
+		assert(
+			potion.cost.amount == expectedPotions[potionId]
+				and potion.cost.amount > 0
+				and potion.cost.amount % 1 == 0,
+			potionId .. " has a non-canonical cost"
+		)
 		assert(isFiniteNumber(potion.multiplier) and potion.multiplier > 0, potionId .. " multiplier is invalid")
 		if potion.durationSeconds ~= nil then
 			assert(isFiniteNumber(potion.durationSeconds) and potion.durationSeconds > 0, potionId .. " duration is invalid")
@@ -933,7 +991,9 @@ function BalanceConfig.Validate()
 		if potion.hatchCharges ~= nil then
 			assert(potion.hatchCharges > 0 and potion.hatchCharges % 1 == 0, potionId .. " charges are invalid")
 		end
+		potionCount = potionCount + 1
 	end
+	assert(potionCount == 5, "potion catalog must contain exactly five canonical items")
 
 	validateCost(BalanceConfig.Enchanting.RollCost, "Enchanting")
 	local enchantWeight = 0

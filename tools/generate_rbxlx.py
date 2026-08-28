@@ -523,9 +523,9 @@ def build_server_script_service():
     """Build ServerScriptService with scripts (flattened structure - no Server/ subfolder)."""
     # Services folder with ModuleScripts
     service_names = [
-        "DataSchema", "DataService", "CurrencyService", "PetService",
+        "DataSchema", "DataService", "CurrencyService", "PetService", "MachineService",
         "UpgradeService", "ZoneService", "CampaignService", "EggService",
-        "QuestService", "MasteryService", "ShopService", "UpgradeTreeService",
+        "QuestService", "MasteryService", "ShopService", "PotionService", "UpgradeTreeService",
         "MovementService", "PickupService",
     ]
     service_scripts = []

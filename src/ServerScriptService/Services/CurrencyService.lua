@@ -16,6 +16,11 @@ local VALID_CURRENCIES = {
 	diamonds = true,
 }
 
+-- Opaque pending debits keep the already validated profile reference private.
+-- Shop transactions can therefore roll back silently without a second
+-- DataService lookup or any pre-commit client event.
+local pendingSpendTransactions = setmetatable({}, { __mode = "k" })
+
 local function isFiniteNumber(value)
 	return type(value) == "number"
 		and value == value
@@ -167,20 +172,64 @@ function CurrencyService.addDiamonds(player, amount)
 	return true, finalAmount
 end
 
--- Canonical deduction API. Currency and amount always come from server-owned
--- configuration; only exact positive integer transactions are accepted.
-function CurrencyService.spend(player, currency, amount)
+-- Begin a silent exact debit against one already validated profile. The opaque
+-- handle can be committed once (publishing one CurrencyUpdated event) or rolled
+-- back once (publishing nothing). This is the atomic boundary used by systems
+-- that must mutate another profile field before the purchase can commit.
+function CurrencyService.beginSpendTransaction(player, currency, amount)
 	amount = normalizePositiveAmount(amount, true)
 	if not amount or VALID_CURRENCIES[currency] ~= true then
-		return false
+		return nil
 	end
 	local data = getProfile(player)
 	if not data or data[currency] < amount then
+		return nil
+	end
+
+	data[currency] = data[currency] - amount
+	local transaction = {}
+	pendingSpendTransactions[transaction] = {
+		player = player,
+		profile = data,
+		currency = currency,
+		amount = amount,
+	}
+	return transaction
+end
+
+function CurrencyService.commitSpendTransaction(transaction)
+	local pending = type(transaction) == "table" and pendingSpendTransactions[transaction] or nil
+	if not pending then
 		return false
 	end
-	data[currency] = data[currency] - amount
-	fireCurrencyUpdate(player, data)
+	pendingSpendTransactions[transaction] = nil
+	fireCurrencyUpdate(pending.player, pending.profile)
 	return true
+end
+
+function CurrencyService.rollbackSpendTransaction(transaction)
+	local pending = type(transaction) == "table" and pendingSpendTransactions[transaction] or nil
+	if not pending then
+		return false
+	end
+	pendingSpendTransactions[transaction] = nil
+	local balance = pending.profile[pending.currency]
+	if not isFiniteNumber(balance) or balance < 0 then
+		return false
+	end
+	pending.profile[pending.currency] = balance + pending.amount
+	return true
+end
+
+-- Canonical immediate deduction API. Currency and amount always come from
+-- server-owned configuration; only exact positive integer transactions are
+-- accepted. Composite purchases use the explicit transaction API above.
+function CurrencyService.spend(player, currency, amount)
+	local transaction = CurrencyService.beginSpendTransaction(player, currency, amount)
+	if not transaction then
+		return false
+	end
+	return CurrencyService.commitSpendTransaction(transaction)
 end
 
 -- Exact, bonus-free credit for transaction rollback. This must never call the

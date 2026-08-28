@@ -75,6 +75,10 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
+local GetPotionState = Remotes:WaitForChild("GetPotionState")
+local ConsumePotion = Remotes:WaitForChild("ConsumePotion")
+local PurchasePotionUpgrade = Remotes:WaitForChild("PurchasePotionUpgrade")
+local SetAutoDrinkSelection = Remotes:WaitForChild("SetAutoDrinkSelection")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -92,6 +96,7 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
+local PotionStateUpdated = Remotes:WaitForChild("PotionStateUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -821,6 +826,10 @@ end)
 
 ShopBuffsUpdated.OnClientEvent:Connect(function(state)
 	uiController:updateShopBuffs(state)
+end)
+
+PotionStateUpdated.OnClientEvent:Connect(function(state)
+	uiController:updatePotionState(state)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")
