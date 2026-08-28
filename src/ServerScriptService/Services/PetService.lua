@@ -67,6 +67,7 @@ end
 function PetService.getHatchEntitlements(player)
 	local neutral = {
 		eggQualityMultiplier = 1,
+		generalLuckMultiplier = 1,
 		directVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 },
 	}
 	if not PetService._upgradeTreeService then
@@ -78,6 +79,7 @@ function PetService.getHatchEntitlements(player)
 	end
 	return {
 		eggQualityMultiplier = entitlements.eggQualityMultiplier,
+		generalLuckMultiplier = entitlements.generalLuckMultiplier,
 		directVariantMultipliers = type(entitlements.directVariantMultipliers) == "table"
 			and entitlements.directVariantMultipliers
 			or neutral.directVariantMultipliers,
@@ -85,7 +87,7 @@ function PetService.getHatchEntitlements(player)
 end
 
 -- Resolve every currently active server-side hatch luck source once per egg.
-function PetService.getHatchLuckMultiplier(player)
+function PetService.getHatchLuckMultiplier(player, hatchEntitlements)
 	local questLuck = 1
 	if PetService._upgradeService then
 		questLuck = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
@@ -101,7 +103,20 @@ function PetService.getHatchLuckMultiplier(player)
 		shopLuck = PetService._shopService.getShopMultiplier(player, "luck")
 	end
 
-	return PetHatchMath.combineLuckMultipliers(questLuck, masteryLuck, shopLuck)
+	local treeLuck = 1
+	if type(hatchEntitlements) == "table" then
+		treeLuck = hatchEntitlements.generalLuckMultiplier
+	elseif PetService._upgradeTreeService then
+		local entitlements = PetService.getHatchEntitlements(player)
+		treeLuck = entitlements.generalLuckMultiplier
+	end
+
+	return PetHatchMath.combineLuckMultipliers(
+		questLuck,
+		masteryLuck,
+		shopLuck,
+		treeLuck
+	)
 end
 
 -- Weighted species selection respects the same composed luck while bounding its
@@ -279,8 +294,8 @@ function PetService.prepareHatchBatch(player, eggType, count)
 		return nil, "No cost defined for egg zone"
 	end
 
-	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
 	local hatchEntitlements = PetService.getHatchEntitlements(player)
+	local luckMultiplier = PetService.getHatchLuckMultiplier(player, hatchEntitlements)
 	local discovered = copyBooleanMap(data.discoveredPets)
 	local pets = {}
 	local newDiscoveryKeys = {}

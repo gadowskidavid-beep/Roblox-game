@@ -2574,6 +2574,7 @@ end
 function PetService.getHatchEntitlements(player)
 	local neutral = {
 		eggQualityMultiplier = 1,
+		generalLuckMultiplier = 1,
 		directVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 },
 	}
 	if not PetService._upgradeTreeService then
@@ -2585,6 +2586,7 @@ function PetService.getHatchEntitlements(player)
 	end
 	return {
 		eggQualityMultiplier = entitlements.eggQualityMultiplier,
+		generalLuckMultiplier = entitlements.generalLuckMultiplier,
 		directVariantMultipliers = type(entitlements.directVariantMultipliers) == "table"
 			and entitlements.directVariantMultipliers
 			or neutral.directVariantMultipliers,
@@ -2592,7 +2594,7 @@ function PetService.getHatchEntitlements(player)
 end
 
 -- Resolve every currently active server-side hatch luck source once per egg.
-function PetService.getHatchLuckMultiplier(player)
+function PetService.getHatchLuckMultiplier(player, hatchEntitlements)
 	local questLuck = 1
 	if PetService._upgradeService then
 		questLuck = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
@@ -2608,7 +2610,20 @@ function PetService.getHatchLuckMultiplier(player)
 		shopLuck = PetService._shopService.getShopMultiplier(player, "luck")
 	end
 
-	return PetHatchMath.combineLuckMultipliers(questLuck, masteryLuck, shopLuck)
+	local treeLuck = 1
+	if type(hatchEntitlements) == "table" then
+		treeLuck = hatchEntitlements.generalLuckMultiplier
+	elseif PetService._upgradeTreeService then
+		local entitlements = PetService.getHatchEntitlements(player)
+		treeLuck = entitlements.generalLuckMultiplier
+	end
+
+	return PetHatchMath.combineLuckMultipliers(
+		questLuck,
+		masteryLuck,
+		shopLuck,
+		treeLuck
+	)
 end
 
 -- Weighted species selection respects the same composed luck while bounding its
@@ -2786,8 +2801,8 @@ function PetService.prepareHatchBatch(player, eggType, count)
 		return nil, "No cost defined for egg zone"
 	end
 
-	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
 	local hatchEntitlements = PetService.getHatchEntitlements(player)
+	local luckMultiplier = PetService.getHatchLuckMultiplier(player, hatchEntitlements)
 	local discovered = copyBooleanMap(data.discoveredPets)
 	local pets = {}
 	local newDiscoveryKeys = {}
@@ -7973,7 +7988,7 @@ return ShopService
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
 	UpgradeTreeService.lua - Server-authoritative tree purchases and effects.
-	QOF-10 adds the explicitly gated Storage and Pet Equip capacity branches.
+	QOF-11 adds Double Luck to the QOF-10 capacity and hatch entitlements.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -8036,6 +8051,10 @@ if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
 	end
 end
 
+if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+	registerPurchasable(BalanceConfig.CoreUpgrades.DoubleLuck, "DoubleLuck")
+end
+
 local function copyBooleanMap(input)
 	local output = {}
 	if type(input) ~= "table" then
@@ -8062,6 +8081,7 @@ local function neutralEntitlements()
 			Shiny = 1,
 		},
 		multiOpenCount = 1,
+		generalLuckMultiplier = 1,
 		storageBonusSlots = 0,
 		petEquipBonusSlots = 0,
 	}
@@ -8147,6 +8167,15 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 				1
 			)
 		end
+	end
+
+	if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+		entitlements.generalLuckMultiplier = applyHighestContiguousLevel(
+			{ BalanceConfig.CoreUpgrades.DoubleLuck },
+			purchased,
+			"multiplier",
+			1
+		)
 	end
 
 	if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
@@ -18965,14 +18994,14 @@ local BalanceConfig = {
 	},
 
 	CoreUpgrades = {
-		-- QOF-10 activates only the two capacity branches. The aggregate gate means
-		-- that at least one Core branch is live; every branch still has its own gate
-		-- so unrelated approved balance cannot become purchasable accidentally.
+		-- QOF-11 adds Double Luck to the QOF-10 capacity branches. The aggregate
+		-- gate means that at least one Core branch is live; every branch still has
+		-- its own gate so unrelated approved balance cannot activate accidentally.
 		RuntimeEnabled = true,
 		SpeedRuntimeEnabled = false,
 		StorageRuntimeEnabled = true,
 		MagnetRuntimeEnabled = false,
-		DoubleLuckRuntimeEnabled = false,
+		DoubleLuckRuntimeEnabled = true,
 		PetEquipSlotsRuntimeEnabled = true,
 		Speed = {
 			{ multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
@@ -19036,6 +19065,10 @@ local BalanceConfig = {
 			{ multiplier = 2.00, cost = { currency = "coins", amount = 200000 } },
 		},
 		DoubleLuck = {
+			id = "doubleLuck",
+			name = "Double Luck",
+			description = "Doubles general hatch luck, subject to existing chance caps.",
+			requireIds = { "Eggs II" },
 			multiplier = 2,
 			cost = { currency = "diamonds", amount = 5000 },
 		},
@@ -19288,7 +19321,7 @@ function BalanceConfig.Validate()
 	assert(core.PetEquipSlotsRuntimeEnabled == true, "Pet Equip upgrades must be enabled in QOF-10")
 	assert(core.SpeedRuntimeEnabled == false, "Speed upgrades must remain dormant")
 	assert(core.MagnetRuntimeEnabled == false, "Magnet upgrades must remain dormant")
-	assert(core.DoubleLuckRuntimeEnabled == false, "Double Luck must remain dormant")
+	assert(core.DoubleLuckRuntimeEnabled == true, "Double Luck must be enabled in QOF-11")
 	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
 
 	for name, value in pairs(BalanceConfig.Limits) do
@@ -19440,6 +19473,22 @@ function BalanceConfig.Validate()
 		{ "friends1", "friends2", "friends3" },
 		{ 1, 2, 3 },
 		{ 1000, 2500, 5000 }
+	)
+
+	local doubleLuck = BalanceConfig.CoreUpgrades.DoubleLuck
+	registerEntitlement(doubleLuck, "Double Luck")
+	assert(doubleLuck.id == "doubleLuck", "Double Luck has a non-canonical ID")
+	assert(type(doubleLuck.description) == "string" and doubleLuck.description ~= "", "Double Luck description is invalid")
+	assert(
+		type(doubleLuck.requireIds) == "table"
+			and #doubleLuck.requireIds == 1
+			and doubleLuck.requireIds[1] == "Eggs II",
+		"Double Luck must require Eggs II"
+	)
+	assert(doubleLuck.multiplier == 2, "Double Luck must use the canonical x2 multiplier")
+	assert(
+		doubleLuck.cost.currency == "diamonds" and doubleLuck.cost.amount == 5000,
+		"Double Luck has a non-canonical cost"
 	)
 
 	for _, level in ipairs(entitlementLevels) do
@@ -25299,6 +25348,17 @@ local upgradeTreeData:upgradeTreeData = {
 				portalTo = "mainTree",
 			},
 			{
+				id = "doubleLuck",
+				name = "Double Luck",
+				description = "Doubles general hatch luck, subject to existing chance caps.",
+				side = "bottom",
+				parentId = "luckBack",
+				requireId = { "Eggs II" },
+				requirements = {{ currency = "diamonds", amount = 5000 }},
+				upgradeIcon = "purpleClover",
+				hexImg = "blue",
+			},
+			{
 				id = "epicLuck1",
 				name = "Epic Luck I",
 				description = "+5% Epic Egg Chance!",
@@ -25538,9 +25598,9 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-10 activates the imported Storage and Pet Equip branches in addition to
--- the hatch branches without changing stable IDs or layout. Only explicitly
--- gated entitlements are purchasable; unrelated legacy nodes remain dormant.
+-- QOF-11 activates Double Luck in addition to the QOF-10 capacity and hatch
+-- branches. Only explicitly gated entitlements are purchasable; unrelated
+-- legacy nodes remain dormant.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -25552,6 +25612,10 @@ for _, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
 end
 
 for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+	activeById[level.id] = level
+end
+if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+	local level = BalanceConfig.CoreUpgrades.DoubleLuck
 	activeById[level.id] = level
 end
 if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then

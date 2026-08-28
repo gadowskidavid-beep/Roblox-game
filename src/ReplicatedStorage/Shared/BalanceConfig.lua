@@ -260,14 +260,14 @@ local BalanceConfig = {
 	},
 
 	CoreUpgrades = {
-		-- QOF-10 activates only the two capacity branches. The aggregate gate means
-		-- that at least one Core branch is live; every branch still has its own gate
-		-- so unrelated approved balance cannot become purchasable accidentally.
+		-- QOF-11 adds Double Luck to the QOF-10 capacity branches. The aggregate
+		-- gate means that at least one Core branch is live; every branch still has
+		-- its own gate so unrelated approved balance cannot activate accidentally.
 		RuntimeEnabled = true,
 		SpeedRuntimeEnabled = false,
 		StorageRuntimeEnabled = true,
 		MagnetRuntimeEnabled = false,
-		DoubleLuckRuntimeEnabled = false,
+		DoubleLuckRuntimeEnabled = true,
 		PetEquipSlotsRuntimeEnabled = true,
 		Speed = {
 			{ multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
@@ -331,6 +331,10 @@ local BalanceConfig = {
 			{ multiplier = 2.00, cost = { currency = "coins", amount = 200000 } },
 		},
 		DoubleLuck = {
+			id = "doubleLuck",
+			name = "Double Luck",
+			description = "Doubles general hatch luck, subject to existing chance caps.",
+			requireIds = { "Eggs II" },
 			multiplier = 2,
 			cost = { currency = "diamonds", amount = 5000 },
 		},
@@ -583,7 +587,7 @@ function BalanceConfig.Validate()
 	assert(core.PetEquipSlotsRuntimeEnabled == true, "Pet Equip upgrades must be enabled in QOF-10")
 	assert(core.SpeedRuntimeEnabled == false, "Speed upgrades must remain dormant")
 	assert(core.MagnetRuntimeEnabled == false, "Magnet upgrades must remain dormant")
-	assert(core.DoubleLuckRuntimeEnabled == false, "Double Luck must remain dormant")
+	assert(core.DoubleLuckRuntimeEnabled == true, "Double Luck must be enabled in QOF-11")
 	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
 
 	for name, value in pairs(BalanceConfig.Limits) do
@@ -735,6 +739,22 @@ function BalanceConfig.Validate()
 		{ "friends1", "friends2", "friends3" },
 		{ 1, 2, 3 },
 		{ 1000, 2500, 5000 }
+	)
+
+	local doubleLuck = BalanceConfig.CoreUpgrades.DoubleLuck
+	registerEntitlement(doubleLuck, "Double Luck")
+	assert(doubleLuck.id == "doubleLuck", "Double Luck has a non-canonical ID")
+	assert(type(doubleLuck.description) == "string" and doubleLuck.description ~= "", "Double Luck description is invalid")
+	assert(
+		type(doubleLuck.requireIds) == "table"
+			and #doubleLuck.requireIds == 1
+			and doubleLuck.requireIds[1] == "Eggs II",
+		"Double Luck must require Eggs II"
+	)
+	assert(doubleLuck.multiplier == 2, "Double Luck must use the canonical x2 multiplier")
+	assert(
+		doubleLuck.cost.currency == "diamonds" and doubleLuck.cost.amount == 5000,
+		"Double Luck has a non-canonical cost"
 	)
 
 	for _, level in ipairs(entitlementLevels) do

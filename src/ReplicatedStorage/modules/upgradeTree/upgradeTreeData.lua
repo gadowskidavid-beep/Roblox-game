@@ -454,6 +454,17 @@ local upgradeTreeData:upgradeTreeData = {
 				portalTo = "mainTree",
 			},
 			{
+				id = "doubleLuck",
+				name = "Double Luck",
+				description = "Doubles general hatch luck, subject to existing chance caps.",
+				side = "bottom",
+				parentId = "luckBack",
+				requireId = { "Eggs II" },
+				requirements = {{ currency = "diamonds", amount = 5000 }},
+				upgradeIcon = "purpleClover",
+				hexImg = "blue",
+			},
+			{
 				id = "epicLuck1",
 				name = "Epic Luck I",
 				description = "+5% Epic Egg Chance!",
@@ -693,9 +704,9 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-10 activates the imported Storage and Pet Equip branches in addition to
--- the hatch branches without changing stable IDs or layout. Only explicitly
--- gated entitlements are purchasable; unrelated legacy nodes remain dormant.
+-- QOF-11 activates Double Luck in addition to the QOF-10 capacity and hatch
+-- branches. Only explicitly gated entitlements are purchasable; unrelated
+-- legacy nodes remain dormant.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -707,6 +718,10 @@ for _, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
 end
 
 for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+	activeById[level.id] = level
+end
+if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+	local level = BalanceConfig.CoreUpgrades.DoubleLuck
 	activeById[level.id] = level
 end
 if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
