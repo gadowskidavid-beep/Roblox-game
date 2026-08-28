@@ -8,10 +8,11 @@ local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
+local PetDex = require(game.ReplicatedStorage.Shared.PetDex)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 10
+DataSchema.VERSION = 11
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -468,7 +469,9 @@ function DataSchema.normalize(data, currentTime)
 	if type(data.upgrades) ~= "table" then data.upgrades = {} end
 	data.upgradeTreePurchases = normalizeBooleanMap(data.upgradeTreePurchases, 64)
 	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
-	data.discoveredPets = normalizeBooleanMap(data.discoveredPets, 128)
+	-- QOF-20 keeps legacy mirrors for rolling QOF-19 servers, derives the six
+	-- canonical states, and repairs exact states still represented in inventory.
+	data.discoveredPets = PetDex.normalizeDiscovery(data.discoveredPets, data.pets)
 	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
 	if type(data.shopPurchases) ~= "table" then data.shopPurchases = {} end
 	data.shopPurchases.extraEquipSlots = math.clamp(
@@ -504,7 +507,7 @@ end
 
 function DataSchema.migrate(rawData, currentTime)
 	if type(rawData) ~= "table" then
-		return DataSchema.getDefaultData()
+		return DataSchema.normalize(DataSchema.getDefaultData(), currentTime)
 	end
 
 	local data = deepCopy(rawData)

@@ -14,16 +14,27 @@ that Roblox Studio requires:
 - Color3uint8 format for colors
 """
 
+import argparse
 import json
 import os
+from pathlib import Path
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from typing import Optional
 
-# Project root is parent of tools/
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = os.path.join(PROJECT_ROOT, "src")
-OUTPUT_FILE = os.path.join(PROJECT_ROOT, "BATTLE_PETS.rbxlx")
+from runtime_inventory import (
+    InventoryError,
+    RuntimeInventory,
+    RuntimeSource,
+    discover_runtime_inventory,
+    read_runtime_source,
+)
 
-# Global referent counter
+DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT_NAME = "BATTLE_PETS.rbxlx"
+
+# Global referent counter; reset explicitly for every generated document.
 _ref_counter = [0]
 
 
@@ -33,10 +44,15 @@ def next_ref():
     return f"RBX{_ref_counter[0]:08X}"
 
 
-def read_source(filepath):
-    """Read a Lua source file and return its contents."""
-    with open(filepath, "r", encoding="utf-8") as f:
-        return f.read()
+def source_xml(source: RuntimeSource, *, lvl: int, children_str: str = "") -> str:
+    """Serialize one source discovered by the canonical runtime inventory."""
+    return make_script_xml(
+        source.class_name,
+        source.name,
+        read_runtime_source(source),
+        lvl=lvl,
+        children_str=children_str,
+    )
 
 
 def rgb_to_uint8(r, g, b):
@@ -452,126 +468,80 @@ def build_lighting():
     return make_service_xml("Lighting", "Lighting", children_str, extra_props=extra_props)
 
 
-def build_replicated_storage():
-    """Build ReplicatedStorage with shared game data and the imported Vide tree."""
-    shared_modules = []
-    module_names = [
-        "BalanceConfig", "Config", "PetData", "PetHatchMath", "PetVariantMath",
-        "PetVariantPresentation", "PetEnchantMath", "HatchCinematicPolicy", "ZoneData",
-        "CampaignData", "QuestData", "MasteryData", "ShopData", "MachineClientSession",
-        "AutoHatchClientSession", "EnchantingClientSession", "EnchantingClientContract",
-    ]
-    for mod_name in module_names:
-        filepath = os.path.join(SRC_DIR, "ReplicatedStorage", "Shared", f"{mod_name}.lua")
-        source = read_source(filepath)
-        shared_modules.append(make_script_xml("ModuleScript", mod_name, source, lvl=4))
+def _load_upgrade_tree_sounds(project_root: Path) -> list[tuple[str, str]]:
+    """Load the one supported model JSON shape without silently dropping data."""
+    model_path = project_root / "src/ReplicatedStorage/modules/upgradeTree/sounds.model.json"
+    try:
+        model = json.loads(model_path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InventoryError(f"invalid {model_path.relative_to(project_root).as_posix()}: {error}") from error
+    if set(model) != {"Name", "ClassName", "Children"}:
+        raise InventoryError("sounds.model.json has unsupported root fields")
+    if model["Name"] != "sounds" or model["ClassName"] != "Folder" or not isinstance(model["Children"], list):
+        raise InventoryError("sounds.model.json must describe the sounds Folder")
+    sounds: list[tuple[str, str]] = []
+    for child in model["Children"]:
+        if not isinstance(child, dict) or set(child) != {"Name", "ClassName", "Properties"}:
+            raise InventoryError("sounds.model.json has an unsupported child shape")
+        properties = child["Properties"]
+        if child["ClassName"] != "Sound" or not isinstance(child["Name"], str):
+            raise InventoryError("sounds.model.json children must be named Sounds")
+        if not isinstance(properties, dict) or set(properties) != {"SoundId"}:
+            raise InventoryError("sounds.model.json Sound properties must contain only SoundId")
+        sound_id = properties["SoundId"]
+        if not isinstance(sound_id, str) or not sound_id:
+            raise InventoryError("sounds.model.json SoundId values must be non-empty strings")
+        sounds.append((child["Name"], sound_id))
+    sounds.sort(key=lambda sound: sound[0])
+    if len({name for name, _ in sounds}) != len(sounds):
+        raise InventoryError("sounds.model.json contains duplicate Sound names")
+    return sounds
+
+
+def build_replicated_storage(inventory: RuntimeInventory, project_root: Path):
+    """Build ReplicatedStorage from the canonical runtime inventory."""
+    shared_modules = [source_xml(source, lvl=4) for source in inventory.shared]
     shared_folder = make_folder_xml("Shared", "\n".join(shared_modules), lvl=3)
 
-    vide_dir = os.path.join(SRC_DIR, "ReplicatedStorage", "packages", "vide")
-    vide_child_names = sorted(
-        filename[:-4]
-        for filename in os.listdir(vide_dir)
-        if filename.endswith(".lua") and filename != "init.lua"
-    )
-    vide_children = []
-    for mod_name in vide_child_names:
-        source = read_source(os.path.join(vide_dir, f"{mod_name}.lua"))
-        vide_children.append(make_script_xml("ModuleScript", mod_name, source, lvl=5))
-    vide_source = read_source(os.path.join(vide_dir, "init.lua"))
-    vide_module = make_script_xml(
-        "ModuleScript", "vide", vide_source, lvl=4, children_str="\n".join(vide_children)
-    )
+    vide_children = [source_xml(source, lvl=5) for source in inventory.vide_children]
+    vide_module = source_xml(inventory.vide_root, lvl=4, children_str="\n".join(vide_children))
     packages_folder = make_folder_xml("packages", vide_module, lvl=3)
 
-    upgrade_tree_dir = os.path.join(SRC_DIR, "ReplicatedStorage", "modules", "upgradeTree")
-    tree_modules = []
-    tree_module_names = sorted(
-        filename[:-4]
-        for filename in os.listdir(upgrade_tree_dir)
-        if filename.endswith(".lua")
-    )
-    for mod_name in tree_module_names:
-        source = read_source(os.path.join(upgrade_tree_dir, f"{mod_name}.lua"))
-        tree_modules.append(make_script_xml("ModuleScript", mod_name, source, lvl=5))
-
-    sounds_model_path = os.path.join(upgrade_tree_dir, "sounds.model.json")
-    with open(sounds_model_path, "r", encoding="utf-8") as sounds_file:
-        sounds_model = json.load(sounds_file)
-    sounds = []
-    for child in sounds_model.get("Children", []):
-        if child.get("ClassName") != "Sound":
-            continue
-        sounds.append((child["Name"], child.get("Properties", {}).get("SoundId", "")))
-    sounds.sort(key=lambda sound: sound[0])
-    sound_children = [make_sound_xml(name, sound_id, lvl=6) for name, sound_id in sounds]
+    tree_modules = [source_xml(source, lvl=5) for source in inventory.upgrade_tree]
+    sound_children = [
+        make_sound_xml(name, sound_id, lvl=6)
+        for name, sound_id in _load_upgrade_tree_sounds(project_root)
+    ]
     sounds_folder = make_folder_xml("sounds", "\n".join(sound_children), lvl=5)
-    upgrade_tree_children = "\n".join(tree_modules + [sounds_folder])
-    upgrade_tree_folder = make_folder_xml("upgradeTree", upgrade_tree_children, lvl=4)
-
-    format_number_source = read_source(
-        os.path.join(SRC_DIR, "ReplicatedStorage", "modules", "formatNumber.lua")
+    upgrade_tree_folder = make_folder_xml(
+        "upgradeTree", "\n".join(tree_modules + [sounds_folder]), lvl=4
     )
-    format_number = make_script_xml("ModuleScript", "formatNumber", format_number_source, lvl=4)
+
+    module_scripts = [source_xml(source, lvl=4) for source in inventory.modules]
     modules_folder = make_folder_xml(
-        "modules", f"{format_number}\n{upgrade_tree_folder}", lvl=3
+        "modules", "\n".join(module_scripts + [upgrade_tree_folder]), lvl=3
     )
 
     children = "\n".join([shared_folder, packages_folder, modules_folder])
     return make_service_xml("ReplicatedStorage", "ReplicatedStorage", children)
 
 
-def build_server_script_service():
-    """Build ServerScriptService with scripts (flattened structure - no Server/ subfolder)."""
-    # Services folder with ModuleScripts
-    service_names = [
-        "DataSchema", "DataService", "CurrencyService", "PetService", "MachineService",
-        "EnchantingService", "MachineAuthorityBootstrap",
-        "UpgradeService", "ZoneService", "CampaignService", "EggService", "AutoHatchService",
-        "QuestService", "MasteryService", "ShopService", "PotionService", "UpgradeTreeService",
-        "MovementService", "PickupService",
-    ]
-    service_scripts = []
-    for svc_name in service_names:
-        filepath = os.path.join(SRC_DIR, "ServerScriptService", "Services", f"{svc_name}.lua")
-        source = read_source(filepath)
-        service_scripts.append(make_script_xml("ModuleScript", svc_name, source, lvl=4))
-
-    services_children = "\n".join(service_scripts)
-    services_folder = make_folder_xml("Services", services_children, lvl=3)
-
-    # Main.server.lua -> Script
-    main_path = os.path.join(SRC_DIR, "ServerScriptService", "Main.server.lua")
-    main_source = read_source(main_path)
-    main_script = make_script_xml("Script", "Main", main_source, lvl=3)
-
-    # ServerScriptService contains Main script and Services subfolder directly
-    children_str = f"{main_script}\n{services_folder}"
-
-    return make_service_xml("ServerScriptService", "ServerScriptService", children_str)
+def build_server_script_service(inventory: RuntimeInventory):
+    """Build the flattened ServerScriptService from discovered runtime sources."""
+    service_scripts = [source_xml(source, lvl=4) for source in inventory.services]
+    services_folder = make_folder_xml("Services", "\n".join(service_scripts), lvl=3)
+    main_script = source_xml(inventory.server_main, lvl=3)
+    return make_service_xml(
+        "ServerScriptService", "ServerScriptService", f"{main_script}\n{services_folder}"
+    )
 
 
-def build_starter_player():
-    """Build StarterPlayer with StarterPlayerScripts (flattened structure - no Client/ subfolder)."""
-    # Controller ModuleScripts
-    controller_names = [
-        "UIController", "PetController", "CampaignController", "EffectsController",
-        "MusicController", "UpgradeTreeController",
-    ]
-    controller_scripts = []
-    for ctrl_name in controller_names:
-        filepath = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", f"{ctrl_name}.lua")
-        source = read_source(filepath)
-        controller_scripts.append(make_script_xml("ModuleScript", ctrl_name, source, lvl=4))
-
-    # Main.client.lua -> LocalScript
-    main_path = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", "Main.client.lua")
-    main_source = read_source(main_path)
-    main_script = make_script_xml("LocalScript", "Main", main_source, lvl=4)
-
-    # StarterPlayerScripts contains scripts directly (no Client subfolder)
+def build_starter_player(inventory: RuntimeInventory):
+    """Build flattened StarterPlayerScripts from discovered runtime sources."""
+    controller_scripts = [source_xml(source, lvl=4) for source in inventory.controllers]
+    main_script = source_xml(inventory.client_main, lvl=4)
     scripts_children = f"{main_script}\n" + "\n".join(controller_scripts)
 
-    # StarterPlayerScripts
     sps_ref = next_ref()
     sps_xml = (
         f'\t\t<Item class="StarterPlayerScripts" referent="{sps_ref}">\n'
@@ -581,7 +551,6 @@ def build_starter_player():
         f'{scripts_children}\n'
         f'\t\t</Item>'
     )
-
     return make_service_xml("StarterPlayer", "StarterPlayer", sps_xml)
 
 
@@ -609,25 +578,19 @@ def build_sound_service():
     )
 
 
-def main():
-    """Generate the BATTLE_PETS.rbxlx place file."""
-    print(f"Generating BATTLE_PETS.rbxlx from source tree: {SRC_DIR}")
+def generate_xml(project_root: Path) -> tuple[bytes, RuntimeInventory]:
+    """Generate one deterministic UTF-8/LF document in memory."""
+    _ref_counter[0] = 0
+    inventory = discover_runtime_inventory(project_root)
 
-    # Verify source directory exists
-    if not os.path.isdir(SRC_DIR):
-        print(f"ERROR: Source directory not found: {SRC_DIR}", file=sys.stderr)
-        sys.exit(1)
-
-    # Build all sections
     workspace_xml = build_workspace()
     lighting_xml = build_lighting()
-    replicated_storage_xml = build_replicated_storage()
-    server_script_service_xml = build_server_script_service()
-    starter_player_xml = build_starter_player()
+    replicated_storage_xml = build_replicated_storage(inventory, project_root)
+    server_script_service_xml = build_server_script_service(inventory)
+    starter_player_xml = build_starter_player(inventory)
     starter_gui_xml = build_starter_gui()
     sound_service_xml = build_sound_service()
 
-    # Assemble complete file with correct Roblox XML header
     xml_content = (
         '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" '
         'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
@@ -645,31 +608,82 @@ def main():
         f'{sound_service_xml}\n'
         '</roblox>\n'
     )
+    xml_bytes = xml_content.encode("utf-8")
+    if b"\r" in xml_bytes:
+        raise RuntimeError("generated XML contains non-LF line endings")
+    ET.fromstring(xml_bytes)
+    return xml_bytes, inventory
 
-    # Write output
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write(xml_content)
 
-    # Report stats
-    file_size = os.path.getsize(OUTPUT_FILE)
-    # Count items
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Publish bytes atomically without exposing stale partial output."""
+    parent = path.parent
+    if not parent.is_dir():
+        raise RuntimeError(f"output directory does not exist: {parent}")
+    temporary_name: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as temporary:
+            temporary_name = temporary.name
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=DEFAULT_PROJECT_ROOT,
+        help="project root containing src/ (default: repository root)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="output RBXLX path (default: <project-root>/BATTLE_PETS.rbxlx)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Generate and atomically publish the BATTLE_PETS.rbxlx place file."""
+    args = parse_args(argv)
+    project_root = args.project_root.resolve()
+    output = (args.output or project_root / DEFAULT_OUTPUT_NAME).resolve()
+    print(f"Generating {output.name} from source tree: {project_root / 'src'}")
+    try:
+        xml_bytes, inventory = generate_xml(project_root)
+        _atomic_write(output, xml_bytes)
+    except (InventoryError, OSError, RuntimeError, ET.ParseError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    xml_content = xml_bytes.decode("utf-8")
     item_count = xml_content.count('<Item class=')
-    script_count = xml_content.count('class="Script"')
-    local_script_count = xml_content.count('class="LocalScript"')
-    module_script_count = xml_content.count('class="ModuleScript"')
-    remote_event_count = xml_content.count('class="RemoteEvent"')
-    remote_function_count = xml_content.count('class="RemoteFunction"')
-
-    print(f"Generated: {OUTPUT_FILE}")
-    print(f"  File size: {file_size:,} bytes")
+    script_counts = {
+        "Script": sum(source.class_name == "Script" for source in inventory.all_sources()),
+        "LocalScript": sum(source.class_name == "LocalScript" for source in inventory.all_sources()),
+        "ModuleScript": sum(source.class_name == "ModuleScript" for source in inventory.all_sources()),
+    }
+    print(f"Generated: {output}")
+    print(f"  File size: {len(xml_bytes):,} bytes")
     print(f"  Total Items: {item_count}")
-    print(f"  Scripts: {script_count}")
-    print(f"  LocalScripts: {local_script_count}")
-    print(f"  ModuleScripts: {module_script_count}")
-    print(f"  RemoteEvents: {remote_event_count}")
-    print(f"  RemoteFunctions: {remote_function_count}")
+    print(f"  Scripts: {script_counts['Script']}")
+    print(f"  LocalScripts: {script_counts['LocalScript']}")
+    print(f"  ModuleScripts: {script_counts['ModuleScript']}")
+    print("  RemoteEvents: 0")
+    print("  RemoteFunctions: 0")
     print("Done!")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

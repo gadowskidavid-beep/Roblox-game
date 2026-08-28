@@ -119,6 +119,8 @@ local specFiles = {
 	"tests/PetHatchMath.spec",
 	"tests/PetVariantMath.spec",
 	"tests/PetEnchantMath.spec",
+	"tests/PetDex.spec",
+	"tests/PetDexClient.spec",
 	"tests/PetVariantPresentation.spec",
 	"tests/HatchCinematicPolicy.spec",
 	"tests/DataSchema.spec",

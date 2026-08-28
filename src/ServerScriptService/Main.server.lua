@@ -746,17 +746,24 @@ getRemoteFunction("AssignPetTarget").OnServerInvoke = function(player, petInstan
 	return ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
 end
 
--- GetDiscoveredPets (returns player's discovered pets table)
+-- GetDiscoveredPets keeps its legacy map shape but never exposes profile identity.
 getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
-		return {}
+		return nil
 	end
-	if not canCall(player, "GetDiscoveredPets", 0.25) then return {} end
+	-- nil means "no authoritative refresh"; an empty map remains a valid state.
+	if not canCall(player, "GetDiscoveredPets", 0.25) then return nil end
 	local data = DataService.getPlayerData(player)
-	if not data then
-		return {}
+	if not data or type(data.discoveredPets) ~= "table" then
+		return nil
 	end
-	return data.discoveredPets or {}
+	local discovered = {}
+	for key, value in pairs(data.discoveredPets) do
+		if type(key) == "string" and value == true then
+			discovered[key] = true
+		end
+	end
+	return discovered
 end
 
 -- PurchaseShopItem accepts the exact QOF-13 potion DTO plus the one retained
