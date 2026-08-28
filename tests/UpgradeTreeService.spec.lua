@@ -105,6 +105,24 @@ describe("UpgradeTreeService QOF-07/QOF-08 entitlements", function()
 		expect(entitlements.petEquipBonusSlots):toBe(0)
 	end)
 
+	it("requires canonical Eggs II for Double Luck and ignores legacy Luck flags", function()
+		local legacyOnly = UpgradeTreeService.resolveEntitlements({
+			["luck I"] = true,
+			["luck II"] = true,
+			["luck III"] = true,
+			["luck IV"] = true,
+			doubleLuck = true,
+		})
+		expect(legacyOnly.generalLuckMultiplier):toBe(1)
+
+		local canonical = UpgradeTreeService.resolveEntitlements({
+			["Eggs I"] = true,
+			["Eggs II"] = true,
+			doubleLuck = true,
+		})
+		expect(canonical.generalLuckMultiplier):toBe(2)
+	end)
+
 	it("grandfathers full legacy capacity chains without external Eggs flags", function()
 		local entitlements = UpgradeTreeService.resolveEntitlements({
 			playtime1 = true,
@@ -227,9 +245,35 @@ describe("UpgradeTreeService QOF-07/QOF-08 purchases", function()
 		expect(state.available.playtime1):toBeTrue()
 		expect(state.available.streak3):toBeTrue()
 		expect(state.available.friends3):toBeTrue()
+		expect(state.available.doubleLuck):toBeTrue()
 		expect(state.entitlements.multiOpenCount):toBe(1)
+		expect(state.entitlements.generalLuckMultiplier):toBe(1)
 		expect(state.entitlements.storageBonusSlots):toBe(0)
 		expect(state.entitlements.petEquipBonusSlots):toBe(0)
+	end)
+
+	it("purchases canonical Double Luck only after Eggs II", function()
+		resetState()
+		profile.upgradeTreePurchases["luck I"] = true
+		local blocked, blockedError = UpgradeTreeService.purchase(player, "doubleLuck")
+		expect(blocked):toBeFalse()
+		expect(blockedError):toBe("Missing prerequisite")
+		expect(#spends):toBe(0)
+		expect(UpgradeTreeService.getState(player).entitlements.generalLuckMultiplier):toBe(1)
+
+		expect(UpgradeTreeService.purchase(player, "Eggs I")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "Eggs II")):toBeTrue()
+		local success, message, state = UpgradeTreeService.purchase(player, "doubleLuck")
+		expect(success):toBeTrue()
+		expect(message):toBe("Purchased doubleLuck")
+		expect(profile.diamonds):toBe(95000)
+		expect(spends[3]):toEqual({ currency = "diamonds", amount = 5000 })
+		expect(state.entitlements.generalLuckMultiplier):toBe(2)
+
+		local duplicate, duplicateError = UpgradeTreeService.purchase(player, "doubleLuck")
+		expect(duplicate):toBeFalse()
+		expect(duplicateError):toBe("Already purchased")
+		expect(#spends):toBe(3)
 	end)
 
 	it("keeps Eggs II mandatory for new purchases after grandfathered capacity flags", function()

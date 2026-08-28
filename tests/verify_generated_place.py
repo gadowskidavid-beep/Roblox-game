@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-10 runtime source."""
+"""Verify that the generated Battle Pets place embeds every QOF-11 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -125,7 +125,7 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-10 runtime source exactly once")
+    print("PASS: generated place embeds every QOF-11 runtime source exactly once")
     print("PASS: all 64 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 

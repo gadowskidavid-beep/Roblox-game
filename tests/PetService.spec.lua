@@ -81,6 +81,7 @@ local masteryLuckMultiplier = 0
 local shopDamageMultiplier = 1
 local shopLuckMultiplier = 1
 local treeEggQualityMultiplier = 1
+local treeGeneralLuckMultiplier = 1
 local treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
 local questStorageBonus = 0
 local questFriendshipBonus = 0
@@ -120,6 +121,7 @@ local upgradeTreeService = {}
 function upgradeTreeService.getEntitlements()
 	return {
 		eggQualityMultiplier = treeEggQualityMultiplier,
+		generalLuckMultiplier = treeGeneralLuckMultiplier,
 		directVariantMultipliers = treeDirectVariantMultipliers,
 		storageBonusSlots = treeStorageBonus,
 		petEquipBonusSlots = treeEquipBonus,
@@ -200,10 +202,39 @@ describe("PetService QOF-07 canonical single hatch", function()
 		end
 	end)
 
+	it("composes QOF-11 Double Luck with every existing server-owned source", function()
+		questLuckMultiplier = 2
+		masteryLuckMultiplier = 1
+		shopLuckMultiplier = 1
+		treeGeneralLuckMultiplier = 2
+		expect(PetService.getHatchLuckMultiplier(player)):toBe(4)
+
+		questLuckMultiplier = 0
+		masteryLuckMultiplier = 0
+		shopLuckMultiplier = 1
+		treeGeneralLuckMultiplier = 1
+	end)
+
+	it("neutralizes malformed or sub-neutral tree Luck", function()
+		questLuckMultiplier = 2
+		masteryLuckMultiplier = 1
+		shopLuckMultiplier = 1
+		for _, malformed in ipairs({ "forged", 0, -1, math.huge, 0 / 0 }) do
+			treeGeneralLuckMultiplier = malformed
+			expect(PetService.getHatchLuckMultiplier(player)):toBe(2)
+		end
+
+		questLuckMultiplier = 0
+		masteryLuckMultiplier = 0
+		shopLuckMultiplier = 1
+		treeGeneralLuckMultiplier = 1
+	end)
+
 	it("composes all active luck sources and enforces approved caps", function()
 		questLuckMultiplier = 2
 		masteryLuckMultiplier = 3
 		shopLuckMultiplier = 2
+		treeGeneralLuckMultiplier = 2
 		expect(PetService.getHatchLuckMultiplier(player)):toBe(10)
 
 		local pet, hatchError = hatchWithRolls(0.004, 0.0009)
@@ -215,6 +246,7 @@ describe("PetService QOF-07 canonical single hatch", function()
 		questLuckMultiplier = 0
 		masteryLuckMultiplier = 0
 		shopLuckMultiplier = 1
+		treeGeneralLuckMultiplier = 1
 	end)
 
 	it("keeps Egg Quality species-only and direct upgrades variant-specific", function()

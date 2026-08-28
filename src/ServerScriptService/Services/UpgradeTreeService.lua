@@ -1,6 +1,6 @@
 --[[
 	UpgradeTreeService.lua - Server-authoritative tree purchases and effects.
-	QOF-10 adds the explicitly gated Storage and Pet Equip capacity branches.
+	QOF-11 adds Double Luck to the QOF-10 capacity and hatch entitlements.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -63,6 +63,10 @@ if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
 	end
 end
 
+if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+	registerPurchasable(BalanceConfig.CoreUpgrades.DoubleLuck, "DoubleLuck")
+end
+
 local function copyBooleanMap(input)
 	local output = {}
 	if type(input) ~= "table" then
@@ -89,6 +93,7 @@ local function neutralEntitlements()
 			Shiny = 1,
 		},
 		multiOpenCount = 1,
+		generalLuckMultiplier = 1,
 		storageBonusSlots = 0,
 		petEquipBonusSlots = 0,
 	}
@@ -174,6 +179,15 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 				1
 			)
 		end
+	end
+
+	if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+		entitlements.generalLuckMultiplier = applyHighestContiguousLevel(
+			{ BalanceConfig.CoreUpgrades.DoubleLuck },
+			purchased,
+			"multiplier",
+			1
+		)
 	end
 
 	if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
