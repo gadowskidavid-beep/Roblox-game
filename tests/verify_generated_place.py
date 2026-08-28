@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-14 runtime source."""
+"""Verify that the generated Battle Pets place embeds every QOF-15 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -19,6 +19,7 @@ EXPECTED_SOURCES = {
     "PetVariantPresentation": "src/ReplicatedStorage/Shared/PetVariantPresentation.lua",
     "HatchCinematicPolicy": "src/ReplicatedStorage/Shared/HatchCinematicPolicy.lua",
     "PetService": "src/ServerScriptService/Services/PetService.lua",
+    "MachineService": "src/ServerScriptService/Services/MachineService.lua",
     "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
     "EggService": "src/ServerScriptService/Services/EggService.lua",
     "ShopService": "src/ServerScriptService/Services/ShopService.lua",
@@ -33,7 +34,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 65, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 66, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -55,7 +56,7 @@ def all_expected_runtime_paths() -> list[Path]:
         *sorted((ROOT / "src/StarterPlayer/StarterPlayerScripts").glob("*Controller.lua")),
     ]
     assert len(paths) == EXPECTED_SCRIPT_COUNTS["ModuleScript"] + 2, (
-        f"expected 67 runtime source paths, found {len(paths)}"
+        f"expected 68 runtime source paths, found {len(paths)}"
     )
     return paths
 
@@ -85,8 +86,46 @@ def main() -> None:
         b'getRemoteFunction("ConsumePotion")',
         b'getRemoteFunction("PurchasePotionUpgrade")',
         b'getRemoteFunction("SetAutoDrinkSelection")',
+        b"MachineService.init(DataService, CurrencyService, PetService)",
+        b"MachineService.setQuestService(QuestService)",
+        b"MachineService.cleanup(player)",
     ):
         assert required in main_source, f"missing server lifecycle or purchase wiring: {required!r}"
+    assert b'"AttemptMachineConversion"' not in main_source, (
+        "QOF-15 must not add a public machine remote"
+    )
+    assert b"MachineService.setActivationValidator" not in main_source, (
+        "QOF-15 Main must not inject machine activation authority"
+    )
+    assert b"PetService.convertToGoldenPet(player, petInstanceIds)" in main_source, (
+        "legacy ConvertToGoldenPet routing changed before QOF-16"
+    )
+
+    balance_source = (
+        ROOT / "src/ReplicatedStorage/Shared/BalanceConfig.lua"
+    ).read_bytes()
+    assert b"Machines = {\n\t\tRuntimeEnabled = false," in balance_source, (
+        "QOF-15 machine runtime must remain dormant"
+    )
+
+    machine_service_source = (
+        ROOT / "src/ServerScriptService/Services/MachineService.lua"
+    ).read_bytes()
+    for required in (
+        b"function MachineService.init",
+        b"function MachineService.setQuestService",
+        b"function MachineService.setActivationValidator",
+        b"function MachineService.attemptConversion",
+        b"function MachineService.cleanup",
+        b"beginSpendTransaction",
+        b"commitSpendTransaction",
+        b"rollbackSpendTransaction",
+        b"prepareVariantConversion",
+        b"commitVariantConversion",
+        b"rollbackVariantConversion",
+        b'"goldenPetsConverted"',
+    ):
+        assert required in machine_service_source, f"missing QOF-15 machine authority: {required!r}"
 
     purchase_handler = main_source.split(
         b'getRemoteFunction("PurchaseShopItem").OnServerInvoke', 1
@@ -202,8 +241,8 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-14 runtime source exactly once")
-    print("PASS: all 67 generated script sources have byte-exact source parity")
+    print("PASS: generated place embeds every QOF-15 runtime source exactly once")
+    print("PASS: all 68 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 
 
