@@ -2,6 +2,8 @@
 
 Status: **Code-verifiziert – Studio-Test ausstehend**
 
+Implementierungscommit: `21fdf0e2dbcc1607d814bb9d6f7d0986abec2d1c`
+
 QOF-23 migriert Profile auf Schema V12, entfernt ungültige Progressionswerte fail-closed und rekonstruiert sparse Persistenzarrays deterministisch. Preise, Chancen und bestehende gültige Progression bleiben unverändert.
 
 ## Kanonische Progressionsgrenzen
