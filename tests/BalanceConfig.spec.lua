@@ -7,6 +7,42 @@ describe("BalanceConfig validation", function()
 		expect(BalanceConfig.Validate()):toBeTrue()
 	end)
 
+	it("fails fast when any active enchanting contract shape or value changes", function()
+		local enchanting = BalanceConfig.Enchanting
+		local mutations = {
+			{ enchanting, "RuntimeEnabled", false },
+			{ enchanting, "MaxSlotsPerPet", 2 },
+			{ enchanting.RollCost, "currency", "coins" },
+			{ enchanting.RollCost, "amount", 499 },
+			{ enchanting.Pool[1], "id", "Forged" },
+			{ enchanting.Pool[2], "weight", 14 },
+			{ enchanting.Pool[3], "stat", "speed" },
+			{ enchanting.Pool[4], "multiplier", 1.11 },
+		}
+		for _, mutation in ipairs(mutations) do
+			local target, key, forged = mutation[1], mutation[2], mutation[3]
+			local original = target[key]
+			target[key] = forged
+			local ok = pcall(BalanceConfig.Validate)
+			target[key] = original
+			expect(ok):toBeFalse()
+		end
+
+		enchanting.unknown = true
+		local sectionOk = pcall(BalanceConfig.Validate)
+		enchanting.unknown = nil
+		expect(sectionOk):toBeFalse()
+		enchanting.RollCost.unknown = true
+		local costOk = pcall(BalanceConfig.Validate)
+		enchanting.RollCost.unknown = nil
+		expect(costOk):toBeFalse()
+		enchanting.Pool[1].unknown = true
+		local outcomeOk = pcall(BalanceConfig.Validate)
+		enchanting.Pool[1].unknown = nil
+		expect(outcomeOk):toBeFalse()
+		expect(BalanceConfig.Validate()):toBeTrue()
+	end)
+
 	it("keeps approved variant chances and multipliers exact", function()
 		expect(BalanceConfig.Hatch.BaseChances.Golden):toBe(0.01)
 		expect(BalanceConfig.Hatch.BaseChances.Rainbow):toBe(0.001)
@@ -139,7 +175,7 @@ describe("BalanceConfig validation", function()
 		end
 	end)
 
-	it("activates QOF-14 potion consumption while unrelated future systems remain dormant", function()
+	it("activates QOF-17 Gold and Rainbow while retaining explicit future-system gates", function()
 		expect(BalanceConfig.Variants.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.EggQualityRuntimeEnabled):toBeTrue()
@@ -148,17 +184,36 @@ describe("BalanceConfig validation", function()
 		expect(BalanceConfig.Hatch.MultiOpen[1].requireIds):toEqual({ "Eggs II" })
 		expect(BalanceConfig.Hatch.MultiOpen[2].requireIds):toEqual({ "Eggs III" })
 		expect(BalanceConfig.Hatch.MultiOpen[3].requireIds):toEqual({ "Eggs IV" })
-		expect(BalanceConfig.Machines.RuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Machines.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Machines.Gold.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Machines.Rainbow.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.StorageRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled):toBeTrue()
-		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Shop.AutoHatch):toEqual({
+			RuntimeEnabled = true,
+			ContractVersion = 1,
+			cost = { currency = "diamonds", amount = 500 },
+			durationSeconds = 600,
+			intervalSeconds = 3,
+		})
 		expect(BalanceConfig.Potions.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Potions.ConsumeRuntimeEnabled):toBeTrue()
-		expect(BalanceConfig.Enchanting.RuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Enchanting.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Enchanting.RollCost):toEqual({ currency = "diamonds", amount = 500 })
+		expect(BalanceConfig.Enchanting.MaxSlotsPerPet):toBe(1)
+		expect(BalanceConfig.Enchanting.Pool):toEqual({
+			{ id = "StrongI", weight = 35, stat = "damage", multiplier = 1.10 },
+			{ id = "StrongII", weight = 15, stat = "damage", multiplier = 1.25 },
+			{ id = "StrongIII", weight = 5, stat = "damage", multiplier = 1.50 },
+			{ id = "AgileI", weight = 30, stat = "speed", multiplier = 1.10 },
+			{ id = "AgileII", weight = 12, stat = "speed", multiplier = 1.20 },
+			{ id = "AgileIII", weight = 3, stat = "speed", multiplier = 1.35 },
+		})
 	end)
 
 	it("binds exact QOF-12 Movement and Magnet contracts", function()

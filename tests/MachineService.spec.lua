@@ -1,4 +1,4 @@
--- MachineService.spec.lua - Focused QOF-15 dormant transaction foundation tests.
+-- MachineService.spec.lua - Focused QOF-17 shared Gold/Rainbow runtime tests.
 
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
@@ -60,9 +60,11 @@ rawset(_G, "require", sharedRequire)
 local PetHatchMath = originalRequire("src/ReplicatedStorage/Shared/PetHatchMath")
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
 local PetVariantPresentation = originalRequire("src/ReplicatedStorage/Shared/PetVariantPresentation")
+local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
 ReplicatedStorage.Shared.PetHatchMath = PetHatchMath
 ReplicatedStorage.Shared.PetVariantMath = PetVariantMath
 ReplicatedStorage.Shared.PetVariantPresentation = PetVariantPresentation
+ReplicatedStorage.Shared.PetEnchantMath = PetEnchantMath
 
 local function serviceRequire(path)
 	if path == Config then return Config end
@@ -71,6 +73,7 @@ local function serviceRequire(path)
 	if path == PetHatchMath then return PetHatchMath end
 	if path == PetVariantMath then return PetVariantMath end
 	if path == PetVariantPresentation then return PetVariantPresentation end
+	if path == PetEnchantMath then return PetEnchantMath end
 	return originalRequire(path)
 end
 rawset(_G, "require", serviceRequire)
@@ -162,6 +165,11 @@ local function makePet(id, petId, variant, shiny)
 	}
 end
 
+local ACTIVATION_TOKENS = {
+	GoldMachine = "server-gold-machine-token",
+	RainbowMachine = "server-rainbow-machine-token",
+}
+
 local function resetState(pets, zones)
 	profile = {
 		coins = 0,
@@ -184,8 +192,8 @@ local function resetState(pets, zones)
 	PetService.init(dataService, currencyService, upgradeService)
 	MachineService.init(dataService, currencyService, PetService)
 	MachineService.setQuestService(questService)
-	MachineService.setActivationValidator(function()
-		return true
+	MachineService.setActivationValidator(function(_, machineId, activationToken)
+		return ACTIVATION_TOKENS[machineId] == activationToken
 	end)
 	MachineService.setRandomSource(function()
 		return 0
@@ -193,32 +201,31 @@ local function resetState(pets, zones)
 end
 
 local function attempt(machineId, ids)
-	local originalGate = BalanceConfig.Machines.RuntimeEnabled
-	BalanceConfig.Machines.RuntimeEnabled = true
-	local result, attemptError = MachineService.attemptConversion(player, machineId, ids)
-	BalanceConfig.Machines.RuntimeEnabled = originalGate
-	return result, attemptError
+	return MachineService.attemptConversion(player, machineId, ACTIVATION_TOKENS[machineId], ids)
 end
 
-local function idsFor(count)
+local function idsFor(count, variant)
+	variant = variant or "Normal"
 	local pets = {}
 	local ids = {}
 	for index = 1, count do
 		local id = "pet-" .. tostring(index)
-		pets[index] = makePet(id, "Buddy", "Normal", index == count)
+		pets[index] = makePet(id, "Buddy", variant, index == count)
 		ids[index] = id
 	end
 	return pets, ids
 end
 
-describe("MachineService QOF-15 definitions and strict admission", function()
-	it("keeps both canonical definitions exact and publicly dormant", function()
-		expect(BalanceConfig.Machines.RuntimeEnabled):toBeFalse()
+describe("MachineService QOF-17 definitions and strict admission", function()
+	it("keeps canonical economics exact while enabling Gold and Rainbow", function()
+		expect(BalanceConfig.Machines.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Machines.Gold):toEqual({
+			RuntimeEnabled = true,
 			id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden",
 			cost = { currency = "diamonds", amount = 750 },
 		})
 		expect(BalanceConfig.Machines.Rainbow):toEqual({
+			RuntimeEnabled = true,
 			id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow",
 			cost = { currency = "diamonds", amount = 2500 },
 		})
@@ -228,9 +235,17 @@ describe("MachineService QOF-15 definitions and strict admission", function()
 		})
 	end)
 
-	it("fails closed behind the runtime gate and a missing activation validator", function()
+	it("honors the global kill switch and fails closed without a validator", function()
 		resetState()
-		local result, message = MachineService.attemptConversion(player, "GoldMachine", { "pet-1" })
+		local originalGate = BalanceConfig.Machines.RuntimeEnabled
+		BalanceConfig.Machines.RuntimeEnabled = false
+		local result, message = MachineService.attemptConversion(
+			player,
+			"GoldMachine",
+			ACTIVATION_TOKENS.GoldMachine,
+			{ "pet-1" }
+		)
+		BalanceConfig.Machines.RuntimeEnabled = originalGate
 		expect(result):toBeNil()
 		expect(message):toBe("Machines are not available")
 		expect(profile.diamonds):toBe(10000)
@@ -239,6 +254,30 @@ describe("MachineService QOF-15 definitions and strict admission", function()
 		result, message = attempt("GoldMachine", { "pet-1" })
 		expect(result):toBeNil()
 		expect(message):toBe("Machine activation unavailable")
+		expect(profile.diamonds):toBe(10000)
+	end)
+
+	it("requires a bounded server activation token before world validation", function()
+		resetState()
+		local validatorCalls = 0
+		MachineService.setActivationValidator(function()
+			validatorCalls = validatorCalls + 1
+			return true
+		end)
+		for _, invalidToken in ipairs({ "", string.rep("x", 129) }) do
+			local result, message = MachineService.attemptConversion(
+				player,
+				"GoldMachine",
+				invalidToken,
+				{ "pet-1" }
+			)
+			expect(result):toBeNil()
+			expect(message):toBe("Invalid machine activation")
+		end
+		local result, message = MachineService.attemptConversion(player, "GoldMachine", nil, { "pet-1" })
+		expect(result):toBeNil()
+		expect(message):toBe("Invalid machine activation")
+		expect(validatorCalls):toBe(0)
 		expect(profile.diamonds):toBe(10000)
 	end)
 
@@ -298,7 +337,7 @@ describe("MachineService QOF-15 definitions and strict admission", function()
 	end)
 end)
 
-describe("MachineService QOF-15 chance and business outcomes", function()
+describe("MachineService QOF-17 chance and business outcomes", function()
 	it("uses every exact chance boundary and guarantees seven inputs", function()
 		for count, chance in ipairs(BalanceConfig.Machines.SuccessChanceByInput) do
 			local pets, ids = idsFor(count)
@@ -357,21 +396,64 @@ describe("MachineService QOF-15 chance and business outcomes", function()
 		expect(inventoryEvents):toBe(1)
 	end)
 
-	it("creates canonical Rainbow output, preserves Shiny OR, and never increments the Gold quest", function()
-		resetState({
-			makePet("gold-1", "Buddy", "Golden", false),
-			makePet("gold-2", "Buddy", "Golden", true),
-		})
-		local result = attempt("RainbowMachine", { "gold-1", "gold-2" })
+	it("converts Golden to Rainbow for 2500 Diamonds, preserves Shiny OR, and never increments Gold progress", function()
+		local pets, ids = idsFor(2, "Golden")
+		resetState(pets)
+		local result, message = attempt("RainbowMachine", ids)
+		expect(message):toBeNil()
 		expect(result.success):toBeTrue()
+		expect(result.machineId):toBe("RainbowMachine")
+		expect(result.cost):toBe(2500)
+		expect(result.chance):toBe(0.26)
+		expect(profile.diamonds):toBe(7500)
+		expect(#profile.pets):toBe(1)
+		local output = profile.pets[1]
+		expect(output):toBe(result.outputPet)
+		expect(output.petId):toBe("Buddy")
+		expect(output.variant):toBe("Rainbow")
+		expect(output.shiny):toBeTrue()
+		expect(output.golden):toBeFalse()
+		expect(output.name):toBe("Rainbow Shiny Buddy")
+		expect(output.damage):toBe(7.5)
+		expect(profile.questStats.goldenPetsConverted):toBe(0)
+		expect(#questCalls):toBe(0)
+		expect(currencyEvents):toBe(1)
+		expect(inventoryEvents):toBe(1)
+	end)
+
+	it("consumes exact Rainbow price and Golden inputs on an ordinary failed roll", function()
+		local pets, ids = idsFor(3, "Golden")
+		resetState(pets)
+		MachineService.setRandomSource(function() return 1 end)
+		local result, message = attempt("RainbowMachine", ids)
+		expect(message):toBeNil()
+		expect(result.success):toBeFalse()
+		expect(result.cost):toBe(2500)
+		expect(profile.diamonds):toBe(7500)
+		expect(#profile.pets):toBe(0)
+		expect(profile.discoveredPets):toEqual({})
+		expect(profile.questStats.goldenPetsConverted):toBe(0)
+		expect(#questCalls):toBe(0)
+		expect(currencyEvents):toBe(1)
+		expect(inventoryEvents):toBe(1)
+	end)
+
+	it("rejects Normal Rainbow inputs and guarantees seven valid Golden inputs", function()
+		resetState()
+		local result = attempt("RainbowMachine", { "pet-1" })
+		expect(result):toBeNil()
+		expect(profile.diamonds):toBe(10000)
+		expect(#profile.pets):toBe(1)
+
+		local pets, ids = idsFor(7, "Golden")
+		resetState(pets)
+		MachineService.setRandomSource(function() return 1 end)
+		result = attempt("RainbowMachine", ids)
+		expect(result.success):toBeTrue()
+		expect(result.chance):toBe(1)
 		expect(profile.diamonds):toBe(7500)
 		expect(#profile.pets):toBe(1)
 		expect(profile.pets[1].variant):toBe("Rainbow")
-		expect(profile.pets[1].shiny):toBeTrue()
-		expect(profile.pets[1].golden):toBeFalse()
-		expect(profile.pets[1].name):toBe("Rainbow Shiny Buddy")
-		expect(profile.pets[1].damage):toBe(7.5)
-		expect(#questCalls):toBe(0)
 		expect(profile.questStats.goldenPetsConverted):toBe(0)
 	end)
 
@@ -401,7 +483,7 @@ describe("MachineService QOF-15 chance and business outcomes", function()
 	end)
 end)
 
-describe("MachineService QOF-15 rollback and lock semantics", function()
+describe("MachineService QOF-17 rollback and lock semantics", function()
 	it("restores exact currency, ordered inventory identity, and discovery shape after spend faults", function()
 		resetState({ makePet("a", "Buddy", "Normal", false), makePet("b", "Buddy", "Normal", false) })
 		profile.discoveredPets = nil
@@ -423,6 +505,30 @@ describe("MachineService QOF-15 rollback and lock semantics", function()
 		expect(currencyEvents):toBe(0)
 		expect(inventoryEvents):toBe(0)
 		expect(#questCalls):toBe(0)
+	end)
+
+	it("rolls back Rainbow price and Golden inputs on a technical fault", function()
+		local pets, ids = idsFor(2, "Golden")
+		resetState(pets)
+		local inventory = profile.pets
+		local first = inventory[1]
+		local second = inventory[2]
+		MachineService.setTransactionHook(function(stage)
+			if stage == "afterPetMutation" then error("injected Rainbow fault") end
+		end)
+		local result, message = attempt("RainbowMachine", ids)
+		expect(result):toBeNil()
+		expect(message):toBe("Conversion failed safely")
+		expect(profile.diamonds):toBe(10000)
+		expect(profile.pets):toBe(inventory)
+		expect(profile.pets[1]):toBe(first)
+		expect(profile.pets[2]):toBe(second)
+		expect(profile.discoveredPets):toEqual({})
+		expect(profile.questStats.goldenPetsConverted):toBe(0)
+		expect(#questCalls):toBe(0)
+		expect(rollbackCalls):toBe(1)
+		expect(currencyEvents):toBe(0)
+		expect(inventoryEvents):toBe(0)
 	end)
 
 	it("restores exact table identities, order, and discovery content after pet mutation faults", function()
@@ -483,7 +589,7 @@ describe("MachineService QOF-15 rollback and lock semantics", function()
 		end
 	end)
 
-	it("reports failed restorations instead of claiming rollback safety", function()
+	it("retains failed restorations and settles them before lifecycle release", function()
 		for _, mode in ipairs({ "false", "error" }) do
 			resetState()
 			rollbackMode = mode
@@ -498,6 +604,13 @@ describe("MachineService QOF-15 rollback and lock semantics", function()
 			expect(profile.pets[1].id):toBe("pet-1")
 			expect(currencyEvents):toBe(0)
 			expect(inventoryEvents):toBe(0)
+			expect(MachineService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+			expect(MachineService._playerLocks[player.UserId]):toBeTrue()
+
+			rollbackMode = "success"
+			expect(MachineService.cleanup(player)):toBeTrue()
+			expect(profile.diamonds):toBe(10000)
+			expect(MachineService._activeTransactions[player.UserId]):toBeNil()
 			expect(MachineService._playerLocks[player.UserId]):toBeNil()
 		end
 	end)
@@ -518,57 +631,131 @@ describe("MachineService QOF-15 rollback and lock semantics", function()
 		expect(MachineService._playerLocks[player.UserId]):toBeNil()
 	end)
 
-	it("rejects reentrant work under the per-player lock and cleanup releases stale locks", function()
+	it("rejects machine work while enchanting owns the shared inventory lease", function()
+		resetState()
+		local enchantLease = PetService.beginInventoryMutation(player, "EnchantingService")
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(result):toBeNil()
+		expect(message):toBe("Pet inventory mutation already in progress")
+		expect(profile.diamonds):toBe(10000)
+		expect(#profile.pets):toBe(1)
+		expect(PetService.endInventoryMutation(player, enchantLease, false)):toBeTrue()
+	end)
+
+	it("rejects a stale lease release without unlocking its current owner", function()
+		resetState()
+		local first = PetService.beginInventoryMutation(player, "first")
+		expect(PetService.endInventoryMutation(player, first, false)):toBeTrue()
+		local second = PetService.beginInventoryMutation(player, "second")
+		expect(PetService.endInventoryMutation(player, first, false)):toBeFalse()
+		expect(PetService.isInventoryMutationCurrent(player, second)):toBeTrue()
+		expect(PetService.endInventoryMutation(player, second, false)):toBeTrue()
+	end)
+
+	it("rejects reentrant work under the per-player lock and cleans only settled state", function()
 		resetState()
 		local nestedResult = true
 		local nestedMessage = nil
 		MachineService.setTransactionHook(function(stage)
 			if stage == "afterSpend" then
-				nestedResult, nestedMessage = MachineService.attemptConversion(player, "GoldMachine", { "pet-1" })
+				nestedResult, nestedMessage = MachineService.attemptConversion(
+					player,
+					"GoldMachine",
+					ACTIVATION_TOKENS.GoldMachine,
+					{ "pet-1" }
+				)
 			end
 		end)
 		local result = attempt("GoldMachine", { "pet-1" })
 		expect(result.success):toBeTrue()
 		expect(nestedResult):toBeNil()
 		expect(nestedMessage):toBe("Machine conversion already in progress")
-		MachineService._playerLocks[player.UserId] = true
-		MachineService.cleanup(player)
+		expect(MachineService.cleanup(player)):toBeTrue()
 		expect(MachineService._playerLocks[player.UserId]):toBeNil()
+	end)
+	it("blocks cleanup and shutdown while a machine transaction is executing", function()
+		resetState()
+		local lease = PetService.beginInventoryMutation(player, "MachineService")
+		MachineService._playerLocks[player.UserId] = true
+		MachineService._activeTransactions[player.UserId] = {
+			player = player,
+			inventoryLease = lease,
+			executing = true,
+		}
+		expect(MachineService.cleanup(player)):toBeFalse()
+		expect(MachineService.prepareForShutdown()):toBeFalse()
+		expect(MachineService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+		expect(PetService.isInventoryMutationCurrent(player, lease)):toBeTrue()
 	end)
 end)
 
-describe("QOF-15 static legacy and dormancy regression", function()
-	it("keeps ConvertToGoldenPet on PetService and adds no machine remote or activation wiring", function()
+describe("QOF-17 server source contracts", function()
+	it("wires UseMachine plus a mutation-free rolling-client compatibility remote", function()
 		if not io or not io.open then return end
-		local petFile = assert(io.open("src/ServerScriptService/Services/PetService.lua", "rb"))
-		local petSource = petFile:read("*a")
-		petFile:close()
 		local mainFile = assert(io.open("src/ServerScriptService/Main.server.lua", "rb"))
 		local mainSource = mainFile:read("*a")
 		mainFile:close()
-		expect(string.find(petSource, "function PetService.convertToGoldenPet", 1, true) ~= nil):toBeTrue()
-		expect(string.find(mainSource, "PetService.convertToGoldenPet(player, petInstanceIds)", 1, true) ~= nil):toBeTrue()
-		expect(string.find(mainSource, '"AttemptMachineConversion"', 1, true) == nil):toBeTrue()
-		expect(string.find(mainSource, "MachineService.setActivationValidator", 1, true) == nil):toBeTrue()
+		local machineFile = assert(io.open("src/ServerScriptService/Services/MachineService.lua", "rb"))
+		local machineSource = machineFile:read("*a")
+		machineFile:close()
+		local zoneFile = assert(io.open("src/ServerScriptService/Services/ZoneService.lua", "rb"))
+		local zoneSource = zoneFile:read("*a")
+		zoneFile:close()
+
+		expect(string.find(mainSource, '"UseMachine"', 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, 'getRemoteFunction("UseMachine").OnServerInvoke', 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, 'canCall(player, "UseMachine"', 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, 'canCallBurst(player, "UseMachine"', 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, "return MachineService.attemptConversion", 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, "MachineAuthorityBootstrap.install", 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, 'getRemoteFunction("ConvertToGoldenPet").OnServerInvoke', 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, "Legacy conversion unavailable", 1, true) ~= nil):toBeTrue()
+		expect(string.find(mainSource, "PetService.convertToGoldenPet", 1, true) == nil):toBeTrue()
+		expect(string.find(mainSource, "goldenPetsConverted", 1, true) == nil):toBeTrue()
+		expect(string.find(machineSource, '"goldenPetsConverted"', 1, true) ~= nil):toBeTrue()
+
+		expect(string.find(zoneSource, "local machineRegistry = {}", 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, "GenerateGUID(false)", 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, 'Instance.new("Model")', 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, 'anchor.Name = "Anchor"', 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, 'Instance.new("ProximityPrompt")', 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, "local function validateMachineActivation", 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, "return validateMachineActivation", 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, "local function spawnMachineStation", 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, 'spawnMachineStation(zonesFolder, "Gold")', 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, 'spawnMachineStation(zonesFolder, "Rainbow")', 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, 'objectText = "Gold Machine"', 1, true) ~= nil):toBeTrue()
+		expect(string.find(zoneSource, 'objectText = "Rainbow Machine"', 1, true) ~= nil):toBeTrue()
 	end)
 end)
 
 
 
-describe("MachineService QOF-15 adversarial transaction boundaries", function()
-	it("isolates transaction economics from mutable activation facts", function()
+describe("MachineService QOF-17 adversarial transaction boundaries", function()
+	it("isolates transaction economics from canonical mutation during activation", function()
 		resetState()
 		local gold = BalanceConfig.Machines.Gold
+		local originalId = gold.id
+		local originalZoneId = gold.zoneId
+		local originalInputVariant = gold.inputVariant
+		local originalOutputVariant = gold.outputVariant
 		local originalCost = gold.cost
-		MachineService.setActivationValidator(function(_, _, facts)
-			facts.machineId = "ForgedMachine"
-			facts.zoneId = 999
-			facts.inputVariant = "Golden"
-			facts.outputVariant = "Rainbow"
-			facts.cost = { currency = "coins", amount = 1 }
+		MachineService.setActivationValidator(function(_, machineId, activationToken)
+			expect(machineId):toBe("GoldMachine")
+			expect(activationToken):toBe(ACTIVATION_TOKENS.GoldMachine)
+			gold.id = "ForgedMachine"
+			gold.zoneId = 999
+			gold.inputVariant = "Golden"
+			gold.outputVariant = "Rainbow"
+			gold.cost = { currency = "coins", amount = 1 }
 			return true
 		end)
 		local result, message = attempt("GoldMachine", { "pet-1" })
+		gold.id = originalId
+		gold.zoneId = originalZoneId
+		gold.inputVariant = originalInputVariant
+		gold.outputVariant = originalOutputVariant
+		gold.cost = originalCost
 		expect(message):toBeNil()
 		expect(result.machineId):toBe("GoldMachine")
 		expect(result.cost):toBe(750)
@@ -698,5 +885,64 @@ describe("MachineService QOF-15 adversarial transaction boundaries", function()
 		expect(profile.discoveredPets.External):toBeTrue()
 		expect(#profile.pets):toBe(1)
 		expect(profile.pets[1].id):toBe("pet-1")
+	end)
+end)
+
+
+describe("MachineService QOF-19 enchant snapshot and consumption", function()
+	it("rejects a concurrent reroll after prepare and restores the debit", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "StrongI"
+		resetState({ enchanted })
+		MachineService.setTransactionHook(function(stage)
+			if stage == "afterSpend" then
+				enchanted.enchantId = "AgileI"
+			end
+		end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(result):toBeNil()
+		expect(message):toBe("Selected pet changed during conversion")
+		expect(profile.diamonds):toBe(10000)
+		expect(profile.pets[1]):toBe(enchanted)
+		expect(profile.pets[1].enchantId):toBe("AgileI")
+	end)
+
+	it("consumes enchanted inputs on normal success and creates an explicitly unenchanted output", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "StrongIII"
+		resetState({ enchanted })
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(message):toBeNil()
+		expect(result.success):toBeTrue()
+		expect(profile.pets[1] == enchanted):toBeFalse()
+		expect(profile.pets[1].enchantId):toBeNil()
+		expect(result.outputPet.enchantId):toBeNil()
+	end)
+
+	it("consumes enchanted inputs on a normal failed chance roll", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "AgileII"
+		resetState({ enchanted })
+		MachineService.setRandomSource(function() return 1 end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(message):toBeNil()
+		expect(result.success):toBeFalse()
+		expect(#profile.pets):toBe(0)
+		expect(result.outputPet):toBeNil()
+	end)
+
+	it("preserves the original enchanted table on technical rollback", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "AgileIII"
+		resetState({ enchanted })
+		MachineService.setTransactionHook(function(stage)
+			if stage == "afterPetMutation" then error("injected enchanted rollback") end
+		end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(result):toBeNil()
+		expect(message):toBe("Conversion failed safely")
+		expect(profile.pets[1]):toBe(enchanted)
+		expect(profile.pets[1].enchantId):toBe("AgileIII")
+		expect(profile.diamonds):toBe(10000)
 	end)
 end)

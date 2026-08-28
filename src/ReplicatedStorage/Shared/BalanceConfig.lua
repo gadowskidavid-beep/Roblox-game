@@ -231,7 +231,9 @@ local BalanceConfig = {
 	},
 
 	Machines = {
-		RuntimeEnabled = false,
+		-- QOF-17 activates both paid conversion stations while retaining explicit
+		-- per-definition gates and the global emergency kill switch.
+		RuntimeEnabled = true,
 		MinInputs = 1,
 		MaxInputs = 7,
 		SuccessChanceByInput = {
@@ -244,6 +246,7 @@ local BalanceConfig = {
 			[7] = 1.00,
 		},
 		Gold = {
+			RuntimeEnabled = true,
 			id = "GoldMachine",
 			zoneId = 3,
 			inputVariant = "Normal",
@@ -251,6 +254,7 @@ local BalanceConfig = {
 			cost = { currency = "diamonds", amount = 750 },
 		},
 		Rainbow = {
+			RuntimeEnabled = true,
 			id = "RainbowMachine",
 			zoneId = 6,
 			inputVariant = "Golden",
@@ -428,10 +432,17 @@ local BalanceConfig = {
 	},
 
 	Shop = {
-		-- The old timed Auto-Hatch product remains reserved in legacy balance and
-		-- persisted preferences remain intact, but no catalog or server processing
-		-- is permitted before its owning feature ships.
-		AutoHatchRuntimeEnabled = false,
+		-- QOF-18 paid Auto-Hatch is an independent, time-limited entitlement.
+		-- The explicit top-level alias remains for rolling source contracts while
+		-- the canonical definition below owns every runtime/economy constant.
+		AutoHatchRuntimeEnabled = true,
+		AutoHatch = {
+			RuntimeEnabled = true,
+			ContractVersion = 1,
+			cost = { currency = "diamonds", amount = 500 },
+			durationSeconds = 600,
+			intervalSeconds = 3,
+		},
 	},
 
 	Potions = {
@@ -497,7 +508,7 @@ local BalanceConfig = {
 	},
 
 	Enchanting = {
-		RuntimeEnabled = false,
+		RuntimeEnabled = true,
 		RollCost = { currency = "diamonds", amount = 500 },
 		MaxSlotsPerPet = 1,
 		Pool = {
@@ -637,19 +648,12 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == true, "Egg Quality must be enabled in QOF-07")
 	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == true, "Multi-Open must be enabled in QOF-08")
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
-	local futureSections = {
-		Machines = BalanceConfig.Machines,
-		Enchanting = BalanceConfig.Enchanting,
-	}
-	for name, section in pairs(futureSections) do
-		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
-	end
+	assert(BalanceConfig.Enchanting.RuntimeEnabled == true, "Enchanting must be enabled in QOF-19")
 
-	-- QOF-15 ships the complete machine transaction definition while keeping its
-	-- public runtime dormant. These exact values are the sole authority used by
-	-- MachineService and must not drift toward the retained legacy conversion.
+	-- QOF-17 exposes the Gold and Rainbow machines. The global gate remains an
+	-- emergency kill switch and each definition has an independent activation gate.
 	local machines = BalanceConfig.Machines
-	assert(machines.RuntimeEnabled == false, "Machines must remain publicly dormant in QOF-15")
+	assert(machines.RuntimeEnabled == true, "Machines must be globally enabled in QOF-17")
 	assert(machines.MinInputs == 1 and machines.MaxInputs == 7, "machine input bounds must be 1..7")
 	local expectedMachineChances = { 0.13, 0.26, 0.39, 0.50, 0.63, 0.88, 1.00 }
 	for count, expectedChance in ipairs(expectedMachineChances) do
@@ -662,12 +666,13 @@ function BalanceConfig.Validate()
 		assert(type(key) == "number" and key % 1 == 0 and key >= 1 and key <= 7, "unknown machine chance key")
 	end
 	local expectedMachines = {
-		Gold = { id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
-		Rainbow = { id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
+		Gold = { runtimeEnabled = true, id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
+		Rainbow = { runtimeEnabled = true, id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
 	}
 	for machineType, expected in pairs(expectedMachines) do
 		local machine = machines[machineType]
 		assert(type(machine) == "table", machineType .. " machine definition is missing")
+		assert(machine.RuntimeEnabled == expected.runtimeEnabled, machineType .. " machine runtime gate changed")
 		assert(machine.id == expected.id, machineType .. " machine ID changed")
 		assert(machine.zoneId == expected.zoneId, machineType .. " machine zone changed")
 		assert(machine.inputVariant == expected.inputVariant, machineType .. " input variant changed")
@@ -690,7 +695,15 @@ function BalanceConfig.Validate()
 	assert(core.SpeedRuntimeEnabled == true, "Speed upgrades must be enabled in QOF-12")
 	assert(core.MagnetRuntimeEnabled == true, "Magnet upgrades must be enabled in QOF-12")
 	assert(core.DoubleLuckRuntimeEnabled == true, "Double Luck must be enabled in QOF-11")
-	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
+	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == true, "Shop Auto-Hatch must be enabled in QOF-18")
+	local autoHatch = BalanceConfig.Shop.AutoHatch
+	assert(type(autoHatch) == "table" and autoHatch.RuntimeEnabled == true, "Auto-Hatch gate is inactive")
+	assert(autoHatch.ContractVersion == 1, "Auto-Hatch contract version changed")
+	validateCost(autoHatch.cost, "Auto-Hatch access")
+	assert(autoHatch.cost.currency == "diamonds" and autoHatch.cost.amount == 500, "Auto-Hatch price changed")
+	assert(autoHatch.durationSeconds == 600, "Auto-Hatch duration changed")
+	assert(autoHatch.intervalSeconds == 3, "Auto-Hatch interval changed")
+	assert(BalanceConfig.Limits.AutoHatchInterval == autoHatch.intervalSeconds, "Auto-Hatch interval aliases diverged")
 
 	for name, value in pairs(BalanceConfig.Limits) do
 		assert(isFiniteNumber(value) and value > 0, name .. " limit must be positive")
@@ -995,10 +1008,58 @@ function BalanceConfig.Validate()
 	end
 	assert(potionCount == 5, "potion catalog must contain exactly five canonical items")
 
-	validateCost(BalanceConfig.Enchanting.RollCost, "Enchanting")
+	local enchanting = BalanceConfig.Enchanting
+	local enchantingFieldCount = 0
+	for key in pairs(enchanting) do
+		assert(
+			key == "RuntimeEnabled" or key == "RollCost" or key == "MaxSlotsPerPet" or key == "Pool",
+			"Enchanting has an unknown contract field"
+		)
+		enchantingFieldCount = enchantingFieldCount + 1
+	end
+	assert(enchantingFieldCount == 4, "Enchanting must contain exactly four contract fields")
+	assert(enchanting.RuntimeEnabled == true, "Enchanting runtime gate changed")
+	assert(enchanting.MaxSlotsPerPet == 1, "Enchanting must expose exactly one slot")
+	validateCost(enchanting.RollCost, "Enchanting")
+	local costFieldCount = 0
+	for key in pairs(enchanting.RollCost) do
+		assert(key == "currency" or key == "amount", "Enchanting roll cost has an unknown field")
+		costFieldCount = costFieldCount + 1
+	end
+	assert(costFieldCount == 2, "Enchanting roll cost must contain exactly two fields")
+	assert(
+		enchanting.RollCost.currency == "diamonds" and enchanting.RollCost.amount == 500,
+		"Enchanting roll cost must remain exactly 500 diamonds"
+	)
+	local expectedEnchants = {
+		{ id = "StrongI", weight = 35, stat = "damage", multiplier = 1.10 },
+		{ id = "StrongII", weight = 15, stat = "damage", multiplier = 1.25 },
+		{ id = "StrongIII", weight = 5, stat = "damage", multiplier = 1.50 },
+		{ id = "AgileI", weight = 30, stat = "speed", multiplier = 1.10 },
+		{ id = "AgileII", weight = 12, stat = "speed", multiplier = 1.20 },
+		{ id = "AgileIII", weight = 3, stat = "speed", multiplier = 1.35 },
+	}
+	assert(#enchanting.Pool == #expectedEnchants, "Enchanting pool must contain exactly six outcomes")
+	for key in pairs(enchanting.Pool) do
+		assert(
+			type(key) == "number" and key % 1 == 0 and key >= 1 and key <= #expectedEnchants,
+			"Enchanting pool has an unknown index"
+		)
+	end
 	local enchantWeight = 0
-	for _, enchant in ipairs(BalanceConfig.Enchanting.Pool) do
-		assert(enchant.weight > 0, enchant.id .. " weight must be positive")
+	for index, expected in ipairs(expectedEnchants) do
+		local enchant = enchanting.Pool[index]
+		assert(type(enchant) == "table", "Enchanting outcome is missing at index " .. tostring(index))
+		assert(enchant.id == expected.id, "Enchanting ID changed at index " .. tostring(index))
+		assert(enchant.weight == expected.weight, enchant.id .. " weight changed")
+		assert(enchant.stat == expected.stat, enchant.id .. " stat changed")
+		assert(enchant.multiplier == expected.multiplier, enchant.id .. " multiplier changed")
+		local fieldCount = 0
+		for key in pairs(enchant) do
+			assert(key == "id" or key == "weight" or key == "stat" or key == "multiplier", enchant.id .. " has an unknown field")
+			fieldCount = fieldCount + 1
+		end
+		assert(fieldCount == 4, enchant.id .. " must contain exactly four fields")
 		enchantWeight = enchantWeight + enchant.weight
 	end
 	assert(enchantWeight == 100, "enchant weights must sum to 100")

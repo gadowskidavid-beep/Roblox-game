@@ -13,6 +13,7 @@ local PetData = require(game.ReplicatedStorage.Shared.PetData)
 local PetHatchMath = require(game.ReplicatedStorage.Shared.PetHatchMath)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 local PetVariantPresentation = require(game.ReplicatedStorage.Shared.PetVariantPresentation)
+local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
 
 local PetService = {}
 
@@ -23,6 +24,33 @@ PetService._upgradeService = nil
 PetService._masteryService = nil
 PetService._shopService = nil
 PetService._upgradeTreeService = nil
+
+-- Shared per-player lease used by every economic pet mutation. Opaque table
+-- identity prevents stale cleanup/finally paths from releasing a newer owner.
+PetService._inventoryMutationLeases = {}
+PetService._inventoryMutationIncarnations = {}
+
+local function deepCopy(value)
+	if type(value) ~= "table" then
+		return value
+	end
+	local copy = {}
+	for key, child in pairs(value) do
+		copy[deepCopy(key)] = deepCopy(child)
+	end
+	return copy
+end
+
+local function projectPets(pets)
+	local projected = {}
+	if type(pets) ~= "table" then
+		return projected
+	end
+	for index, pet in ipairs(pets) do
+		projected[index] = deepCopy(pet)
+	end
+	return projected
+end
 
 local function isFiniteNumber(value)
 	return type(value) == "number"
@@ -48,6 +76,87 @@ function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
 	PetService._currencyService = currencyService
 	PetService._upgradeService = upgradeService
+	PetService._inventoryMutationLeases = {}
+	PetService._inventoryMutationIncarnations = {}
+end
+
+function PetService.beginInventoryMutation(player, owner)
+	local userId = player and player.UserId
+	if not isFiniteNumber(userId) or userId % 1 ~= 0 then
+		return nil
+	end
+	if type(PetService._dataService) == "table"
+		and type(PetService._dataService.isMutationAdmissionOpen) == "function"
+		and PetService._dataService.isMutationAdmissionOpen(player) ~= true then
+		return nil
+	end
+	if PetService._inventoryMutationLeases[userId] ~= nil then
+		return nil
+	end
+	local lease = {
+		player = player,
+		owner = owner,
+		incarnation = PetService._inventoryMutationIncarnations[userId] or 0,
+	}
+	PetService._inventoryMutationLeases[userId] = lease
+	return lease
+end
+
+function PetService.isInventoryMutationIdle(player)
+	local userId = player and player.UserId
+	return isFiniteNumber(userId)
+		and userId % 1 == 0
+		and PetService._inventoryMutationLeases[userId] == nil
+end
+
+function PetService.isInventoryMutationCurrent(player, lease)
+	local userId = player and player.UserId
+	return type(lease) == "table"
+		and lease.player == player
+		and PetService._inventoryMutationLeases[userId] == lease
+		and (PetService._inventoryMutationIncarnations[userId] or 0) == lease.incarnation
+end
+
+function PetService.endInventoryMutation(player, lease, mutated)
+	if not PetService.isInventoryMutationCurrent(player, lease) then
+		return false
+	end
+	local userId = player.UserId
+	if mutated == true then
+		PetService._inventoryMutationIncarnations[userId] = lease.incarnation + 1
+	end
+	PetService._inventoryMutationLeases[userId] = nil
+	return true
+end
+
+local function acquireInventoryMutation(player, owner, suppliedLease)
+	if suppliedLease ~= nil then
+		if PetService.isInventoryMutationCurrent(player, suppliedLease) then
+			return suppliedLease, false
+		end
+		return nil, false
+	end
+	local lease = PetService.beginInventoryMutation(player, owner)
+	return lease, lease ~= nil
+end
+
+local function withInventoryMutation(player, owner, callback)
+	local lease = PetService.beginInventoryMutation(player, owner)
+	if not lease then
+		return false, "Pet inventory mutation already in progress"
+	end
+	local ok, result, resultError = xpcall(callback, debug.traceback)
+	local mutated = ok and result == true
+	local released = PetService.endInventoryMutation(player, lease, mutated)
+	if not ok then
+		return false, "Pet inventory mutation failed safely"
+	end
+	if not released then
+		-- Exact identity prevents an old finally from releasing a newer owner. The
+		-- current lease remains held fail-closed if release cannot be proven.
+		return false, "Pet inventory mutation settlement failed"
+	end
+	return result, resultError
 end
 
 -- Set mastery service reference (called after init to avoid circular deps)
@@ -310,6 +419,13 @@ function PetService.prepareHatchBatch(player, eggType, count, options)
 	if not isFiniteNumber(shinyBoostCount) or shinyBoostCount < 0 then shinyBoostCount = 0 end
 	shinyBoostCount = math.min(count, math.floor(shinyBoostCount))
 	local discovered = copyBooleanMap(data.discoveredPets)
+	local petsTable = data.pets
+	local originalPets = {}
+	for index, pet in ipairs(petsTable) do
+		originalPets[index] = pet
+	end
+	local discoveryTable = type(data.discoveredPets) == "table" and data.discoveredPets or nil
+	local discoverySnapshot = copyBooleanMap(discoveryTable)
 	local pets = {}
 	local newDiscoveryKeys = {}
 	for index = 1, count do
@@ -335,21 +451,52 @@ function PetService.prepareHatchBatch(player, eggType, count, options)
 		eggType = eggType,
 		pets = pets,
 		newDiscoveryKeys = newDiscoveryKeys,
+		petsTable = petsTable,
+		originalPets = originalPets,
+		discoveryTable = discoveryTable,
+		discoverySnapshot = discoverySnapshot,
 		originalPetCount = #data.pets,
 		discoveryTableWasNil = type(data.discoveredPets) ~= "table",
+		discoveryWrites = {},
 		mutationStarted = false,
 		committed = false,
 	}, nil
 end
 
-function PetService.commitHatchBatch(player, prepared)
+local function hatchSnapshotMatches(prepared)
+	local data = prepared.data
+	if PetService._dataService.getPlayerData(prepared.player) ~= data
+		or type(data) ~= "table" or data.pets ~= prepared.petsTable
+		or #data.pets ~= #prepared.originalPets then
+		return false
+	end
+	for index, pet in ipairs(prepared.originalPets) do
+		if data.pets[index] ~= pet then
+			return false
+		end
+	end
+	if data.discoveredPets ~= prepared.discoveryTable then
+		return false
+	end
+	if prepared.discoveryTable then
+		for key, value in pairs(prepared.discoveryTable) do
+			if prepared.discoverySnapshot[key] ~= value then return false end
+		end
+		for key, value in pairs(prepared.discoverySnapshot) do
+			if prepared.discoveryTable[key] ~= value then return false end
+		end
+	end
+	return true
+end
+
+local function commitHatchBatchUnlocked(player, prepared)
 	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed then
 		return false, "Invalid prepared hatch"
 	end
-	local data = PetService._dataService.getPlayerData(player)
-	if data ~= prepared.data or type(data.pets) ~= "table" or #data.pets ~= prepared.originalPetCount then
+	if not hatchSnapshotMatches(prepared) then
 		return false, "Inventory changed during hatch"
 	end
+	local data = prepared.data
 	local hasSpace, capacityError = PetService.canAddPets(player, #prepared.pets)
 	if not hasSpace then
 		return false, capacityError
@@ -359,7 +506,12 @@ function PetService.commitHatchBatch(player, prepared)
 	if type(data.discoveredPets) ~= "table" then
 		data.discoveredPets = {}
 	end
+	prepared.discoveryWriteTable = data.discoveredPets
 	for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+		prepared.discoveryWrites[discoveryKey] = {
+			present = rawget(data.discoveredPets, discoveryKey) ~= nil,
+			value = rawget(data.discoveredPets, discoveryKey),
+		}
 		data.discoveredPets[discoveryKey] = true
 	end
 	for _, pet in ipairs(prepared.pets) do
@@ -369,27 +521,69 @@ function PetService.commitHatchBatch(player, prepared)
 	return true
 end
 
-function PetService.rollbackHatchBatch(prepared)
+function PetService.commitHatchBatch(player, prepared, suppliedLease)
+	local lease, ownsLease = acquireInventoryMutation(player, "PetService.commitHatchBatch", suppliedLease)
+	if not lease then return false, "Pet inventory mutation already in progress" end
+	local ok, committed, commitError = xpcall(function()
+		return commitHatchBatchUnlocked(player, prepared)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and committed == true)
+	end
+	if not ok then return false, "Hatch commit failed safely" end
+	return committed, commitError
+end
+
+local function rollbackHatchBatchUnlocked(prepared)
 	if type(prepared) ~= "table" or not prepared.mutationStarted or type(prepared.data) ~= "table" then
 		return true
 	end
 	local data = prepared.data
-	if type(data.pets) ~= "table" then
+	if data.pets ~= prepared.petsTable
+		or #data.pets ~= prepared.originalPetCount + #prepared.pets then
 		return false
 	end
-	while #data.pets > prepared.originalPetCount do
+	for index, pet in ipairs(prepared.pets) do
+		if data.pets[prepared.originalPetCount + index] ~= pet then
+			return false
+		end
+	end
+	for _ = 1, #prepared.pets do
 		table.remove(data.pets)
 	end
-	if prepared.discoveryTableWasNil then
-		data.discoveredPets = nil
-	elseif type(data.discoveredPets) == "table" then
-		for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+	if data.discoveredPets ~= prepared.discoveryWriteTable then
+		return false
+	end
+	for discoveryKey, previous in pairs(prepared.discoveryWrites) do
+		if rawget(data.discoveredPets, discoveryKey) ~= true then
+			return false
+		end
+		if previous.present then
+			data.discoveredPets[discoveryKey] = previous.value
+		else
 			data.discoveredPets[discoveryKey] = nil
 		end
+	end
+	if prepared.discoveryTableWasNil and next(data.discoveredPets) == nil then
+		data.discoveredPets = nil
 	end
 	prepared.mutationStarted = false
 	prepared.committed = false
 	return true
+end
+
+function PetService.rollbackHatchBatch(prepared, suppliedLease)
+	local player = type(prepared) == "table" and prepared.player or nil
+	if not player then return false end
+	local lease, ownsLease = acquireInventoryMutation(player, "PetService.rollbackHatchBatch", suppliedLease)
+	if not lease then return false end
+	local ok, restored = xpcall(function()
+		return rollbackHatchBatchUnlocked(prepared)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and restored == true)
+	end
+	return ok and restored == true
 end
 
 function PetService.replicateInventory(player)
@@ -397,13 +591,13 @@ function PetService.replicateInventory(player)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	local event = remotes and remotes:FindFirstChild("PetInventoryUpdated")
 	if data and event then
-		event:FireClient(player, data.pets)
+		pcall(event.FireClient, event, player, projectPets(data.pets))
 	end
 end
 
 -- Compatibility single-roll API used by campaign rewards. Paid player hatches
 -- are orchestrated by EggService through the atomic batch methods above.
-function PetService.hatchEgg(player, eggType, skipCostDeduction)
+local function hatchEggUnlocked(player, eggType, skipCostDeduction, inventoryLease)
 	local prepared, prepareError = PetService.prepareHatchBatch(player, eggType, 1)
 	if not prepared then
 		return nil, prepareError
@@ -424,9 +618,14 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		end
 	end
 
-	local callSucceeded, committed, commitError = pcall(PetService.commitHatchBatch, player, prepared)
+	local callSucceeded, committed, commitError = pcall(
+		PetService.commitHatchBatch,
+		player,
+		prepared,
+		inventoryLease
+	)
 	if not callSucceeded or not committed then
-		PetService.rollbackHatchBatch(prepared)
+		PetService.rollbackHatchBatch(prepared, inventoryLease)
 		if paidAmount > 0 then
 			PetService._currencyService.creditRaw(player, "coins", paidAmount)
 		end
@@ -434,6 +633,20 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	end
 	PetService.replicateInventory(player)
 	return prepared.pets[1], nil
+end
+
+function PetService.hatchEgg(player, eggType, skipCostDeduction)
+	local lease = PetService.beginInventoryMutation(player, "PetService.hatchEgg")
+	if not lease then
+		return nil, "Pet inventory mutation already in progress"
+	end
+	local ok, pet, hatchError = xpcall(function()
+		return hatchEggUnlocked(player, eggType, skipCostDeduction, lease)
+	end, debug.traceback)
+	local released = PetService.endInventoryMutation(player, lease, ok and pet ~= nil)
+	if not ok then return nil, "Hatch failed safely" end
+	if not released then return nil, "Hatch settlement failed" end
+	return pet, hatchError
 end
 
 -- Public authoritative equip capacity.
@@ -479,7 +692,7 @@ function PetService.getMaxEquipped(player)
 end
 
 -- Equip a pet by instance ID
-function PetService.equipPet(player, petInstanceId)
+local function equipPetUnlocked(player, petInstanceId)
 	print("[PetService] equipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
 
 	if not player or type(petInstanceId) ~= "string" then
@@ -526,7 +739,7 @@ function PetService.equipPet(player, petInstanceId)
 				local event = remotes:FindFirstChild("PetEquipped")
 				if event then
 					print("[PetService] equipPet SUCCESS: Firing PetEquipped event for " .. tostring(pet.name))
-					event:FireClient(player, pet)
+					pcall(event.FireClient, event, player, deepCopy(pet))
 				end
 			end
 
@@ -538,8 +751,14 @@ function PetService.equipPet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.equipPet(player, petInstanceId)
+	return withInventoryMutation(player, "PetService.equipPet", function()
+		return equipPetUnlocked(player, petInstanceId)
+	end)
+end
+
 -- Unequip a pet by instance ID
-function PetService.unequipPet(player, petInstanceId)
+local function unequipPetUnlocked(player, petInstanceId)
 	print("[PetService] unequipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
 
 	if not player or type(petInstanceId) ~= "string" then
@@ -576,7 +795,7 @@ function PetService.unequipPet(player, petInstanceId)
 				local event = remotes:FindFirstChild("PetUnequipped")
 				if event then
 					print("[PetService] unequipPet SUCCESS: Firing PetUnequipped event for " .. tostring(pet.name))
-					event:FireClient(player, petInstanceId)
+					pcall(event.FireClient, event, player, petInstanceId)
 				end
 			end
 
@@ -588,17 +807,23 @@ function PetService.unequipPet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.unequipPet(player, petInstanceId)
+	return withInventoryMutation(player, "PetService.unequipPet", function()
+		return unequipPetUnlocked(player, petInstanceId)
+	end)
+end
+
 local function fireInventoryUpdate(player, pets)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if not remotes then return end
 	local event = remotes:FindFirstChild("PetInventoryUpdated")
 	if event then
-		event:FireClient(player, pets)
+		pcall(event.FireClient, event, player, projectPets(pets))
 	end
 end
 
 -- Set a pet's favorite state by instance ID.
-function PetService.setPetFavorite(player, petInstanceId, isFavorite)
+local function setPetFavoriteUnlocked(player, petInstanceId, isFavorite)
 	if not player or type(petInstanceId) ~= "string" or type(isFavorite) ~= "boolean" then
 		return false, "Invalid parameters"
 	end
@@ -619,8 +844,14 @@ function PetService.setPetFavorite(player, petInstanceId, isFavorite)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.setPetFavorite(player, petInstanceId, isFavorite)
+	return withInventoryMutation(player, "PetService.setPetFavorite", function()
+		return setPetFavoriteUnlocked(player, petInstanceId, isFavorite)
+	end)
+end
+
 -- Delete a single pet by instance ID
-function PetService.deletePet(player, petInstanceId)
+local function deletePetUnlocked(player, petInstanceId)
 	if not player or type(petInstanceId) ~= "string" then
 		return false, "Invalid parameters"
 	end
@@ -656,8 +887,14 @@ function PetService.deletePet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.deletePet(player, petInstanceId)
+	return withInventoryMutation(player, "PetService.deletePet", function()
+		return deletePetUnlocked(player, petInstanceId)
+	end)
+end
+
 -- Delete multiple pets by instance IDs (bulk operation)
-function PetService.deletePets(player, petInstanceIds)
+local function deletePetsUnlocked(player, petInstanceIds)
 	if not player or type(petInstanceIds) ~= "table" then
 		return false, "Invalid parameters"
 	end
@@ -715,6 +952,12 @@ function PetService.deletePets(player, petInstanceIds)
 
 	fireInventoryUpdate(player, data.pets)
 	return true, nil
+end
+
+function PetService.deletePets(player, petInstanceIds)
+	return withInventoryMutation(player, "PetService.deletePets", function()
+		return deletePetsUnlocked(player, petInstanceIds)
+	end)
 end
 
 -- Prepare a canonical variant conversion without mutating inventory, discovery,
@@ -812,6 +1055,8 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 			petId = pet.petId,
 			variant = canonicalVariant,
 			shiny = pet.shiny == true,
+			enchantPresent = rawget(pet, "enchantId") ~= nil,
+			enchantId = rawget(pet, "enchantId"),
 		}
 	end
 
@@ -838,6 +1083,8 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 		favorite = false,
 		equipped = false,
 	}
+	-- Machine success always creates a fresh, explicitly unenchanted output.
+	outputPet.enchantId = nil
 	local discoveryKey = PetService.getLegacyDiscoveryKey(speciesId, outputVariant, anyShiny)
 	local originalPets = {}
 	for index, pet in ipairs(petsTable) do
@@ -893,7 +1140,7 @@ local function discoveryMatchesPreparedSnapshot(data, prepared)
 	return true
 end
 
-function PetService.commitVariantConversion(player, prepared, succeeded)
+local function commitVariantConversionUnlocked(player, prepared, succeeded)
 	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed
 		or type(succeeded) ~= "boolean" then
 		return false, "Invalid prepared conversion"
@@ -922,6 +1169,8 @@ function PetService.commitVariantConversion(player, prepared, succeeded)
 		if pet.id ~= snapshot.id or pet.petId ~= snapshot.petId
 			or PetVariantPresentation.normalizeBaseVariant(pet) ~= snapshot.variant
 			or (pet.shiny == true) ~= snapshot.shiny
+			or (rawget(pet, "enchantId") ~= nil) ~= snapshot.enchantPresent
+			or rawget(pet, "enchantId") ~= snapshot.enchantId
 			or pet.favorite == true or pet.equipped == true or equippedById[pet.id] then
 			return false, "Selected pet changed during conversion"
 		end
@@ -965,7 +1214,24 @@ function PetService.commitVariantConversion(player, prepared, succeeded)
 	return true
 end
 
-function PetService.rollbackVariantConversion(prepared)
+function PetService.commitVariantConversion(player, prepared, succeeded, suppliedLease)
+	local lease, ownsLease = acquireInventoryMutation(
+		player,
+		"PetService.commitVariantConversion",
+		suppliedLease
+	)
+	if not lease then return false, "Pet inventory mutation already in progress" end
+	local ok, committed, commitError = xpcall(function()
+		return commitVariantConversionUnlocked(player, prepared, succeeded)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and committed == true)
+	end
+	if not ok then return false, "Conversion failed safely" end
+	return committed, commitError
+end
+
+local function rollbackVariantConversionUnlocked(prepared)
 	if type(prepared) ~= "table" or not prepared.mutationStarted
 		or type(prepared.data) ~= "table" or type(prepared.petsTable) ~= "table" then
 		return true
@@ -1008,6 +1274,24 @@ function PetService.rollbackVariantConversion(prepared)
 	return true
 end
 
+function PetService.rollbackVariantConversion(prepared, suppliedLease)
+	local player = type(prepared) == "table" and prepared.player or nil
+	if not player then return false end
+	local lease, ownsLease = acquireInventoryMutation(
+		player,
+		"PetService.rollbackVariantConversion",
+		suppliedLease
+	)
+	if not lease then return false end
+	local ok, restored = xpcall(function()
+		return rollbackVariantConversionUnlocked(prepared)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and restored == true)
+	end
+	return ok and restored == true
+end
+
 -- Get player's pet inventory
 function PetService.getInventory(player)
 	if not player then
@@ -1025,24 +1309,81 @@ end
 -- Calculate effective damage from canonical identity and apply active buffs once.
 -- pet.damage is a replicated compatibility mirror and is never combat authority.
 function PetService.getPetDamage(pet, player)
-	if not pet or not player then
+	if type(pet) ~= "table" or not player then
 		return 0
 	end
 
-	local baseDamage = PetVariantMath.getPetBaseDamage(pet)
-	local strongBonus = PetService._upgradeService.getUpgradeBonus(player, "StrongPets")
-
-	if strongBonus > 0 then
-		baseDamage = math.floor(baseDamage * strongBonus)
+	local baseOk, baseDamage = pcall(PetVariantMath.getPetBaseDamage, pet)
+	if not baseOk or not isFiniteNumber(baseDamage) or baseDamage < 0 then
+		return 0
 	end
-	if PetService._shopService then
-		local shopDamageMultiplier = PetService._shopService.getShopMultiplier(player, "damage")
-		if shopDamageMultiplier > 1 then
-			baseDamage = math.floor(baseDamage * shopDamageMultiplier)
+	local enchantOk, enchantMultiplier = pcall(PetEnchantMath.getDamageMultiplier, pet)
+	if not enchantOk or not isFiniteNumber(enchantMultiplier) or enchantMultiplier < 0 then
+		enchantMultiplier = 1
+	end
+	local enchantedDamage = baseDamage * enchantMultiplier
+	if isFiniteNumber(enchantedDamage) and enchantedDamage >= 0 then
+		baseDamage = enchantedDamage
+	end
+
+	local strongBonus = 0
+	if type(PetService._upgradeService) == "table"
+		and type(PetService._upgradeService.getUpgradeBonus) == "function" then
+		local bonusOk, bonus = pcall(
+			PetService._upgradeService.getUpgradeBonus,
+			player,
+			"StrongPets"
+		)
+		if bonusOk and isFiniteNumber(bonus) and bonus > 0 then
+			strongBonus = bonus
+		end
+	end
+	if strongBonus > 0 then
+		local candidate = baseDamage * strongBonus
+		if isFiniteNumber(candidate) and candidate >= 0 then
+			baseDamage = math.floor(candidate)
 		end
 	end
 
-	return baseDamage
+	if type(PetService._shopService) == "table"
+		and type(PetService._shopService.getShopMultiplier) == "function" then
+		local multiplierOk, shopDamageMultiplier = pcall(
+			PetService._shopService.getShopMultiplier,
+			player,
+			"damage"
+		)
+		if multiplierOk and isFiniteNumber(shopDamageMultiplier) and shopDamageMultiplier > 1 then
+			local candidate = baseDamage * shopDamageMultiplier
+			if isFiniteNumber(candidate) and candidate >= 0 then
+				baseDamage = math.floor(candidate)
+			end
+		end
+	end
+
+	return isFiniteNumber(baseDamage) and baseDamage >= 0 and baseDamage or 0
+end
+
+-- Campaign lane movement is snapshotted by CampaignService at deploy. It uses
+-- only canonical PetData base speed and an Agile enchant from the whitelist.
+function PetService.getCampaignLaneSpeed(pet)
+	if type(pet) ~= "table" then
+		return 0
+	end
+	local petId = rawget(pet, "petId")
+	if type(petId) ~= "string" then
+		return 0
+	end
+	local definition = PetData.Pets[petId]
+	local baseSpeed = definition and definition.baseSpeed or nil
+	if not isFiniteNumber(baseSpeed) or baseSpeed < 0 then
+		return 0
+	end
+	local multiplierOk, multiplier = pcall(PetEnchantMath.getCampaignSpeedMultiplier, pet)
+	if not multiplierOk or not isFiniteNumber(multiplier) or multiplier < 0 then
+		return 0
+	end
+	local speed = baseSpeed * multiplier
+	return isFiniteNumber(speed) and speed >= 0 and speed or 0
 end
 
 -- Shared machine chance table. QOF-02 centralizes this without changing the
@@ -1053,7 +1394,7 @@ local GOLDEN_CHANCES = GOLDEN_CONVERSION.SuccessChanceByInput
 -- Convert pets into a golden pet (multi-pet sacrifice with chance)
 -- petInstanceIds: table of 1-7 pet instance IDs (all must be same petId/type)
 -- Returns: { success = bool, goldenPet = pet|nil, chance = number, isNewDiscovery = bool }
-function PetService.convertToGoldenPet(player, petInstanceIds)
+local function convertToGoldenPetUnlocked(player, petInstanceIds)
 	if not player or type(petInstanceIds) ~= "table" then
 		return nil, "Invalid parameters"
 	end
@@ -1211,6 +1552,18 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 		chance = chance,
 		isNewDiscovery = isNewDiscovery,
 	}, nil
+end
+
+function PetService.convertToGoldenPet(player, petInstanceIds)
+	local lease = PetService.beginInventoryMutation(player, "PetService.convertToGoldenPet")
+	if not lease then return nil, "Pet inventory mutation already in progress" end
+	local ok, result, conversionError = xpcall(function()
+		return convertToGoldenPetUnlocked(player, petInstanceIds)
+	end, debug.traceback)
+	local released = PetService.endInventoryMutation(player, lease, ok and result ~= nil)
+	if not ok then return nil, "Conversion failed safely" end
+	if not released then return nil, "Conversion settlement failed" end
+	return result, conversionError
 end
 
 return PetService
