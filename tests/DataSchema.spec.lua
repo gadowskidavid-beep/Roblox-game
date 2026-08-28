@@ -16,10 +16,16 @@ local Config = {
 }
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
 local PetData = originalRequire("src/ReplicatedStorage/Shared/PetData")
+local CampaignData = originalRequire("src/ReplicatedStorage/Shared/CampaignData")
+local QuestData = originalRequire("src/ReplicatedStorage/Shared/QuestData")
+local MasteryData = originalRequire("src/ReplicatedStorage/Shared/MasteryData")
 local SharedMock = {
 	Config = Config,
 	BalanceConfig = BalanceConfig,
 	PetData = PetData,
+	CampaignData = CampaignData,
+	QuestData = QuestData,
+	MasteryData = MasteryData,
 }
 local ReplicatedStorageMock = { Shared = SharedMock }
 rawset(_G, "game", { ReplicatedStorage = ReplicatedStorageMock })
@@ -29,6 +35,10 @@ local function mockRequire(path)
 	if path == Config then return Config end
 	if path == BalanceConfig then return BalanceConfig end
 	if path == PetData then return PetData end
+	if path == CampaignData then return CampaignData end
+	if path == QuestData then return QuestData end
+	if path == MasteryData then return MasteryData end
+	if path == SharedMock.ProgressionMath then return SharedMock.ProgressionMath end
 	if path == SharedMock.PetVariantMath then return SharedMock.PetVariantMath end
 	if path == SharedMock.PetEnchantMath then return SharedMock.PetEnchantMath end
 	if path == SharedMock.PetDex then return SharedMock.PetDex end
@@ -51,6 +61,8 @@ local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantM
 SharedMock.PetEnchantMath = PetEnchantMath
 local PetDex = originalRequire("src/ReplicatedStorage/Shared/PetDex")
 SharedMock.PetDex = PetDex
+local ProgressionMath = originalRequire("src/ReplicatedStorage/Shared/ProgressionMath")
+SharedMock.ProgressionMath = ProgressionMath
 local DataSchema = originalRequire("src/ServerScriptService/Services/DataSchema")
 
 -- Restore require
@@ -840,7 +852,7 @@ end)
 describe("DataSchema V11 six-state Pet Dex migration", function()
 	it("backfills the starter as an exact Normal discovery for new profiles", function()
 		local data = DataSchema.migrate(nil, 1000)
-		expect(data.schemaVersion):toBe(11)
+		expect(data.schemaVersion):toBe(12)
 		expect(data.discoveredPets.Buddy):toBeTrue()
 		expect(data.discoveredPets["Buddy|Normal"]):toBeTrue()
 		expect(data.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
@@ -909,5 +921,161 @@ describe("DataSchema V11 six-state Pet Dex migration", function()
 		expect(snapshot):toEqual(once)
 		snapshot.discoveredPets["Buddy|Rainbow|Shiny"] = nil
 		expect(once.discoveredPets["Buddy|Rainbow|Shiny"]):toBeTrue()
+	end)
+end)
+
+
+
+describe("DataSchema V12 hostile progression normalization", function()
+	it("keeps only known finite integer quest and mastery levels within canonical maxima", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 11,
+			upgrades = {
+				StrongPets = 3,
+				GoldenPetsChance = 1,
+				FasterPets = 4,
+				LuckyEggs = -1,
+				EggMaster = 1.5,
+				Sprinting = "2",
+				CoinCollector = math.huge,
+				Dedication = -math.huge,
+				Veteran = 0 / 0,
+				Rising = {},
+				Legend = function() end,
+				UnknownQuest = 1,
+			},
+			masteryBuffs = {
+				MoreCoins = 10,
+				LongerBuffs = 5,
+				MoreDiamonds = 11,
+				BetterLuck = -1,
+				XPBoost = 1.5,
+				FasterRunning = "2",
+				MorePetSlots = math.huge,
+				BiggerRange = -math.huge,
+				QuickHatch = 0 / 0,
+				DropMagnet = {},
+				DoubleJump = function() end,
+				UnknownMastery = 1,
+			},
+		}, 1000)
+
+		expect(data.schemaVersion):toBe(12)
+		expect(data.upgrades):toEqual({ StrongPets = 3, GoldenPetsChance = 1 })
+		expect(data.masteryBuffs):toEqual({ MoreCoins = 10, LongerBuffs = 5 })
+	end)
+
+	it("normalizes sparse arrays by sorted positive integer keys and keeps first valid duplicates", function()
+		local data = DataSchema.migrate({
+			pets = {
+				[7] = { id = "pet-c", petId = "Buddy", variant = "Rainbow", shiny = true },
+				[2] = { id = "pet-a", petId = "Buddy", variant = "Normal", equipped = false },
+				[5] = { id = "pet-a", petId = "Dog", variant = "Golden", equipped = true },
+				[4] = "invalid",
+				ignored = { id = "string-key", petId = "Dog" },
+			},
+			equippedPets = {
+				[8] = "pet-c",
+				[3] = "pet-a",
+				[5] = "pet-a",
+				ignored = "pet-c",
+			},
+			unlockedZones = { [9] = 7, [2] = 3, [4] = 3, [6] = 2.5, ignored = 8 },
+			campaignProgress = { [10] = 48, [1] = 4, [6] = 4, [3] = 12, [5] = math.huge },
+		}, 1000)
+
+		expect(#data.pets):toBe(2)
+		expect(data.pets[1].id):toBe("pet-a")
+		expect(data.pets[1].petId):toBe("Buddy")
+		expect(data.pets[2].id):toBe("pet-c")
+		expect(data.pets[2].variant):toBe("Rainbow")
+		expect(data.pets[2].shiny):toBeTrue()
+		expect(data.equippedPets):toEqual({ "pet-a", "pet-c" })
+		expect(data.unlockedZones):toEqual({ 1, 3, 7 })
+		expect(data.campaignProgress):toEqual({ 4, 12, 48 })
+	end)
+
+	it("reapplies V12 normalization during persistence cloning without mutating live data", function()
+		local live = DataSchema.migrate({
+			upgrades = { StrongPets = 2 },
+			masteryBuffs = { MoreCoins = 4 },
+		}, 1000)
+		live.upgrades.StrongPets = 999
+		live.upgrades.UnknownQuest = 1
+		live.masteryBuffs.MoreCoins = "10"
+		live.masteryBuffs.UnknownMastery = 1
+
+		local snapshot = DataSchema.cloneForPersistence(live, 1000)
+		expect(snapshot.upgrades):toEqual({})
+		expect(snapshot.masteryBuffs):toEqual({})
+		expect(live.upgrades.StrongPets):toBe(999)
+		expect(live.masteryBuffs.MoreCoins):toBe("10")
+		expect(DataSchema.migrate(snapshot, 1000)):toEqual(snapshot)
+	end)
+
+	it("preserves valid V5, V6, V10, and V11 profile semantics through V12", function()
+		local fixtures = {
+			{
+				schemaVersion = 5,
+				pets = { { id = "v5", petId = "Buddy", variant = "Shiny" } },
+				equippedPets = {},
+			},
+			{
+				schemaVersion = 6,
+				pets = { { id = "v6", petId = "Buddy", variant = "Rainbow", shiny = true } },
+				equippedPets = {},
+			},
+			{
+				schemaVersion = 10,
+				pets = { { id = "v10", petId = "Buddy", variant = "Golden", shiny = true, enchantId = "StrongIII" } },
+				equippedPets = {},
+			},
+			{
+				schemaVersion = 11,
+				pets = { { id = "v11", petId = "Buddy", variant = "Rainbow", shiny = true, enchantId = "AgileII" } },
+				equippedPets = {},
+				discoveredPets = { ["Buddy|Rainbow|Shiny"] = true },
+			},
+		}
+
+		for _, fixture in ipairs(fixtures) do
+			fixture.upgrades = { StrongPets = 3 }
+			fixture.masteryBuffs = { MoreCoins = 10 }
+			local once = DataSchema.migrate(fixture, 1000)
+			local twice = DataSchema.migrate(once, 1000)
+			expect(once.schemaVersion):toBe(12)
+			expect(once.upgrades.StrongPets):toBe(3)
+			expect(once.masteryBuffs.MoreCoins):toBe(10)
+			expect(once.pets[1].shiny):toBeTrue()
+			expect(twice):toEqual(once)
+		end
+
+		local enchanted = DataSchema.migrate(fixtures[3], 1000)
+		expect(enchanted.pets[1].enchantId):toBe("StrongIII")
+		expect(enchanted.discoveredPets["Buddy|Golden|Shiny"]):toBeTrue()
+		local dex = DataSchema.migrate(fixtures[4], 1000)
+		expect(dex.pets[1].enchantId):toBe("AgileII")
+		expect(dex.discoveredPets["Buddy|Rainbow|Shiny"]):toBeTrue()
+	end)
+end)
+
+
+
+describe("DataSchema V12 campaign boss claim normalization", function()
+	it("keeps only exact true claims for canonical SpecialEgg levels", function()
+		local values = { false, "claimed", {}, function() end, 1, 0 / 0 }
+		for _, hostile in ipairs(values) do
+			local data = DataSchema.migrate({
+				campaignBossRewards = {
+					["6"] = hostile,
+					["12"] = true,
+					["5"] = true,
+					["999"] = true,
+					[6] = true,
+				},
+			}, 1000)
+			expect(data.campaignBossRewards):toEqual({ ["12"] = true })
+			expect(DataSchema.migrate(data, 1000)):toEqual(data)
+		end
 	end)
 end)

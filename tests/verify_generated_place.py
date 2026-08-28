@@ -41,7 +41,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 75, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 76, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -304,7 +304,7 @@ def main() -> None:
     data_schema_source = (
         ROOT / "src/ServerScriptService/Services/DataSchema.lua"
     ).read_bytes()
-    assert b'DataSchema.VERSION = 11' in data_schema_source
+    assert b'DataSchema.VERSION = 12' in data_schema_source
     assert b'autoHatchExpiresAt = 0' in data_schema_source
     assert b'normalizeAutoHatchExpiry' in data_schema_source
     assert b'or value % 1 ~= 0' in data_schema_source
@@ -517,7 +517,7 @@ def main() -> None:
     assert b"RuntimeEnabled = false" not in enchanting_balance
 
     for required in (
-        b"DataSchema.VERSION = 11",
+        b"DataSchema.VERSION = 12",
         b"PetEnchantMath.normalizeEnchantId(pet.enchantId)",
         b"pet.enchant = nil",
         b"pet.enchantData = nil",

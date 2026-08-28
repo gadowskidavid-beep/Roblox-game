@@ -124,6 +124,7 @@ local specFiles = {
 	"tests/PetVariantPresentation.spec",
 	"tests/HatchCinematicPolicy.spec",
 	"tests/DataSchema.spec",
+	"tests/ProgressionServices.spec",
 	"tests/DataService.spec",
 	"tests/CurrencyService.spec",
 	"tests/UpgradeTreeService.spec",

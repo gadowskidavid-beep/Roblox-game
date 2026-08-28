@@ -1,0 +1,16 @@
+# Battle Pets deterministic release provenance v1
+# qof: 23
+# source-tree-sha256: 2993053dd4f03f254f0de8ba97c1ad564597e99d963dd879573f337fedfc0f4e
+# generator-sha256: 4d01b65a20825cf02a884752a5cb6f9ffcecefdd4a40f8fc5177862e33eb8637
+# runtime-inventory-sha256: 1bbeb087fd022fbaf1a8f2a79ae89f5171763118f8ddd9f872247335485b5817
+# release-builder-sha256: 20d80a331e516b5fb9d3c654d999c8d40ec5753b4e767a3849fe2f863b21cd75
+# converter-sha256: 48ba4e0c3599a1281b4ac9ca2869159080c6c684ccad335f3dffedd41da81158
+# rbxmk-lock-sha256: 811b934905620d86e44e9637bf45406a6de4ff8eea57e1671ebf46a4d70a6631
+# rbxmk-version: 0.9.1
+# rbxmk-platform: linux-amd64
+# rbxmk-sha256: 057c4b3e70c928af73646975d1df11579b0a5ccfa72f274af8c6d135fc9f4d34
+# descriptor: none
+# zip: deflate-9; timestamp=1980-01-01T00:00:00; unix-mode=100644
+b20778c38f4d68b1a959a85b0ca03a21fd334a2d743c164d65b344d69acd7d37  BATTLE_PETS.rbxlx
+9c2cad0b254339b273577f5e246d484d4afd77d40c8fa1e0e07d60d0a36a04f5  BATTLE_PETS_QOF-23_RBXLX.zip
+b8a2d611beab73db67ee8b4fdb62b8d8e054f8b9ff91064bfb44a11a4eb2c40a  BATTLE_PETS_QOF-23_TEST.rbxl

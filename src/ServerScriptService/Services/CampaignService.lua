@@ -526,9 +526,11 @@ function CampaignService._onVictory(userId, battle)
 		end
 
 		if rewards.SpecialEgg then
-			data.campaignBossRewards = data.campaignBossRewards or {}
+			if type(data.campaignBossRewards) ~= "table" then
+				data.campaignBossRewards = {}
+			end
 			local claimKey = tostring(battle.levelNum)
-			if not data.campaignBossRewards[claimKey] then
+			if data.campaignBossRewards[claimKey] ~= true then
 				local rewardPet, rewardError = CampaignService._petService.hatchEgg(player, rewards.SpecialEgg, true)
 				if rewardPet then
 					data.campaignBossRewards[claimKey] = true

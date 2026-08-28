@@ -11,6 +11,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 local DataSchema = require(script.Parent.DataSchema)
 
 local DataService = {}
@@ -266,14 +267,14 @@ function DataService.getClientData(player)
 		xpNeeded = (data.level or 1) * 100,
 		equippedPets = DataSchema.deepCopy(data.equippedPets),
 		unlockedZones = DataSchema.deepCopy(data.unlockedZones),
-		upgrades = DataSchema.deepCopy(data.upgrades),
+		upgrades = ProgressionMath.normalizeQuestLevels(data.upgrades),
 		upgradeTreePurchases = DataSchema.deepCopy(data.upgradeTreePurchases or {}),
 		hatchPreferences = DataSchema.deepCopy(data.hatchPreferences or { preferredBatchCount = 1 }),
 		autoHatchExpiresAt = data.autoHatchExpiresAt or 0,
 		questStats = DataSchema.deepCopy(data.questStats),
 		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,
-		masteryBuffs = DataSchema.deepCopy(data.masteryBuffs),
+		masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs),
 		discoveredPets = DataSchema.deepCopy(data.discoveredPets or {}),
 		shopPurchases = DataSchema.deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
 		potionInventory = DataSchema.deepCopy(data.potionInventory or {}),

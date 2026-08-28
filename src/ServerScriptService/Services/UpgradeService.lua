@@ -8,6 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local QuestData = require(game.ReplicatedStorage.Shared.QuestData)
 local MasteryData = require(game.ReplicatedStorage.Shared.MasteryData)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 
 local UpgradeService = {}
 
@@ -42,7 +43,7 @@ function UpgradeService.getUpgradeLevel(player, upgradeId)
 		return 0
 	end
 
-	return data.upgrades[upgradeId] or 0
+	return ProgressionMath.resolveQuestLevel(data.upgrades, upgradeId)
 end
 
 -- Get the bonus value for the current upgrade level
@@ -59,11 +60,7 @@ function UpgradeService.getUpgradeBonus(player, upgradeId)
 		if not data then
 			return 0
 		end
-		local currentLevel = data.upgrades[upgradeId] or 0
-		if currentLevel == 0 then
-			return 0
-		end
-		return questDef.levels[currentLevel].bonus
+		return ProgressionMath.getQuestBonus(data.upgrades, upgradeId)
 	end
 
 	-- Check mastery buffs for matching bonus types

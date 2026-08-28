@@ -118,3 +118,50 @@ describe("CampaignService hardened deploy calculations", function()
 		CampaignService._activeBattles[player.UserId] = nil
 	end)
 end)
+
+
+
+describe("CampaignService QOF-23 hostile boss claim state", function()
+	it("treats only exact true as claimed and never lets a poisoned value suppress the egg", function()
+		local player = { UserId = 2323 }
+		function Players:GetPlayerByUserId(userId)
+			return userId == player.UserId and player or nil
+		end
+		local profile = {
+			campaignProgress = {},
+			campaignBossRewards = { ["6"] = "claimed" },
+		}
+		local hatchCalls = 0
+		CampaignService._dataService = { getPlayerData = function() return profile end }
+		CampaignService._currencyService = {
+			addCoins = function() end,
+			addDiamonds = function() end,
+		}
+		CampaignService._petService = {
+			hatchEgg = function(_, eggId, bypass)
+				expect(eggId):toBe("BasicEgg")
+				expect(bypass):toBeTrue()
+				hatchCalls = hatchCalls + 1
+				return { name = "Buddy", isNewDiscovery = true }
+			end,
+		}
+
+		CampaignService._activeBattles[player.UserId] = {
+			active = true,
+			levelNum = 6,
+			levelDef = CampaignData.Levels[6],
+		}
+		CampaignService._onVictory(player.UserId, CampaignService._activeBattles[player.UserId])
+		expect(hatchCalls):toBe(1)
+		expect(profile.campaignBossRewards["6"]):toBeTrue()
+
+		CampaignService._activeBattles[player.UserId] = {
+			active = true,
+			levelNum = 6,
+			levelDef = CampaignData.Levels[6],
+		}
+		CampaignService._onVictory(player.UserId, CampaignService._activeBattles[player.UserId])
+		expect(hatchCalls):toBe(1)
+		CampaignService._activeBattles[player.UserId] = nil
+	end)
+end)
