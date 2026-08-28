@@ -2,6 +2,8 @@
 
 Status: **Code-verifiziert – Studio-Test ausstehend**
 
+Implementierungscommit: `fecf0ee22a183dd72125d61ab8a08462634f2007`
+
 QOF-27 ordnet den gemeinsamen Gold-/Rainbow-Maschinenpfad neu: Pet-Inputs werden erst nach erfolgreicher zentraler Profil-/Currency-Reservierung aus dem sichtbaren Inventar entfernt und erst danach wird gewürfelt. Ein normaler Chancen-Misserfolg verbraucht Inputs und Preis endgültig; ausschließlich technische Fehler vor dem Currency-PONR restaurieren den exakten Ausgangszustand.
 
 ## Kanonischer Vertrag
