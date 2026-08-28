@@ -13,7 +13,6 @@ ShopData.Order = {
 	"SpeedPotion",
 	"PowerPotion",
 	"CoinPotion",
-	"AutoHatch",
 	"ExtraEquipSlot",
 }
 
@@ -72,16 +71,6 @@ ShopData.Items = {
 		accentColor = { 255, 235, 125 },
 		durationLabel = "5 min",
 	}),
-	AutoHatch = legacyItem("AutoHatch", {
-		displayName = "Auto-Hatch",
-		description = "Automatically buys and hatches normal eggs for 10 minutes",
-		buffType = "autoHatch",
-		permanent = false,
-		artType = "egg",
-		color = { 245, 125, 35 },
-		accentColor = { 255, 205, 105 },
-		durationLabel = "10 min",
-	}),
 	ExtraEquipSlot = legacyItem("ExtraEquipSlot", {
 		displayName = "Extra Equip Slot",
 		description = "Permanently equip 1 more pet (maximum 5)",
@@ -93,5 +82,19 @@ ShopData.Items = {
 		durationLabel = "Permanent",
 	}),
 }
+
+if BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+	ShopData.Items.AutoHatch = legacyItem("AutoHatch", {
+		displayName = "Auto-Hatch",
+		description = "Automatically buys and hatches normal eggs for 10 minutes",
+		buffType = "autoHatch",
+		permanent = false,
+		artType = "egg",
+		color = { 245, 125, 35 },
+		accentColor = { 255, 205, 105 },
+		durationLabel = "10 min",
+	})
+	table.insert(ShopData.Order, 5, "AutoHatch")
+end
 
 return ShopData

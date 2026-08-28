@@ -122,7 +122,7 @@ describe("BalanceConfig validation", function()
 		end
 	end)
 
-	it("activates QOF-08 Multi-Open while keeping later systems dormant", function()
+	it("activates only QOF-10 capacity branches while keeping unrelated systems dormant", function()
 		expect(BalanceConfig.Variants.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.EggQualityRuntimeEnabled):toBeTrue()
@@ -132,8 +132,44 @@ describe("BalanceConfig validation", function()
 		expect(BalanceConfig.Hatch.MultiOpen[2].requireIds):toEqual({ "Eggs III" })
 		expect(BalanceConfig.Hatch.MultiOpen[3].requireIds):toEqual({ "Eggs IV" })
 		expect(BalanceConfig.Machines.RuntimeEnabled):toBeFalse()
-		expect(BalanceConfig.CoreUpgrades.RuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.CoreUpgrades.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.CoreUpgrades.StorageRuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
 		expect(BalanceConfig.Potions.RuntimeEnabled):toBeFalse()
 		expect(BalanceConfig.Enchanting.RuntimeEnabled):toBeFalse()
+	end)
+
+	it("binds exact QOF-10 Storage and Pet Equip chains", function()
+		local function project(levels)
+			local result = {}
+			for _, level in ipairs(levels) do
+				table.insert(result, {
+					id = level.id,
+					name = level.name,
+					requireIds = level.requireIds,
+					bonusSlots = level.bonusSlots,
+					cost = level.cost,
+				})
+			end
+			return result
+		end
+
+		expect(project(BalanceConfig.CoreUpgrades.Storage)):toEqual({
+			{ id = "playtime1", name = "Storage I", requireIds = { "Eggs II" }, bonusSlots = 25, cost = { currency = "diamonds", amount = 250 } },
+			{ id = "playtime2", name = "Storage II", requireIds = { "playtime1" }, bonusSlots = 50, cost = { currency = "diamonds", amount = 750 } },
+			{ id = "playtime3", name = "Storage III", requireIds = { "playtime2" }, bonusSlots = 75, cost = { currency = "diamonds", amount = 2000 } },
+			{ id = "streak1", name = "Storage IV", requireIds = { "playtime3" }, bonusSlots = 100, cost = { currency = "diamonds", amount = 5000 } },
+			{ id = "streak2", name = "Storage V", requireIds = { "streak1" }, bonusSlots = 125, cost = { currency = "diamonds", amount = 10000 } },
+			{ id = "streak3", name = "Storage VI", requireIds = { "streak2" }, bonusSlots = 150, cost = { currency = "diamonds", amount = 20000 } },
+		})
+		expect(project(BalanceConfig.CoreUpgrades.PetEquipSlots)):toEqual({
+			{ id = "friends1", name = "Pet Equip I", requireIds = { "Eggs II" }, bonusSlots = 1, cost = { currency = "diamonds", amount = 1000 } },
+			{ id = "friends2", name = "Pet Equip II", requireIds = { "friends1" }, bonusSlots = 2, cost = { currency = "diamonds", amount = 2500 } },
+			{ id = "friends3", name = "Pet Equip III", requireIds = { "friends2" }, bonusSlots = 3, cost = { currency = "diamonds", amount = 5000 } },
+		})
 	end)
 end)

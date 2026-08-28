@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local ShopData = require(game.ReplicatedStorage.Shared.ShopData)
 
 local ShopService = {}
@@ -30,13 +31,16 @@ function ShopService.init(dataService, currencyService)
 	ShopService._dataService = dataService
 	ShopService._currencyService = currencyService
 
-	-- Start auto-hatch loop
-	task.spawn(function()
-		while true do
-			task.wait(Config.AutoHatchInterval or 3)
-			ShopService._processAutoHatch()
-		end
-	end)
+	-- The legacy timed Auto-Hatch loop is feature-gated off until its complete
+	-- shop behavior ships. Persisted hatch preferences remain untouched.
+	if BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+		task.spawn(function()
+			while true do
+				task.wait(Config.AutoHatchInterval or 3)
+				ShopService._processAutoHatch()
+			end
+		end)
+	end
 end
 
 -- Set EggService reference (called after init to avoid circular deps)
@@ -126,6 +130,9 @@ function ShopService.purchaseItem(player, itemId)
 	if not player or type(itemId) ~= "string" then
 		return false, "Invalid parameters"
 	end
+	if itemId == "AutoHatch" and not BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+		return false, "Auto-Hatch is not available yet"
+	end
 
 	local itemDef = ShopData.Items[itemId]
 	if not itemDef then
@@ -211,6 +218,9 @@ end
 
 -- Process auto-hatch for players with active AutoHatch buff
 function ShopService._processAutoHatch()
+	if not BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+		return false
+	end
 	local now = os.clock()
 	for _, player in ipairs(Players:GetPlayers()) do
 		local buffs = removeExpiredBuffs(player, now)

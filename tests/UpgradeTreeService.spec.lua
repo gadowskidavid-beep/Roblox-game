@@ -101,6 +101,56 @@ describe("UpgradeTreeService QOF-07/QOF-08 entitlements", function()
 		expect(entitlements.eggQualityMultiplier):toBe(1)
 		expect(entitlements.directVariantMultipliers.Golden):toBe(1)
 		expect(entitlements.multiOpenCount):toBe(1)
+		expect(entitlements.storageBonusSlots):toBe(0)
+		expect(entitlements.petEquipBonusSlots):toBe(0)
+	end)
+
+	it("grandfathers full legacy capacity chains without external Eggs flags", function()
+		local entitlements = UpgradeTreeService.resolveEntitlements({
+			playtime1 = true,
+			playtime2 = true,
+			playtime3 = true,
+			streak1 = true,
+			streak2 = true,
+			streak3 = true,
+			friends1 = true,
+			friends2 = true,
+			friends3 = true,
+		})
+		expect(entitlements.storageBonusSlots):toBe(150)
+		expect(entitlements.petEquipBonusSlots):toBe(3)
+	end)
+
+	it("grants only the highest contiguous legacy capacity prefix", function()
+		local firstOnly = UpgradeTreeService.resolveEntitlements({
+			playtime1 = true,
+			playtime3 = true,
+			streak1 = true,
+			friends1 = true,
+			friends3 = true,
+		})
+		expect(firstOnly.storageBonusSlots):toBe(25)
+		expect(firstOnly.petEquipBonusSlots):toBe(1)
+
+		local interrupted = UpgradeTreeService.resolveEntitlements({
+			playtime1 = true,
+			playtime2 = true,
+			streak1 = true,
+			streak2 = true,
+			friends2 = true,
+			friends3 = true,
+		})
+		expect(interrupted.storageBonusSlots):toBe(50)
+		expect(interrupted.petEquipBonusSlots):toBe(0)
+
+		local missingRoots = UpgradeTreeService.resolveEntitlements({
+			playtime2 = true,
+			playtime3 = true,
+			streak1 = true,
+			friends2 = true,
+		})
+		expect(missingRoots.storageBonusSlots):toBe(0)
+		expect(missingRoots.petEquipBonusSlots):toBe(0)
 	end)
 end)
 
@@ -174,7 +224,60 @@ describe("UpgradeTreeService QOF-07/QOF-08 purchases", function()
 		expect(state.available["Eggs I"]):toBeTrue()
 		expect(state.available.epicLuck1):toBeTrue()
 		expect(state.available["Eggs III"]):toBeTrue()
+		expect(state.available.playtime1):toBeTrue()
+		expect(state.available.streak3):toBeTrue()
+		expect(state.available.friends3):toBeTrue()
 		expect(state.entitlements.multiOpenCount):toBe(1)
+		expect(state.entitlements.storageBonusSlots):toBe(0)
+		expect(state.entitlements.petEquipBonusSlots):toBe(0)
+	end)
+
+	it("keeps Eggs II mandatory for new purchases after grandfathered capacity flags", function()
+		resetState()
+		profile.upgradeTreePurchases = {
+			playtime1 = true,
+			friends1 = true,
+		}
+		expect(UpgradeTreeService.getState(player).entitlements.storageBonusSlots):toBe(25)
+		expect(UpgradeTreeService.getState(player).entitlements.petEquipBonusSlots):toBe(1)
+
+		local storageSuccess, storageError = UpgradeTreeService.purchase(player, "playtime2")
+		expect(storageSuccess):toBeFalse()
+		expect(storageError):toBe("Missing prerequisite")
+		local equipSuccess, equipError = UpgradeTreeService.purchase(player, "friends2")
+		expect(equipSuccess):toBeFalse()
+		expect(equipError):toBe("Missing prerequisite")
+		expect(#spends):toBe(0)
+
+		expect(UpgradeTreeService.purchase(player, "Eggs I")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "Eggs II")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "playtime2")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "friends2")):toBeTrue()
+	end)
+
+	it("purchases strict Storage and Pet Equip chains with canonical costs", function()
+		resetState()
+		expect(UpgradeTreeService.purchase(player, "playtime1")):toBeFalse()
+		expect(UpgradeTreeService.purchase(player, "friends1")):toBeFalse()
+		expect(#spends):toBe(0)
+		expect(UpgradeTreeService.purchase(player, "Eggs I")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "Eggs II")):toBeTrue()
+
+		for _, id in ipairs({ "playtime1", "playtime2", "playtime3", "streak1", "streak2", "streak3" }) do
+			expect(UpgradeTreeService.purchase(player, id)):toBeTrue()
+		end
+		for _, id in ipairs({ "friends1", "friends2", "friends3" }) do
+			expect(UpgradeTreeService.purchase(player, id)):toBeTrue()
+		end
+
+		local state = UpgradeTreeService.getState(player)
+		expect(state.entitlements.storageBonusSlots):toBe(150)
+		expect(state.entitlements.petEquipBonusSlots):toBe(3)
+		expect(profile.diamonds):toBe(53500)
+		expect(spends[3]):toEqual({ currency = "diamonds", amount = 250 })
+		expect(spends[8]):toEqual({ currency = "diamonds", amount = 20000 })
+		expect(spends[9]):toEqual({ currency = "diamonds", amount = 1000 })
+		expect(spends[11]):toEqual({ currency = "diamonds", amount = 5000 })
 	end)
 
 	it("rolls back both mutations after post-debit or post-entitlement faults", function()

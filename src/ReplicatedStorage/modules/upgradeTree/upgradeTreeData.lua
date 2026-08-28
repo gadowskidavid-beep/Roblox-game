@@ -693,9 +693,9 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-08 activates the imported Eggs III-V branch without changing its stable
--- IDs or layout. Only approved hatch entitlements are purchasable; unrelated
--- legacy nodes remain visible but server-blocked for their owning later QOFs.
+-- QOF-10 activates the imported Storage and Pet Equip branches in addition to
+-- the hatch branches without changing stable IDs or layout. Only explicitly
+-- gated entitlements are purchasable; unrelated legacy nodes remain dormant.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -709,11 +709,23 @@ end
 for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
 	activeById[level.id] = level
 end
+if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
+		activeById[level.id] = level
+	end
+end
+if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.PetEquipSlots) do
+		activeById[level.id] = level
+	end
+end
 
 for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 	for _, upgrade in ipairs(treeUpgrades) do
 		local active = activeById[upgrade.id]
-		if upgrade.id == "luckPortal" then
+		if upgrade.id == "playerPortal" then
+			upgrade.requireId = { "Eggs II" }
+		elseif upgrade.id == "luckPortal" then
 			upgrade.name = "Variant Chances"
 			upgrade.description = "Gold, Rainbow, and Shiny direct hatch upgrades."
 			upgrade.requireId = {}

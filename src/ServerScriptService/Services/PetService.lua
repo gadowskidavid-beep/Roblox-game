@@ -24,6 +24,26 @@ PetService._masteryService = nil
 PetService._shopService = nil
 PetService._upgradeTreeService = nil
 
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+-- Capacity sources are external service/profile values. Slot bonuses are always
+-- non-negative whole numbers; malformed, negative, or non-finite values are inert.
+local function safeSlotBonus(value, maximum)
+	if not isFiniteNumber(value) or value <= 0 then
+		return 0
+	end
+	local bonus = math.floor(value)
+	if maximum then
+		bonus = math.min(bonus, maximum)
+	end
+	return bonus
+end
+
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
 	PetService._currencyService = currencyService
@@ -120,15 +140,25 @@ local function weightedRandomPet(petPool, luckMultiplier, eggQualityMultiplier)
 end
 
 -- Get the server-authoritative inventory capacity for a player.
+-- Formula: clamp(100 + ExtraSlots quest + tree Storage, 100, 250).
 function PetService.getMaxInventory(player)
-	local bonus = 0
+	local questBonus = 0
 	if PetService._upgradeService then
-		bonus = PetService._upgradeService.getUpgradeBonus(player, "ExtraSlots") or 0
+		questBonus = safeSlotBonus(PetService._upgradeService.getUpgradeBonus(player, "ExtraSlots"))
 	end
+
+	local treeBonus = 0
+	if PetService._upgradeTreeService then
+		local entitlements = PetService._upgradeTreeService.getEntitlements(player)
+		if type(entitlements) == "table" then
+			treeBonus = safeSlotBonus(entitlements.storageBonusSlots)
+		end
+	end
+
 	return math.clamp(
-		(Config.MaxPetInventoryBase or 100) + bonus,
-		Config.MaxPetInventoryBase or 100,
-		Config.MaxPetInventoryAbsolute or 250
+		BalanceConfig.Limits.PetInventoryBase + questBonus + treeBonus,
+		BalanceConfig.Limits.PetInventoryBase,
+		BalanceConfig.Limits.PetInventoryAbsolute
 	)
 end
 
@@ -377,16 +407,46 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	return prepared.pets[1], nil
 end
 
--- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
-local function getMaxEquipped(player)
-	local base = Config.MaxEquippedPetsBase
-	local bonus = PetService._upgradeService.getUpgradeBonus(player, "Friendship")
-	local extraSlots = 0
-	local data = PetService._dataService.getPlayerData(player)
-	if data and data.shopPurchases then
-		extraSlots = math.clamp(data.shopPurchases.extraEquipSlots or 0, 0, Config.MaxExtraEquipSlots or 5)
+-- Public authoritative equip capacity.
+-- Formula: clamp(3 + Friendship quest + MorePetSlots mastery + legacy shop
+-- + tree Pet Equip, 3, 12).
+function PetService.getMaxEquipped(player)
+	local friendshipBonus = 0
+	if PetService._upgradeService then
+		friendshipBonus = safeSlotBonus(PetService._upgradeService.getUpgradeBonus(player, "Friendship"))
 	end
-	return math.min(base + (bonus or 0) + extraSlots, Config.MaxEquippedPetsAbsolute or 12)
+
+	local masteryBonus = 0
+	if PetService._masteryService then
+		masteryBonus = safeSlotBonus(PetService._masteryService.getBuffBonus(player, "MorePetSlots"))
+	end
+
+	local legacyShopBonus = 0
+	local data = PetService._dataService and PetService._dataService.getPlayerData(player)
+	if data and type(data.shopPurchases) == "table" then
+		legacyShopBonus = safeSlotBonus(
+			data.shopPurchases.extraEquipSlots,
+			BalanceConfig.Limits.ExtraEquipSlots
+		)
+	end
+
+	local treeBonus = 0
+	if PetService._upgradeTreeService then
+		local entitlements = PetService._upgradeTreeService.getEntitlements(player)
+		if type(entitlements) == "table" then
+			treeBonus = safeSlotBonus(entitlements.petEquipBonusSlots)
+		end
+	end
+
+	return math.clamp(
+		BalanceConfig.Limits.EquippedPetsBase
+			+ friendshipBonus
+			+ masteryBonus
+			+ legacyShopBonus
+			+ treeBonus,
+		BalanceConfig.Limits.EquippedPetsBase,
+		BalanceConfig.Limits.EquippedPetsAbsolute
+	)
 end
 
 -- Equip a pet by instance ID
@@ -413,7 +473,7 @@ function PetService.equipPet(player, petInstanceId)
 	end
 
 	-- Validate max equipped
-	local maxEquipped = getMaxEquipped(player)
+	local maxEquipped = PetService.getMaxEquipped(player)
 	if equippedCount >= maxEquipped then
 		print("[PetService] equipPet FAILED: Max equipped (" .. tostring(equippedCount) .. "/" .. tostring(maxEquipped) .. ")")
 		return false, "Maximum pets equipped (" .. tostring(maxEquipped) .. ")"

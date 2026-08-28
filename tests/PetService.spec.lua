@@ -82,6 +82,11 @@ local shopDamageMultiplier = 1
 local shopLuckMultiplier = 1
 local treeEggQualityMultiplier = 1
 local treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
+local questStorageBonus = 0
+local questFriendshipBonus = 0
+local masteryPetSlotsBonus = 0
+local treeStorageBonus = 0
+local treeEquipBonus = 0
 
 local dataService = {}
 function dataService.getPlayerData()
@@ -95,11 +100,14 @@ local upgradeService = {}
 function upgradeService.getUpgradeBonus(_, upgradeName)
 	if upgradeName == "StrongPets" then return strongMultiplier end
 	if upgradeName == "LuckyEggs" then return questLuckMultiplier end
+	if upgradeName == "ExtraSlots" then return questStorageBonus end
+	if upgradeName == "Friendship" then return questFriendshipBonus end
 	return 0
 end
 local masteryService = {}
 function masteryService.getBuffBonus(_, buffType)
 	if buffType == "BetterLuck" then return masteryLuckMultiplier end
+	if buffType == "MorePetSlots" then return masteryPetSlotsBonus end
 	return 0
 end
 local shopService = {}
@@ -113,6 +121,8 @@ function upgradeTreeService.getEntitlements()
 	return {
 		eggQualityMultiplier = treeEggQualityMultiplier,
 		directVariantMultipliers = treeDirectVariantMultipliers,
+		storageBonusSlots = treeStorageBonus,
+		petEquipBonusSlots = treeEquipBonus,
 	}
 end
 
@@ -293,6 +303,64 @@ describe("PetService legacy Golden conversion regression", function()
 end)
 
 
+
+describe("PetService QOF-10 capacities", function()
+	it("combines quest and contiguous tree Storage and clamps to 100..250", function()
+		freshProfile()
+		questStorageBonus = 20
+		treeStorageBonus = 75
+		expect(PetService.getMaxInventory(player)):toBe(195)
+
+		questStorageBonus = 20
+		treeStorageBonus = 150
+		expect(PetService.getMaxInventory(player)):toBe(250)
+
+		questStorageBonus = 0 / 0
+		treeStorageBonus = "forged"
+		expect(PetService.getMaxInventory(player)):toBe(100)
+		questStorageBonus = 0
+		treeStorageBonus = 0
+	end)
+
+	it("combines Friendship, MorePetSlots mastery, legacy shop, and tree Equip", function()
+		freshProfile()
+		questFriendshipBonus = 1
+		masteryPetSlotsBonus = 2
+		profile.shopPurchases.extraEquipSlots = 2
+		treeEquipBonus = 1
+		expect(PetService.getMaxEquipped(player)):toBe(9)
+
+		questFriendshipBonus = 3
+		masteryPetSlotsBonus = 5
+		profile.shopPurchases.extraEquipSlots = 999
+		treeEquipBonus = 3
+		expect(PetService.getMaxEquipped(player)):toBe(12)
+
+		questFriendshipBonus = math.huge
+		masteryPetSlotsBonus = "bad"
+		profile.shopPurchases.extraEquipSlots = -5
+		treeEquipBonus = 0 / 0
+		expect(PetService.getMaxEquipped(player)):toBe(3)
+		questFriendshipBonus = 0
+		masteryPetSlotsBonus = 0
+		treeEquipBonus = 0
+	end)
+
+	it("does not truncate an existing over-cap inventory", function()
+		freshProfile()
+		for index = 1, 251 do
+			table.insert(profile.pets, { id = "existing-" .. tostring(index) })
+		end
+		questStorageBonus = 20
+		treeStorageBonus = 150
+		expect(PetService.getMaxInventory(player)):toBe(250)
+		local allowed = PetService.canAddPets(player, 1)
+		expect(allowed):toBeFalse()
+		expect(#profile.pets):toBe(251)
+		questStorageBonus = 0
+		treeStorageBonus = 0
+	end)
+end)
 
 describe("PetService QOF-08 prepared batch boundary", function()
 	it("prepares without mutation, commits all results once, and can restore the exact snapshot", function()

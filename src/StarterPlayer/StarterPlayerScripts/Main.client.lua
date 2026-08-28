@@ -6,7 +6,7 @@
 	INPUT SYSTEM (Pet Simulator 1 style):
 	- Single left click on destructible: send 1 pet to attack it
 	- Hold left click (0.3s+) on destructible: send ALL pets to attack it
-	- E-key: hatch egg when near egg station (via ProximityPrompt)
+	- E-key near an egg station: open the quoted manual-purchase dialog
 	- Assigned pets keep attacking; target discovery is manual-only
 ]]
 
@@ -54,7 +54,8 @@ local player = Players.LocalPlayer
 -- RemoteFunctions
 local GetPlayerData = Remotes:WaitForChild("GetPlayerData")
 local HatchEgg = Remotes:WaitForChild("HatchEgg")
-local SetHatchBatchSize = Remotes:WaitForChild("SetHatchBatchSize")
+-- QOF-10 fresh manual-purchase quote; no currency is spent by this call.
+local GetHatchPurchaseOptions = Remotes:WaitForChild("GetHatchPurchaseOptions")
 local EquipPet = Remotes:WaitForChild("EquipPet")
 local UnequipPet = Remotes:WaitForChild("UnequipPet")
 local DeletePet = Remotes:WaitForChild("DeletePet")
@@ -74,7 +75,6 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
-local GetUpgradeTreeState = Remotes:WaitForChild("GetUpgradeTreeState")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -92,7 +92,6 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
-local UpgradeTreeUpdated = Remotes:WaitForChild("UpgradeTreeUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -237,74 +236,11 @@ uiController:init(Remotes, playerData)
 musicController:init()
 upgradeTreeController:init(Remotes, playerData)
 
--- Hydrate the persisted Auto-Hatch preference only after the current entitlement
--- limit is known. This is selector state only; hatch presentation stays unchanged.
-local pendingPreferredBatchCount = type(playerData.hatchPreferences) == "table"
-	and playerData.hatchPreferences.preferredBatchCount or 1
-local function applyHatchEntitlementState(serverState)
-	local entitlements = type(serverState) == "table" and serverState.entitlements or nil
-	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
-	local entitlementCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
-	local maximumCount = type(entitlementCount) == "number"
-		and entitlementCount == entitlementCount
-		and allowed[entitlementCount] and entitlementCount or 1
-	if pendingPreferredBatchCount ~= nil then
-		local selectedCount = type(pendingPreferredBatchCount) == "number"
-			and pendingPreferredBatchCount == pendingPreferredBatchCount
-			and allowed[pendingPreferredBatchCount] and pendingPreferredBatchCount or 1
-		if selectedCount > maximumCount then
-			selectedCount = maximumCount
-		end
-		uiController:setHatchBatchState(maximumCount, selectedCount)
-		pendingPreferredBatchCount = nil
-	else
-		local selectedCount = uiController:getSelectedHatchCount()
-		if type(selectedCount) ~= "number" or selectedCount ~= selectedCount or not allowed[selectedCount] then
-			selectedCount = 1
-		elseif selectedCount > maximumCount then
-			selectedCount = maximumCount
-		end
-		uiController:setHatchBatchState(maximumCount, selectedCount)
-	end
-end
-
-local hatchSelectionRequestToken = 0
-uiController:setHatchBatchSelectionCallback(function(count)
-	hatchSelectionRequestToken += 1
-	local token = hatchSelectionRequestToken
-	uiController:showHatchFeedback("Updating hatch amount…", true)
-	task.spawn(function()
-		local invoked, accepted, message, batchState = pcall(function()
-			return SetHatchBatchSize:InvokeServer(count)
-		end)
-		if token ~= hatchSelectionRequestToken then
-			return
-		end
-		if type(batchState) == "table" then
-			uiController:setHatchBatchState(batchState.maximumCount, batchState.selectedCount)
-		end
-		if not invoked then
-			uiController:showHatchFeedback(tostring(accepted or "Could not change hatch amount"), false)
-			return
-		end
-		if accepted ~= true then
-			uiController:showHatchFeedback(message or "Could not change hatch amount", false)
-			return
-		end
-		uiController:showHatchFeedback("Auto-Hatch set to x" .. tostring(count), true)
-	end)
-end)
-
-UpgradeTreeUpdated.OnClientEvent:Connect(applyHatchEntitlementState)
--- UpgradeTreeController performs the first request during init; avoid competing
--- with its rate limit and then synchronize this independent hatch selector.
-task.delay(0.35, function()
-	local invoked, state = pcall(function()
-		return GetUpgradeTreeState:InvokeServer()
-	end)
-	if invoked then
-		applyHatchEntitlementState(state)
-	end
+-- Reuse the UpgradeTreeController's authoritative initial request and every
+-- subsequent server update. This avoids a competing one-shot remote call whose
+-- failure could leave legacy Capacity bonuses hidden until the next purchase.
+upgradeTreeController:setStateObserver(function(state)
+	uiController:updateUpgradeTree(state)
 end)
 
 --------------------------------------------------------------------------------
@@ -428,8 +364,9 @@ refreshOnboardingHint()
 -- of creating another tutorial system or blocking the player.
 task.delay(2, refreshOnboardingHint)
 
--- Track the egg station whose hatch prompt is currently visible. This keeps the
--- HUD target scoped to the active station and falls back when the player leaves.
+-- Track the concrete egg prompt as well as its egg type. Every async quote or
+-- purchase captures hatchOperationToken so a hidden/replaced prompt cannot
+-- revive a stale dialog or apply stale feedback.
 local function getEggTypeFromPrompt(prompt)
 	if prompt.Name ~= "HatchPrompt" or not prompt.Parent then return nil end
 	local eggTypeTag = prompt.Parent:FindFirstChild("PromptEggType")
@@ -439,41 +376,149 @@ local function getEggTypeFromPrompt(prompt)
 	return nil
 end
 
+local activeEggPrompt = nil
+local activeEggType = nil
+local hatchOperationToken = 0
+local hatchQuoteInFlight = false
+local hatchPurchaseInFlight = false
+
+local function closeHatchPurchaseDialog()
+	hatchOperationToken += 1
+	hatchQuoteInFlight = false
+	hatchPurchaseInFlight = false
+	uiController:closeHatchPurchaseDialog()
+end
+
+local function describeHatchError(message, fallback)
+	local text = tostring(message or fallback or "Hatch purchase is unavailable right now.")
+	if text == "No feasible hatch purchase" then
+		return "No eggs fit your current Coins and pet inventory slots."
+	elseif text == "x1 hatch option unavailable" or text == "x3 hatch option unavailable" then
+		return "That option is no longer available. Refresh the quote to check Coins, slots, and entitlement."
+	elseif string.find(text, "Move closer", 1, true) then
+		return "Move closer to this egg station, then refresh the quote."
+	elseif string.find(text, "Not enough coins", 1, true) then
+		return "You do not have enough Coins for that option. Refresh the quote."
+	elseif string.find(text, "inventory", 1, true) or string.find(text, "Inventory", 1, true) then
+		return "Your pet inventory does not have enough free slots. Refresh after making room."
+	end
+	return text
+end
+
+local function requestFreshHatchQuote()
+	if hatchQuoteInFlight or hatchPurchaseInFlight then return end
+	local prompt = activeEggPrompt
+	local eggType = activeEggType
+	if not prompt or not prompt.Parent or not eggType then
+		closeHatchPurchaseDialog()
+		return
+	end
+
+	hatchOperationToken += 1
+	local token = hatchOperationToken
+	hatchQuoteInFlight = true
+	uiController:showHatchPurchaseLoading(eggType)
+	task.spawn(function()
+		local invoked, quote, quoteError = pcall(function()
+			return GetHatchPurchaseOptions:InvokeServer(eggType)
+		end)
+		if token ~= hatchOperationToken
+			or prompt ~= activeEggPrompt
+			or eggType ~= activeEggType
+			or not prompt.Parent then
+			return
+		end
+		hatchQuoteInFlight = false
+		if invoked and type(quote) == "table" and quote.eggType == eggType then
+			uiController:showHatchPurchaseQuote(eggType, quote)
+		else
+			local message = invoked and quoteError or quote
+			uiController:showHatchPurchaseError(describeHatchError(message, "Could not load a fresh quote."))
+		end
+	end)
+end
+
+local function confirmHatchPurchase(intent)
+	if hatchQuoteInFlight or hatchPurchaseInFlight then return end
+	local prompt = activeEggPrompt
+	local eggType = activeEggType
+	if not prompt or not prompt.Parent or not eggType or not uiController:isHatchPurchaseDialogOpen() then
+		closeHatchPurchaseDialog()
+		return
+	end
+
+	-- Rebuild, rather than forward, the only three intents accepted by QOF-10.
+	-- MAX intentionally never carries the count from the displayed quote.
+	local serverIntent = nil
+	if type(intent) == "table" and intent.mode == "Fixed" and intent.count == 1 then
+		serverIntent = { mode = "Fixed", count = 1 }
+	elseif type(intent) == "table" and intent.mode == "Fixed" and intent.count == 3 then
+		serverIntent = { mode = "Fixed", count = 3 }
+	elseif type(intent) == "table" and intent.mode == "Max" then
+		serverIntent = { mode = "Max" }
+	end
+	if not serverIntent then return end
+
+	hatchOperationToken += 1
+	local token = hatchOperationToken
+	hatchPurchaseInFlight = true
+	uiController:showHatchPurchaseBusy("Confirming purchase with the server…")
+	task.spawn(function()
+		local invoked, result, hatchError = pcall(function()
+			return HatchEgg:InvokeServer(eggType, serverIntent)
+		end)
+		if token ~= hatchOperationToken
+			or prompt ~= activeEggPrompt
+			or eggType ~= activeEggType then
+			return
+		end
+		hatchPurchaseInFlight = false
+		if invoked and type(result) == "table" then
+			-- EggHatchStart/EggHatchResult remain the sole QOF-09 cinematic owners.
+			closeHatchPurchaseDialog()
+		else
+			local message = invoked and hatchError or result
+			uiController:showHatchPurchaseError(describeHatchError(message, "Hatch purchase failed safely."))
+		end
+	end)
+end
+
+uiController:setHatchPurchaseCallbacks(
+	confirmHatchPurchase,
+	closeHatchPurchaseDialog,
+	requestFreshHatchQuote
+)
+
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
-	if eggType then
-		uiController:showEggStationPrompt(eggType)
+	if not eggType then return end
+	if activeEggPrompt and activeEggPrompt ~= prompt then
+		local previousEggType = activeEggType
+		closeHatchPurchaseDialog()
+		activeEggPrompt = nil
+		activeEggType = nil
+		if previousEggType then
+			uiController:hideEggStationPrompt(previousEggType)
+		end
 	end
+	activeEggPrompt = prompt
+	activeEggType = eggType
+	uiController:showEggStationPrompt(eggType)
 end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
-	local eggType = getEggTypeFromPrompt(prompt)
+	if prompt ~= activeEggPrompt then return end
+	local eggType = activeEggType
+	activeEggPrompt = nil
+	activeEggType = nil
+	closeHatchPurchaseDialog()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end
 end)
 
-local hatchRequestInFlight = false
-local function requestHatch(eggType)
-	if hatchRequestInFlight then
-		uiController:showHatchFeedback("A hatch is already in progress", false)
-		return
-	end
-	hatchRequestInFlight = true
-	local count = uiController:getSelectedHatchCount()
-	task.spawn(function()
-		local invoked, result, hatchError = pcall(function()
-			return HatchEgg:InvokeServer(eggType, count)
-		end)
-		hatchRequestInFlight = false
-		if not invoked or type(result) ~= "table" then
-			uiController:showHatchFeedback(hatchError or "Hatch request failed", false)
-		end
-	end)
-end
-
--- Prompt routing is centralized so character respawns and delayed world creation
--- never add duplicate hatch connections.
+-- Prompt routing is centralized so respawns and delayed world creation never
+-- add duplicate hatch connections. PotionShopPrompt behavior is unchanged.
 ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer)
 	if triggeringPlayer ~= nil and triggeringPlayer ~= player then
 		return
@@ -483,9 +528,18 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 		return
 	end
 	local eggType = getEggTypeFromPrompt(prompt)
-	if eggType then
-		requestHatch(eggType)
+	if not eggType then return end
+	if activeEggPrompt ~= prompt then
+		local previousEggType = activeEggType
+		closeHatchPurchaseDialog()
+		if previousEggType then
+			uiController:hideEggStationPrompt(previousEggType)
+		end
+		activeEggPrompt = prompt
+		activeEggType = eggType
+		uiController:showEggStationPrompt(eggType)
 	end
+	requestFreshHatchQuote()
 end)
 
 -- Initialize equipped pets visuals from initial data (called ONCE)
@@ -941,7 +995,17 @@ local function onCharacterAdded(character)
 	-- no per-character connections are created here.
 end
 
--- Connect character added
+-- Connect character lifecycle. ResetOnSpawn=false keeps the one dialog instance,
+-- while removing a character invalidates all pending quote/purchase callbacks.
+player.CharacterRemoving:Connect(function()
+	local eggType = activeEggType
+	activeEggPrompt = nil
+	activeEggType = nil
+	closeHatchPurchaseDialog()
+	if eggType then
+		uiController:hideEggStationPrompt(eggType)
+	end
+end)
 if player.Character then
 	onCharacterAdded(player.Character)
 end

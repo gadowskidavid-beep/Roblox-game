@@ -736,6 +736,7 @@ local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
+local BalanceConfig = require(ReplicatedStorage.Shared.BalanceConfig)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -814,6 +815,7 @@ end
 -- Create all RemoteFunctions
 local remoteFunctions = {
 	"HatchEgg",
+	"GetHatchPurchaseOptions",
 	"SetHatchBatchSize",
 	"EquipPet",
 	"UnequipPet",
@@ -948,27 +950,47 @@ getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	return DataService.getClientData(player)
 end
 
--- HatchEgg (one authoritative batch per 3 seconds)
-getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, requestedCount)
+-- GetHatchPurchaseOptions returns a fresh server-authoritative manual quote.
+getRemoteFunction("GetHatchPurchaseOptions").OnServerInvoke = function(player, eggType)
+	if not player or not player:IsA("Player") then
+		return nil, "Invalid player"
+	end
+	if not canCall(player, "GetHatchPurchaseOptions", 0.15)
+		or not canCallBurst(player, "GetHatchPurchaseOptions", 12, 10) then
+		return nil, "Please wait before requesting hatch options again"
+	end
+	if not isValidIdentifier(eggType) then
+		return nil, "Invalid egg type"
+	end
+	return EggService.getHatchPurchaseOptions(player, eggType)
+end
+
+-- HatchEgg confirms only the strict QOF-10 intent DTO. Manual purchases must
+-- pass through the confirmation dialog contract instead of raw numeric counts.
+getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, intent)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
 	if not canCall(player, "HatchEgg", 3) then
 		return nil, "Please wait before hatching again"
 	end
-	if type(eggType) ~= "string" or type(requestedCount) ~= "number" then
+	if not isValidIdentifier(eggType) then
 		return nil, "Invalid hatch parameters"
 	end
-	return EggService.purchaseAndHatch(player, eggType, requestedCount, {
-		bypassStation = false,
-	})
+	if type(intent) == "table" then
+		return EggService.purchaseFromIntent(player, eggType, intent)
+	end
+	return nil, "Invalid hatch parameters"
 end
 
--- SetHatchBatchSize stores the server-validated persistent preference for Auto-Hatch.
--- HatchEgg validates the count again for every paid transaction.
+-- The compatibility remote remains present for rolling clients, but is fail-closed
+-- and cannot mutate persisted Auto-Hatch preferences before the owning QOF ships.
 getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if BalanceConfig.Shop.AutoHatchRuntimeEnabled ~= true then
+		return false, "Auto-Hatch is not available yet", EggService.getBatchState(player)
 	end
 	if not canCall(player, "SetHatchBatchSize", 0.15) then
 		return false, "Please wait before changing batch size", EggService.getBatchState(player)
@@ -2509,6 +2531,26 @@ PetService._masteryService = nil
 PetService._shopService = nil
 PetService._upgradeTreeService = nil
 
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+-- Capacity sources are external service/profile values. Slot bonuses are always
+-- non-negative whole numbers; malformed, negative, or non-finite values are inert.
+local function safeSlotBonus(value, maximum)
+	if not isFiniteNumber(value) or value <= 0 then
+		return 0
+	end
+	local bonus = math.floor(value)
+	if maximum then
+		bonus = math.min(bonus, maximum)
+	end
+	return bonus
+end
+
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
 	PetService._currencyService = currencyService
@@ -2605,15 +2647,25 @@ local function weightedRandomPet(petPool, luckMultiplier, eggQualityMultiplier)
 end
 
 -- Get the server-authoritative inventory capacity for a player.
+-- Formula: clamp(100 + ExtraSlots quest + tree Storage, 100, 250).
 function PetService.getMaxInventory(player)
-	local bonus = 0
+	local questBonus = 0
 	if PetService._upgradeService then
-		bonus = PetService._upgradeService.getUpgradeBonus(player, "ExtraSlots") or 0
+		questBonus = safeSlotBonus(PetService._upgradeService.getUpgradeBonus(player, "ExtraSlots"))
 	end
+
+	local treeBonus = 0
+	if PetService._upgradeTreeService then
+		local entitlements = PetService._upgradeTreeService.getEntitlements(player)
+		if type(entitlements) == "table" then
+			treeBonus = safeSlotBonus(entitlements.storageBonusSlots)
+		end
+	end
+
 	return math.clamp(
-		(Config.MaxPetInventoryBase or 100) + bonus,
-		Config.MaxPetInventoryBase or 100,
-		Config.MaxPetInventoryAbsolute or 250
+		BalanceConfig.Limits.PetInventoryBase + questBonus + treeBonus,
+		BalanceConfig.Limits.PetInventoryBase,
+		BalanceConfig.Limits.PetInventoryAbsolute
 	)
 end
 
@@ -2862,16 +2914,46 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	return prepared.pets[1], nil
 end
 
--- Get maximum equipped pets for a player (base + Friendship bonus + Extra Equip Slots)
-local function getMaxEquipped(player)
-	local base = Config.MaxEquippedPetsBase
-	local bonus = PetService._upgradeService.getUpgradeBonus(player, "Friendship")
-	local extraSlots = 0
-	local data = PetService._dataService.getPlayerData(player)
-	if data and data.shopPurchases then
-		extraSlots = math.clamp(data.shopPurchases.extraEquipSlots or 0, 0, Config.MaxExtraEquipSlots or 5)
+-- Public authoritative equip capacity.
+-- Formula: clamp(3 + Friendship quest + MorePetSlots mastery + legacy shop
+-- + tree Pet Equip, 3, 12).
+function PetService.getMaxEquipped(player)
+	local friendshipBonus = 0
+	if PetService._upgradeService then
+		friendshipBonus = safeSlotBonus(PetService._upgradeService.getUpgradeBonus(player, "Friendship"))
 	end
-	return math.min(base + (bonus or 0) + extraSlots, Config.MaxEquippedPetsAbsolute or 12)
+
+	local masteryBonus = 0
+	if PetService._masteryService then
+		masteryBonus = safeSlotBonus(PetService._masteryService.getBuffBonus(player, "MorePetSlots"))
+	end
+
+	local legacyShopBonus = 0
+	local data = PetService._dataService and PetService._dataService.getPlayerData(player)
+	if data and type(data.shopPurchases) == "table" then
+		legacyShopBonus = safeSlotBonus(
+			data.shopPurchases.extraEquipSlots,
+			BalanceConfig.Limits.ExtraEquipSlots
+		)
+	end
+
+	local treeBonus = 0
+	if PetService._upgradeTreeService then
+		local entitlements = PetService._upgradeTreeService.getEntitlements(player)
+		if type(entitlements) == "table" then
+			treeBonus = safeSlotBonus(entitlements.petEquipBonusSlots)
+		end
+	end
+
+	return math.clamp(
+		BalanceConfig.Limits.EquippedPetsBase
+			+ friendshipBonus
+			+ masteryBonus
+			+ legacyShopBonus
+			+ treeBonus,
+		BalanceConfig.Limits.EquippedPetsBase,
+		BalanceConfig.Limits.EquippedPetsAbsolute
+	)
 end
 
 -- Equip a pet by instance ID
@@ -2898,7 +2980,7 @@ function PetService.equipPet(player, petInstanceId)
 	end
 
 	-- Validate max equipped
-	local maxEquipped = getMaxEquipped(player)
+	local maxEquipped = PetService.getMaxEquipped(player)
 	if equippedCount >= maxEquipped then
 		print("[PetService] equipPet FAILED: Max equipped (" .. tostring(equippedCount) .. "/" .. tostring(maxEquipped) .. ")")
 		return false, "Maximum pets equipped (" .. tostring(maxEquipped) .. ")"
@@ -6707,13 +6789,24 @@ local VALID_BATCH_COUNTS = {
 	[10] = true,
 }
 
-local function isValidBatchCount(value)
+local function isFiniteNumber(value)
 	return type(value) == "number"
 		and value == value
 		and value ~= math.huge
 		and value ~= -math.huge
+end
+
+local function isValidBatchCount(value)
+	return isFiniteNumber(value)
 		and value % 1 == 0
 		and VALID_BATCH_COUNTS[value] == true
+end
+
+local function isValidTransactionCount(value, maximum)
+	return isFiniteNumber(value)
+		and value % 1 == 0
+		and value >= 1
+		and value <= maximum
 end
 
 function EggService.init(dataService, currencyService, petService, upgradeTreeService)
@@ -6784,13 +6877,27 @@ local function reconcilePreferredBatchCount(player, maximum)
 	return selected
 end
 
-local function validateRequestedCount(player, requestedCount, maximum)
+local function validatePreferredCount(player, requestedCount, maximum)
 	if not isValidBatchCount(requestedCount) then
 		return nil, "Invalid hatch count"
 	end
 	maximum = maximum or getMaximumBatchCount(player)
 	if requestedCount > maximum then
 		return nil, "Multi-Open upgrade required"
+	end
+	return requestedCount, nil
+end
+
+local function validateTransactionCount(player, requestedCount, maximum)
+	maximum = maximum or getMaximumBatchCount(player)
+	if not isFiniteNumber(requestedCount) or requestedCount % 1 ~= 0 or requestedCount < 1 then
+		return nil, "Invalid hatch count"
+	end
+	if requestedCount > maximum then
+		return nil, "Multi-Open upgrade required"
+	end
+	if not isValidTransactionCount(requestedCount, maximum) then
+		return nil, "Invalid hatch count"
 	end
 	return requestedCount, nil
 end
@@ -6818,7 +6925,7 @@ function EggService.setSelectedBatchCount(player, requestedCount)
 	end
 	local maximum = getMaximumBatchCount(player)
 	reconcilePreferredBatchCount(player, maximum)
-	local count, countError = validateRequestedCount(player, requestedCount, maximum)
+	local count, countError = validatePreferredCount(player, requestedCount, maximum)
 	if not count then
 		return false, countError, EggService.getBatchState(player)
 	end
@@ -6862,6 +6969,165 @@ local function isNearStation(player, eggType)
 		return EggService._stationValidator(player, eggType) == true
 	end
 	return defaultStationValidator(player, eggType)
+end
+
+local function getManualQuoteContext(player, eggType)
+	if not player or type(eggType) ~= "string" or eggType == "" then
+		return nil, "Invalid parameters"
+	end
+	local eggDef = PetData.Eggs[eggType]
+	if not eggDef then
+		return nil, "Unknown egg type: " .. tostring(eggType)
+	end
+	local data = getPlayerData(player)
+	if not data or type(data.pets) ~= "table" then
+		return nil, "No player data"
+	end
+	if not isUnlockedZone(data, eggDef.zone) then
+		return nil, "Zone not unlocked for this egg type"
+	end
+	local eggCost = Config.EggCosts[eggDef.zone]
+	local unitCost = eggCost and eggCost.Coins
+	if not isFiniteNumber(unitCost) or unitCost < 0 or unitCost % 1 ~= 0 then
+		return nil, "No valid coin cost for egg zone"
+	end
+	if not isNearStation(player, eggType) then
+		return nil, "Move closer to this egg station"
+	end
+
+	local entitlementCap = getMaximumBatchCount(player)
+	local maximumInventory = EggService._petService.getMaxInventory(player)
+	if not isFiniteNumber(maximumInventory) then
+		maximumInventory = #data.pets
+	end
+	local freeSlots = math.max(0, math.floor(maximumInventory) - #data.pets)
+	local coins = isFiniteNumber(data.coins) and math.max(0, math.floor(data.coins)) or 0
+	local affordableCount = unitCost == 0 and entitlementCap or math.floor(coins / unitCost)
+	local feasibleMax = math.max(0, math.min(entitlementCap, freeSlots, affordableCount, 10))
+
+	return {
+		eggType = eggType,
+		zone = eggDef.zone,
+		unitCost = unitCost,
+		entitlementCap = entitlementCap,
+		freeSlots = freeSlots,
+		coins = coins,
+		feasibleMax = feasibleMax,
+		x1 = {
+			count = 1,
+			available = feasibleMax >= 1,
+			totalCost = unitCost,
+			intent = { mode = "Fixed", count = 1 },
+		},
+		x3 = {
+			count = 3,
+			available = entitlementCap >= 3 and feasibleMax >= 3,
+			totalCost = unitCost * 3,
+			intent = { mode = "Fixed", count = 3 },
+		},
+		max = {
+			count = feasibleMax,
+			available = feasibleMax >= 1,
+			totalCost = unitCost * feasibleMax,
+			intent = { mode = "Max" },
+		},
+	}, nil
+end
+
+-- Server-authoritative manual purchase quote. It intentionally does not read or
+-- mutate hatchPreferences; those preferences belong only to the later Auto-Hatch flow.
+function EggService.getHatchPurchaseOptions(player, eggType)
+	return getManualQuoteContext(player, eggType)
+end
+
+local function validateStrictIntent(intent)
+	if type(intent) ~= "table" or getmetatable(intent) ~= nil then
+		return nil, "Invalid hatch intent"
+	end
+	if intent.mode == "Fixed" then
+		local keyCount = 0
+		for key in pairs(intent) do
+			if key ~= "mode" and key ~= "count" then
+				return nil, "Invalid hatch intent"
+			end
+			keyCount = keyCount + 1
+		end
+		if keyCount ~= 2 or (intent.count ~= 1 and intent.count ~= 3) then
+			return nil, "Invalid hatch intent"
+		end
+		return intent.count, nil
+	elseif intent.mode == "Max" then
+		local keyCount = 0
+		for key in pairs(intent) do
+			if key ~= "mode" then
+				return nil, "Invalid hatch intent"
+			end
+			keyCount = keyCount + 1
+		end
+		if keyCount ~= 1 then
+			return nil, "Invalid hatch intent"
+		end
+		return "Max", nil
+	end
+	return nil, "Invalid hatch intent"
+end
+
+local purchaseAndHatchUnlocked
+
+local function withHatchLock(player, callback)
+	if not player then
+		return nil, "Invalid parameters"
+	end
+	local lockKey = player.UserId or player
+	if EggService._hatchLock[lockKey] then
+		return nil, "Already hatching eggs"
+	end
+	EggService._hatchLock[lockKey] = true
+	local callSucceeded, result, hatchError = pcall(callback)
+	EggService._hatchLock[lockKey] = nil
+	if not callSucceeded then
+		return nil, "Hatch failed safely"
+	end
+	return result, hatchError
+end
+
+function EggService.purchaseFromIntent(player, eggType, intent)
+	local selection, intentError = validateStrictIntent(intent)
+	if not selection then
+		return nil, intentError
+	end
+
+	-- Confirmation is serialized before Max is resolved. Quote resolution,
+	-- entitlement/capacity validation, debit, and inventory commit therefore share
+	-- one hatch critical section instead of trusting an earlier client quote.
+	return withHatchLock(player, function()
+		local quote, quoteError = getManualQuoteContext(player, eggType)
+		if not quote then
+			return nil, quoteError
+		end
+
+		local count
+		if selection == "Max" then
+			count = quote.feasibleMax
+		elseif selection == 3 then
+			if not quote.x3.available then
+				return nil, "x3 hatch option unavailable"
+			end
+			count = 3
+		else
+			if not quote.x1.available then
+				return nil, "x1 hatch option unavailable"
+			end
+			count = 1
+		end
+		if count < 1 then
+			return nil, "No feasible hatch purchase"
+		end
+
+		return purchaseAndHatchUnlocked(player, eggType, count, {
+			bypassStation = false,
+		})
+	end)
 end
 
 local function runTransactionHook(stage, transaction)
@@ -6927,28 +7193,26 @@ end
 
 -- options is server-owned. Manual remote calls pass { bypassStation = false };
 -- auto-hatch passes true and still pays the full batch price.
-function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
+purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
 	options = type(options) == "table" and options or {
 		bypassStation = options == true,
 	}
-	local preferredCount = EggService.getSelectedBatchCount(player)
-	local count = requestedCount == nil and preferredCount or requestedCount
-	local validatedCount, countError = validateRequestedCount(player, count)
+	-- Explicit transaction counts (including manual x3/Max quantities) never
+	-- reconcile or mutate the persisted Auto-Hatch preference.
+	local count = requestedCount
+	if count == nil then
+		count = EggService.getSelectedBatchCount(player)
+	end
+	local validatedCount, countError = validateTransactionCount(player, count)
 	if not validatedCount then
 		return nil, countError
 	end
 	if options.bypassStation ~= true and not isNearStation(player, eggType) then
 		return nil, "Move closer to this egg station"
 	end
-
-	local lockKey = player.UserId or player
-	if EggService._hatchLock[lockKey] then
-		return nil, "Already hatching eggs"
-	end
-	EggService._hatchLock[lockKey] = true
 
 	local transaction = {
 		player = player,
@@ -7021,7 +7285,6 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 	if not callSucceeded or not result then
 		rollbackSucceeded = rollbackTransaction(transaction)
 	end
-	EggService._hatchLock[lockKey] = nil
 
 	if not rollbackSucceeded then
 		return nil, "Hatch rollback failed"
@@ -7035,6 +7298,12 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 
 	notifyCommittedBatch(player, result)
 	return result, nil
+end
+
+function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
+	return withHatchLock(player, function()
+		return purchaseAndHatchUnlocked(player, eggType, requestedCount, options)
+	end)
 end
 
 -- Compatibility API for explicitly free server rewards. Auto-hatch does not use
@@ -7444,6 +7713,7 @@ local Players = game:GetService("Players")
 
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local ShopData = require(game.ReplicatedStorage.Shared.ShopData)
 
 local ShopService = {}
@@ -7464,13 +7734,16 @@ function ShopService.init(dataService, currencyService)
 	ShopService._dataService = dataService
 	ShopService._currencyService = currencyService
 
-	-- Start auto-hatch loop
-	task.spawn(function()
-		while true do
-			task.wait(Config.AutoHatchInterval or 3)
-			ShopService._processAutoHatch()
-		end
-	end)
+	-- The legacy timed Auto-Hatch loop is feature-gated off until its complete
+	-- shop behavior ships. Persisted hatch preferences remain untouched.
+	if BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+		task.spawn(function()
+			while true do
+				task.wait(Config.AutoHatchInterval or 3)
+				ShopService._processAutoHatch()
+			end
+		end)
+	end
 end
 
 -- Set EggService reference (called after init to avoid circular deps)
@@ -7560,6 +7833,9 @@ function ShopService.purchaseItem(player, itemId)
 	if not player or type(itemId) ~= "string" then
 		return false, "Invalid parameters"
 	end
+	if itemId == "AutoHatch" and not BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+		return false, "Auto-Hatch is not available yet"
+	end
 
 	local itemDef = ShopData.Items[itemId]
 	if not itemDef then
@@ -7645,6 +7921,9 @@ end
 
 -- Process auto-hatch for players with active AutoHatch buff
 function ShopService._processAutoHatch()
+	if not BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+		return false
+	end
 	local now = os.clock()
 	for _, player in ipairs(Players:GetPlayers()) do
 		local buffs = removeExpiredBuffs(player, now)
@@ -7693,7 +7972,8 @@ return ShopService
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	UpgradeTreeService.lua - Server-authoritative QOF-07/QOF-08 tree purchases and effects.
+	UpgradeTreeService.lua - Server-authoritative tree purchases and effects.
+	QOF-10 adds the explicitly gated Storage and Pet Equip capacity branches.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -7744,6 +8024,18 @@ if BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled then
 	end
 end
 
+if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
+		registerPurchasable(level, "Storage")
+	end
+end
+
+if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.PetEquipSlots) do
+		registerPurchasable(level, "PetEquipSlots")
+	end
+end
+
 local function copyBooleanMap(input)
 	local output = {}
 	if type(input) ~= "table" then
@@ -7770,11 +8062,38 @@ local function neutralEntitlements()
 			Shiny = 1,
 		},
 		multiOpenCount = 1,
+		storageBonusSlots = 0,
+		petEquipBonusSlots = 0,
 	}
 end
 
-local function applyHighestContiguousLevel(levels, purchased, valueKey)
-	local value = 1
+local function applyHighestContiguousLevel(levels, purchased, valueKey, neutralValue)
+	local value = neutralValue
+	for _, level in ipairs(levels) do
+		if purchased[level.id] ~= true then
+			break
+		end
+		local prerequisitesMet = true
+		for _, requiredId in ipairs(level.requireIds or {}) do
+			if purchased[requiredId] ~= true then
+				prerequisitesMet = false
+				break
+			end
+		end
+		if not prerequisitesMet then
+			break
+		end
+		value = level[valueKey]
+	end
+	return value
+end
+
+-- Capacity branches reuse legacy purchase IDs. Their effects are grandfathered
+-- from the highest contiguous branch prefix even when an old save predates the
+-- external Eggs II root prerequisite. New purchases still use purchaseUnlocked,
+-- which enforces every canonical requireId before charging.
+local function applyGrandfatheredCapacityPrefix(levels, purchased, valueKey, neutralValue)
+	local value = neutralValue
 	for _, level in ipairs(levels) do
 		if purchased[level.id] ~= true then
 			break
@@ -7794,7 +8113,8 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 		entitlements.eggQualityMultiplier = applyHighestContiguousLevel(
 			BalanceConfig.Hatch.EggQuality,
 			purchased,
-			"rarityMultiplier"
+			"rarityMultiplier",
+			1
 		)
 	end
 
@@ -7803,7 +8123,8 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 			entitlements.directVariantMultipliers[variant] = applyHighestContiguousLevel(
 				levels,
 				purchased,
-				"multiplier"
+				"multiplier",
+				1
 			)
 		end
 	end
@@ -7822,9 +8143,28 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 			entitlements.multiOpenCount = applyHighestContiguousLevel(
 				BalanceConfig.Hatch.MultiOpen,
 				purchased,
-				"eggCount"
+				"eggCount",
+				1
 			)
 		end
+	end
+
+	if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
+		entitlements.storageBonusSlots = applyGrandfatheredCapacityPrefix(
+			BalanceConfig.CoreUpgrades.Storage,
+			purchased,
+			"bonusSlots",
+			0
+		)
+	end
+
+	if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
+		entitlements.petEquipBonusSlots = applyGrandfatheredCapacityPrefix(
+			BalanceConfig.CoreUpgrades.PetEquipSlots,
+			purchased,
+			"bonusSlots",
+			0
+		)
 	end
 
 	return entitlements
@@ -7902,6 +8242,13 @@ local function purchaseUnlocked(player, upgradeId, transaction)
 	end
 	if data.upgradeTreePurchases[upgradeId] == true then
 		return false, "Already purchased", UpgradeTreeService.getState(player)
+	end
+
+	-- Grandfathered capacity flags grant their historical effects, but never
+	-- bypass the modern Eggs II gate for any newly purchased branch level.
+	if (definition.effectType == "Storage" or definition.effectType == "PetEquipSlots")
+		and data.upgradeTreePurchases["Eggs II"] ~= true then
+		return false, "Missing prerequisite", UpgradeTreeService.getState(player)
 	end
 
 	for _, requiredId in ipairs(definition.requireIds) do
@@ -8013,7 +8360,7 @@ return UpgradeTreeService
 	INPUT SYSTEM (Pet Simulator 1 style):
 	- Single left click on destructible: send 1 pet to attack it
 	- Hold left click (0.3s+) on destructible: send ALL pets to attack it
-	- E-key: hatch egg when near egg station (via ProximityPrompt)
+	- E-key near an egg station: open the quoted manual-purchase dialog
 	- Assigned pets keep attacking; target discovery is manual-only
 ]]
 
@@ -8061,7 +8408,8 @@ local player = Players.LocalPlayer
 -- RemoteFunctions
 local GetPlayerData = Remotes:WaitForChild("GetPlayerData")
 local HatchEgg = Remotes:WaitForChild("HatchEgg")
-local SetHatchBatchSize = Remotes:WaitForChild("SetHatchBatchSize")
+-- QOF-10 fresh manual-purchase quote; no currency is spent by this call.
+local GetHatchPurchaseOptions = Remotes:WaitForChild("GetHatchPurchaseOptions")
 local EquipPet = Remotes:WaitForChild("EquipPet")
 local UnequipPet = Remotes:WaitForChild("UnequipPet")
 local DeletePet = Remotes:WaitForChild("DeletePet")
@@ -8081,7 +8429,6 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
-local GetUpgradeTreeState = Remotes:WaitForChild("GetUpgradeTreeState")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -8099,7 +8446,6 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
-local UpgradeTreeUpdated = Remotes:WaitForChild("UpgradeTreeUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -8244,74 +8590,11 @@ uiController:init(Remotes, playerData)
 musicController:init()
 upgradeTreeController:init(Remotes, playerData)
 
--- Hydrate the persisted Auto-Hatch preference only after the current entitlement
--- limit is known. This is selector state only; hatch presentation stays unchanged.
-local pendingPreferredBatchCount = type(playerData.hatchPreferences) == "table"
-	and playerData.hatchPreferences.preferredBatchCount or 1
-local function applyHatchEntitlementState(serverState)
-	local entitlements = type(serverState) == "table" and serverState.entitlements or nil
-	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
-	local entitlementCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
-	local maximumCount = type(entitlementCount) == "number"
-		and entitlementCount == entitlementCount
-		and allowed[entitlementCount] and entitlementCount or 1
-	if pendingPreferredBatchCount ~= nil then
-		local selectedCount = type(pendingPreferredBatchCount) == "number"
-			and pendingPreferredBatchCount == pendingPreferredBatchCount
-			and allowed[pendingPreferredBatchCount] and pendingPreferredBatchCount or 1
-		if selectedCount > maximumCount then
-			selectedCount = maximumCount
-		end
-		uiController:setHatchBatchState(maximumCount, selectedCount)
-		pendingPreferredBatchCount = nil
-	else
-		local selectedCount = uiController:getSelectedHatchCount()
-		if type(selectedCount) ~= "number" or selectedCount ~= selectedCount or not allowed[selectedCount] then
-			selectedCount = 1
-		elseif selectedCount > maximumCount then
-			selectedCount = maximumCount
-		end
-		uiController:setHatchBatchState(maximumCount, selectedCount)
-	end
-end
-
-local hatchSelectionRequestToken = 0
-uiController:setHatchBatchSelectionCallback(function(count)
-	hatchSelectionRequestToken += 1
-	local token = hatchSelectionRequestToken
-	uiController:showHatchFeedback("Updating hatch amount…", true)
-	task.spawn(function()
-		local invoked, accepted, message, batchState = pcall(function()
-			return SetHatchBatchSize:InvokeServer(count)
-		end)
-		if token ~= hatchSelectionRequestToken then
-			return
-		end
-		if type(batchState) == "table" then
-			uiController:setHatchBatchState(batchState.maximumCount, batchState.selectedCount)
-		end
-		if not invoked then
-			uiController:showHatchFeedback(tostring(accepted or "Could not change hatch amount"), false)
-			return
-		end
-		if accepted ~= true then
-			uiController:showHatchFeedback(message or "Could not change hatch amount", false)
-			return
-		end
-		uiController:showHatchFeedback("Auto-Hatch set to x" .. tostring(count), true)
-	end)
-end)
-
-UpgradeTreeUpdated.OnClientEvent:Connect(applyHatchEntitlementState)
--- UpgradeTreeController performs the first request during init; avoid competing
--- with its rate limit and then synchronize this independent hatch selector.
-task.delay(0.35, function()
-	local invoked, state = pcall(function()
-		return GetUpgradeTreeState:InvokeServer()
-	end)
-	if invoked then
-		applyHatchEntitlementState(state)
-	end
+-- Reuse the UpgradeTreeController's authoritative initial request and every
+-- subsequent server update. This avoids a competing one-shot remote call whose
+-- failure could leave legacy Capacity bonuses hidden until the next purchase.
+upgradeTreeController:setStateObserver(function(state)
+	uiController:updateUpgradeTree(state)
 end)
 
 --------------------------------------------------------------------------------
@@ -8435,8 +8718,9 @@ refreshOnboardingHint()
 -- of creating another tutorial system or blocking the player.
 task.delay(2, refreshOnboardingHint)
 
--- Track the egg station whose hatch prompt is currently visible. This keeps the
--- HUD target scoped to the active station and falls back when the player leaves.
+-- Track the concrete egg prompt as well as its egg type. Every async quote or
+-- purchase captures hatchOperationToken so a hidden/replaced prompt cannot
+-- revive a stale dialog or apply stale feedback.
 local function getEggTypeFromPrompt(prompt)
 	if prompt.Name ~= "HatchPrompt" or not prompt.Parent then return nil end
 	local eggTypeTag = prompt.Parent:FindFirstChild("PromptEggType")
@@ -8446,41 +8730,149 @@ local function getEggTypeFromPrompt(prompt)
 	return nil
 end
 
+local activeEggPrompt = nil
+local activeEggType = nil
+local hatchOperationToken = 0
+local hatchQuoteInFlight = false
+local hatchPurchaseInFlight = false
+
+local function closeHatchPurchaseDialog()
+	hatchOperationToken += 1
+	hatchQuoteInFlight = false
+	hatchPurchaseInFlight = false
+	uiController:closeHatchPurchaseDialog()
+end
+
+local function describeHatchError(message, fallback)
+	local text = tostring(message or fallback or "Hatch purchase is unavailable right now.")
+	if text == "No feasible hatch purchase" then
+		return "No eggs fit your current Coins and pet inventory slots."
+	elseif text == "x1 hatch option unavailable" or text == "x3 hatch option unavailable" then
+		return "That option is no longer available. Refresh the quote to check Coins, slots, and entitlement."
+	elseif string.find(text, "Move closer", 1, true) then
+		return "Move closer to this egg station, then refresh the quote."
+	elseif string.find(text, "Not enough coins", 1, true) then
+		return "You do not have enough Coins for that option. Refresh the quote."
+	elseif string.find(text, "inventory", 1, true) or string.find(text, "Inventory", 1, true) then
+		return "Your pet inventory does not have enough free slots. Refresh after making room."
+	end
+	return text
+end
+
+local function requestFreshHatchQuote()
+	if hatchQuoteInFlight or hatchPurchaseInFlight then return end
+	local prompt = activeEggPrompt
+	local eggType = activeEggType
+	if not prompt or not prompt.Parent or not eggType then
+		closeHatchPurchaseDialog()
+		return
+	end
+
+	hatchOperationToken += 1
+	local token = hatchOperationToken
+	hatchQuoteInFlight = true
+	uiController:showHatchPurchaseLoading(eggType)
+	task.spawn(function()
+		local invoked, quote, quoteError = pcall(function()
+			return GetHatchPurchaseOptions:InvokeServer(eggType)
+		end)
+		if token ~= hatchOperationToken
+			or prompt ~= activeEggPrompt
+			or eggType ~= activeEggType
+			or not prompt.Parent then
+			return
+		end
+		hatchQuoteInFlight = false
+		if invoked and type(quote) == "table" and quote.eggType == eggType then
+			uiController:showHatchPurchaseQuote(eggType, quote)
+		else
+			local message = invoked and quoteError or quote
+			uiController:showHatchPurchaseError(describeHatchError(message, "Could not load a fresh quote."))
+		end
+	end)
+end
+
+local function confirmHatchPurchase(intent)
+	if hatchQuoteInFlight or hatchPurchaseInFlight then return end
+	local prompt = activeEggPrompt
+	local eggType = activeEggType
+	if not prompt or not prompt.Parent or not eggType or not uiController:isHatchPurchaseDialogOpen() then
+		closeHatchPurchaseDialog()
+		return
+	end
+
+	-- Rebuild, rather than forward, the only three intents accepted by QOF-10.
+	-- MAX intentionally never carries the count from the displayed quote.
+	local serverIntent = nil
+	if type(intent) == "table" and intent.mode == "Fixed" and intent.count == 1 then
+		serverIntent = { mode = "Fixed", count = 1 }
+	elseif type(intent) == "table" and intent.mode == "Fixed" and intent.count == 3 then
+		serverIntent = { mode = "Fixed", count = 3 }
+	elseif type(intent) == "table" and intent.mode == "Max" then
+		serverIntent = { mode = "Max" }
+	end
+	if not serverIntent then return end
+
+	hatchOperationToken += 1
+	local token = hatchOperationToken
+	hatchPurchaseInFlight = true
+	uiController:showHatchPurchaseBusy("Confirming purchase with the server…")
+	task.spawn(function()
+		local invoked, result, hatchError = pcall(function()
+			return HatchEgg:InvokeServer(eggType, serverIntent)
+		end)
+		if token ~= hatchOperationToken
+			or prompt ~= activeEggPrompt
+			or eggType ~= activeEggType then
+			return
+		end
+		hatchPurchaseInFlight = false
+		if invoked and type(result) == "table" then
+			-- EggHatchStart/EggHatchResult remain the sole QOF-09 cinematic owners.
+			closeHatchPurchaseDialog()
+		else
+			local message = invoked and hatchError or result
+			uiController:showHatchPurchaseError(describeHatchError(message, "Hatch purchase failed safely."))
+		end
+	end)
+end
+
+uiController:setHatchPurchaseCallbacks(
+	confirmHatchPurchase,
+	closeHatchPurchaseDialog,
+	requestFreshHatchQuote
+)
+
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
-	if eggType then
-		uiController:showEggStationPrompt(eggType)
+	if not eggType then return end
+	if activeEggPrompt and activeEggPrompt ~= prompt then
+		local previousEggType = activeEggType
+		closeHatchPurchaseDialog()
+		activeEggPrompt = nil
+		activeEggType = nil
+		if previousEggType then
+			uiController:hideEggStationPrompt(previousEggType)
+		end
 	end
+	activeEggPrompt = prompt
+	activeEggType = eggType
+	uiController:showEggStationPrompt(eggType)
 end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
-	local eggType = getEggTypeFromPrompt(prompt)
+	if prompt ~= activeEggPrompt then return end
+	local eggType = activeEggType
+	activeEggPrompt = nil
+	activeEggType = nil
+	closeHatchPurchaseDialog()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end
 end)
 
-local hatchRequestInFlight = false
-local function requestHatch(eggType)
-	if hatchRequestInFlight then
-		uiController:showHatchFeedback("A hatch is already in progress", false)
-		return
-	end
-	hatchRequestInFlight = true
-	local count = uiController:getSelectedHatchCount()
-	task.spawn(function()
-		local invoked, result, hatchError = pcall(function()
-			return HatchEgg:InvokeServer(eggType, count)
-		end)
-		hatchRequestInFlight = false
-		if not invoked or type(result) ~= "table" then
-			uiController:showHatchFeedback(hatchError or "Hatch request failed", false)
-		end
-	end)
-end
-
--- Prompt routing is centralized so character respawns and delayed world creation
--- never add duplicate hatch connections.
+-- Prompt routing is centralized so respawns and delayed world creation never
+-- add duplicate hatch connections. PotionShopPrompt behavior is unchanged.
 ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer)
 	if triggeringPlayer ~= nil and triggeringPlayer ~= player then
 		return
@@ -8490,9 +8882,18 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 		return
 	end
 	local eggType = getEggTypeFromPrompt(prompt)
-	if eggType then
-		requestHatch(eggType)
+	if not eggType then return end
+	if activeEggPrompt ~= prompt then
+		local previousEggType = activeEggType
+		closeHatchPurchaseDialog()
+		if previousEggType then
+			uiController:hideEggStationPrompt(previousEggType)
+		end
+		activeEggPrompt = prompt
+		activeEggType = eggType
+		uiController:showEggStationPrompt(eggType)
 	end
+	requestFreshHatchQuote()
 end)
 
 -- Initialize equipped pets visuals from initial data (called ONCE)
@@ -8948,7 +9349,17 @@ local function onCharacterAdded(character)
 	-- no per-character connections are created here.
 end
 
--- Connect character added
+-- Connect character lifecycle. ResetOnSpawn=false keeps the one dialog instance,
+-- while removing a character invalidates all pending quote/purchase callbacks.
+player.CharacterRemoving:Connect(function()
+	local eggType = activeEggType
+	activeEggPrompt = nil
+	activeEggType = nil
+	closeHatchPurchaseDialog()
+	if eggType then
+		uiController:hideEggStationPrompt(eggType)
+	end
+end)
 if player.Character then
 	onCharacterAdded(player.Character)
 end
@@ -8984,11 +9395,13 @@ print("[Battle Pets] Client initialized successfully!")
 
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
+local BalanceConfig = require(Shared:WaitForChild("BalanceConfig"))
 local PetData = require(Shared:WaitForChild("PetData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
@@ -9071,6 +9484,59 @@ local function normalizeZoneId(zoneId)
 	return numericZoneId
 end
 
+local function safeSlotBonus(value)
+	local numeric = tonumber(value)
+	if not numeric
+		or numeric ~= numeric
+		or numeric == math.huge
+		or numeric == -math.huge
+		or numeric <= 0 then
+		return 0
+	end
+	return math.floor(numeric)
+end
+
+local function resolveLevelBonus(definition, rawLevel, valuesKey)
+	if type(definition) ~= "table" then return 0 end
+	local level = tonumber(rawLevel)
+	if not level
+		or level ~= level
+		or level == math.huge
+		or level == -math.huge
+		or level < 1
+		or level % 1 ~= 0 then
+		return 0
+	end
+	local values = definition[valuesKey]
+	if type(values) ~= "table" then return 0 end
+	local levelValue = values[level]
+	if valuesKey == "levels" then
+		levelValue = type(levelValue) == "table" and levelValue.bonus or nil
+	end
+	return safeSlotBonus(levelValue)
+end
+
+local function sanitizeDefinedLevels(source, definitions, valuesKey)
+	source = type(source) == "table" and source or {}
+	local normalized = {}
+	for id, definition in pairs(type(definitions) == "table" and definitions or {}) do
+		local rawLevel = tonumber(source[id])
+		local values = type(definition) == "table" and definition[valuesKey] or nil
+		if rawLevel
+			and rawLevel == rawLevel
+			and rawLevel ~= math.huge
+			and rawLevel ~= -math.huge
+			and rawLevel >= 0
+			and rawLevel % 1 == 0
+			and (rawLevel == 0 or (type(values) == "table" and values[rawLevel] ~= nil)) then
+			normalized[id] = rawLevel
+		else
+			normalized[id] = 0
+		end
+	end
+	return normalized
+end
+
 function UIController.new()
 	local self = setmetatable({}, UIController)
 	self._remotes = nil
@@ -9085,23 +9551,30 @@ function UIController.new()
 	self._diamonds = 0
 	self._unlockedZones = { [1] = true }
 	self._selectedEggType = nil
-	self._hatchBatchLimit = 1
-	self._selectedHatchCount = 1
-	self._hatchBatchButtons = {}
-	self._hatchBatchSelector = nil
-	self._hatchBatchFeedback = nil
-	self._hatchBatchSelectionCallback = nil
-	self._hatchBatchLayoutConnection = nil
-	self._hatchFeedbackToken = 0
+	self._hatchPurchaseGui = nil
+	self._hatchPurchasePanel = nil
+	self._hatchPurchaseTitle = nil
+	self._hatchPurchaseUnitPrice = nil
+	self._hatchPurchaseFeedback = nil
+	self._hatchPurchaseRefreshButton = nil
+	self._hatchPurchaseOptionButtons = {}
+	self._hatchPurchaseCallbacks = {}
+	self._hatchPurchaseConnections = {}
+	self._activeHatchPurchaseEggType = nil
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
 	self._inventoryTitle = nil
+	self._equippedTitle = nil
 	self._petSortMode = "Default"
 	self._petVariantFilter = "All"
 	self._petSortButton = nil
 	self._petVariantFilterButton = nil
 	self._upgradeData = {}
+	self._treeEntitlements = {
+		storageBonusSlots = 0,
+		petEquipBonusSlots = 0,
+	}
 	self._equippedPets = {}
 	self._equippedBar = nil
 	self._multiSelectMode = false
@@ -9164,16 +9637,23 @@ function UIController:init(remotes, playerData)
 			end
 		end
 		self._unlockedZones[1] = true
-		self._petInventoryData = playerData.pets or {}
-		self._equippedPets = playerData.equippedPets or {}
-		self._upgradeData = playerData.upgrades or {}
+		self._petInventoryData = type(playerData.pets) == "table" and playerData.pets or {}
+		self._equippedPets = type(playerData.equippedPets) == "table" and playerData.equippedPets or {}
+		self._upgradeData = sanitizeDefinedLevels(playerData.upgrades, QuestData.Quests, "levels")
 		self._currentZone = playerData.currentZone or 1
 		self._masteryState = {
 			masteryPoints = playerData.masteryPoints or 0,
 			level = playerData.level or 1,
-			buffs = playerData.masteryBuffs or {},
+			buffs = sanitizeDefinedLevels(playerData.masteryBuffs, MasteryData.Buffs, "bonusPerLevel"),
 		}
 		self._discoveredPets = playerData.discoveredPets or {}
+		local initialPurchases = type(playerData.shopPurchases) == "table" and playerData.shopPurchases or {}
+		local maxExtraEquipSlots = safeSlotBonus(self._shopState.maxExtraEquipSlots)
+		self._shopState.purchases.extraEquipSlots = math.clamp(
+			safeSlotBonus(initialPurchases.extraEquipSlots),
+			0,
+			maxExtraEquipSlots
+		)
 	end
 
 	-- Create all UI
@@ -9211,84 +9691,255 @@ function UIController:_createMainHUD(playerData)
 	-- ===== NON-BLOCKING ONBOARDING HINT =====
 	self:_createOnboardingHint(screenGui)
 
-	-- ===== CONTEXTUAL ATOMIC HATCH SELECTOR =====
-	self:_createHatchBatchSelector(screenGui)
+	-- ===== EQUIPPED CAPACITY (display only; server remains authoritative) =====
+	self:_createEquippedCapacityDisplay(screenGui)
+
+	-- ===== QOF-10 MANUAL HATCH PURCHASE DIALOG =====
+	self:_createHatchPurchaseDialog()
 end
 
-function UIController:_createHatchBatchSelector(parent)
+function UIController:_createEquippedCapacityDisplay(parent)
 	local panel = Instance.new("Frame")
-	panel.Name = "HatchBatchSelector"
-	panel.AnchorPoint = Vector2.new(0.5, 1)
-	panel.Size = UDim2.new(0.48, 0, 0, 116)
-	panel.Position = UDim2.new(0.5, 0, 1, -92)
+	panel.Name = "EquippedCapacity"
+	panel.Size = UDim2.new(0.3, 0, 0, 52)
+	panel.Position = UDim2.fromScale(0.02, 0.04)
 	panel.BackgroundColor3 = COLORS.DarkBg
-	panel.BackgroundTransparency = 0.06
+	panel.BackgroundTransparency = 0.08
 	panel.BorderSizePixel = 0
-	panel.Visible = false
 	panel.Parent = parent
-	self._hatchBatchSelector = panel
 
 	local sizeConstraint = Instance.new("UISizeConstraint")
-	sizeConstraint.MinSize = Vector2.new(280, 108)
-	sizeConstraint.MaxSize = Vector2.new(520, 116)
+	sizeConstraint.MinSize = Vector2.new(180, 52)
+	sizeConstraint.MaxSize = Vector2.new(360, 52)
 	sizeConstraint.Parent = panel
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 14)
+	corner.CornerRadius = UDim.new(0, 12)
 	corner.Parent = panel
 
 	local stroke = Instance.new("UIStroke")
 	stroke.Thickness = 3
-	stroke.Color = COLORS.DiamondCyan
+	stroke.Color = COLORS.NavPets
 	stroke.Parent = panel
 
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
-	title.Size = UDim2.new(1, -16, 0, 28)
-	title.Position = UDim2.fromOffset(8, 4)
+	title.Size = UDim2.new(1, -16, 1, -10)
+	title.Position = UDim2.fromOffset(8, 5)
 	title.BackgroundTransparency = 1
-	title.Text = "CHOOSE HATCH AMOUNT"
 	title.TextColor3 = COLORS.White
 	title.Font = Enum.Font.GothamBold
 	title.TextScaled = true
+	title.TextWrapped = true
 	title.Parent = panel
+	self._equippedTitle = title
+	self:_refreshCapacityUI()
+end
 
-	local counts = { 1, 2, 5, 10 }
-	for index, count in ipairs(counts) do
+local function normalizeQuoteInteger(value)
+	local numeric = tonumber(value)
+	if not numeric or numeric ~= numeric or numeric == math.huge or numeric == -math.huge then
+		return 0
+	end
+	return math.max(0, math.floor(numeric))
+end
+
+local function formatHatchCost(value)
+	local formatted = tostring(normalizeQuoteInteger(value))
+	while true do
+		local replacements
+		formatted, replacements = string.gsub(formatted, "^(%d+)(%d%d%d)", "%1,%2")
+		if replacements == 0 then
+			return formatted
+		end
+	end
+end
+
+local function deriveHatchUnavailableReason(quote, count, isMax)
+	local freeSlots = normalizeQuoteInteger(quote.freeSlots)
+	local coins = normalizeQuoteInteger(quote.coins)
+	local unitCost = normalizeQuoteInteger(quote.unitCost)
+	local entitlementCap = normalizeQuoteInteger(quote.entitlementCap)
+
+	if freeSlots < (isMax and 1 or count) then
+		return freeSlots == 0 and "No pet inventory slots" or "Need more pet inventory slots"
+	end
+	if not isMax and entitlementCap < count then
+		return "Multi-Open entitlement required"
+	end
+	if coins < unitCost * (isMax and 1 or count) then
+		return "Not enough Coins"
+	end
+	return "Unavailable right now"
+end
+
+-- QOF-10 API: Main owns quote/purchase requests; UIController owns exactly one
+-- reusable dialog and forwards only the three fixed server intent shapes.
+function UIController:_createHatchPurchaseDialog()
+	if self._hatchPurchaseGui then return end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "HatchPurchaseDialog"
+	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = false
+	pcall(function()
+		screenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+	end)
+	screenGui.DisplayOrder = 40 -- MainHUD < purchase dialog < hatch cinematic (50)
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Enabled = false
+	screenGui.Parent = self._playerGui
+	self._hatchPurchaseGui = screenGui
+
+	local dimmer = Instance.new("TextButton")
+	dimmer.Name = "Dimmer"
+	dimmer.Size = UDim2.fromScale(1, 1)
+	dimmer.BackgroundColor3 = Color3.fromRGB(5, 8, 18)
+	dimmer.BackgroundTransparency = 0.28
+	dimmer.BorderSizePixel = 0
+	dimmer.Text = ""
+	dimmer.AutoButtonColor = false
+	dimmer.Active = true
+	dimmer.Parent = screenGui
+
+	local panel = Instance.new("Frame")
+	panel.Name = "PurchasePanel"
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Size = UDim2.fromScale(0.94, 0.88)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = screenGui
+	self._hatchPurchasePanel = panel
+
+	local panelConstraint = Instance.new("UISizeConstraint")
+	panelConstraint.MaxSize = Vector2.new(680, 610)
+	panelConstraint.Parent = panel
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 20)
+	panelCorner.Parent = panel
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = COLORS.DiamondCyan
+	panelStroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Name = "EggName"
+	title.Size = UDim2.new(1, -28, 0.1, 0)
+	title.Position = UDim2.new(0, 14, 0.025, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "EGG"
+	title.TextColor3 = COLORS.CoinYellow
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextWrapped = true
+	title.Parent = panel
+	self._hatchPurchaseTitle = title
+
+	local instruction = Instance.new("TextLabel")
+	instruction.Name = "Instruction"
+	instruction.Size = UDim2.new(1, -28, 0.055, 0)
+	instruction.Position = UDim2.new(0, 14, 0.13, 0)
+	instruction.BackgroundTransparency = 1
+	instruction.Text = "Choose how many eggs to buy"
+	instruction.TextColor3 = COLORS.White
+	instruction.Font = Enum.Font.GothamBold
+	instruction.TextScaled = true
+	instruction.TextWrapped = true
+	instruction.Parent = panel
+
+	local unitPrice = Instance.new("TextLabel")
+	unitPrice.Name = "UnitPrice"
+	unitPrice.Size = UDim2.new(1, -28, 0.045, 0)
+	unitPrice.Position = UDim2.new(0, 14, 0.19, 0)
+	unitPrice.BackgroundTransparency = 1
+	unitPrice.Text = "Loading current price…"
+	unitPrice.TextColor3 = COLORS.CoinYellow
+	unitPrice.Font = Enum.Font.GothamBold
+	unitPrice.TextScaled = true
+	unitPrice.TextWrapped = true
+	unitPrice.Parent = panel
+	self._hatchPurchaseUnitPrice = unitPrice
+
+	local optionContainer = Instance.new("ScrollingFrame")
+	optionContainer.Name = "Options"
+	optionContainer.Size = UDim2.new(1, -28, 0.47, 0)
+	optionContainer.Position = UDim2.new(0, 14, 0.25, 0)
+	optionContainer.BackgroundTransparency = 1
+	optionContainer.BorderSizePixel = 0
+	optionContainer.ScrollBarThickness = 5
+	optionContainer.ScrollBarImageColor3 = COLORS.DiamondCyan
+	optionContainer.ScrollingDirection = Enum.ScrollingDirection.Y
+	optionContainer.CanvasSize = UDim2.fromOffset(0, 208)
+	optionContainer.Parent = panel
+
+	local optionLayout = Instance.new("UIListLayout")
+	optionLayout.FillDirection = Enum.FillDirection.Vertical
+	optionLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	optionLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+	optionLayout.Padding = UDim.new(0, 8)
+	optionLayout.Parent = optionContainer
+
+	local optionDefinitions = {
+		{ key = "x1", defaultText = "x1" },
+		{ key = "x3", defaultText = "x3" },
+		{ key = "max", defaultText = "MAX" },
+	}
+	for _, definition in ipairs(optionDefinitions) do
 		local button = Instance.new("TextButton")
-		button.Name = "HatchX" .. tostring(count)
-		button.Size = UDim2.new(0.22, 0, 0, 42)
-		button.Position = UDim2.new(0.025 + (index - 1) * 0.2425, 0, 0, 34)
-		button.BackgroundColor3 = COLORS.ButtonGreen
-		button.Text = "x" .. tostring(count)
+		button.Name = "Option_" .. definition.key
+		button.Size = UDim2.new(1, -8, 0, 64)
+		button.BackgroundColor3 = COLORS.NavSettings
+		button.Text = definition.defaultText .. "\nLoading…"
 		button.TextColor3 = COLORS.White
 		button.Font = Enum.Font.GothamBold
 		button.TextScaled = true
-		button.Parent = panel
-		local buttonCorner = Instance.new("UICorner")
-		buttonCorner.CornerRadius = UDim.new(0, 10)
-		buttonCorner.Parent = button
-		self._hatchBatchButtons[count] = button
+		button.TextWrapped = true
+		button.AutoButtonColor = false
+		button.Active = false
+		button.Selectable = false
+		button.Parent = optionContainer
 
-		button.MouseButton1Click:Connect(function()
-			if count > self._hatchBatchLimit then
-				self:showHatchFeedback("Unlock x" .. tostring(count) .. " in the Upgrade Tree", false)
-				return
-			end
-			-- Keep the highlighted preference authoritative: the server response
-			-- applies the selection after entitlement and throttle validation.
-			if self._hatchBatchSelectionCallback then
-				self._hatchBatchSelectionCallback(count)
-			else
-				self:setSelectedHatchCount(count)
+		local buttonConstraint = Instance.new("UISizeConstraint")
+		buttonConstraint.MinSize = Vector2.new(132, 52)
+		buttonConstraint.MaxSize = Vector2.new(640, 82)
+		buttonConstraint.Parent = button
+
+		local buttonCorner = Instance.new("UICorner")
+		buttonCorner.CornerRadius = UDim.new(0, 12)
+		buttonCorner.Parent = button
+
+		local buttonStroke = Instance.new("UIStroke")
+		buttonStroke.Thickness = 3
+		buttonStroke.Color = Color3.fromRGB(75, 82, 105)
+		buttonStroke.Parent = button
+
+		button.Activated:Connect(function()
+			if not button.Active then return end
+			local callback = self._hatchPurchaseCallbacks.confirm
+			if callback then
+				if definition.key == "x1" then
+					callback({ mode = "Fixed", count = 1 })
+				elseif definition.key == "x3" then
+					callback({ mode = "Fixed", count = 3 })
+				else
+					callback({ mode = "Max" })
+				end
 			end
 		end)
+
+		self._hatchPurchaseOptionButtons[definition.key] = {
+			button = button,
+			stroke = buttonStroke,
+		}
 	end
 
 	local feedback = Instance.new("TextLabel")
 	feedback.Name = "Feedback"
-	feedback.Size = UDim2.new(1, -16, 0, 28)
-	feedback.Position = UDim2.fromOffset(8, 82)
+	feedback.Size = UDim2.new(1, -28, 0.075, 0)
+	feedback.Position = UDim2.new(0, 14, 0.735, 0)
 	feedback.BackgroundTransparency = 1
 	feedback.Text = ""
 	feedback.TextColor3 = COLORS.White
@@ -9296,70 +9947,216 @@ function UIController:_createHatchBatchSelector(parent)
 	feedback.TextScaled = true
 	feedback.TextWrapped = true
 	feedback.Parent = panel
-	self._hatchBatchFeedback = feedback
-	self:_refreshHatchBatchSelector()
-end
+	self._hatchPurchaseFeedback = feedback
 
-function UIController:_refreshHatchBatchSelector()
-	if self._selectedHatchCount > self._hatchBatchLimit then
-		self._selectedHatchCount = 1
-	end
-	for count, button in pairs(self._hatchBatchButtons) do
-		local unlocked = count <= self._hatchBatchLimit
-		local selected = count == self._selectedHatchCount
-		button.BackgroundColor3 = not unlocked and COLORS.NavSettings
-			or selected and COLORS.DiamondCyan
-			or COLORS.ButtonGreen
-		button.TextTransparency = unlocked and 0 or 0.35
-		button.Text = "x" .. tostring(count) .. (unlocked and "" or " [LOCKED]")
-	end
-	if self._hatchBatchSelector then
-		self._hatchBatchSelector.Visible = self._selectedEggType ~= nil
-	end
-end
-
-function UIController:setHatchBatchLimit(maximumCount)
-	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
-	self._hatchBatchLimit = allowed[maximumCount] and maximumCount or 1
-	self:_refreshHatchBatchSelector()
-	self:_updateEggShortfall()
-end
-
-function UIController:setSelectedHatchCount(selectedCount)
-	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
-	if not allowed[selectedCount] or selectedCount > self._hatchBatchLimit then
-		selectedCount = 1
-	end
-	self._selectedHatchCount = selectedCount
-	self:_refreshHatchBatchSelector()
-	self:_updateEggShortfall()
-end
-
-function UIController:setHatchBatchState(maximumCount, selectedCount)
-	self:setHatchBatchLimit(maximumCount)
-	self:setSelectedHatchCount(selectedCount)
-end
-
-function UIController:setHatchBatchSelectionCallback(callback)
-	self._hatchBatchSelectionCallback = type(callback) == "function" and callback or nil
-end
-
-function UIController:getSelectedHatchCount()
-	return self._selectedHatchCount
-end
-
-function UIController:showHatchFeedback(message, success)
-	if not self._hatchBatchFeedback then return end
-	self._hatchFeedbackToken += 1
-	local token = self._hatchFeedbackToken
-	self._hatchBatchFeedback.Text = tostring(message or "")
-	self._hatchBatchFeedback.TextColor3 = success and Color3.fromRGB(145, 255, 170)
-		or Color3.fromRGB(255, 160, 160)
-	task.delay(3, function()
-		if self._hatchFeedbackToken == token and self._hatchBatchFeedback then
-			self._hatchBatchFeedback.Text = ""
-		end
+	local refreshButton = Instance.new("TextButton")
+	refreshButton.Name = "RefreshQuote"
+	refreshButton.AnchorPoint = Vector2.new(0, 1)
+	refreshButton.Size = UDim2.new(0.42, 0, 0, 52)
+	refreshButton.Position = UDim2.new(0.04, 0, 0.97, 0)
+	refreshButton.BackgroundColor3 = COLORS.DiamondCyan
+	refreshButton.Text = "Refresh Quote"
+	refreshButton.TextColor3 = COLORS.White
+	refreshButton.Font = Enum.Font.GothamBold
+	refreshButton.TextScaled = true
+	refreshButton.AutoButtonColor = false
+	refreshButton.Visible = false
+	refreshButton.Parent = panel
+	local refreshConstraint = Instance.new("UISizeConstraint")
+	refreshConstraint.MinSize = Vector2.new(132, 52)
+	refreshConstraint.Parent = refreshButton
+	local refreshCorner = Instance.new("UICorner")
+	refreshCorner.CornerRadius = UDim.new(0, 12)
+	refreshCorner.Parent = refreshButton
+	refreshButton.Activated:Connect(function()
+		if not refreshButton.Active then return end
+		local callback = self._hatchPurchaseCallbacks.refresh
+		if callback then callback() end
 	end)
+	self._hatchPurchaseRefreshButton = refreshButton
+
+	local cancelButton = Instance.new("TextButton")
+	cancelButton.Name = "Cancel"
+	cancelButton.AnchorPoint = Vector2.new(1, 1)
+	cancelButton.Size = UDim2.new(0.42, 0, 0, 52)
+	cancelButton.Position = UDim2.new(0.96, 0, 0.97, 0)
+	cancelButton.BackgroundColor3 = COLORS.ButtonRed
+	cancelButton.Text = "Cancel"
+	cancelButton.TextColor3 = COLORS.White
+	cancelButton.Font = Enum.Font.GothamBold
+	cancelButton.TextScaled = true
+	cancelButton.AutoButtonColor = false
+	cancelButton.Parent = panel
+	local cancelConstraint = Instance.new("UISizeConstraint")
+	cancelConstraint.MinSize = Vector2.new(132, 52)
+	cancelConstraint.Parent = cancelButton
+	local cancelCorner = Instance.new("UICorner")
+	cancelCorner.CornerRadius = UDim.new(0, 12)
+	cancelCorner.Parent = cancelButton
+	cancelButton.Activated:Connect(function()
+		self:_requestHatchPurchaseCancel()
+	end)
+
+	local function updateResponsiveLayout()
+		local size = panel.AbsoluteSize
+		local compactFooter = size.X < 320 or size.Y < 500
+		if compactFooter then
+			optionContainer.Position = UDim2.new(0, 14, 0.23, 0)
+			optionContainer.Size = UDim2.new(1, -28, 0.36, 0)
+			feedback.Position = UDim2.new(0, 14, 0.60, 0)
+			feedback.Size = UDim2.new(1, -28, 0.08, 0)
+
+			refreshButton.AnchorPoint = Vector2.new(0.5, 1)
+			refreshButton.Size = UDim2.new(0.84, 0, 0, 52)
+			refreshButton.Position = UDim2.new(0.5, 0, 0.84, 0)
+			cancelButton.AnchorPoint = Vector2.new(0.5, 1)
+			cancelButton.Size = UDim2.new(0.84, 0, 0, 52)
+			cancelButton.Position = UDim2.new(0.5, 0, 0.98, 0)
+		else
+			optionContainer.Position = UDim2.new(0, 14, 0.25, 0)
+			optionContainer.Size = UDim2.new(1, -28, 0.47, 0)
+			feedback.Position = UDim2.new(0, 14, 0.735, 0)
+			feedback.Size = UDim2.new(1, -28, 0.075, 0)
+
+			refreshButton.AnchorPoint = Vector2.new(0, 1)
+			refreshButton.Size = UDim2.new(0.42, 0, 0, 52)
+			refreshButton.Position = UDim2.new(0.04, 0, 0.97, 0)
+			cancelButton.AnchorPoint = Vector2.new(1, 1)
+			cancelButton.Size = UDim2.new(0.42, 0, 0, 52)
+			cancelButton.Position = UDim2.new(0.96, 0, 0.97, 0)
+		end
+	end
+	table.insert(self._hatchPurchaseConnections, panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(
+		updateResponsiveLayout
+	))
+	task.defer(updateResponsiveLayout)
+
+	table.insert(self._hatchPurchaseConnections, UserInputService.InputBegan:Connect(function(input)
+		if not self:isHatchPurchaseDialogOpen() then return end
+		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
+			self:_requestHatchPurchaseCancel()
+		end
+	end))
+end
+
+function UIController:setHatchPurchaseCallbacks(confirmCallback, cancelCallback, refreshCallback)
+	self._hatchPurchaseCallbacks = {
+		confirm = type(confirmCallback) == "function" and confirmCallback or nil,
+		cancel = type(cancelCallback) == "function" and cancelCallback or nil,
+		refresh = type(refreshCallback) == "function" and refreshCallback or nil,
+	}
+end
+
+function UIController:isHatchPurchaseDialogOpen()
+	return self._hatchPurchaseGui ~= nil and self._hatchPurchaseGui.Enabled == true
+end
+
+function UIController:_requestHatchPurchaseCancel()
+	if not self:isHatchPurchaseDialogOpen() then return end
+	local callback = self._hatchPurchaseCallbacks.cancel
+	if callback then
+		callback()
+	else
+		self:closeHatchPurchaseDialog()
+	end
+end
+
+function UIController:_setHatchPurchaseOption(key, heading, totalCost, available, unavailableReason)
+	local entry = self._hatchPurchaseOptionButtons[key]
+	if not entry then return end
+	local button = entry.button
+	button.Active = available == true
+	button.Selectable = available == true
+	button.BackgroundColor3 = available and COLORS.ButtonGreen or COLORS.NavSettings
+	button.TextColor3 = available and COLORS.White or Color3.fromRGB(220, 225, 235)
+	entry.stroke.Color = available and Color3.fromRGB(0, 125, 55) or Color3.fromRGB(75, 82, 105)
+	local priceText = formatHatchCost(totalCost) .. " Coins"
+	button.Text = heading .. "  •  " .. priceText
+	if not available then
+		button.Text ..= "\n" .. tostring(unavailableReason or "Unavailable")
+	end
+end
+
+function UIController:showHatchPurchaseLoading(eggType)
+	if not self._hatchPurchaseGui then return end
+	self._activeHatchPurchaseEggType = eggType
+	local eggDef = PetData.Eggs[eggType]
+	self._hatchPurchaseTitle.Text = string.upper(tostring(eggDef and eggDef.name or eggType or "Egg"))
+	self._hatchPurchaseUnitPrice.Text = "Loading current price…"
+	self._hatchPurchaseFeedback.Text = "Getting a fresh purchase quote…"
+	self._hatchPurchaseFeedback.TextColor3 = COLORS.White
+	self._hatchPurchaseRefreshButton.Visible = false
+	self._hatchPurchaseRefreshButton.Active = false
+	self._hatchPurchaseOptionButtons.x3.button.Visible = false
+	self:_setHatchPurchaseOption("x1", "x1", 0, false, "Loading…")
+	self:_setHatchPurchaseOption("x3", "x3", 0, false, "Loading…")
+	self:_setHatchPurchaseOption("max", "MAX", 0, false, "Loading…")
+	self._hatchPurchaseGui.Enabled = true
+end
+
+function UIController:showHatchPurchaseQuote(eggType, quote)
+	if not self:isHatchPurchaseDialogOpen() or self._activeHatchPurchaseEggType ~= eggType then return end
+	quote = type(quote) == "table" and quote or {}
+	local eggDef = PetData.Eggs[eggType]
+	self._hatchPurchaseTitle.Text = string.upper(tostring(eggDef and eggDef.name or eggType or "Egg"))
+	self._hatchPurchaseUnitPrice.Text = "Unit price: " .. formatHatchCost(quote.unitCost) .. " Coins"
+	self._hatchPurchaseFeedback.Text = "Quote is current. Confirm one option below."
+	self._hatchPurchaseFeedback.TextColor3 = Color3.fromRGB(145, 255, 170)
+	self._hatchPurchaseRefreshButton.Visible = true
+	self._hatchPurchaseRefreshButton.Active = true
+
+	local x1 = type(quote.x1) == "table" and quote.x1 or {}
+	local x3 = type(quote.x3) == "table" and quote.x3 or {}
+	local maxOption = type(quote.max) == "table" and quote.max or {}
+	local feasibleMax = normalizeQuoteInteger(quote.feasibleMax)
+	local entitlementCap = normalizeQuoteInteger(quote.entitlementCap)
+	self._hatchPurchaseOptionButtons.x3.button.Visible = entitlementCap >= 3
+	self:_setHatchPurchaseOption(
+		"x1", "x1", x1.totalCost, x1.available == true,
+		deriveHatchUnavailableReason(quote, 1, false)
+	)
+	self:_setHatchPurchaseOption(
+		"x3", "x3", x3.totalCost, x3.available == true,
+		deriveHatchUnavailableReason(quote, 3, false)
+	)
+	self:_setHatchPurchaseOption(
+		"max", "MAX x" .. tostring(feasibleMax), maxOption.totalCost,
+		maxOption.available == true and feasibleMax > 0,
+		deriveHatchUnavailableReason(quote, feasibleMax, true)
+	)
+end
+
+function UIController:showHatchPurchaseBusy(message)
+	if not self:isHatchPurchaseDialogOpen() then return end
+	for _, entry in pairs(self._hatchPurchaseOptionButtons) do
+		entry.button.Active = false
+		entry.button.Selectable = false
+		entry.button.BackgroundColor3 = COLORS.NavSettings
+	end
+	self._hatchPurchaseRefreshButton.Visible = false
+	self._hatchPurchaseRefreshButton.Active = false
+	self._hatchPurchaseFeedback.Text = tostring(message or "Processing purchase…")
+	self._hatchPurchaseFeedback.TextColor3 = COLORS.White
+end
+
+function UIController:showHatchPurchaseError(message)
+	if not self:isHatchPurchaseDialogOpen() then return end
+	for _, entry in pairs(self._hatchPurchaseOptionButtons) do
+		entry.button.Active = false
+		entry.button.Selectable = false
+		entry.button.BackgroundColor3 = COLORS.NavSettings
+	end
+	self._hatchPurchaseFeedback.Text = tostring(message or "Could not complete the purchase.")
+	self._hatchPurchaseFeedback.TextColor3 = Color3.fromRGB(255, 160, 160)
+	self._hatchPurchaseRefreshButton.Visible = true
+	self._hatchPurchaseRefreshButton.Active = true
+end
+
+function UIController:closeHatchPurchaseDialog(eggType)
+	if not self._hatchPurchaseGui then return end
+	if eggType ~= nil and self._activeHatchPurchaseEggType ~= eggType then return end
+	self._hatchPurchaseGui.Enabled = false
+	self._activeHatchPurchaseEggType = nil
 end
 
 function UIController:_createOnboardingHint(parent)
@@ -10008,19 +10805,87 @@ function UIController:_createPetInventory()
 	self:_refreshPetGrid()
 end
 
-function UIController:_updateInventoryTitle()
-	if not self._inventoryTitle then return end
-	local bonus = 0
-	local level = self._upgradeData.ExtraSlots or 0
-	local quest = QuestData.Quests.ExtraSlots
-	if quest and level > 0 and quest.levels[level] then
-		bonus = quest.levels[level].bonus or 0
-	end
-	local capacity = math.min(
-		(Config.MaxPetInventoryBase or 100) + bonus,
-		Config.MaxPetInventoryAbsolute or 250
+function UIController:_getInventoryCapacity()
+	local extraSlots = resolveLevelBonus(
+		QuestData.Quests.ExtraSlots,
+		type(self._upgradeData) == "table" and self._upgradeData.ExtraSlots or nil,
+		"levels"
 	)
-	self._inventoryTitle.Text = "My Pets  " .. tostring(#self._petInventoryData) .. "/" .. tostring(capacity)
+	local treeStorage = safeSlotBonus(
+		type(self._treeEntitlements) == "table" and self._treeEntitlements.storageBonusSlots or nil
+	)
+	local limits = BalanceConfig.Limits
+	return math.clamp(
+		limits.PetInventoryBase + extraSlots + treeStorage,
+		limits.PetInventoryBase,
+		limits.PetInventoryAbsolute
+	)
+end
+
+function UIController:_getEquipCapacity()
+	local friendship = resolveLevelBonus(
+		QuestData.Quests.Friendship,
+		type(self._upgradeData) == "table" and self._upgradeData.Friendship or nil,
+		"levels"
+	)
+	local masteryBuffs = type(self._masteryState) == "table" and self._masteryState.buffs or nil
+	local morePetSlots = resolveLevelBonus(
+		MasteryData.Buffs.MorePetSlots,
+		type(masteryBuffs) == "table" and masteryBuffs.MorePetSlots or nil,
+		"bonusPerLevel"
+	)
+	local purchases = type(self._shopState) == "table" and self._shopState.purchases or nil
+	local legacyShop = safeSlotBonus(
+		type(purchases) == "table" and purchases.extraEquipSlots or nil
+	)
+	legacyShop = math.min(legacyShop, ShopData.Items.ExtraEquipSlot.maxPurchases or 5)
+	local treeEquip = safeSlotBonus(
+		type(self._treeEntitlements) == "table" and self._treeEntitlements.petEquipBonusSlots or nil
+	)
+	local limits = BalanceConfig.Limits
+	return math.clamp(
+		limits.EquippedPetsBase + friendship + morePetSlots + legacyShop + treeEquip,
+		limits.EquippedPetsBase,
+		limits.EquippedPetsAbsolute
+	)
+end
+
+function UIController:_countEquippedPets()
+	local count = 0
+	local seen = {}
+	for _, pet in ipairs(type(self._equippedPets) == "table" and self._equippedPets or {}) do
+		local id = type(pet) == "string" and pet
+			or type(pet) == "table" and (pet.uniqueId or pet.id)
+		if type(id) == "string" and id ~= "" and not seen[id] then
+			seen[id] = true
+			count += 1
+		end
+	end
+	return count
+end
+
+function UIController:_refreshCapacityUI()
+	local inventoryCapacity = self:_getInventoryCapacity()
+	if self._inventoryTitle then
+		local absoluteCap = BalanceConfig.Limits.PetInventoryAbsolute
+		local capText = inventoryCapacity >= absoluteCap
+			and "  •  CAP " .. tostring(absoluteCap) or ""
+		self._inventoryTitle.Text = "My Pets  " .. tostring(#self._petInventoryData)
+			.. "/" .. tostring(inventoryCapacity) .. capText
+	end
+
+	local equipCapacity = self:_getEquipCapacity()
+	if self._equippedTitle then
+		local absoluteCap = BalanceConfig.Limits.EquippedPetsAbsolute
+		local capText = equipCapacity >= absoluteCap
+			and "  •  CAP " .. tostring(absoluteCap) or ""
+		self._equippedTitle.Text = "Equipped  " .. tostring(self:_countEquippedPets())
+			.. "/" .. tostring(equipCapacity) .. capText
+	end
+end
+
+function UIController:_updateInventoryTitle()
+	self:_refreshCapacityUI()
 end
 
 function UIController:_buildPetDisplayList()
@@ -11304,9 +12169,10 @@ function UIController:_purchaseMasteryBuff(buffId)
 end
 
 --------------------------------------------------------------------------------
--- EGG STATION - No overlay menu needed (E-key directly hatches via ProximityPrompt)
--- The old ShopWindow/EggPrompt overlay is removed.
--- BillboardGuis showing pet probabilities are created server-side on the egg stations.
+-- EGG STATION CONTEXT - the native E ProximityPrompt remains in the world.
+-- Triggering it opens the reusable QOF-10 purchase dialog created above; the
+-- legacy ShopWindow/EggPrompt overlay remains intentionally empty.
+-- BillboardGuis showing pet probabilities are created server-side on the stations.
 --------------------------------------------------------------------------------
 function UIController:_createShopWindow()
 	-- No shop window overlay needed - E-key hatches directly
@@ -11397,26 +12263,33 @@ function UIController:_updateEggShortfall()
 		return
 	end
 
-	local batchCount = self._selectedHatchCount or 1
+	-- Near a station the native ProximityPrompt is the only call to action. The
+	-- amount is chosen only after E opens a fresh server-quoted purchase dialog.
+	if self._selectedEggType ~= nil then
+		self._eggShortfallLabel.Text = eggDef.name .. ": Press E to choose amount"
+		self._eggShortfallLabel.TextColor3 = COLORS.White
+		return
+	end
+
 	local missing = {}
 	if cost.Coins then
-		local missingCoins = math.max(0, cost.Coins * batchCount - self._coins)
+		local missingCoins = math.max(0, cost.Coins - self._coins)
 		if missingCoins > 0 then
 			table.insert(missing, tostring(missingCoins) .. " Coins")
 		end
 	end
 	if cost.Diamonds then
-		local missingDiamonds = math.max(0, cost.Diamonds * batchCount - self._diamonds)
+		local missingDiamonds = math.max(0, cost.Diamonds - self._diamonds)
 		if missingDiamonds > 0 then
 			table.insert(missing, tostring(missingDiamonds) .. " Diamonds")
 		end
 	end
 
 	if #missing == 0 then
-		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": READY TO HATCH!"
+		self._eggShortfallLabel.Text = eggDef.name .. ": READY TO HATCH!"
 		self._eggShortfallLabel.TextColor3 = COLORS.ButtonGreen
 	else
-		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": Need " .. table.concat(missing, " + ")
+		self._eggShortfallLabel.Text = eggDef.name .. ": Need " .. table.concat(missing, " + ")
 		self._eggShortfallLabel.TextColor3 = COLORS.White
 	end
 end
@@ -11426,15 +12299,16 @@ function UIController:showEggStationPrompt(eggType)
 	if not eggDef or not self._unlockedZones[eggDef.zone] then return end
 
 	self._selectedEggType = eggType
-	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
 function UIController:hideEggStationPrompt(eggType)
 	if self._selectedEggType ~= eggType then return end
 
+	if self._activeHatchPurchaseEggType == eggType then
+		self:_requestHatchPurchaseCancel()
+	end
 	self._selectedEggType = nil
-	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
@@ -12029,11 +12903,15 @@ function UIController:_applyShopState(payload)
 	payload = type(payload) == "table" and payload or {}
 	local isFullState = type(payload.buffs) == "table" or type(payload.purchases) == "table"
 	local buffs = isFullState and (payload.buffs or {}) or payload
-	local purchases = isFullState and (payload.purchases or {}) or {}
-	local maxSlots = tonumber(payload.maxExtraEquipSlots)
-		or ShopData.Items.ExtraEquipSlot.maxPurchases
-		or 5
-	local ownedSlots = math.clamp(math.floor(tonumber(purchases.extraEquipSlots) or 0), 0, maxSlots)
+	-- Buff-only legacy payloads must not erase the persisted permanent purchase.
+	local purchases = type(payload.purchases) == "table"
+		and payload.purchases
+		or (type(self._shopState.purchases) == "table" and self._shopState.purchases or {})
+	local maxSlots = safeSlotBonus(payload.maxExtraEquipSlots)
+	if maxSlots == 0 then
+		maxSlots = ShopData.Items.ExtraEquipSlot.maxPurchases or 5
+	end
+	local ownedSlots = math.clamp(safeSlotBonus(purchases.extraEquipSlots), 0, maxSlots)
 
 	local normalizedBuffs = {}
 	local now = os.clock()
@@ -12057,6 +12935,7 @@ function UIController:_applyShopState(payload)
 		maxExtraEquipSlots = maxSlots,
 	}
 	self:_updateShopCardStates()
+	self:_refreshCapacityUI()
 end
 
 function UIController:_refreshShopStateFromServer()
@@ -12108,7 +12987,12 @@ function UIController:_purchaseShopItem(itemId)
 		elseif success then
 			if state then
 				self:_applyShopState(state)
+			else
+				-- Stay display-only: fetch the committed value instead of inventing
+				-- an optimistic permanent slot on the client.
+				self:_refreshShopStateFromServer()
 			end
+			self:_refreshCapacityUI()
 			self:_setShopFeedback(item.displayName .. " purchased!", Color3.fromRGB(35, 160, 62))
 		else
 			self:_setShopFeedback(tostring(err or "Purchase failed."), COLORS.ButtonRed)
@@ -12119,15 +13003,6 @@ end
 
 function UIController:updateShopBuffs(state)
 	self:_applyShopState(state)
-end
-
-function UIController:_hatchEgg(eggType)
-	if self._remotes then
-		local remote = self._remotes:FindFirstChild("HatchEgg")
-		if remote then
-			remote:InvokeServer(eggType)
-		end
-	end
 end
 
 --------------------------------------------------------------------------------
@@ -12409,7 +13284,7 @@ function UIController:updateCurrency(coins, diamonds)
 end
 
 function UIController:updatePetInventory(pets)
-	self._petInventoryData = pets or {}
+	self._petInventoryData = type(pets) == "table" and pets or {}
 
 	-- Drop stale or newly protected selections while preserving valid selections
 	-- across sorting and filtering refreshes.
@@ -12431,7 +13306,7 @@ function UIController:updatePetInventory(pets)
 end
 
 function UIController:updateEquippedPets(equippedPets)
-	self._equippedPets = equippedPets or {}
+	self._equippedPets = type(equippedPets) == "table" and equippedPets or {}
 	-- Also update the equipped boolean on inventory data to keep in sync
 	local equippedIdSet = {}
 	for _, pet in ipairs(self._equippedPets) do
@@ -12450,23 +13325,44 @@ function UIController:updateEquippedPets(equippedPets)
 			petData.equipped = equippedIdSet[id] or false
 		end
 	end
+	self:_refreshCapacityUI()
 	self:_refreshPetGrid()
 end
 
 function UIController:updateUpgrades(upgrades)
-	self._upgradeData = upgrades or {}
-	self:_updateInventoryTitle()
+	self._upgradeData = sanitizeDefinedLevels(upgrades, QuestData.Quests, "levels")
+	self:_refreshCapacityUI()
 	self:_refreshQuestGrid()
 end
 
 function UIController:updateQuestProgress(questProgress)
-	self._questProgress = questProgress or {}
+	self._questProgress = type(questProgress) == "table" and questProgress or {}
 	self:_refreshQuestGrid()
 end
 
 function UIController:updateMastery(masteryState)
-	self._masteryState = masteryState or { masteryPoints = 0, level = 1, buffs = {} }
+	masteryState = type(masteryState) == "table" and masteryState or {}
+	self._masteryState = {
+		masteryPoints = tonumber(masteryState.masteryPoints) or 0,
+		level = tonumber(masteryState.level) or 1,
+		buffs = sanitizeDefinedLevels(masteryState.buffs, MasteryData.Buffs, "bonusPerLevel"),
+	}
+	self:_refreshCapacityUI()
 	self:_refreshMasteryGrid()
+end
+
+-- QOF-10 display-only entitlement snapshot. Server services remain authoritative.
+function UIController:updateUpgradeTree(state)
+	local entitlements = type(state) == "table" and state.entitlements or nil
+	self._treeEntitlements = {
+		storageBonusSlots = safeSlotBonus(
+			type(entitlements) == "table" and entitlements.storageBonusSlots or nil
+		),
+		petEquipBonusSlots = safeSlotBonus(
+			type(entitlements) == "table" and entitlements.petEquipBonusSlots or nil
+		),
+	}
+	self:_refreshCapacityUI()
 end
 
 --------------------------------------------------------------------------------
@@ -12944,8 +13840,7 @@ function UIController:_refreshScreenData(screenName)
 			task.spawn(function()
 				local state = remote:InvokeServer()
 				if state then
-					self._masteryState = state
-					self:_refreshMasteryGrid()
+					self:updateMastery(state)
 				end
 			end)
 		end
@@ -12966,6 +13861,9 @@ function UIController:_refreshScreenData(screenName)
 end
 
 function UIController:openScreen(screenName)
+	-- Navigation always dismisses a pending manual hatch flow and invalidates its
+	-- async request through Main's registered cancel callback.
+	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen then return end
 
@@ -13024,6 +13922,7 @@ function UIController:openScreen(screenName)
 end
 
 function UIController:closeScreen(screenName)
+	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen or not screen.Enabled or self._screenStates[screenName] == "closing" then return end
 
@@ -13055,6 +13954,7 @@ function UIController:closeScreen(screenName)
 end
 
 function UIController:toggleScreen(screenName)
+	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen then return end
 	if screen.Enabled then
@@ -13077,6 +13977,24 @@ function UIController:updateXP(level, xp, xpNeeded)
 end
 
 function UIController:cleanup()
+	self:_requestHatchPurchaseCancel()
+	self:closeHatchPurchaseDialog()
+	for _, connection in ipairs(self._hatchPurchaseConnections) do
+		connection:Disconnect()
+	end
+	self._hatchPurchaseConnections = {}
+	self._hatchPurchaseCallbacks = {}
+	if self._hatchPurchaseGui then
+		self._hatchPurchaseGui:Destroy()
+		self._hatchPurchaseGui = nil
+	end
+	self._hatchPurchasePanel = nil
+	self._hatchPurchaseTitle = nil
+	self._hatchPurchaseUnitPrice = nil
+	self._hatchPurchaseFeedback = nil
+	self._hatchPurchaseRefreshButton = nil
+	self._hatchPurchaseOptionButtons = {}
+	self._activeHatchPurchaseEggType = nil
 	if self._shopTimerConnection then
 		self._shopTimerConnection:Disconnect()
 		self._shopTimerConnection = nil
@@ -17584,7 +18502,16 @@ function UpgradeTreeController.new()
 		_connections = {},
 		_treeCleanup = nil,
 		_feedbackToken = 0,
+		_serverState = nil,
+		_stateObserver = nil,
 	}, UpgradeTreeController)
+end
+
+function UpgradeTreeController:setStateObserver(callback)
+	self._stateObserver = type(callback) == "function" and callback or nil
+	if self._stateObserver and self._serverState then
+		pcall(self._stateObserver, self._serverState)
+	end
 end
 
 function UpgradeTreeController:init(remotes, playerData)
@@ -17640,6 +18567,10 @@ function UpgradeTreeController:init(remotes, playerData)
 		end
 		if type(serverState.entitlements) == "table" then
 			entitlements(copyMap(serverState.entitlements))
+		end
+		self._serverState = serverState
+		if self._stateObserver then
+			pcall(self._stateObserver, serverState)
 		end
 	end
 
@@ -18034,7 +18965,15 @@ local BalanceConfig = {
 	},
 
 	CoreUpgrades = {
-		RuntimeEnabled = false,
+		-- QOF-10 activates only the two capacity branches. The aggregate gate means
+		-- that at least one Core branch is live; every branch still has its own gate
+		-- so unrelated approved balance cannot become purchasable accidentally.
+		RuntimeEnabled = true,
+		SpeedRuntimeEnabled = false,
+		StorageRuntimeEnabled = true,
+		MagnetRuntimeEnabled = false,
+		DoubleLuckRuntimeEnabled = false,
+		PetEquipSlotsRuntimeEnabled = true,
 		Speed = {
 			{ multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
 			{ multiplier = 1.10, cost = { currency = "coins", amount = 25000 } },
@@ -18042,12 +18981,54 @@ local BalanceConfig = {
 			{ multiplier = 1.20, cost = { currency = "coins", amount = 300000 } },
 		},
 		Storage = {
-			{ bonusSlots = 25, cost = { currency = "diamonds", amount = 250 } },
-			{ bonusSlots = 50, cost = { currency = "diamonds", amount = 750 } },
-			{ bonusSlots = 75, cost = { currency = "diamonds", amount = 2000 } },
-			{ bonusSlots = 100, cost = { currency = "diamonds", amount = 5000 } },
-			{ bonusSlots = 125, cost = { currency = "diamonds", amount = 10000 } },
-			{ bonusSlots = 150, cost = { currency = "diamonds", amount = 20000 } },
+			{
+				id = "playtime1",
+				name = "Storage I",
+				description = "Increases pet inventory capacity by 25 slots.",
+				requireIds = { "Eggs II" },
+				bonusSlots = 25,
+				cost = { currency = "diamonds", amount = 250 },
+			},
+			{
+				id = "playtime2",
+				name = "Storage II",
+				description = "Increases pet inventory capacity by 50 slots total.",
+				requireIds = { "playtime1" },
+				bonusSlots = 50,
+				cost = { currency = "diamonds", amount = 750 },
+			},
+			{
+				id = "playtime3",
+				name = "Storage III",
+				description = "Increases pet inventory capacity by 75 slots total.",
+				requireIds = { "playtime2" },
+				bonusSlots = 75,
+				cost = { currency = "diamonds", amount = 2000 },
+			},
+			{
+				id = "streak1",
+				name = "Storage IV",
+				description = "Increases pet inventory capacity by 100 slots total.",
+				requireIds = { "playtime3" },
+				bonusSlots = 100,
+				cost = { currency = "diamonds", amount = 5000 },
+			},
+			{
+				id = "streak2",
+				name = "Storage V",
+				description = "Increases pet inventory capacity by 125 slots total.",
+				requireIds = { "streak1" },
+				bonusSlots = 125,
+				cost = { currency = "diamonds", amount = 10000 },
+			},
+			{
+				id = "streak3",
+				name = "Storage VI",
+				description = "Increases pet inventory capacity by 150 slots total.",
+				requireIds = { "streak2" },
+				bonusSlots = 150,
+				cost = { currency = "diamonds", amount = 20000 },
+			},
 		},
 		Magnet = {
 			{ multiplier = 1.25, cost = { currency = "coins", amount = 10000 } },
@@ -18059,10 +19040,38 @@ local BalanceConfig = {
 			cost = { currency = "diamonds", amount = 5000 },
 		},
 		PetEquipSlots = {
-			{ bonusSlots = 1, cost = { currency = "diamonds", amount = 1000 } },
-			{ bonusSlots = 2, cost = { currency = "diamonds", amount = 2500 } },
-			{ bonusSlots = 3, cost = { currency = "diamonds", amount = 5000 } },
+			{
+				id = "friends1",
+				name = "Pet Equip I",
+				description = "Increases maximum equipped pets by 1.",
+				requireIds = { "Eggs II" },
+				bonusSlots = 1,
+				cost = { currency = "diamonds", amount = 1000 },
+			},
+			{
+				id = "friends2",
+				name = "Pet Equip II",
+				description = "Increases maximum equipped pets by 2 total.",
+				requireIds = { "friends1" },
+				bonusSlots = 2,
+				cost = { currency = "diamonds", amount = 2500 },
+			},
+			{
+				id = "friends3",
+				name = "Pet Equip III",
+				description = "Increases maximum equipped pets by 3 total.",
+				requireIds = { "friends2" },
+				bonusSlots = 3,
+				cost = { currency = "diamonds", amount = 5000 },
+			},
 		},
+	},
+
+	Shop = {
+		-- The old timed Auto-Hatch product remains reserved in legacy balance and
+		-- persisted preferences remain intact, but no catalog or server processing
+		-- is permitted before its owning feature ships.
+		AutoHatchRuntimeEnabled = false,
 	},
 
 	Potions = {
@@ -18267,13 +19276,20 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
 		Machines = BalanceConfig.Machines,
-		CoreUpgrades = BalanceConfig.CoreUpgrades,
 		Potions = BalanceConfig.Potions,
 		Enchanting = BalanceConfig.Enchanting,
 	}
 	for name, section in pairs(futureSections) do
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
+	local core = BalanceConfig.CoreUpgrades
+	assert(core.RuntimeEnabled == true, "Core capacity upgrades must be enabled in QOF-10")
+	assert(core.StorageRuntimeEnabled == true, "Storage upgrades must be enabled in QOF-10")
+	assert(core.PetEquipSlotsRuntimeEnabled == true, "Pet Equip upgrades must be enabled in QOF-10")
+	assert(core.SpeedRuntimeEnabled == false, "Speed upgrades must remain dormant")
+	assert(core.MagnetRuntimeEnabled == false, "Magnet upgrades must remain dormant")
+	assert(core.DoubleLuckRuntimeEnabled == false, "Double Luck must remain dormant")
+	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
 
 	for name, value in pairs(BalanceConfig.Limits) do
 		assert(isFiniteNumber(value) and value > 0, name .. " limit must be positive")
@@ -18395,6 +19411,37 @@ function BalanceConfig.Validate()
 			"Multi-Open count must be an integer above one"
 		)
 	end
+
+	local function validateCapacityLevels(levels, context, expectedIds, expectedBonuses, expectedCosts)
+		assert(#levels == #expectedIds, context .. " has an unexpected level count")
+		for index, level in ipairs(levels) do
+			registerEntitlement(level, context .. " " .. tostring(index))
+			assert(level.id == expectedIds[index], context .. " has a non-canonical ID")
+			assert(type(level.description) == "string" and level.description ~= "", context .. " description is invalid")
+			assert(type(level.requireIds) == "table" and #level.requireIds == 1, context .. " must be a strict chain")
+			local expectedRequirement = index == 1 and "Eggs II" or expectedIds[index - 1]
+			assert(level.requireIds[1] == expectedRequirement, context .. " has an invalid prerequisite")
+			assert(level.bonusSlots == expectedBonuses[index], context .. " has a non-canonical bonus")
+			assert(level.cost.currency == "diamonds" and level.cost.amount == expectedCosts[index], context .. " has a non-canonical cost")
+		end
+		validateIncreasingCosts(levels, context)
+	end
+
+	validateCapacityLevels(
+		BalanceConfig.CoreUpgrades.Storage,
+		"Storage",
+		{ "playtime1", "playtime2", "playtime3", "streak1", "streak2", "streak3" },
+		{ 25, 50, 75, 100, 125, 150 },
+		{ 250, 750, 2000, 5000, 10000, 20000 }
+	)
+	validateCapacityLevels(
+		BalanceConfig.CoreUpgrades.PetEquipSlots,
+		"Pet Equip",
+		{ "friends1", "friends2", "friends3" },
+		{ 1, 2, 3 },
+		{ 1000, 2500, 5000 }
+	)
+
 	for _, level in ipairs(entitlementLevels) do
 		for _, requiredId in ipairs(level.requireIds or {}) do
 			assert(entitlementIds[requiredId] == true, level.id .. " has an unknown prerequisite")
@@ -20087,7 +21134,6 @@ ShopData.Order = {
 	"SpeedPotion",
 	"PowerPotion",
 	"CoinPotion",
-	"AutoHatch",
 	"ExtraEquipSlot",
 }
 
@@ -20146,16 +21192,6 @@ ShopData.Items = {
 		accentColor = { 255, 235, 125 },
 		durationLabel = "5 min",
 	}),
-	AutoHatch = legacyItem("AutoHatch", {
-		displayName = "Auto-Hatch",
-		description = "Automatically buys and hatches normal eggs for 10 minutes",
-		buffType = "autoHatch",
-		permanent = false,
-		artType = "egg",
-		color = { 245, 125, 35 },
-		accentColor = { 255, 205, 105 },
-		durationLabel = "10 min",
-	}),
 	ExtraEquipSlot = legacyItem("ExtraEquipSlot", {
 		displayName = "Extra Equip Slot",
 		description = "Permanently equip 1 more pet (maximum 5)",
@@ -20167,6 +21203,20 @@ ShopData.Items = {
 		durationLabel = "Permanent",
 	}),
 }
+
+if BalanceConfig.Shop.AutoHatchRuntimeEnabled then
+	ShopData.Items.AutoHatch = legacyItem("AutoHatch", {
+		displayName = "Auto-Hatch",
+		description = "Automatically buys and hatches normal eggs for 10 minutes",
+		buffType = "autoHatch",
+		permanent = false,
+		artType = "egg",
+		color = { 245, 125, 35 },
+		accentColor = { 255, 205, 105 },
+		durationLabel = "10 min",
+	})
+	table.insert(ShopData.Order, 5, "AutoHatch")
+end
 
 return ShopData
 ]]></ProtectedString>
@@ -24488,9 +25538,9 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-08 activates the imported Eggs III-V branch without changing its stable
--- IDs or layout. Only approved hatch entitlements are purchasable; unrelated
--- legacy nodes remain visible but server-blocked for their owning later QOFs.
+-- QOF-10 activates the imported Storage and Pet Equip branches in addition to
+-- the hatch branches without changing stable IDs or layout. Only explicitly
+-- gated entitlements are purchasable; unrelated legacy nodes remain dormant.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -24504,11 +25554,23 @@ end
 for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
 	activeById[level.id] = level
 end
+if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
+		activeById[level.id] = level
+	end
+end
+if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.PetEquipSlots) do
+		activeById[level.id] = level
+	end
+end
 
 for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 	for _, upgrade in ipairs(treeUpgrades) do
 		local active = activeById[upgrade.id]
-		if upgrade.id == "luckPortal" then
+		if upgrade.id == "playerPortal" then
+			upgrade.requireId = { "Eggs II" }
+		elseif upgrade.id == "luckPortal" then
 			upgrade.name = "Variant Chances"
 			upgrade.description = "Gold, Rainbow, and Shiny direct hatch upgrades."
 			upgrade.requireId = {}

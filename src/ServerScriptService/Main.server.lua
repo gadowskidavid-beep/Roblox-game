@@ -19,6 +19,7 @@ local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
+local BalanceConfig = require(ReplicatedStorage.Shared.BalanceConfig)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -97,6 +98,7 @@ end
 -- Create all RemoteFunctions
 local remoteFunctions = {
 	"HatchEgg",
+	"GetHatchPurchaseOptions",
 	"SetHatchBatchSize",
 	"EquipPet",
 	"UnequipPet",
@@ -231,27 +233,47 @@ getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	return DataService.getClientData(player)
 end
 
--- HatchEgg (one authoritative batch per 3 seconds)
-getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, requestedCount)
+-- GetHatchPurchaseOptions returns a fresh server-authoritative manual quote.
+getRemoteFunction("GetHatchPurchaseOptions").OnServerInvoke = function(player, eggType)
+	if not player or not player:IsA("Player") then
+		return nil, "Invalid player"
+	end
+	if not canCall(player, "GetHatchPurchaseOptions", 0.15)
+		or not canCallBurst(player, "GetHatchPurchaseOptions", 12, 10) then
+		return nil, "Please wait before requesting hatch options again"
+	end
+	if not isValidIdentifier(eggType) then
+		return nil, "Invalid egg type"
+	end
+	return EggService.getHatchPurchaseOptions(player, eggType)
+end
+
+-- HatchEgg confirms only the strict QOF-10 intent DTO. Manual purchases must
+-- pass through the confirmation dialog contract instead of raw numeric counts.
+getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, intent)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
 	if not canCall(player, "HatchEgg", 3) then
 		return nil, "Please wait before hatching again"
 	end
-	if type(eggType) ~= "string" or type(requestedCount) ~= "number" then
+	if not isValidIdentifier(eggType) then
 		return nil, "Invalid hatch parameters"
 	end
-	return EggService.purchaseAndHatch(player, eggType, requestedCount, {
-		bypassStation = false,
-	})
+	if type(intent) == "table" then
+		return EggService.purchaseFromIntent(player, eggType, intent)
+	end
+	return nil, "Invalid hatch parameters"
 end
 
--- SetHatchBatchSize stores the server-validated persistent preference for Auto-Hatch.
--- HatchEgg validates the count again for every paid transaction.
+-- The compatibility remote remains present for rolling clients, but is fail-closed
+-- and cannot mutate persisted Auto-Hatch preferences before the owning QOF ships.
 getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if BalanceConfig.Shop.AutoHatchRuntimeEnabled ~= true then
+		return false, "Auto-Hatch is not available yet", EggService.getBatchState(player)
 	end
 	if not canCall(player, "SetHatchBatchSize", 0.15) then
 		return false, "Please wait before changing batch size", EggService.getBatchState(player)

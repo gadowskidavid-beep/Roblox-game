@@ -126,6 +126,7 @@ local specFiles = {
 	"tests/UpgradeTreeService.spec",
 	"tests/PetService.spec",
 	"tests/EggService.spec",
+	"tests/ShopService.spec",
 }
 
 local function loadSpec(specPath)

@@ -260,7 +260,15 @@ local BalanceConfig = {
 	},
 
 	CoreUpgrades = {
-		RuntimeEnabled = false,
+		-- QOF-10 activates only the two capacity branches. The aggregate gate means
+		-- that at least one Core branch is live; every branch still has its own gate
+		-- so unrelated approved balance cannot become purchasable accidentally.
+		RuntimeEnabled = true,
+		SpeedRuntimeEnabled = false,
+		StorageRuntimeEnabled = true,
+		MagnetRuntimeEnabled = false,
+		DoubleLuckRuntimeEnabled = false,
+		PetEquipSlotsRuntimeEnabled = true,
 		Speed = {
 			{ multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
 			{ multiplier = 1.10, cost = { currency = "coins", amount = 25000 } },
@@ -268,12 +276,54 @@ local BalanceConfig = {
 			{ multiplier = 1.20, cost = { currency = "coins", amount = 300000 } },
 		},
 		Storage = {
-			{ bonusSlots = 25, cost = { currency = "diamonds", amount = 250 } },
-			{ bonusSlots = 50, cost = { currency = "diamonds", amount = 750 } },
-			{ bonusSlots = 75, cost = { currency = "diamonds", amount = 2000 } },
-			{ bonusSlots = 100, cost = { currency = "diamonds", amount = 5000 } },
-			{ bonusSlots = 125, cost = { currency = "diamonds", amount = 10000 } },
-			{ bonusSlots = 150, cost = { currency = "diamonds", amount = 20000 } },
+			{
+				id = "playtime1",
+				name = "Storage I",
+				description = "Increases pet inventory capacity by 25 slots.",
+				requireIds = { "Eggs II" },
+				bonusSlots = 25,
+				cost = { currency = "diamonds", amount = 250 },
+			},
+			{
+				id = "playtime2",
+				name = "Storage II",
+				description = "Increases pet inventory capacity by 50 slots total.",
+				requireIds = { "playtime1" },
+				bonusSlots = 50,
+				cost = { currency = "diamonds", amount = 750 },
+			},
+			{
+				id = "playtime3",
+				name = "Storage III",
+				description = "Increases pet inventory capacity by 75 slots total.",
+				requireIds = { "playtime2" },
+				bonusSlots = 75,
+				cost = { currency = "diamonds", amount = 2000 },
+			},
+			{
+				id = "streak1",
+				name = "Storage IV",
+				description = "Increases pet inventory capacity by 100 slots total.",
+				requireIds = { "playtime3" },
+				bonusSlots = 100,
+				cost = { currency = "diamonds", amount = 5000 },
+			},
+			{
+				id = "streak2",
+				name = "Storage V",
+				description = "Increases pet inventory capacity by 125 slots total.",
+				requireIds = { "streak1" },
+				bonusSlots = 125,
+				cost = { currency = "diamonds", amount = 10000 },
+			},
+			{
+				id = "streak3",
+				name = "Storage VI",
+				description = "Increases pet inventory capacity by 150 slots total.",
+				requireIds = { "streak2" },
+				bonusSlots = 150,
+				cost = { currency = "diamonds", amount = 20000 },
+			},
 		},
 		Magnet = {
 			{ multiplier = 1.25, cost = { currency = "coins", amount = 10000 } },
@@ -285,10 +335,38 @@ local BalanceConfig = {
 			cost = { currency = "diamonds", amount = 5000 },
 		},
 		PetEquipSlots = {
-			{ bonusSlots = 1, cost = { currency = "diamonds", amount = 1000 } },
-			{ bonusSlots = 2, cost = { currency = "diamonds", amount = 2500 } },
-			{ bonusSlots = 3, cost = { currency = "diamonds", amount = 5000 } },
+			{
+				id = "friends1",
+				name = "Pet Equip I",
+				description = "Increases maximum equipped pets by 1.",
+				requireIds = { "Eggs II" },
+				bonusSlots = 1,
+				cost = { currency = "diamonds", amount = 1000 },
+			},
+			{
+				id = "friends2",
+				name = "Pet Equip II",
+				description = "Increases maximum equipped pets by 2 total.",
+				requireIds = { "friends1" },
+				bonusSlots = 2,
+				cost = { currency = "diamonds", amount = 2500 },
+			},
+			{
+				id = "friends3",
+				name = "Pet Equip III",
+				description = "Increases maximum equipped pets by 3 total.",
+				requireIds = { "friends2" },
+				bonusSlots = 3,
+				cost = { currency = "diamonds", amount = 5000 },
+			},
 		},
+	},
+
+	Shop = {
+		-- The old timed Auto-Hatch product remains reserved in legacy balance and
+		-- persisted preferences remain intact, but no catalog or server processing
+		-- is permitted before its owning feature ships.
+		AutoHatchRuntimeEnabled = false,
 	},
 
 	Potions = {
@@ -493,13 +571,20 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
 		Machines = BalanceConfig.Machines,
-		CoreUpgrades = BalanceConfig.CoreUpgrades,
 		Potions = BalanceConfig.Potions,
 		Enchanting = BalanceConfig.Enchanting,
 	}
 	for name, section in pairs(futureSections) do
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
+	local core = BalanceConfig.CoreUpgrades
+	assert(core.RuntimeEnabled == true, "Core capacity upgrades must be enabled in QOF-10")
+	assert(core.StorageRuntimeEnabled == true, "Storage upgrades must be enabled in QOF-10")
+	assert(core.PetEquipSlotsRuntimeEnabled == true, "Pet Equip upgrades must be enabled in QOF-10")
+	assert(core.SpeedRuntimeEnabled == false, "Speed upgrades must remain dormant")
+	assert(core.MagnetRuntimeEnabled == false, "Magnet upgrades must remain dormant")
+	assert(core.DoubleLuckRuntimeEnabled == false, "Double Luck must remain dormant")
+	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
 
 	for name, value in pairs(BalanceConfig.Limits) do
 		assert(isFiniteNumber(value) and value > 0, name .. " limit must be positive")
@@ -621,6 +706,37 @@ function BalanceConfig.Validate()
 			"Multi-Open count must be an integer above one"
 		)
 	end
+
+	local function validateCapacityLevels(levels, context, expectedIds, expectedBonuses, expectedCosts)
+		assert(#levels == #expectedIds, context .. " has an unexpected level count")
+		for index, level in ipairs(levels) do
+			registerEntitlement(level, context .. " " .. tostring(index))
+			assert(level.id == expectedIds[index], context .. " has a non-canonical ID")
+			assert(type(level.description) == "string" and level.description ~= "", context .. " description is invalid")
+			assert(type(level.requireIds) == "table" and #level.requireIds == 1, context .. " must be a strict chain")
+			local expectedRequirement = index == 1 and "Eggs II" or expectedIds[index - 1]
+			assert(level.requireIds[1] == expectedRequirement, context .. " has an invalid prerequisite")
+			assert(level.bonusSlots == expectedBonuses[index], context .. " has a non-canonical bonus")
+			assert(level.cost.currency == "diamonds" and level.cost.amount == expectedCosts[index], context .. " has a non-canonical cost")
+		end
+		validateIncreasingCosts(levels, context)
+	end
+
+	validateCapacityLevels(
+		BalanceConfig.CoreUpgrades.Storage,
+		"Storage",
+		{ "playtime1", "playtime2", "playtime3", "streak1", "streak2", "streak3" },
+		{ 25, 50, 75, 100, 125, 150 },
+		{ 250, 750, 2000, 5000, 10000, 20000 }
+	)
+	validateCapacityLevels(
+		BalanceConfig.CoreUpgrades.PetEquipSlots,
+		"Pet Equip",
+		{ "friends1", "friends2", "friends3" },
+		{ 1, 2, 3 },
+		{ 1000, 2500, 5000 }
+	)
+
 	for _, level in ipairs(entitlementLevels) do
 		for _, requiredId in ipairs(level.requireIds or {}) do
 			assert(entitlementIds[requiredId] == true, level.id .. " has an unknown prerequisite")
