@@ -82,10 +82,15 @@ local BalanceConfig = {
 		},
 	},
 
-	-- Approved target hatch model. Current hatch behavior remains under Legacy.Hatch
-	-- until the variant migration and atomic batch flow are implemented.
+	-- Canonical hatch model. QOF-07 adds save-compatible Tree entitlements to
+	-- the QOF-06 single-egg outcomes; atomic Multi-Open remains QOF-08.
 	Hatch = {
-		RuntimeEnabled = false,
+		-- This top-level gate owns only the direct single-egg outcome model.
+		-- Deferred subfeatures keep explicit gates so their balance data stays dormant.
+		RuntimeEnabled = true,
+		EggQualityRuntimeEnabled = true,
+		MultiOpenRuntimeEnabled = false,
+		DirectVariantUpgradesRuntimeEnabled = true,
 		BaseChances = {
 			Golden = 0.01,
 			Rainbow = 0.001,
@@ -98,29 +103,108 @@ local BalanceConfig = {
 			ShinyChance = 0.001,
 		},
 		EggQuality = {
-			{ id = "Eggs I", cost = { currency = "coins", amount = 5000 }, rarityMultiplier = 1.25 },
-			{ id = "Eggs II", cost = { currency = "coins", amount = 50000 }, rarityMultiplier = 1.60 },
+			{
+				id = "Eggs I",
+				name = "Egg Quality I",
+				description = "Improves non-Common species weights by x1.25.",
+				requireIds = {},
+				cost = { currency = "coins", amount = 5000 },
+				rarityMultiplier = 1.25,
+			},
+			{
+				id = "Eggs II",
+				name = "Egg Quality II",
+				description = "Improves non-Common species weights by x1.60 total.",
+				requireIds = { "Eggs I" },
+				cost = { currency = "coins", amount = 50000 },
+				rarityMultiplier = 1.60,
+			},
 		},
 		MultiOpen = {
-			{ id = "Eggs III", cost = { currency = "diamonds", amount = 500 }, eggCount = 2 },
-			{ id = "Eggs IV", cost = { currency = "diamonds", amount = 2500 }, eggCount = 5 },
-			{ id = "Eggs V", cost = { currency = "diamonds", amount = 10000 }, eggCount = 10 },
+			{ id = "Eggs III", name = "Multi-Open I", cost = { currency = "diamonds", amount = 500 }, eggCount = 2 },
+			{ id = "Eggs IV", name = "Multi-Open II", cost = { currency = "diamonds", amount = 2500 }, eggCount = 5 },
+			{ id = "Eggs V", name = "Multi-Open III", cost = { currency = "diamonds", amount = 10000 }, eggCount = 10 },
 		},
+		-- QOF-07 intentionally reuses three legacy save-compatible chains. Each
+		-- branch applies only its highest contiguous purchased level.
 		DirectVariantUpgrades = {
 			Golden = {
-				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 500 } },
-				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 1500 } },
-				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 5000 } },
+				{
+					id = "epicLuck1",
+					name = "Gold Chance I",
+					description = "Multiplies direct Gold hatch chance by x1.25.",
+					requireIds = {},
+					multiplier = 1.25,
+					cost = { currency = "diamonds", amount = 500 },
+				},
+				{
+					id = "epicLuck2",
+					name = "Gold Chance II",
+					description = "Multiplies direct Gold hatch chance by x1.50 total.",
+					requireIds = { "epicLuck1" },
+					multiplier = 1.50,
+					cost = { currency = "diamonds", amount = 1500 },
+				},
+				{
+					id = "epicLuck3",
+					name = "Gold Chance III",
+					description = "Multiplies direct Gold hatch chance by x2 total.",
+					requireIds = { "epicLuck2" },
+					multiplier = 2.00,
+					cost = { currency = "diamonds", amount = 5000 },
+				},
 			},
 			Rainbow = {
-				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 1500 } },
-				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 5000 } },
-				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 15000 } },
+				{
+					id = "legendLuck1",
+					name = "Rainbow Chance I",
+					description = "Multiplies direct Rainbow hatch chance by x1.25.",
+					requireIds = {},
+					multiplier = 1.25,
+					cost = { currency = "diamonds", amount = 1500 },
+				},
+				{
+					id = "legendLuck2",
+					name = "Rainbow Chance II",
+					description = "Multiplies direct Rainbow hatch chance by x1.50 total.",
+					requireIds = { "legendLuck1" },
+					multiplier = 1.50,
+					cost = { currency = "diamonds", amount = 5000 },
+				},
+				{
+					id = "legendLuck3",
+					name = "Rainbow Chance III",
+					description = "Multiplies direct Rainbow hatch chance by x2 total.",
+					requireIds = { "legendLuck2" },
+					multiplier = 2.00,
+					cost = { currency = "diamonds", amount = 15000 },
+				},
 			},
 			Shiny = {
-				{ multiplier = 1.25, cost = { currency = "diamonds", amount = 5000 } },
-				{ multiplier = 1.50, cost = { currency = "diamonds", amount = 15000 } },
-				{ multiplier = 2.00, cost = { currency = "diamonds", amount = 50000 } },
+				{
+					id = "rerollLuck1",
+					name = "Shiny Chance I",
+					description = "Multiplies independent Shiny chance by x1.25.",
+					requireIds = {},
+					multiplier = 1.25,
+					cost = { currency = "diamonds", amount = 5000 },
+				},
+				{
+					id = "rerollLuck2",
+					name = "Shiny Chance II",
+					description = "Multiplies independent Shiny chance by x1.50 total.",
+					requireIds = { "rerollLuck1" },
+					multiplier = 1.50,
+					cost = { currency = "diamonds", amount = 15000 },
+				},
+				{
+					id = "rerollLuck3",
+					name = "Shiny Chance III",
+					description = "Multiplies independent Shiny chance by x2 total.",
+					requireIds = { "rerollLuck2" },
+					multiplier = 2.00,
+					cost = { currency = "diamonds", amount = 50000 },
+				},
 			},
 		},
 	},
@@ -382,8 +466,11 @@ end
 
 function BalanceConfig.Validate()
 	assert(BalanceConfig.Variants.RuntimeEnabled == true, "Variants must be enabled in QOF-04")
+	assert(BalanceConfig.Hatch.RuntimeEnabled == true, "direct Hatch outcomes must be enabled in QOF-06")
+	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == true, "Egg Quality must be enabled in QOF-07")
+	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == false, "Multi-Open must remain disabled until QOF-08")
+	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
-		Hatch = BalanceConfig.Hatch,
 		Machines = BalanceConfig.Machines,
 		CoreUpgrades = BalanceConfig.CoreUpgrades,
 		Potions = BalanceConfig.Potions,
@@ -438,6 +525,27 @@ function BalanceConfig.Validate()
 	end
 	assert(chances.Golden + chances.Rainbow <= 1, "base variant chances exceed 100%")
 
+	local luckCaps = BalanceConfig.Hatch.LuckCaps
+	assert(
+		isFiniteNumber(luckCaps.SpeciesMultiplier) and luckCaps.SpeciesMultiplier >= 1,
+		"species luck cap must be at least x1"
+	)
+	local directChanceCaps = {
+		Golden = luckCaps.GoldenChance,
+		Rainbow = luckCaps.RainbowChance,
+		Shiny = luckCaps.ShinyChance,
+	}
+	for name, cap in pairs(directChanceCaps) do
+		assert(
+			isFiniteNumber(cap) and cap >= chances[name] and cap <= 1,
+			name .. " luck cap must be finite and between its base chance and 100%"
+		)
+	end
+	assert(
+		directChanceCaps.Golden + directChanceCaps.Rainbow <= 1,
+		"capped base variant chances exceed 100%"
+	)
+
 	assert(BalanceConfig.Variants.Base.Normal.damageMultiplier == 1, "Normal multiplier must be x1")
 	assert(BalanceConfig.Variants.Base.Golden.damageMultiplier == 2, "Gold multiplier must be x2")
 	assert(BalanceConfig.Variants.Base.Rainbow.damageMultiplier == 5, "Rainbow multiplier must be x5")
@@ -450,13 +558,46 @@ function BalanceConfig.Validate()
 	end
 	assert(#BalanceConfig.Hatch.MultiOpen == #expectedCounts, "Multi-Open must have exactly three levels")
 
+	local entitlementIds = {}
+	local entitlementLevels = {}
+	local function registerEntitlement(level, context)
+		assert(type(level.id) == "string" and #level.id > 0 and #level.id <= 64, context .. " has an invalid ID")
+		assert(entitlementIds[level.id] == nil, "duplicate hatch entitlement ID: " .. level.id)
+		assert(type(level.name) == "string" and level.name ~= "", context .. " has an invalid name")
+		validateCost(level.cost, context)
+		assert(level.cost.amount > 0 and level.cost.amount % 1 == 0, context .. " cost must be a positive integer")
+		entitlementIds[level.id] = true
+		table.insert(entitlementLevels, level)
+	end
+
+	for index, level in ipairs(BalanceConfig.Hatch.EggQuality) do
+		registerEntitlement(level, "Egg Quality " .. tostring(index))
+		assert(type(level.requireIds) == "table", "Egg Quality prerequisites must be a table")
+		assert(isFiniteNumber(level.rarityMultiplier) and level.rarityMultiplier > 1, "Egg Quality multiplier is invalid")
+	end
 	validateIncreasingCosts(BalanceConfig.Hatch.EggQuality, "Egg Quality")
+	assert(
+		BalanceConfig.Hatch.EggQuality[2].rarityMultiplier > BalanceConfig.Hatch.EggQuality[1].rarityMultiplier,
+		"Egg Quality multipliers must increase"
+	)
+
 	for variant, levels in pairs(BalanceConfig.Hatch.DirectVariantUpgrades) do
 		validateIncreasingCosts(levels, variant .. " hatch chance")
 		local previousMultiplier = 0
-		for _, level in ipairs(levels) do
+		for index, level in ipairs(levels) do
+			registerEntitlement(level, variant .. " hatch chance " .. tostring(index))
+			assert(type(level.requireIds) == "table", variant .. " prerequisites must be a table")
 			assert(isFiniteNumber(level.multiplier) and level.multiplier > previousMultiplier, variant .. " multipliers must increase")
 			previousMultiplier = level.multiplier
+		end
+	end
+
+	for index, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+		registerEntitlement(level, "Multi-Open " .. tostring(index))
+	end
+	for _, level in ipairs(entitlementLevels) do
+		for _, requiredId in ipairs(level.requireIds or {}) do
+			assert(entitlementIds[requiredId] == true, level.id .. " has an unknown prerequisite")
 		end
 	end
 

@@ -101,9 +101,33 @@ describe("BalanceConfig validation", function()
 		expect(BalanceConfig.Potions.Upgrades.MaxShinyCharges):toBe(30)
 	end)
 
-	it("activates only canonical variant damage in QOF-04", function()
+	it("binds save-compatible QOF-07 IDs to canonical costs and highest-stage effects", function()
+		expect(BalanceConfig.Hatch.EggQuality[1].id):toBe("Eggs I")
+		expect(BalanceConfig.Hatch.EggQuality[1].cost):toEqual({ currency = "coins", amount = 5000 })
+		expect(BalanceConfig.Hatch.EggQuality[2].id):toBe("Eggs II")
+		expect(BalanceConfig.Hatch.EggQuality[2].rarityMultiplier):toBe(1.6)
+
+		local expectedIds = {
+			Golden = { "epicLuck1", "epicLuck2", "epicLuck3" },
+			Rainbow = { "legendLuck1", "legendLuck2", "legendLuck3" },
+			Shiny = { "rerollLuck1", "rerollLuck2", "rerollLuck3" },
+		}
+		for variant, ids in pairs(expectedIds) do
+			local levels = BalanceConfig.Hatch.DirectVariantUpgrades[variant]
+			for index, id in ipairs(ids) do
+				expect(levels[index].id):toBe(id)
+			end
+			expect(levels[3].multiplier):toBe(2)
+			expect(levels[1].cost.currency):toBe("diamonds")
+		end
+	end)
+
+	it("activates only QOF-07 tree entitlements while keeping Multi-Open dormant", function()
 		expect(BalanceConfig.Variants.RuntimeEnabled):toBeTrue()
-		expect(BalanceConfig.Hatch.RuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Hatch.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Hatch.EggQualityRuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Hatch.MultiOpenRuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Machines.RuntimeEnabled):toBeFalse()
 		expect(BalanceConfig.CoreUpgrades.RuntimeEnabled):toBeFalse()
 		expect(BalanceConfig.Potions.RuntimeEnabled):toBeFalse()

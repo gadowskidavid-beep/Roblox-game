@@ -1,9 +1,23 @@
--- PetService.spec.lua - QOF-04 server-authoritative damage and constructor tests.
+-- PetService.spec.lua - QOF-07 server-authoritative hatch and damage tests.
 
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
 local PetData = originalRequire("src/ReplicatedStorage/Shared/PetData")
+local SharedMock = {
+	BalanceConfig = BalanceConfig,
+	PetData = PetData,
+}
+rawset(_G, "script", { Parent = SharedMock })
+
+local function bootstrapRequire(path)
+	if path == BalanceConfig then return BalanceConfig end
+	if path == PetData then return PetData end
+	return originalRequire(path)
+end
+rawset(_G, "require", bootstrapRequire)
+local PetHatchMath = originalRequire("src/ReplicatedStorage/Shared/PetHatchMath")
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
+local PetVariantPresentation = originalRequire("src/ReplicatedStorage/Shared/PetVariantPresentation")
 
 local Config = {
 	MaxPetInventoryBase = 100,
@@ -30,7 +44,9 @@ local ReplicatedStorage = {
 		Config = Config,
 		BalanceConfig = BalanceConfig,
 		PetData = PetData,
+		PetHatchMath = PetHatchMath,
 		PetVariantMath = PetVariantMath,
+		PetVariantPresentation = PetVariantPresentation,
 	},
 }
 function ReplicatedStorage:FindFirstChild()
@@ -49,7 +65,9 @@ local function mockRequire(path)
 	if path == Config then return Config end
 	if path == BalanceConfig then return BalanceConfig end
 	if path == PetData then return PetData end
+	if path == PetHatchMath then return PetHatchMath end
 	if path == PetVariantMath then return PetVariantMath end
+	if path == PetVariantPresentation then return PetVariantPresentation end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -58,7 +76,13 @@ rawset(_G, "require", originalRequire)
 
 local profile = nil
 local strongMultiplier = 0
+local questLuckMultiplier = 0
+local masteryLuckMultiplier = 0
 local shopDamageMultiplier = 1
+local shopLuckMultiplier = 1
+local treeEggQualityMultiplier = 1
+local treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
+
 local dataService = {}
 function dataService.getPlayerData()
 	return profile
@@ -70,17 +94,51 @@ end
 local upgradeService = {}
 function upgradeService.getUpgradeBonus(_, upgradeName)
 	if upgradeName == "StrongPets" then return strongMultiplier end
+	if upgradeName == "LuckyEggs" then return questLuckMultiplier end
+	return 0
+end
+local masteryService = {}
+function masteryService.getBuffBonus(_, buffType)
+	if buffType == "BetterLuck" then return masteryLuckMultiplier end
 	return 0
 end
 local shopService = {}
 function shopService.getShopMultiplier(_, buffType)
 	if buffType == "damage" then return shopDamageMultiplier end
+	if buffType == "luck" then return shopLuckMultiplier end
 	return 1
+end
+local upgradeTreeService = {}
+function upgradeTreeService.getEntitlements()
+	return {
+		eggQualityMultiplier = treeEggQualityMultiplier,
+		directVariantMultipliers = treeDirectVariantMultipliers,
+	}
 end
 
 local player = { Name = "Tester", UserId = 1 }
 PetService.init(dataService, currencyService, upgradeService)
+PetService.setMasteryService(masteryService)
 PetService.setShopService(shopService)
+PetService.setUpgradeTreeService(upgradeTreeService)
+
+local function freshProfile()
+	profile = { pets = {}, equippedPets = {}, discoveredPets = {}, shopPurchases = {} }
+end
+
+local function hatchWithRolls(baseVariantRoll, shinyRoll, speciesRoll)
+	freshProfile()
+	local rolls = { speciesRoll or 0, baseVariantRoll, shinyRoll }
+	local rollIndex = 0
+	local originalRandom = math.random
+	math.random = function()
+		rollIndex = rollIndex + 1
+		return rolls[rollIndex]
+	end
+	local pet, hatchError = PetService.hatchEgg(player, "BasicEgg", true)
+	math.random = originalRandom
+	return pet, hatchError
+end
 
 describe("PetService canonical combat damage", function()
 	it("ignores a forged damage mirror", function()
@@ -105,33 +163,79 @@ describe("PetService canonical combat damage", function()
 	end)
 end)
 
-describe("PetService QOF-04 constructors", function()
-	it("keeps the legacy Shiny hatch roll but emits canonical x1.5 damage", function()
-		profile = { pets = {}, equippedPets = {}, discoveredPets = {}, shopPurchases = {} }
-		strongMultiplier = 0
-		shopDamageMultiplier = 1
-		PetService.setMasteryService(nil)
-		PetService.setShopService(nil)
+describe("PetService QOF-07 canonical single hatch", function()
+	it("constructs all six canonical outcomes with truthful names and damage", function()
+		questLuckMultiplier = 0
+		masteryLuckMultiplier = 0
+		shopLuckMultiplier = 1
+		local cases = {
+			{ 0.5, 0.5, "Normal", false, "Buddy", 1, "Buddy" },
+			{ 0.5, 0, "Normal", true, "Shiny Buddy", 1.5, "Shiny_Buddy" },
+			{ 0.001, 0.5, "Golden", false, "Gold Buddy", 2, "Golden_Buddy" },
+			{ 0.001, 0, "Golden", true, "Gold Shiny Buddy", 3, "Shiny_Buddy" },
+			{ 0, 0.5, "Rainbow", false, "Rainbow Buddy", 5, "Rainbow_Buddy" },
+			{ 0, 0, "Rainbow", true, "Rainbow Shiny Buddy", 7.5, "Shiny_Buddy" },
+		}
 
-		local rolls = { 0, 1, 0 }
-		local rollIndex = 0
-		local originalRandom = math.random
-		math.random = function()
-			rollIndex = rollIndex + 1
-			return rolls[rollIndex]
+		for _, case in ipairs(cases) do
+			local pet, hatchError = hatchWithRolls(case[1], case[2])
+			expect(hatchError):toBeNil()
+			expect(pet.petId):toBe("Buddy")
+			expect(pet.variant):toBe(case[3])
+			expect(pet.shiny):toBe(case[4])
+			expect(pet.name):toBe(case[5])
+			expect(pet.damage):toBe(case[6])
+			expect(pet.golden):toBe(case[3] == "Golden")
+			expect(profile.discoveredPets[case[7]]):toBeTrue()
 		end
-		local pet, hatchError = PetService.hatchEgg(player, "BasicEgg", true)
-		math.random = originalRandom
-		PetService.setShopService(shopService)
-
-		expect(hatchError):toBeNil()
-		expect(pet.petId):toBe("Buddy")
-		expect(pet.variant):toBe("Normal")
-		expect(pet.shiny):toBeTrue()
-		expect(pet.damage):toBe(1.5)
-		expect(profile.discoveredPets.Shiny_Buddy):toBeTrue()
 	end)
 
+	it("composes all active luck sources and enforces approved caps", function()
+		questLuckMultiplier = 2
+		masteryLuckMultiplier = 3
+		shopLuckMultiplier = 2
+		expect(PetService.getHatchLuckMultiplier(player)):toBe(10)
+
+		local pet, hatchError = hatchWithRolls(0.004, 0.0009)
+		expect(hatchError):toBeNil()
+		expect(pet.variant):toBe("Rainbow")
+		expect(pet.shiny):toBeTrue()
+		expect(pet.damage):toBe(7.5)
+
+		questLuckMultiplier = 0
+		masteryLuckMultiplier = 0
+		shopLuckMultiplier = 1
+	end)
+
+	it("keeps Egg Quality species-only and direct upgrades variant-specific", function()
+		questLuckMultiplier = 0
+		masteryLuckMultiplier = 0
+		shopLuckMultiplier = 1
+		treeEggQualityMultiplier = 1.6
+		treeDirectVariantMultipliers = { Golden = 2, Rainbow = 2, Shiny = 2 }
+
+		local pet, hatchError = hatchWithRolls(0.0015, 0.00015, 0.66)
+		expect(hatchError):toBeNil()
+		expect(pet.petId):toBe("Whiskers")
+		expect(pet.variant):toBe("Rainbow")
+		expect(pet.shiny):toBeTrue()
+		expect(pet.damage):toBe(60)
+
+		treeEggQualityMultiplier = 1
+		treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
+	end)
+
+	it("keeps legacy discovery categories for combined Shiny outcomes", function()
+		expect(PetService.getLegacyDiscoveryKey("Buddy", "Normal", false)):toBe("Buddy")
+		expect(PetService.getLegacyDiscoveryKey("Buddy", "Golden", false)):toBe("Golden_Buddy")
+		expect(PetService.getLegacyDiscoveryKey("Buddy", "Rainbow", false)):toBe("Rainbow_Buddy")
+		expect(PetService.getLegacyDiscoveryKey("Buddy", "Golden", true)):toBe("Shiny_Buddy")
+		expect(PetService.getLegacyDiscoveryKey("Buddy", "Rainbow", true)):toBe("Shiny_Buddy")
+		expect(PetService.getLegacyDiscoveryKey(nil, "Normal", false)):toBeNil()
+	end)
+end)
+
+describe("PetService legacy Golden conversion regression", function()
 	it("creates canonical Golden damage and preserves conversion behavior", function()
 		profile = {
 			pets = {

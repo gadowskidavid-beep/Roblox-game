@@ -151,6 +151,7 @@ UpgradeService.setMasteryService(MasteryService)
 PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
+PetService.setUpgradeTreeService(UpgradeTreeService)
 EggService.init(DataService, CurrencyService, PetService)
 EggService.setQuestService(QuestService)
 ShopService.setEggService(EggService)
@@ -391,7 +392,7 @@ end
 -- GetUpgradeTreeState
 getRemoteFunction("GetUpgradeTreeState").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
-		return { currency = { coins = 0 }, purchased = {} }
+		return { currency = { coins = 0, diamonds = 0 }, purchased = {}, available = {}, entitlements = {} }
 	end
 	if not canCall(player, "GetUpgradeTreeState", 0.25) then
 		return nil
@@ -399,7 +400,7 @@ getRemoteFunction("GetUpgradeTreeState").OnServerInvoke = function(player)
 	return UpgradeTreeService.getState(player)
 end
 
--- PurchaseTreeUpgrade (server validates canonical ID, prerequisites, and coin cost)
+-- PurchaseTreeUpgrade (server validates canonical ID, prerequisites, and currency cost)
 getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgradeId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player", { currency = { coins = 0 }, purchased = {} }

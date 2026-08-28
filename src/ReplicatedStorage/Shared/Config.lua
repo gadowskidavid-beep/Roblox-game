@@ -46,8 +46,8 @@ Config.Upgrades = {}
 Config.ZoneGateCosts = BalanceConfig.World.ZoneGateCoinCosts
 Config.Campaign = BalanceConfig.World.Campaign
 
--- Compatibility values preserve the current exclusive Shiny/Rainbow hatch model.
--- QOF-03/QOF-04 will switch PetService atomically to BalanceConfig.Hatch.
+-- Legacy aliases remain for untouched compatibility consumers. QOF-06 PetService
+-- uses the canonical BalanceConfig.Hatch model instead of these exclusive odds.
 Config.SHINY_CHANCE = BalanceConfig.Legacy.Hatch.ShinyChance
 Config.RAINBOW_CHANCE = BalanceConfig.Legacy.Hatch.RainbowChance
 

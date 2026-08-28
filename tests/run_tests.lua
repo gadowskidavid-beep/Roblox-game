@@ -116,10 +116,14 @@ _G.expect = expect
 -- In pure Luau CLI context we use a simple require approach
 local specFiles = {
 	"tests/BalanceConfig.spec",
+	"tests/PetHatchMath.spec",
 	"tests/PetVariantMath.spec",
 	"tests/PetVariantPresentation.spec",
 	"tests/DataSchema.spec",
+	"tests/CurrencyService.spec",
+	"tests/UpgradeTreeService.spec",
 	"tests/PetService.spec",
+	"tests/EggService.spec",
 }
 
 local function loadSpec(specPath)
