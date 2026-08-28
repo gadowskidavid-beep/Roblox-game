@@ -41,7 +41,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 75, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 76, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -304,7 +304,7 @@ def main() -> None:
     data_schema_source = (
         ROOT / "src/ServerScriptService/Services/DataSchema.lua"
     ).read_bytes()
-    assert b'DataSchema.VERSION = 11' in data_schema_source
+    assert b'DataSchema.VERSION = 12' in data_schema_source
     assert b'autoHatchExpiresAt = 0' in data_schema_source
     assert b'normalizeAutoHatchExpiry' in data_schema_source
     assert b'or value % 1 ~= 0' in data_schema_source
@@ -517,7 +517,7 @@ def main() -> None:
     assert b"RuntimeEnabled = false" not in enchanting_balance
 
     for required in (
-        b"DataSchema.VERSION = 11",
+        b"DataSchema.VERSION = 12",
         b"PetEnchantMath.normalizeEnchantId(pet.enchantId)",
         b"pet.enchant = nil",
         b"pet.enchantData = nil",
@@ -639,7 +639,11 @@ def main() -> None:
         b"rawget(pet, \"enchantId\") ~= snapshot.enchantId",
         b"outputPet.enchantId = nil",
         b"PetEnchantMath.getDamageMultiplier",
-        b"local enchantedDamage = baseDamage * enchantMultiplier",
+        b"normalizedPositiveDamageFactor",
+        b"local completeDamage = baseDamage",
+        b"* enchantMultiplier",
+        b"* questMultiplier",
+        b"* shopMultiplier",
         b"PetData.Pets[petId]",
         b"PetEnchantMath.getCampaignSpeedMultiplier",
         b"local speed = baseSpeed * multiplier",
@@ -653,6 +657,23 @@ def main() -> None:
     ):
         assert required in pet_service_source, f"missing shared lease/stat/machine semantics: {required!r}"
 
+    damage_function = pet_service_source.split(
+        b"function PetService.getPetDamage", 1
+    )[1].split(b"function PetService.getCampaignLaneSpeed", 1)[0]
+    assert b"math.floor" not in damage_function, (
+        "canonical combat damage must stay unrounded through every factor"
+    )
+    assert b"value > 0" in pet_service_source, (
+        "finite positive reduction factors must remain valid damage multipliers"
+    )
+    for required in (
+        b"local totalDamage = 0",
+        b"totalDamage = totalDamage + ZoneService._petService.getPetDamage(pet, player)",
+        b"local appliedDamage = math.max(0, math.min(damage, destructible.hp))",
+        b"destructible.hp = destructible.hp - appliedDamage",
+    ):
+        assert required in zone_service_source, f"missing QOF-24 aggregate damage boundary: {required!r}"
+
     campaign_service_source = (
         ROOT / "src/ServerScriptService/Services/CampaignService.lua"
     ).read_bytes()
@@ -662,7 +683,12 @@ def main() -> None:
         b'return false, "Pet stats unavailable"',
         b"battle.energy = battle.energy - deployCost",
         b"speed = speed",
+        b"damage = effectiveDamage",
+        b"hp = hp",
+        b"maxHp = hp",
         b"getCurrentPetDamage",
+        b"closestEnemy.hp = closestEnemy.hp - getCurrentPetDamage(userId, pet)",
+        b"battle.enemyBaseHP = battle.enemyBaseHP - getCurrentPetDamage(userId, pet)",
     ):
         assert required in campaign_service_source, f"missing Strong/Agile campaign semantics: {required!r}"
     assert campaign_service_source.index(b"CampaignService._petService.getCampaignLaneSpeed") < (

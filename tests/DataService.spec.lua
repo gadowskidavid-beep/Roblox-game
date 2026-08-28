@@ -16,6 +16,25 @@ function DataSchema.deepCopy(value)
 	return copy
 end
 
+local function normalizeKnownLevel(values, id, maximum)
+	local output = {}
+	if type(values) == "table" then
+		local value = values[id]
+		if type(value) == "number" and value == value and value ~= math.huge
+			and value ~= -math.huge and value % 1 == 0 and value >= 1 and value <= maximum then
+			output[id] = value
+		end
+	end
+	return output
+end
+local ProgressionMath = {}
+function ProgressionMath.normalizeQuestLevels(values)
+	return normalizeKnownLevel(values, "StrongPets", 3)
+end
+function ProgressionMath.normalizeMasteryLevels(values)
+	return normalizeKnownLevel(values, "MoreCoins", 10)
+end
+
 local dataStoreService = {}
 function dataStoreService:GetDataStore()
 	return {}
@@ -34,7 +53,7 @@ function runService:IsStudio()
 	return false
 end
 
-local SharedMock = { Config = Config }
+local SharedMock = { Config = Config, ProgressionMath = ProgressionMath }
 local ServicesMock = { DataSchema = DataSchema }
 local gameMock = {
 	JobId = "test-job",
@@ -53,6 +72,7 @@ rawset(_G, "script", { Parent = ServicesMock })
 
 local function mockRequire(path)
 	if path == Config then return Config end
+	if path == ProgressionMath then return ProgressionMath end
 	if path == DataSchema then return DataSchema end
 	return originalRequire(path)
 end
@@ -68,7 +88,7 @@ end
 describe("DataService QOF-09 client projection", function()
 	it("projects hatch and potion state as deep copies without private session state", function()
 		local profile = {
-			schemaVersion = 8,
+			schemaVersion = 12,
 			coins = 10,
 			diamonds = 2,
 			pets = {},
@@ -76,13 +96,13 @@ describe("DataService QOF-09 client projection", function()
 			xp = 0,
 			equippedPets = {},
 			unlockedZones = { 1 },
-			upgrades = {},
+			upgrades = { StrongPets = 2, UnknownQuest = 1, FasterPets = 999 },
 			upgradeTreePurchases = {},
 			hatchPreferences = { preferredBatchCount = 5 },
 			questStats = {},
 			campaignProgress = {},
 			masteryPoints = 0,
-			masteryBuffs = {},
+			masteryBuffs = { MoreCoins = 4, UnknownMastery = 1, FasterRunning = "5" },
 			discoveredPets = {},
 			shopPurchases = {},
 			potionInventory = { LuckPotion = 4 },
@@ -96,6 +116,8 @@ describe("DataService QOF-09 client projection", function()
 
 		local projected = DataService.getClientData(player)
 		expect(projected.hatchPreferences):toEqual({ preferredBatchCount = 5 })
+		expect(projected.upgrades):toEqual({ StrongPets = 2 })
+		expect(projected.masteryBuffs):toEqual({ MoreCoins = 4 })
 		expect(projected.potionInventory):toEqual({ LuckPotion = 4 })
 		expect(projected.activeBuffs):toEqual({ luck = { sources = { LuckPotion = { expiresAt = 1500 } } } })
 		expect(projected.potionUpgrades):toEqual({ slots = 3, durationLevel = 1, autoDrink = false })
@@ -103,11 +125,17 @@ describe("DataService QOF-09 client projection", function()
 		expect(projected.potionBuffSources):toBeNil()
 		expect(projected._session):toBeNil()
 		projected.hatchPreferences.preferredBatchCount = 1
+		projected.upgrades.StrongPets = 1
+		projected.masteryBuffs.MoreCoins = 1
 		projected.potionInventory.LuckPotion = 1
 		projected.activeBuffs.luck.sources.LuckPotion.expiresAt = 1
 		projected.potionUpgrades.slots = 5
 		projected.autoDrinkSelection.LuckPotion = nil
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+		expect(profile.upgrades.StrongPets):toBe(2)
+		expect(profile.upgrades.UnknownQuest):toBe(1)
+		expect(profile.masteryBuffs.MoreCoins):toBe(4)
+		expect(profile.masteryBuffs.UnknownMastery):toBe(1)
 		expect(profile.potionInventory.LuckPotion):toBe(4)
 		expect(profile.activeBuffs.luck.sources.LuckPotion.expiresAt):toBe(1500)
 		expect(profile.potionUpgrades.slots):toBe(3)

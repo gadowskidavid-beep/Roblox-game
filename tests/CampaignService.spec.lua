@@ -118,3 +118,141 @@ describe("CampaignService hardened deploy calculations", function()
 		CampaignService._activeBattles[player.UserId] = nil
 	end)
 end)
+
+
+
+describe("CampaignService QOF-24 fractional damage", function()
+	local function battleWithPet(pet)
+		return {
+			active = true,
+			energy = 100,
+			energyRegenRate = 0,
+			maxEnergy = 100,
+			waveSpawnTimer = 0,
+			waveSpawnInterval = 999,
+			currentWave = 1,
+			totalWaves = 1,
+			broadcastTimer = 0,
+			deployedPets = { pet },
+			enemies = {},
+			enemyBaseHP = 100,
+			playerBaseHP = 100,
+		}
+	end
+
+	it("snapshots 4.5 damage and derives exact 22.5 HP at deploy", function()
+		local player = { UserId = 2424 }
+		local pet = {
+			id = "fractional-pet", petId = "Splash", name = "Splash",
+			rarity = "Common",
+		}
+		CampaignService._dataService = {
+			getPlayerData = function() return { pets = { pet } } end,
+		}
+		CampaignService._petService = {
+			getPetDamage = function() return 4.5 end,
+			getCampaignLaneSpeed = function() return 14 end,
+		}
+		CampaignService._activeBattles[player.UserId] = {
+			active = true, energy = 100, deployedPets = {},
+		}
+
+		local success, reason = CampaignService.deployPet(player, pet.id)
+		expect(success):toBeTrue()
+		expect(reason):toBeNil()
+		local deployed = CampaignService._activeBattles[player.UserId].deployedPets[1]
+		expect(deployed.damage):toBe(4.5)
+		expect(deployed.hp):toBe(22.5)
+		expect(deployed.maxHp):toBe(22.5)
+		CampaignService._activeBattles[player.UserId] = nil
+	end)
+
+	it("subtracts exactly 4.5 from regular enemies and bosses", function()
+		local player = { UserId = 2425 }
+		function Players:GetPlayerByUserId(userId)
+			return userId == player.UserId and player or nil
+		end
+		CampaignService._petService = {
+			getPetDamage = function() return 4.5 end,
+		}
+		for _, isBoss in ipairs({ false, true }) do
+			local deployed = {
+				id = "fractional-pet", sourcePet = {}, damage = 4.5,
+				hp = 22.5, maxHp = 22.5, speed = 0, position = 10,
+				attackTimer = 0,
+			}
+			local battle = battleWithPet(deployed)
+			local enemy = {
+				hp = 20, maxHp = 20, damage = 0, speed = 0,
+				position = 12, attackTimer = 1, isBoss = isBoss,
+			}
+			battle.enemies = { enemy }
+			CampaignService._updateBattle(player.UserId, battle, 0)
+			expect(enemy.hp):toBe(15.5)
+		end
+	end)
+
+	it("subtracts exactly 4.5 from the enemy base", function()
+		local player = { UserId = 2426 }
+		function Players:GetPlayerByUserId(userId)
+			return userId == player.UserId and player or nil
+		end
+		CampaignService._petService = {
+			getPetDamage = function() return 4.5 end,
+		}
+		local deployed = {
+			id = "fractional-pet", sourcePet = {}, damage = 4.5,
+			hp = 22.5, maxHp = 22.5, speed = 0, position = 100,
+			attackTimer = 0,
+		}
+		local battle = battleWithPet(deployed)
+		CampaignService._updateBattle(player.UserId, battle, 0)
+		expect(battle.enemyBaseHP):toBe(95.5)
+	end)
+end)
+
+
+describe("CampaignService QOF-23 hostile boss claim state", function()
+	it("treats only exact true as claimed and never lets a poisoned value suppress the egg", function()
+		local player = { UserId = 2323 }
+		function Players:GetPlayerByUserId(userId)
+			return userId == player.UserId and player or nil
+		end
+		local profile = {
+			campaignProgress = {},
+			campaignBossRewards = { ["6"] = "claimed" },
+		}
+		local hatchCalls = 0
+		CampaignService._dataService = { getPlayerData = function() return profile end }
+		CampaignService._currencyService = {
+			addCoins = function() end,
+			addDiamonds = function() end,
+		}
+		CampaignService._petService = {
+			hatchEgg = function(_, eggId, bypass)
+				expect(eggId):toBe("BasicEgg")
+				expect(bypass):toBeTrue()
+				hatchCalls = hatchCalls + 1
+				return { name = "Buddy", isNewDiscovery = true }
+			end,
+		}
+
+		CampaignService._activeBattles[player.UserId] = {
+			active = true,
+			levelNum = 6,
+			levelDef = CampaignData.Levels[6],
+		}
+		CampaignService._onVictory(player.UserId, CampaignService._activeBattles[player.UserId])
+		expect(hatchCalls):toBe(1)
+		expect(profile.campaignBossRewards["6"]):toBeTrue()
+
+		CampaignService._activeBattles[player.UserId] = {
+			active = true,
+			levelNum = 6,
+			levelDef = CampaignData.Levels[6],
+		}
+		CampaignService._onVictory(player.UserId, CampaignService._activeBattles[player.UserId])
+		expect(hatchCalls):toBe(1)
+		CampaignService._activeBattles[player.UserId] = nil
+	end)
+end)

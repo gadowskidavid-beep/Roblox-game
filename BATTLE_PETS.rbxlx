@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000081">
+	<Item class="ServerScriptService" referent="RBX00000082">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000080">
+			<Item class="Script" referent="RBX00000081">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -1822,11 +1822,11 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX0000007F">
+			<Item class="Folder" referent="RBX00000080">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">AutoHatchService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2489,7 +2489,7 @@ return AutoHatchService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006D">
+				<Item class="ModuleScript" referent="RBX0000006E">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3021,9 +3021,11 @@ function CampaignService._onVictory(userId, battle)
 		end
 
 		if rewards.SpecialEgg then
-			data.campaignBossRewards = data.campaignBossRewards or {}
+			if type(data.campaignBossRewards) ~= "table" then
+				data.campaignBossRewards = {}
+			end
 			local claimKey = tostring(battle.levelNum)
-			if not data.campaignBossRewards[claimKey] then
+			if data.campaignBossRewards[claimKey] ~= true then
 				local rewardPet, rewardError = CampaignService._petService.hatchEgg(player, rewards.SpecialEgg, true)
 				if rewardPet then
 					data.campaignBossRewards[claimKey] = true
@@ -3136,7 +3138,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006E">
+				<Item class="ModuleScript" referent="RBX0000006F">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3416,7 +3418,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006F">
+				<Item class="ModuleScript" referent="RBX00000070">
 					<Properties>
 						<string name="Name">DataSchema</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3428,13 +3430,15 @@ return CurrencyService
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local CampaignData = require(game.ReplicatedStorage.Shared.CampaignData)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
 local PetDex = require(game.ReplicatedStorage.Shared.PetDex)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 11
+DataSchema.VERSION = 12
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -3573,6 +3577,21 @@ local function mergeDefaults(data, defaults)
 	end
 end
 
+local function sortedPositiveIntegerKeys(values)
+	local keys = {}
+	if type(values) ~= "table" then
+		return keys
+	end
+	for key in pairs(values) do
+		if type(key) == "number" and key == key and key ~= math.huge
+			and key ~= -math.huge and key % 1 == 0 and key > 0 then
+			table.insert(keys, key)
+		end
+	end
+	table.sort(keys)
+	return keys
+end
+
 local function normalizePets(data)
 	if type(data.pets) ~= "table" then
 		data.pets = {}
@@ -3583,7 +3602,8 @@ local function normalizePets(data)
 
 	local normalizedPets = {}
 	local petById = {}
-	for _, pet in ipairs(data.pets) do
+	for _, key in ipairs(sortedPositiveIntegerKeys(data.pets)) do
+		local pet = data.pets[key]
 		if type(pet) == "table" and type(pet.id) == "string" and pet.id ~= "" and not petById[pet.id] then
 			local legacyVariant = type(pet.variant) == "string" and pet.variant or "Normal"
 			local variant = "Normal"
@@ -3622,7 +3642,8 @@ local function normalizePets(data)
 
 	local equipped = {}
 	local equippedSet = {}
-	for _, petId in ipairs(data.equippedPets) do
+	for _, key in ipairs(sortedPositiveIntegerKeys(data.equippedPets)) do
+		local petId = data.equippedPets[key]
 		if type(petId) == "string" and petById[petId] and not equippedSet[petId] then
 			equippedSet[petId] = true
 			table.insert(equipped, petId)
@@ -3646,9 +3667,10 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 	local normalized = {}
 	local seen = {}
 	if type(values) == "table" then
-		for _, value in ipairs(values) do
-			if type(value) == "number" then
-				value = math.floor(value)
+		for _, key in ipairs(sortedPositiveIntegerKeys(values)) do
+			local value = values[key]
+			if type(value) == "number" and value == value and value ~= math.huge
+				and value ~= -math.huge and value % 1 == 0 then
 				if value >= minimum and value <= maximum and not seen[value] then
 					seen[value] = true
 					table.insert(normalized, value)
@@ -3660,6 +3682,21 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 		table.insert(normalized, requiredValue)
 	end
 	table.sort(normalized)
+	return normalized
+end
+
+local function normalizeCampaignBossRewards(values)
+	local normalized = {}
+	if type(values) ~= "table" then
+		return normalized
+	end
+	for levelNumber, levelDefinition in pairs(CampaignData.Levels) do
+		local rewards = type(levelDefinition) == "table" and levelDefinition.rewards or nil
+		if type(rewards) == "table" and type(rewards.SpecialEgg) == "string"
+			and values[tostring(levelNumber)] == true then
+			normalized[tostring(levelNumber)] = true
+		end
+	end
 	return normalized
 end
 
@@ -3888,13 +3925,13 @@ function DataSchema.normalize(data, currentTime)
 	for statName, defaultValue in pairs(DataSchema.getDefaultData().questStats) do
 		data.questStats[statName] = math.floor(finiteNumber(data.questStats[statName], defaultValue, 0))
 	end
-	if type(data.upgrades) ~= "table" then data.upgrades = {} end
+	data.upgrades = ProgressionMath.normalizeQuestLevels(data.upgrades)
 	data.upgradeTreePurchases = normalizeBooleanMap(data.upgradeTreePurchases, 64)
-	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
+	data.masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs)
 	-- QOF-20 keeps legacy mirrors for rolling QOF-19 servers, derives the six
 	-- canonical states, and repairs exact states still represented in inventory.
 	data.discoveredPets = PetDex.normalizeDiscovery(data.discoveredPets, data.pets)
-	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
+	data.campaignBossRewards = normalizeCampaignBossRewards(data.campaignBossRewards)
 	if type(data.shopPurchases) ~= "table" then data.shopPurchases = {} end
 	data.shopPurchases.extraEquipSlots = math.clamp(
 		math.floor(finiteNumber(data.shopPurchases.extraEquipSlots, 0, 0)),
@@ -3950,7 +3987,7 @@ return DataSchema
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000070">
+				<Item class="ModuleScript" referent="RBX00000071">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3967,6 +4004,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 local DataSchema = require(script.Parent.DataSchema)
 
 local DataService = {}
@@ -4222,14 +4260,14 @@ function DataService.getClientData(player)
 		xpNeeded = (data.level or 1) * 100,
 		equippedPets = DataSchema.deepCopy(data.equippedPets),
 		unlockedZones = DataSchema.deepCopy(data.unlockedZones),
-		upgrades = DataSchema.deepCopy(data.upgrades),
+		upgrades = ProgressionMath.normalizeQuestLevels(data.upgrades),
 		upgradeTreePurchases = DataSchema.deepCopy(data.upgradeTreePurchases or {}),
 		hatchPreferences = DataSchema.deepCopy(data.hatchPreferences or { preferredBatchCount = 1 }),
 		autoHatchExpiresAt = data.autoHatchExpiresAt or 0,
 		questStats = DataSchema.deepCopy(data.questStats),
 		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,
-		masteryBuffs = DataSchema.deepCopy(data.masteryBuffs),
+		masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs),
 		discoveredPets = DataSchema.deepCopy(data.discoveredPets or {}),
 		shopPurchases = DataSchema.deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
 		potionInventory = DataSchema.deepCopy(data.potionInventory or {}),
@@ -4413,7 +4451,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000071">
+				<Item class="ModuleScript" referent="RBX00000072">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -5134,7 +5172,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000072">
+				<Item class="ModuleScript" referent="RBX00000073">
 					<Properties>
 						<string name="Name">EnchantingService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -5701,7 +5739,7 @@ return EnchantingService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000073">
+				<Item class="ModuleScript" referent="RBX00000074">
 					<Properties>
 						<string name="Name">MachineAuthorityBootstrap</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -5724,7 +5762,7 @@ return MachineAuthorityBootstrap
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000074">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">MachineService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6151,7 +6189,7 @@ return MachineService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000076">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6164,8 +6202,14 @@ return MachineService
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MasteryData = require(game.ReplicatedStorage.Shared.MasteryData)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 
 local MasteryService = {}
+
+local function finiteNonNegativeInteger(value)
+	return type(value) == "number" and value == value and value ~= math.huge
+		and value ~= -math.huge and value % 1 == 0 and value >= 0
+end
 
 -- References to other services
 MasteryService._dataService = nil
@@ -6192,27 +6236,35 @@ function MasteryService.purchaseBuff(player, buffId)
 	end
 
 	-- Ensure mastery tables exist
-	if not data.masteryBuffs then
+	if type(data.masteryBuffs) ~= "table" then
 		data.masteryBuffs = {}
 	end
 
-	-- Get current level of this buff
-	local currentLevel = data.masteryBuffs[buffId] or 0
-	local maxLevel = buffDef.maxLevel
+	local currentLevel, levelWasValid = ProgressionMath.resolveMasteryLevel(
+		data.masteryBuffs,
+		buffId
+	)
+	data.masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs)
+	local maxLevel = ProgressionMath.getMasteryMaxLevel(buffId)
+	if not levelWasValid then
+		return false, "Invalid level"
+	end
 
 	-- Validate not max level
 	if currentLevel >= maxLevel then
 		return false, "Already at max level"
 	end
 
-	-- Get cost for next level
+	-- Get cost for next level from the same consistent boundary.
 	local cost = buffDef.pointsPerLevel[currentLevel + 1]
-	if not cost then
+	if not finiteNonNegativeInteger(cost) or cost < 1 then
 		return false, "Invalid level"
 	end
 
-	-- Check if player has enough mastery points
-	local availablePoints = (data.masteryPoints or 0)
+	local availablePoints = data.masteryPoints
+	if not finiteNonNegativeInteger(availablePoints) then
+		return false, "Invalid mastery points"
+	end
 	if availablePoints < cost then
 		return false, "Not enough mastery points (need " .. tostring(cost) .. ", have " .. tostring(availablePoints) .. ")"
 	end
@@ -6243,16 +6295,7 @@ function MasteryService.getBuffBonus(player, buffId)
 		return 0
 	end
 
-	if not data.masteryBuffs then
-		return 0
-	end
-
-	local currentLevel = data.masteryBuffs[buffId] or 0
-	if currentLevel == 0 then
-		return 0
-	end
-
-	return buffDef.bonusPerLevel[currentLevel]
+	return ProgressionMath.getMasteryBonus(data.masteryBuffs, buffId)
 end
 
 -- Get full mastery state for client display
@@ -6263,9 +6306,9 @@ function MasteryService.getMasteryState(player)
 	if not data then return {} end
 
 	return {
-		masteryPoints = data.masteryPoints or 0,
-		level = data.level or 1,
-		buffs = data.masteryBuffs or {},
+		masteryPoints = finiteNonNegativeInteger(data.masteryPoints) and data.masteryPoints or 0,
+		level = finiteNonNegativeInteger(data.level) and math.max(data.level, 1) or 1,
+		buffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs),
 	}
 end
 
@@ -6276,7 +6319,11 @@ function MasteryService.awardMasteryPoint(player)
 	local data = MasteryService._dataService.getPlayerData(player)
 	if not data then return end
 
-	data.masteryPoints = (data.masteryPoints or 0) + 1
+	local masteryPoints = data.masteryPoints
+	if not finiteNonNegativeInteger(masteryPoints) then
+		masteryPoints = 0
+	end
+	data.masteryPoints = masteryPoints + 1
 
 	-- Notify client
 	MasteryService._fireMasteryUpdate(player, data)
@@ -6284,14 +6331,15 @@ end
 
 -- Fire mastery state update to client
 function MasteryService._fireMasteryUpdate(player, data)
+	data.masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("MasteryUpdated")
 		if event then
 			event:FireClient(player, {
-				masteryPoints = data.masteryPoints or 0,
-				level = data.level or 1,
-				buffs = data.masteryBuffs or {},
+				masteryPoints = finiteNonNegativeInteger(data.masteryPoints) and data.masteryPoints or 0,
+				level = finiteNonNegativeInteger(data.level) and math.max(data.level, 1) or 1,
+				buffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs),
 			})
 		end
 	end
@@ -6301,7 +6349,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000076">
+				<Item class="ModuleScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">MovementService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6505,7 +6553,7 @@ return MovementService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000077">
+				<Item class="ModuleScript" referent="RBX00000078">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6569,6 +6617,13 @@ local function isFiniteNumber(value)
 		and value == value
 		and value ~= math.huge
 		and value ~= -math.huge
+end
+
+-- Damage multipliers are external/runtime values. Every finite strictly positive
+-- factor is meaningful (including reductions below 1); malformed factors are
+-- neutral instead of corrupting the authoritative damage chain.
+local function normalizedPositiveDamageFactor(value)
+	return isFiniteNumber(value) and value > 0 and value or 1
 end
 
 -- Capacity sources are external service/profile values. Slot bonuses are always
@@ -7829,8 +7884,10 @@ function PetService.getInventory(player)
 	return data.pets
 end
 
--- Calculate effective damage from canonical identity and apply active buffs once.
--- pet.damage is a replicated compatibility mirror and is never combat authority.
+-- Calculate effective damage from canonical identity and apply every active
+-- factor to one unrounded intermediate. pet.damage is a replicated compatibility
+-- mirror and is never combat authority. Invalid factors are neutral; an overflowed
+-- complete product fails closed to zero instead of entering combat state.
 function PetService.getPetDamage(pet, player)
 	if type(pet) ~= "table" or not player then
 		return 0
@@ -7840,16 +7897,14 @@ function PetService.getPetDamage(pet, player)
 	if not baseOk or not isFiniteNumber(baseDamage) or baseDamage < 0 then
 		return 0
 	end
-	local enchantOk, enchantMultiplier = pcall(PetEnchantMath.getDamageMultiplier, pet)
-	if not enchantOk or not isFiniteNumber(enchantMultiplier) or enchantMultiplier < 0 then
-		enchantMultiplier = 1
-	end
-	local enchantedDamage = baseDamage * enchantMultiplier
-	if isFiniteNumber(enchantedDamage) and enchantedDamage >= 0 then
-		baseDamage = enchantedDamage
+
+	local enchantMultiplier = 1
+	local enchantOk, enchantValue = pcall(PetEnchantMath.getDamageMultiplier, pet)
+	if enchantOk then
+		enchantMultiplier = normalizedPositiveDamageFactor(enchantValue)
 	end
 
-	local strongBonus = 0
+	local questMultiplier = 1
 	if type(PetService._upgradeService) == "table"
 		and type(PetService._upgradeService.getUpgradeBonus) == "function" then
 		local bonusOk, bonus = pcall(
@@ -7857,33 +7912,29 @@ function PetService.getPetDamage(pet, player)
 			player,
 			"StrongPets"
 		)
-		if bonusOk and isFiniteNumber(bonus) and bonus > 0 then
-			strongBonus = bonus
-		end
-	end
-	if strongBonus > 0 then
-		local candidate = baseDamage * strongBonus
-		if isFiniteNumber(candidate) and candidate >= 0 then
-			baseDamage = math.floor(candidate)
+		if bonusOk then
+			questMultiplier = normalizedPositiveDamageFactor(bonus)
 		end
 	end
 
+	local shopMultiplier = 1
 	if type(PetService._shopService) == "table"
 		and type(PetService._shopService.getShopMultiplier) == "function" then
-		local multiplierOk, shopDamageMultiplier = pcall(
+		local multiplierOk, multiplier = pcall(
 			PetService._shopService.getShopMultiplier,
 			player,
 			"damage"
 		)
-		if multiplierOk and isFiniteNumber(shopDamageMultiplier) and shopDamageMultiplier > 1 then
-			local candidate = baseDamage * shopDamageMultiplier
-			if isFiniteNumber(candidate) and candidate >= 0 then
-				baseDamage = math.floor(candidate)
-			end
+		if multiplierOk then
+			shopMultiplier = normalizedPositiveDamageFactor(multiplier)
 		end
 	end
 
-	return isFiniteNumber(baseDamage) and baseDamage >= 0 and baseDamage or 0
+	local completeDamage = baseDamage
+		* enchantMultiplier
+		* questMultiplier
+		* shopMultiplier
+	return isFiniteNumber(completeDamage) and completeDamage >= 0 and completeDamage or 0
 end
 
 -- Campaign lane movement is snapshotted by CampaignService at deploy. It uses
@@ -8095,7 +8146,7 @@ return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000078">
+				<Item class="ModuleScript" referent="RBX00000079">
 					<Properties>
 						<string name="Name">PickupService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8484,7 +8535,7 @@ return PickupService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000079">
+				<Item class="ModuleScript" referent="RBX0000007A">
 					<Properties>
 						<string name="Name">PotionService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9251,7 +9302,7 @@ return PotionService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007A">
+				<Item class="ModuleScript" referent="RBX0000007B">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9265,8 +9316,17 @@ return PotionService
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local QuestData = require(game.ReplicatedStorage.Shared.QuestData)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 
 local QuestService = {}
+
+local function finiteNonNegativeNumber(value)
+	if type(value) ~= "number" or value ~= value or value == math.huge
+		or value == -math.huge or value < 0 then
+		return 0
+	end
+	return value
+end
 
 -- References to other services
 QuestService._dataService = nil
@@ -9281,19 +9341,21 @@ end
 -- statType: "destroyDestructibles", "hatchEggs", "earnCoins", "playtime", "goldenPetsConverted"
 -- amount: how much to increment (default 1)
 function QuestService.incrementStat(player, statType, amount)
-	if not player or not statType then return end
-	amount = amount or 1
+	if not player or type(statType) ~= "string" then return end
+	amount = amount == nil and 1 or amount
+	if type(amount) ~= "number" or amount ~= amount or amount == math.huge
+		or amount == -math.huge or amount <= 0 then
+		return
+	end
 
 	local data = QuestService._dataService.getPlayerData(player)
 	if not data then return end
 
-	-- Ensure questStats table exists
-	if not data.questStats then
+	if type(data.questStats) ~= "table" then
 		data.questStats = {}
 	end
 
-	-- Increment the stat
-	data.questStats[statType] = (data.questStats[statType] or 0) + amount
+	data.questStats[statType] = finiteNonNegativeNumber(data.questStats[statType]) + amount
 
 	-- Check all quests to see if any new levels have been unlocked
 	QuestService._checkQuestCompletions(player, data)
@@ -9302,18 +9364,19 @@ end
 -- Set a quest stat to a specific value (used for level-based checks)
 -- This is for stats like "reachLevel" where the value is the current state, not cumulative
 function QuestService.setStat(player, statType, value)
-	if not player or not statType then return end
+	if not player or type(statType) ~= "string" or type(value) ~= "number"
+		or value ~= value or value == math.huge or value == -math.huge or value < 0 then
+		return
+	end
 
 	local data = QuestService._dataService.getPlayerData(player)
 	if not data then return end
 
-	-- Ensure questStats table exists
-	if not data.questStats then
+	if type(data.questStats) ~= "table" then
 		data.questStats = {}
 	end
 
-	-- Only update if new value is higher (levels only go up)
-	local current = data.questStats[statType] or 0
+	local current = finiteNonNegativeNumber(data.questStats[statType])
 	if value > current then
 		data.questStats[statType] = value
 		QuestService._checkQuestCompletions(player, data)
@@ -9323,18 +9386,22 @@ end
 -- Internal: check all quest completions and award upgrades
 function QuestService._checkQuestCompletions(player, data)
 	local upgradesChanged = false
+	data.upgrades = ProgressionMath.normalizeQuestLevels(data.upgrades)
+	local questStats = type(data.questStats) == "table" and data.questStats or {}
 
 	for questId, questDef in pairs(QuestData.Quests) do
 		local statType = questDef.requirement.type
-		local maxLevel = #questDef.levels
-		local currentLevel = math.clamp(math.floor(tonumber(data.upgrades[questId]) or 0), 0, maxLevel)
+		local maxLevel = ProgressionMath.getQuestMaxLevel(questId)
+		local currentLevel = ProgressionMath.resolveQuestLevel(data.upgrades, questId)
 
 		-- Award every milestone already covered by the current stat. This matters for
 		-- migrated profiles and large one-shot progress gains.
-		local currentStat = data.questStats[statType] or 0
+		local currentStat = finiteNonNegativeNumber(questStats[statType])
 		while currentLevel < maxLevel do
 			local requiredForNext = questDef.levelRequirements[currentLevel + 1]
-			if not requiredForNext or currentStat < requiredForNext then
+			if type(requiredForNext) ~= "number" or requiredForNext ~= requiredForNext
+				or requiredForNext == math.huge or requiredForNext == -math.huge
+				or currentStat < requiredForNext then
 				break
 			end
 			currentLevel = currentLevel + 1
@@ -9358,15 +9425,15 @@ function QuestService.getQuestProgress(player)
 	if not data then return {} end
 
 	local progress = {}
-	local questStats = data.questStats or {}
+	local questStats = type(data.questStats) == "table" and data.questStats or {}
 
 	for _, questId in ipairs(QuestData.QuestOrder) do
 		local questDef = QuestData.Quests[questId]
 		if questDef then
-			local currentLevel = data.upgrades[questId] or 0
-			local maxLevel = #questDef.levels
+			local currentLevel = ProgressionMath.resolveQuestLevel(data.upgrades, questId)
+			local maxLevel = ProgressionMath.getQuestMaxLevel(questId)
 			local statType = questDef.requirement.type
-			local currentStat = questStats[statType] or 0
+			local currentStat = finiteNonNegativeNumber(questStats[statType])
 
 			-- Determine next requirement
 			local nextRequired = 0
@@ -9398,7 +9465,7 @@ function QuestService.getUpgradeLevel(player, upgradeId)
 		return 0
 	end
 
-	return data.upgrades[upgradeId] or 0
+	return ProgressionMath.resolveQuestLevel(data.upgrades, upgradeId)
 end
 
 -- Get the bonus value for current upgrade level (backward compat)
@@ -9417,21 +9484,17 @@ function QuestService.getUpgradeBonus(player, upgradeId)
 		return 0
 	end
 
-	local currentLevel = data.upgrades[upgradeId] or 0
-	if currentLevel == 0 then
-		return 0
-	end
-
-	return questDef.levels[currentLevel].bonus
+	return ProgressionMath.getQuestBonus(data.upgrades, upgradeId)
 end
 
 -- Fire upgrade update to client
 function QuestService._fireUpgradeUpdate(player, data)
+	data.upgrades = ProgressionMath.normalizeQuestLevels(data.upgrades)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("UpgradeUpdated")
 		if event then
-			event:FireClient(player, data.upgrades)
+			event:FireClient(player, ProgressionMath.normalizeQuestLevels(data.upgrades))
 		end
 	end
 end
@@ -9451,7 +9514,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007B">
+				<Item class="ModuleScript" referent="RBX0000007C">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9945,7 +10008,7 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007C">
+				<Item class="ModuleScript" referent="RBX0000007D">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9959,6 +10022,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local QuestData = require(game.ReplicatedStorage.Shared.QuestData)
 local MasteryData = require(game.ReplicatedStorage.Shared.MasteryData)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 
 local UpgradeService = {}
 
@@ -9993,7 +10057,7 @@ function UpgradeService.getUpgradeLevel(player, upgradeId)
 		return 0
 	end
 
-	return data.upgrades[upgradeId] or 0
+	return ProgressionMath.resolveQuestLevel(data.upgrades, upgradeId)
 end
 
 -- Get the bonus value for the current upgrade level
@@ -10010,11 +10074,7 @@ function UpgradeService.getUpgradeBonus(player, upgradeId)
 		if not data then
 			return 0
 		end
-		local currentLevel = data.upgrades[upgradeId] or 0
-		if currentLevel == 0 then
-			return 0
-		end
-		return questDef.levels[currentLevel].bonus
+		return ProgressionMath.getQuestBonus(data.upgrades, upgradeId)
 	end
 
 	-- Check mastery buffs for matching bonus types
@@ -10041,7 +10101,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007D">
+				<Item class="ModuleScript" referent="RBX0000007E">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10457,7 +10517,7 @@ return UpgradeTreeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007E">
+				<Item class="ModuleScript" referent="RBX0000007F">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -13537,15 +13597,15 @@ return ZoneService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX0000008A">
+	<Item class="StarterPlayer" referent="RBX0000008B">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000089">
+		<Item class="StarterPlayerScripts" referent="RBX0000008A">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000088">
+				<Item class="LocalScript" referent="RBX00000089">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -14957,7 +15017,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000082">
+				<Item class="ModuleScript" referent="RBX00000083">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15872,7 +15932,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000083">
+				<Item class="ModuleScript" referent="RBX00000084">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17475,7 +17535,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000084">
+				<Item class="ModuleScript" referent="RBX00000085">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17657,7 +17717,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000085">
+				<Item class="ModuleScript" referent="RBX00000086">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19311,7 +19371,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000086">
+				<Item class="ModuleScript" referent="RBX00000087">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -25306,7 +25366,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000087">
+				<Item class="ModuleScript" referent="RBX00000088">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -25611,11 +25671,11 @@ return UpgradeTreeController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX0000006B">
+	<Item class="ReplicatedStorage" referent="RBX0000006C">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX00000042">
+			<Item class="Folder" referent="RBX00000043">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
@@ -28603,6 +28663,140 @@ return PetVariantPresentation
 				</Item>
 				<Item class="ModuleScript" referent="RBX0000003F">
 					<Properties>
+						<string name="Name">ProgressionMath</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	ProgressionMath.lua - Canonical QOF-23 progression boundaries.
+	Persistent and live values share the same fail-closed integer validation so
+	no caller can index a quest/mastery definition with hostile profile data.
+]]
+
+local QuestData = require(game.ReplicatedStorage.Shared.QuestData)
+local MasteryData = require(game.ReplicatedStorage.Shared.MasteryData)
+
+local ProgressionMath = {}
+
+local function finiteInteger(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+		and value % 1 == 0
+end
+
+local function contiguousTableLength(values)
+	if type(values) ~= "table" then
+		return 0
+	end
+	local length = 0
+	while values[length + 1] ~= nil do
+		length = length + 1
+	end
+	return length
+end
+
+function ProgressionMath.getQuestMaxLevel(upgradeId)
+	if type(upgradeId) ~= "string" then
+		return 0
+	end
+	local definition = QuestData.Quests[upgradeId]
+	if type(definition) ~= "table" then
+		return 0
+	end
+	return contiguousTableLength(definition.levels)
+end
+
+function ProgressionMath.getMasteryMaxLevel(buffId)
+	if type(buffId) ~= "string" then
+		return 0
+	end
+	local definition = MasteryData.Buffs[buffId]
+	if type(definition) ~= "table" or not finiteInteger(definition.maxLevel)
+		or definition.maxLevel < 0 then
+		return 0
+	end
+	return math.min(
+		definition.maxLevel,
+		contiguousTableLength(definition.pointsPerLevel),
+		contiguousTableLength(definition.bonusPerLevel)
+	)
+end
+
+local function resolveLevel(values, id, maximum)
+	if type(values) ~= "table" or maximum < 1 then
+		return 0, false
+	end
+	local value = values[id]
+	if value == nil then
+		return 0, true
+	end
+	if not finiteInteger(value) or value < 0 or value > maximum then
+		return 0, false
+	end
+	return value, true
+end
+
+function ProgressionMath.resolveQuestLevel(values, upgradeId)
+	return resolveLevel(values, upgradeId, ProgressionMath.getQuestMaxLevel(upgradeId))
+end
+
+function ProgressionMath.resolveMasteryLevel(values, buffId)
+	return resolveLevel(values, buffId, ProgressionMath.getMasteryMaxLevel(buffId))
+end
+
+function ProgressionMath.normalizeQuestLevels(values)
+	local normalized = {}
+	for upgradeId in pairs(QuestData.Quests) do
+		local level = ProgressionMath.resolveQuestLevel(values, upgradeId)
+		if level > 0 then
+			normalized[upgradeId] = level
+		end
+	end
+	return normalized
+end
+
+function ProgressionMath.normalizeMasteryLevels(values)
+	local normalized = {}
+	for buffId in pairs(MasteryData.Buffs) do
+		local level = ProgressionMath.resolveMasteryLevel(values, buffId)
+		if level > 0 then
+			normalized[buffId] = level
+		end
+	end
+	return normalized
+end
+
+function ProgressionMath.getQuestBonus(values, upgradeId)
+	local level = ProgressionMath.resolveQuestLevel(values, upgradeId)
+	if level == 0 then
+		return 0
+	end
+	local levelDefinition = QuestData.Quests[upgradeId].levels[level]
+	local bonus = type(levelDefinition) == "table" and levelDefinition.bonus or nil
+	if type(bonus) ~= "number" or bonus ~= bonus or bonus == math.huge or bonus == -math.huge then
+		return 0
+	end
+	return bonus
+end
+
+function ProgressionMath.getMasteryBonus(values, buffId)
+	local level = ProgressionMath.resolveMasteryLevel(values, buffId)
+	if level == 0 then
+		return 0
+	end
+	local bonus = MasteryData.Buffs[buffId].bonusPerLevel[level]
+	if type(bonus) ~= "number" or bonus ~= bonus or bonus == math.huge or bonus == -math.huge then
+		return 0
+	end
+	return bonus
+end
+
+return ProgressionMath
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000040">
+					<Properties>
 						<string name="Name">QuestData</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
@@ -28903,7 +29097,7 @@ return QuestData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000040">
+				<Item class="ModuleScript" referent="RBX00000041">
 					<Properties>
 						<string name="Name">ShopData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -29024,7 +29218,7 @@ return ShopData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000041">
+				<Item class="ModuleScript" referent="RBX00000042">
 					<Properties>
 						<string name="Name">ZoneData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -29240,11 +29434,11 @@ return ZoneData
 					</Properties>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX0000005E">
+			<Item class="Folder" referent="RBX0000005F">
 				<Properties>
 					<string name="Name">packages</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX0000005D">
+				<Item class="ModuleScript" referent="RBX0000005E">
 					<Properties>
 						<string name="Name">vide</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -29260,7 +29454,7 @@ export type Context<T> = vide.Context<T>
 return vide
 ]]></ProtectedString>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX00000043">
+					<Item class="ModuleScript" referent="RBX00000044">
 						<Properties>
 							<string name="Name">action</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29292,7 +29486,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000044">
+					<Item class="ModuleScript" referent="RBX00000045">
 						<Properties>
 							<string name="Name">apply</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29461,7 +29655,7 @@ return apply
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000045">
+					<Item class="ModuleScript" referent="RBX00000046">
 						<Properties>
 							<string name="Name">batch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29491,7 +29685,7 @@ return batch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000046">
+					<Item class="ModuleScript" referent="RBX00000047">
 						<Properties>
 							<string name="Name">branch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29538,7 +29732,7 @@ return branch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000047">
+					<Item class="ModuleScript" referent="RBX00000048">
 						<Properties>
 							<string name="Name">changed</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29563,7 +29757,7 @@ return changed
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000048">
+					<Item class="ModuleScript" referent="RBX00000049">
 						<Properties>
 							<string name="Name">cleanup</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29613,7 +29807,7 @@ return cleanup ::
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000049">
+					<Item class="ModuleScript" referent="RBX0000004A">
 						<Properties>
 							<string name="Name">context</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29694,7 +29888,7 @@ return context
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004A">
+					<Item class="ModuleScript" referent="RBX0000004B">
 						<Properties>
 							<string name="Name">create</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29811,7 +30005,7 @@ return (create :: any) :: Create
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004B">
+					<Item class="ModuleScript" referent="RBX0000004C">
 						<Properties>
 							<string name="Name">defaults</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29931,7 +30125,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004C">
+					<Item class="ModuleScript" referent="RBX0000004D">
 						<Properties>
 							<string name="Name">derive</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29956,7 +30150,7 @@ return derive
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004D">
+					<Item class="ModuleScript" referent="RBX0000004E">
 						<Properties>
 							<string name="Name">effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29975,7 +30169,7 @@ return effect :: (<T>(callback: (T) -> T, initial_value: T) -> ()) & ((callback:
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004E">
+					<Item class="ModuleScript" referent="RBX0000004F">
 						<Properties>
 							<string name="Name">flags</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29994,7 +30188,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004F">
+					<Item class="ModuleScript" referent="RBX00000050">
 						<Properties>
 							<string name="Name">graph</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30322,7 +30516,7 @@ return table.freeze {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000050">
+					<Item class="ModuleScript" referent="RBX00000051">
 						<Properties>
 							<string name="Name">implicit_effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30454,7 +30648,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000051">
+					<Item class="ModuleScript" referent="RBX00000052">
 						<Properties>
 							<string name="Name">indexes</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30582,7 +30776,7 @@ return indexes
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000052">
+					<Item class="ModuleScript" referent="RBX00000053">
 						<Properties>
 							<string name="Name">lib</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30709,7 +30903,7 @@ return vide
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000053">
+					<Item class="ModuleScript" referent="RBX00000054">
 						<Properties>
 							<string name="Name">mount</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30727,7 +30921,7 @@ return mount :: (<T>(component: () -> T, target: Instance) -> () -> ()) & ((comp
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000054">
+					<Item class="ModuleScript" referent="RBX00000055">
 						<Properties>
 							<string name="Name">read</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30739,7 +30933,7 @@ return read
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000055">
+					<Item class="ModuleScript" referent="RBX00000056">
 						<Properties>
 							<string name="Name">root</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30781,7 +30975,7 @@ return root :: <T...>(fn: (destroy: () -> ()) -> T...) -> (() -> (), T...)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000056">
+					<Item class="ModuleScript" referent="RBX00000057">
 						<Properties>
 							<string name="Name">show</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30824,7 +31018,7 @@ return show
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000057">
+					<Item class="ModuleScript" referent="RBX00000058">
 						<Properties>
 							<string name="Name">source</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30862,7 +31056,7 @@ return source :: (<T>(initial_value: T) -> Source<T>) & (<T>() -> Source<T>)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000058">
+					<Item class="ModuleScript" referent="RBX00000059">
 						<Properties>
 							<string name="Name">spring</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31197,7 +31391,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000059">
+					<Item class="ModuleScript" referent="RBX0000005A">
 						<Properties>
 							<string name="Name">switch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31318,7 +31512,7 @@ return switch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005A">
+					<Item class="ModuleScript" referent="RBX0000005B">
 						<Properties>
 							<string name="Name">timeout</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31352,7 +31546,7 @@ return function() return timeout, update_timeouts end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005B">
+					<Item class="ModuleScript" referent="RBX0000005C">
 						<Properties>
 							<string name="Name">untrack</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31384,7 +31578,7 @@ return untrack :: ( <T>(fn: () -> T) -> T ) & ( (fn: () -> ()) -> () )
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005C">
+					<Item class="ModuleScript" referent="RBX0000005D">
 						<Properties>
 							<string name="Name">values</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31524,11 +31718,11 @@ return values
 					</Item>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX0000006A">
+			<Item class="Folder" referent="RBX0000006B">
 				<Properties>
 					<string name="Name">modules</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000069">
+				<Item class="ModuleScript" referent="RBX0000006A">
 					<Properties>
 						<string name="Name">formatNumber</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -31580,11 +31774,11 @@ return formatNumber
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="Folder" referent="RBX00000068">
+				<Item class="Folder" referent="RBX00000069">
 					<Properties>
 						<string name="Name">upgradeTree</string>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX0000005F">
+					<Item class="ModuleScript" referent="RBX00000060">
 						<Properties>
 							<string name="Name">upgradeState</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31687,7 +31881,7 @@ end
 return createUpgradeState]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000060">
+					<Item class="ModuleScript" referent="RBX00000061">
 						<Properties>
 							<string name="Name">upgradeTree</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -32856,7 +33050,7 @@ return createUpgradeTree
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000061">
+					<Item class="ModuleScript" referent="RBX00000062">
 						<Properties>
 							<string name="Name">upgradeTreeData</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -33719,7 +33913,7 @@ return upgradeTreeData
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000062">
+					<Item class="ModuleScript" referent="RBX00000063">
 						<Properties>
 							<string name="Name">upgradeTreeSettings</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -33797,29 +33991,29 @@ return upgradeTreeSettings
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="Folder" referent="RBX00000067">
+					<Item class="Folder" referent="RBX00000068">
 						<Properties>
 							<string name="Name">sounds</string>
 						</Properties>
-						<Item class="Sound" referent="RBX00000063">
+						<Item class="Sound" referent="RBX00000064">
 							<Properties>
 								<string name="Name">close</string>
 								<Content name="SoundId"><url>rbxassetid://134438769993456</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000064">
+						<Item class="Sound" referent="RBX00000065">
 							<Properties>
 								<string name="Name">hover</string>
 								<Content name="SoundId"><url>rbxassetid://86397706758188</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000065">
+						<Item class="Sound" referent="RBX00000066">
 							<Properties>
 								<string name="Name">open</string>
 								<Content name="SoundId"><url>rbxassetid://72320208051245</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000066">
+						<Item class="Sound" referent="RBX00000067">
 							<Properties>
 								<string name="Name">upgrade</string>
 								<Content name="SoundId"><url>rbxassetid://72362215248423</url></Content>
@@ -33829,7 +34023,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX0000008B">
+	<Item class="StarterGui" referent="RBX0000008C">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -33864,7 +34058,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000008C">
+	<Item class="SoundService" referent="RBX0000008D">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>
