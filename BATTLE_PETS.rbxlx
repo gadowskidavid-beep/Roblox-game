@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000074">
+	<Item class="ServerScriptService" referent="RBX00000076">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000073">
+			<Item class="Script" referent="RBX00000075">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -736,6 +736,8 @@ local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
+local MovementService = require(script.Parent.Services.MovementService)
+local PickupService = require(script.Parent.Services.PickupService)
 local BalanceConfig = require(ReplicatedStorage.Shared.BalanceConfig)
 
 ----------------------------------------------
@@ -863,6 +865,7 @@ QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
 UpgradeTreeService.init(DataService, CurrencyService)
+PickupService.init(DataService, CurrencyService, QuestService, MasteryService, UpgradeTreeService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
@@ -888,44 +891,19 @@ end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
+ZoneService.setPickupService(PickupService)
 
 CampaignService.init(DataService, CurrencyService, PetService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Bind to server shutdown to save all player data
-DataService.bindToClose()
+-- Settle transient pickup rewards before shutdown snapshots cached profiles.
+DataService.bindToClose(PickupService.settleAllPlayers)
 
-----------------------------------------------
--- WalkSpeed Buff System
-----------------------------------------------
-
--- Compute and apply walk speed buffs for a player
--- Formula: 16 * sprintingBonus * fasterRunningBonus * shopSpeedMultiplier
-local function applyWalkSpeedBuffs(player)
-	if not player or not player.Character then return end
-	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then return end
-
-	local baseSpeed = 16
-
-	-- Sprinting quest bonus (multiplier from QuestData)
-	local sprintingBonus = QuestService.getUpgradeBonus(player, "Sprinting")
-	local sprintingMultiplier = (sprintingBonus > 0) and sprintingBonus or 1
-
-	-- FasterRunning mastery bonus (multiplier from MasteryData)
-	local fasterRunningBonus = MasteryService.getBuffBonus(player, "FasterRunning")
-	local fasterRunningMultiplier = (fasterRunningBonus > 0) and fasterRunningBonus or 1
-
-	-- Speed Potion shop buff (2x when active, 1 otherwise)
-	local shopSpeedMultiplier = ShopService.getShopMultiplier(player, "speed")
-
-	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
-	humanoid.WalkSpeed = finalSpeed
-end
-
-ShopService.setWalkSpeedRefreshCallback(applyWalkSpeedBuffs)
+-- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
+MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
+ShopService.setWalkSpeedRefreshCallback(MovementService.refresh)
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -1127,9 +1105,9 @@ getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffI
 		return false, "Invalid buff ID parameter"
 	end
 	local success, msg = MasteryService.purchaseBuff(player, buffId)
-	-- Refresh walkspeed in case FasterRunning was purchased
+	-- Refresh every composed source after a movement mastery purchase.
 	if success then
-		applyWalkSpeedBuffs(player)
+		MovementService.refresh(player)
 	end
 	return success, msg
 end
@@ -1165,7 +1143,11 @@ getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgra
 	if not isValidIdentifier(upgradeId) then
 		return false, "Invalid upgrade ID", UpgradeTreeService.getState(player)
 	end
-	return UpgradeTreeService.purchase(player, upgradeId)
+	local success, message, state = UpgradeTreeService.purchase(player, upgradeId)
+	if success then
+		MovementService.refresh(player)
+	end
+	return success, message, state
 end
 
 -- ConvertToGoldenPet (2 second cooldown)
@@ -1305,9 +1287,9 @@ getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
 		return false, "Invalid item ID parameter"
 	end
 	local success, msg, state = ShopService.purchaseItem(player, itemId)
-	-- Refresh walkspeed in case Speed Potion was purchased
+	-- Refresh every composed source after a timed shop mutation.
 	if success then
-		applyWalkSpeedBuffs(player)
+		MovementService.refresh(player)
 	end
 	return success, msg, state
 end
@@ -1351,13 +1333,8 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Apply walkspeed on CharacterAdded (after Humanoid exists)
-	player.CharacterAdded:Connect(function(character)
-		local humanoid = character:WaitForChild("Humanoid", 10)
-		if humanoid then
-			applyWalkSpeedBuffs(player)
-		end
-	end)
+	-- Bind current and future characters after the authoritative profile is loaded.
+	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
 	local leaderstats = Instance.new("Folder")
@@ -1465,6 +1442,14 @@ Players.PlayerRemoving:Connect(function(player)
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
 
+	-- Cleanup QOF-12 movement listeners before the profile is released.
+	MovementService.unbindPlayer(player)
+
+	-- Settle transient owner-only pickups before the profile is saved/released.
+	if not PickupService.onPlayerRemoving(player) then
+		warn("[Battle Pets] Pending pickup settlement did not complete before player data cleanup for " .. player.Name)
+	end
+
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
@@ -1489,6 +1474,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 			return
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
+		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players
 		local leaderstats = player:FindFirstChild("leaderstats")
@@ -1578,22 +1564,11 @@ task.spawn(function()
 	end
 end)
 
--- Periodic WalkSpeed refresh: every 5 seconds, reapply walkspeed buffs for all players
--- Handles buff expiry (e.g., Speed Potion wearing off)
-task.spawn(function()
-	while true do
-		task.wait(5)
-		for _, player in ipairs(Players:GetPlayers()) do
-			applyWalkSpeedBuffs(player)
-		end
-	end
-end)
-
 print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX00000072">
+			<Item class="Folder" referent="RBX00000074">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
@@ -2287,12 +2262,21 @@ function DataService.startAutoSave()
 	end)
 end
 
-function DataService.bindToClose()
+function DataService.bindToClose(beforeFinalSave)
 	if DataService._useMemoryOnly then
 		return
 	end
 
 	game:BindToClose(function()
+		-- Transient economy owners must commit into cached profiles before any
+		-- final save snapshots or releases those profiles.
+		if type(beforeFinalSave) == "function" then
+			local prepared, prepareResult = pcall(beforeFinalSave)
+			if not prepared or prepareResult == false then
+				warn("[DataService] Pre-save settlement did not complete for every player")
+			end
+		end
+
 		local pending = 0
 		for _, player in ipairs(Players:GetPlayers()) do
 			if DataService._cache[player.UserId] then
@@ -2388,8 +2372,8 @@ function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply existing quest/mastery reward bonuses only to earned coin grants.
-local function applyBonuses(player, amount)
+-- Resolve existing quest/mastery reward bonuses exactly once for a future credit.
+local function applyCoinBonuses(player, amount)
 	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
@@ -2410,28 +2394,19 @@ local function applyBonuses(player, amount)
 	return normalizePositiveAmount(finalAmount, true)
 end
 
-function CurrencyService.addCoins(player, amount)
+function CurrencyService.resolveCoinReward(player, amount)
 	amount = normalizePositiveAmount(amount, false)
-	local data = getProfile(player)
-	if not amount or not data then
-		return false
+	if not amount or not getProfile(player) then
+		return nil
 	end
-	local finalAmount = applyBonuses(player, amount)
-	if not finalAmount then
-		return false
-	end
-	data.coins = data.coins + finalAmount
-	fireCurrencyUpdate(player, data)
-	return true, finalAmount
+	return applyCoinBonuses(player, amount)
 end
 
-function CurrencyService.addDiamonds(player, amount)
+function CurrencyService.resolveDiamondReward(player, amount)
 	amount = normalizePositiveAmount(amount, false)
-	local data = getProfile(player)
-	if not amount or not data then
-		return false
+	if not amount or not getProfile(player) then
+		return nil
 	end
-
 	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local diamondBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "Diamonds")
@@ -2439,13 +2414,61 @@ function CurrencyService.addDiamonds(player, amount)
 			finalAmount = math.floor(finalAmount * diamondBonus)
 		end
 	end
-	finalAmount = normalizePositiveAmount(finalAmount, true)
+	return normalizePositiveAmount(finalAmount, true)
+end
+
+-- Exact credit for a reward whose bonuses were snapshotted previously. This is
+-- intentionally separate from rollback credit even though both mutate exactly.
+function CurrencyService.creditResolvedReward(player, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount or VALID_CURRENCIES[currency] ~= true then
+		return false
+	end
+	local data = getProfile(player)
+	if not data then
+		return false
+	end
+	data[currency] = data[currency] + amount
+	fireCurrencyUpdate(player, data)
+	return true
+end
+
+-- Shutdown/leave fallback for an already-resolved reward. The caller must pass
+-- the authoritative cached profile before DataService snapshots and releases it.
+function CurrencyService.creditResolvedRewardToProfile(data, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount
+		or VALID_CURRENCIES[currency] ~= true
+		or type(data) ~= "table"
+		or not isFiniteNumber(data.coins)
+		or data.coins < 0
+		or not isFiniteNumber(data.diamonds)
+		or data.diamonds < 0 then
+		return false
+	end
+	data[currency] = data[currency] + amount
+	return true
+end
+
+function CurrencyService.addCoins(player, amount)
+	local finalAmount = CurrencyService.resolveCoinReward(player, amount)
 	if not finalAmount then
 		return false
 	end
+	if not CurrencyService.creditResolvedReward(player, "coins", finalAmount) then
+		return false
+	end
+	return true, finalAmount
+end
 
-	data.diamonds = data.diamonds + finalAmount
-	fireCurrencyUpdate(player, data)
+function CurrencyService.addDiamonds(player, amount)
+	local finalAmount = CurrencyService.resolveDiamondReward(player, amount)
+	if not finalAmount then
+		return false
+	end
+	if not CurrencyService.creditResolvedReward(player, "diamonds", finalAmount) then
+		return false
+	end
 	return true, finalAmount
 end
 
@@ -3538,6 +3561,7 @@ ZoneService._currencyService = nil
 ZoneService._petService = nil
 ZoneService._questService = nil
 ZoneService._shopService = nil
+ZoneService._pickupService = nil
 
 -- Active destructibles tracked by unique ID
 ZoneService._destructibles = {}
@@ -5335,6 +5359,29 @@ local function fireCollectCurrency(player, position, amount, currencyType)
 	end
 end
 
+local function queueResolvedCurrency(player, currency, amount, position)
+	if not amount or amount <= 0 then
+		return false
+	end
+	if ZoneService._pickupService then
+		local created = ZoneService._pickupService.createPickup(player, currency, amount, position)
+		if created then
+			return true
+		end
+	end
+
+	-- Fail-safe for world/pickup initialization errors: preserve the exact
+	-- snapshotted reward without reapplying bonuses or losing player currency.
+	local credited = ZoneService._currencyService.creditResolvedReward(player, currency, amount)
+	if credited then
+		fireCollectCurrency(player, position, amount, currency == "coins" and "Coins" or "Diamonds")
+		if currency == "coins" and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", amount)
+		end
+	end
+	return credited
+end
+
 -- Split rewards by actual damage contribution instead of giving everything to the
 -- last hitter. Disconnected contributors are excluded and their share is reallocated.
 function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedDrops)
@@ -5363,28 +5410,24 @@ function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedD
 		local playerRewards = { Coins = 0, Diamonds = 0 }
 		local coinShare = coinAllocations[entry.userId] or 0
 		if coinShare > 0 then
-			-- Coin Potion applies only to newly earned breakable rewards for this contributor.
+			-- Resolve every earned multiplier and random DropCloner roll once at
+			-- destruction. The pickup later performs only an exact one-shot credit.
 			local coinMultiplier = 1
 			if ZoneService._shopService then
 				coinMultiplier = ZoneService._shopService.getShopMultiplier(player, "coins")
 			end
 			local earnedCoins = math.floor(coinShare * coinMultiplier)
-			local success, actualCoins = ZoneService._currencyService.addCoins(player, earnedCoins)
-			if success then
-				playerRewards.Coins = actualCoins or earnedCoins
-				fireCollectCurrency(player, destructible.position, playerRewards.Coins, "Coins")
-				if ZoneService._questService then
-					ZoneService._questService.incrementStat(player, "earnCoins", playerRewards.Coins)
-				end
+			local actualCoins = ZoneService._currencyService.resolveCoinReward(player, earnedCoins)
+			if actualCoins and queueResolvedCurrency(player, "coins", actualCoins, destructible.position) then
+				playerRewards.Coins = actualCoins
 			end
 		end
 
 		local diamondShare = diamondAllocations[entry.userId] or 0
 		if diamondShare > 0 then
-			local success, actualDiamonds = ZoneService._currencyService.addDiamonds(player, diamondShare)
-			if success then
-				playerRewards.Diamonds = actualDiamonds or diamondShare
-				fireCollectCurrency(player, destructible.position, playerRewards.Diamonds, "Diamonds")
+			local actualDiamonds = ZoneService._currencyService.resolveDiamondReward(player, diamondShare)
+			if actualDiamonds and queueResolvedCurrency(player, "diamonds", actualDiamonds, destructible.position) then
+				playerRewards.Diamonds = actualDiamonds
 			end
 		end
 
@@ -5441,6 +5484,57 @@ function ZoneService._clearDestroyedTargetState(destructibleId)
 	for _, windows in pairs(ZoneService._critWindows) do
 		windows[destructibleId] = nil
 	end
+end
+
+local function resolveDrops(drops)
+	local resolved = {}
+	for currencyType, dropValue in pairs(drops) do
+		if type(dropValue) == "table" and dropValue.min and dropValue.max then
+			resolved[currencyType] = math.random(dropValue.min, dropValue.max)
+		else
+			resolved[currencyType] = dropValue
+		end
+	end
+	return resolved
+end
+
+-- One destruction finalizer owns reward snapshotting, pickup creation, cleanup,
+-- replication, and respawn for both pet and Crit-QTE damage paths.
+function ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, fallbackPlayer)
+	destructible.hp = 0
+	local rewardsByUserId = ZoneService._rewardContributors(
+		destructible,
+		fallbackPlayer,
+		resolveDrops(destructible.drops)
+	)
+	ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
+	ZoneService._clearDestroyedTargetState(destructibleId)
+
+	if destructible.model and destructible.model.Parent then
+		destructible.model:Destroy()
+	elseif destructible.part and destructible.part.Parent then
+		destructible.part:Destroy()
+	end
+
+	local zoneId = destructible.zoneId
+	local dtype = destructible.dtype
+	local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
+	ZoneService._destructibles[destructibleId] = nil
+	task.delay(10, function()
+		local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
+		if zoneFolder then
+			local origin = getZoneOrigin(zoneId)
+			local existingPositions = {}
+			for _, active in pairs(ZoneService._destructibles) do
+				if active.position then
+					table.insert(existingPositions, active.position)
+				end
+			end
+			local newPosition = getRandomPositionInZone(origin, existingPositions)
+			ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
+		end
+	end)
+	return rewardsByUserId
 end
 
 -- Attack a destructible (called when a player's pets attack)
@@ -5522,59 +5616,8 @@ function ZoneService.attackDestructible(player, destructibleId)
 	local appliedDamage = recordContribution(destructible, player, totalDamage)
 	destructible.hp = destructible.hp - appliedDamage
 
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
 	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops: support both fixed numbers and {min, max} tables for randomization
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model (or part) from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Schedule respawn after 10 seconds
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		-- Remove from tracking
-		ZoneService._destructibles[destructibleId] = nil
-
-		-- Respawn after delay at a new random position within the zone
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				-- Gather positions of ALL existing destructibles (all zones) to prevent overlap
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
+		ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, player)
 	else
 		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
@@ -5699,61 +5742,8 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 	local appliedDamage = recordContribution(destructible, player, critDamage)
 	destructible.hp = destructible.hp - appliedDamage
 
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
 	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Clean up crit window for this destructible
-		if playerCritWindows then
-			playerCritWindows[destructibleId] = nil
-		end
-
-		-- Schedule respawn
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		ZoneService._destructibles[destructibleId] = nil
-
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
+		ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, player)
 	else
 		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
@@ -5821,6 +5811,11 @@ end
 -- Set shop service reference for contributor-specific breakable rewards.
 function ZoneService.setShopService(shopService)
 	ZoneService._shopService = shopService
+end
+
+-- Set transient server-owned pickup service for breakable currency rewards.
+function ZoneService.setPickupService(pickupService)
+	ZoneService._pickupService = pickupService
 end
 
 --------------------------------------------------------------------------------
@@ -7766,8 +7761,8 @@ function ShopService.setEggService(eggService)
 	ShopService._eggService = eggService
 end
 
--- Main.server owns the complete WalkSpeed formula. ShopService only notifies it
--- when a speed potion expires so every non-shop movement bonus is preserved.
+-- MovementService owns the complete WalkSpeed formula. ShopService only notifies
+-- it when a speed potion expires so every non-shop movement source is preserved.
 function ShopService.setWalkSpeedRefreshCallback(callback)
 	ShopService._walkSpeedRefresh = callback
 end
@@ -7988,7 +7983,7 @@ return ShopService
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
 	UpgradeTreeService.lua - Server-authoritative tree purchases and effects.
-	QOF-11 adds Double Luck to the QOF-10 capacity and hatch entitlements.
+	QOF-12 adds Movement Speed and Magnet to the existing hatch/capacity entitlements.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -8039,6 +8034,18 @@ if BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled then
 	end
 end
 
+if BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Speed) do
+		registerPurchasable(level, "MovementSpeed")
+	end
+end
+
+if BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Magnet) do
+		registerPurchasable(level, "Magnet")
+	end
+end
+
 if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
 	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
 		registerPurchasable(level, "Storage")
@@ -8082,6 +8089,8 @@ local function neutralEntitlements()
 		},
 		multiOpenCount = 1,
 		generalLuckMultiplier = 1,
+		movementSpeedMultiplier = 1,
+		magnetRangeMultiplier = 1,
 		storageBonusSlots = 0,
 		petEquipBonusSlots = 0,
 	}
@@ -8172,6 +8181,24 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 	if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
 		entitlements.generalLuckMultiplier = applyHighestContiguousLevel(
 			{ BalanceConfig.CoreUpgrades.DoubleLuck },
+			purchased,
+			"multiplier",
+			1
+		)
+	end
+
+	if BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled then
+		entitlements.movementSpeedMultiplier = applyHighestContiguousLevel(
+			BalanceConfig.CoreUpgrades.Speed,
+			purchased,
+			"multiplier",
+			1
+		)
+	end
+
+	if BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled then
+		entitlements.magnetRangeMultiplier = applyHighestContiguousLevel(
+			BalanceConfig.CoreUpgrades.Magnet,
 			purchased,
 			"multiplier",
 			1
@@ -8366,17 +8393,610 @@ return UpgradeTreeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
+				<Item class="ModuleScript" referent="RBX00000072">
+					<Properties>
+						<string name="Name">MovementService</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	MovementService.lua - Single server-authoritative owner of player WalkSpeed.
+	QOF-12 composes existing quest, mastery, and shop sources with the canonical
+	Upgrade Tree entitlement, clamps once, and reconciles character lifecycle.
+]]
+
+local RunService = game:GetService("RunService")
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+
+local MovementService = {}
+
+MovementService._questService = nil
+MovementService._masteryService = nil
+MovementService._shopService = nil
+MovementService._upgradeTreeService = nil
+MovementService._runService = nil
+MovementService._heartbeatConnection = nil
+MovementService._states = {}
+MovementService._accumulator = 0
+
+local function finiteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function normalizedMultiplier(value)
+	if not finiteNumber(value) or value <= 1 then
+		return 1
+	end
+	return value
+end
+
+local function disconnect(connection)
+	if connection then
+		connection:Disconnect()
+	end
+end
+
+function MovementService.resolveWalkSpeed(player)
+	local movement = BalanceConfig.CoreUpgrades.Movement
+	local questMultiplier = 1
+	if MovementService._questService then
+		questMultiplier = MovementService._questService.getUpgradeBonus(player, "Sprinting")
+	end
+
+	local masteryMultiplier = 1
+	if MovementService._masteryService then
+		masteryMultiplier = MovementService._masteryService.getBuffBonus(player, "FasterRunning")
+	end
+
+	local shopMultiplier = 1
+	if MovementService._shopService then
+		shopMultiplier = MovementService._shopService.getShopMultiplier(player, "speed")
+	end
+
+	local treeMultiplier = 1
+	if MovementService._upgradeTreeService then
+		local entitlements = MovementService._upgradeTreeService.getEntitlements(player)
+		if type(entitlements) == "table" then
+			treeMultiplier = entitlements.movementSpeedMultiplier
+		end
+	end
+
+	local speed = movement.BaseWalkSpeed
+		* normalizedMultiplier(questMultiplier)
+		* normalizedMultiplier(masteryMultiplier)
+		* normalizedMultiplier(shopMultiplier)
+		* normalizedMultiplier(treeMultiplier)
+	return math.min(math.max(speed, movement.BaseWalkSpeed), movement.MaxWalkSpeed)
+end
+
+function MovementService.refresh(player)
+	local state = MovementService._states[player]
+	if not state or not state.humanoid or state.humanoid.Parent == nil then
+		return false
+	end
+	local expected = MovementService.resolveWalkSpeed(player)
+	state.expectedWalkSpeed = expected
+	if state.humanoid.WalkSpeed ~= expected then
+		state.applying = true
+		state.humanoid.WalkSpeed = expected
+		state.applying = false
+	end
+	return true, expected
+end
+
+local function setHumanoid(player, state, humanoid, generation)
+	if MovementService._states[player] ~= state or state.generation ~= generation then
+		return
+	end
+	disconnect(state.humanoidChangedConnection)
+	state.humanoid = humanoid
+	state.humanoidChangedConnection = humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+		if not state.applying
+			and MovementService._states[player] == state
+			and state.humanoid == humanoid
+			and state.expectedWalkSpeed ~= nil
+			and humanoid.WalkSpeed ~= state.expectedWalkSpeed then
+			MovementService.refresh(player)
+		end
+	end)
+	MovementService.refresh(player)
+end
+
+local function attachCharacter(player, state, character)
+	state.generation = state.generation + 1
+	local generation = state.generation
+	disconnect(state.childAddedConnection)
+	disconnect(state.humanoidChangedConnection)
+	state.childAddedConnection = nil
+	state.humanoidChangedConnection = nil
+	state.character = character
+	state.humanoid = nil
+	state.expectedWalkSpeed = nil
+
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		setHumanoid(player, state, humanoid, generation)
+		return
+	end
+	if character then
+		state.childAddedConnection = character.ChildAdded:Connect(function(child)
+			if child:IsA("Humanoid") then
+				disconnect(state.childAddedConnection)
+				state.childAddedConnection = nil
+				setHumanoid(player, state, child, generation)
+			end
+		end)
+	end
+end
+
+function MovementService.unbindPlayer(player)
+	local state = MovementService._states[player]
+	if not state then
+		return
+	end
+	MovementService._states[player] = nil
+	state.generation = state.generation + 1
+	disconnect(state.characterAddedConnection)
+	disconnect(state.characterRemovingConnection)
+	disconnect(state.childAddedConnection)
+	disconnect(state.humanoidChangedConnection)
+end
+
+function MovementService.bindPlayer(player)
+	if not player then
+		return false
+	end
+	MovementService.unbindPlayer(player)
+	local state = {
+		generation = 0,
+		applying = false,
+	}
+	MovementService._states[player] = state
+	state.characterAddedConnection = player.CharacterAdded:Connect(function(character)
+		attachCharacter(player, state, character)
+	end)
+	state.characterRemovingConnection = player.CharacterRemoving:Connect(function(character)
+		if state.character == character then
+			attachCharacter(player, state, nil)
+		end
+	end)
+	if player.Character then
+		attachCharacter(player, state, player.Character)
+	end
+	return true
+end
+
+function MovementService.step(deltaTime)
+	local interval = BalanceConfig.CoreUpgrades.Movement.ReconcileIntervalSeconds
+	MovementService._accumulator = MovementService._accumulator + (finiteNumber(deltaTime) and math.max(deltaTime, 0) or interval)
+	if MovementService._accumulator < interval then
+		return false
+	end
+	MovementService._accumulator = MovementService._accumulator % interval
+	for player in pairs(MovementService._states) do
+		MovementService.refresh(player)
+	end
+	return true
+end
+
+function MovementService.init(questService, masteryService, shopService, upgradeTreeService, runService)
+	MovementService._questService = questService
+	MovementService._masteryService = masteryService
+	MovementService._shopService = shopService
+	MovementService._upgradeTreeService = upgradeTreeService
+	MovementService._runService = runService or RunService
+	MovementService._accumulator = 0
+	disconnect(MovementService._heartbeatConnection)
+	MovementService._heartbeatConnection = MovementService._runService.Heartbeat:Connect(function(deltaTime)
+		MovementService.step(deltaTime)
+	end)
+end
+
+return MovementService
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000073">
+					<Properties>
+						<string name="Name">PickupService</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	PickupService.lua - Server-owned transient currency pickup and claim layer.
+	QOF-12 snapshots earned reward bonuses at destruction time, then credits each
+	owner exactly once after authoritative proximity, timeout, or leave settlement.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+
+local PickupService = {}
+
+PickupService._dataService = nil
+PickupService._currencyService = nil
+PickupService._questService = nil
+PickupService._masteryService = nil
+PickupService._upgradeTreeService = nil
+PickupService._players = Players
+PickupService._runService = RunService
+PickupService._clock = os.clock
+PickupService._guid = function()
+	return HttpService:GenerateGUID(false)
+end
+PickupService._visualFactory = nil
+PickupService._folder = nil
+PickupService._records = {}
+PickupService._ownerIds = {}
+PickupService._heartbeatConnection = nil
+PickupService._accumulator = 0
+
+local VALID_CURRENCIES = {
+	coins = true,
+	diamonds = true,
+}
+
+local function finiteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function normalizedMultiplier(value)
+	if not finiteNumber(value) or value <= 1 then
+		return 1
+	end
+	return value
+end
+
+local function defaultVisualFactory(record, folder)
+	local part = Instance.new("Part")
+	part.Name = record.currency == "coins" and "CoinPickup" or "DiamondPickup"
+	part.Shape = Enum.PartType.Ball
+	part.Size = Vector3.new(1.5, 1.5, 1.5)
+	part.Position = record.position
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.Material = Enum.Material.Neon
+	part.Color = record.currency == "coins"
+		and Color3.fromRGB(255, 221, 61)
+		or Color3.fromRGB(65, 205, 255)
+	part:SetAttribute("PickupId", record.id)
+	part:SetAttribute("OwnerUserId", record.ownerUserId)
+	part.Parent = folder
+	return part
+end
+
+local function removeOwnerId(ownerUserId, pickupId)
+	local ids = PickupService._ownerIds[ownerUserId]
+	if not ids then
+		return
+	end
+	for index, id in ipairs(ids) do
+		if id == pickupId then
+			table.remove(ids, index)
+			break
+		end
+	end
+	if #ids == 0 then
+		PickupService._ownerIds[ownerUserId] = nil
+	end
+end
+
+local function removeRecord(record)
+	PickupService._records[record.id] = nil
+	removeOwnerId(record.ownerUserId, record.id)
+	if record.visual then
+		pcall(function()
+			record.visual:Destroy()
+		end)
+		record.visual = nil
+	end
+end
+
+local function fireCollected(record)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("CollectCurrency")
+	if event then
+		event:FireClient(
+			record.player,
+			record.position,
+			record.amount,
+			record.currency == "coins" and "Coins" or "Diamonds"
+		)
+	end
+end
+
+function PickupService.getCollectionRadius(player)
+	local settings = BalanceConfig.CoreUpgrades.PickupCollection
+	local treeMultiplier = 1
+	if PickupService._upgradeTreeService then
+		local entitlements = PickupService._upgradeTreeService.getEntitlements(player)
+		if type(entitlements) == "table" then
+			treeMultiplier = entitlements.magnetRangeMultiplier
+		end
+	end
+
+	local masteryMultiplier = 1
+	if PickupService._masteryService then
+		masteryMultiplier = PickupService._masteryService.getBuffBonus(player, "DropMagnet")
+	end
+
+	local radius = settings.BaseRadius
+		* normalizedMultiplier(treeMultiplier)
+		* normalizedMultiplier(masteryMultiplier)
+	return math.min(math.max(radius, settings.BaseRadius), settings.MaxRadius)
+end
+
+local function isWithinCollectionRadius(record)
+	local player = record.player
+	if not player or player.Parent == nil then
+		return false
+	end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return false
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid and finiteNumber(humanoid.Health) and humanoid.Health <= 0 then
+		return false
+	end
+	local ok, distance = pcall(function()
+		return (root.Position - record.position).Magnitude
+	end)
+	return ok and finiteNumber(distance) and distance <= PickupService.getCollectionRadius(player)
+end
+
+local function commitRecord(record, notifyClient)
+	-- Remove authority before non-critical notifications so callback failure can
+	-- never make an exact credited reward claimable twice.
+	record.state = "claimed"
+	removeRecord(record)
+	if record.currency == "coins" and PickupService._questService then
+		pcall(function()
+			PickupService._questService.incrementStat(record.player, "earnCoins", record.amount)
+		end)
+	end
+	if notifyClient then
+		pcall(fireCollected, record)
+	end
+	return true, record.amount
+end
+
+local function settleRecord(record)
+	if not record or record.state ~= "pending" then
+		return false, "Pickup is not pending"
+	end
+	record.state = "claiming"
+	local credited = PickupService._currencyService.creditResolvedReward(
+		record.player,
+		record.currency,
+		record.amount
+	)
+	if not credited then
+		record.state = "pending"
+		return false, "Credit failed"
+	end
+	return commitRecord(record, true)
+end
+
+local function settleRecordForPersistence(record)
+	local settled = settleRecord(record)
+	if settled == true then
+		return true
+	end
+	if not record or record.state ~= "pending" or not PickupService._dataService then
+		return false
+	end
+	local data = PickupService._dataService.getPlayerData(record.player)
+	record.state = "claiming"
+	local credited = PickupService._currencyService.creditResolvedRewardToProfile(
+		data,
+		record.currency,
+		record.amount
+	)
+	if not credited then
+		record.state = "pending"
+		return false
+	end
+	return commitRecord(record, false)
+end
+
+function PickupService.claimPickup(player, pickupId)
+	if not player or type(pickupId) ~= "string" or #pickupId == 0 or #pickupId > 64 then
+		return false, "Invalid pickup"
+	end
+	local record = PickupService._records[pickupId]
+	if not record or record.player ~= player or record.ownerUserId ~= player.UserId then
+		return false, "Pickup unavailable"
+	end
+	if not isWithinCollectionRadius(record) then
+		return false, "Pickup out of range"
+	end
+	return settleRecord(record)
+end
+
+function PickupService.createPickup(player, currency, amount, position)
+	if not player
+		or VALID_CURRENCIES[currency] ~= true
+		or not finiteNumber(amount)
+		or amount <= 0
+		or amount % 1 ~= 0
+		or position == nil then
+		return false, "Invalid pickup"
+	end
+	local ownerUserId = player.UserId
+	if type(ownerUserId) ~= "number" then
+		return false, "Invalid owner"
+	end
+
+	local settings = BalanceConfig.CoreUpgrades.PickupCollection
+	local ids = PickupService._ownerIds[ownerUserId]
+	if ids and #ids >= settings.MaxPendingPerPlayer then
+		local oldest = PickupService._records[ids[1]]
+		local settled = oldest and settleRecord(oldest)
+		if settled ~= true then
+			return false, "Pending pickup limit reached"
+		end
+	end
+
+	local pickupId = PickupService._guid()
+	if type(pickupId) ~= "string" or #pickupId == 0 or #pickupId > 64 or PickupService._records[pickupId] then
+		return false, "Pickup ID unavailable"
+	end
+	local now = PickupService._clock()
+	local record = {
+		id = pickupId,
+		player = player,
+		ownerUserId = ownerUserId,
+		currency = currency,
+		amount = amount,
+		position = position,
+		createdAt = now,
+		expiresAt = now + settings.LifetimeSeconds,
+		state = "pending",
+		visual = nil,
+	}
+	PickupService._records[pickupId] = record
+	PickupService._ownerIds[ownerUserId] = PickupService._ownerIds[ownerUserId] or {}
+	table.insert(PickupService._ownerIds[ownerUserId], pickupId)
+
+	local factory = PickupService._visualFactory or defaultVisualFactory
+	local visualOk, visual = pcall(factory, record, PickupService._folder)
+	if visualOk then
+		record.visual = visual
+	end
+	return true, pickupId
+end
+
+function PickupService.step(deltaTime)
+	local settings = BalanceConfig.CoreUpgrades.PickupCollection
+	PickupService._accumulator = PickupService._accumulator
+		+ (finiteNumber(deltaTime) and math.max(deltaTime, 0) or settings.PollIntervalSeconds)
+	if PickupService._accumulator < settings.PollIntervalSeconds then
+		return false
+	end
+	PickupService._accumulator = PickupService._accumulator % settings.PollIntervalSeconds
+
+	local now = PickupService._clock()
+	local pending = {}
+	for _, record in pairs(PickupService._records) do
+		if record.state == "pending" then
+			table.insert(pending, record)
+		end
+	end
+	for _, record in ipairs(pending) do
+		if PickupService._records[record.id] == record then
+			if now >= record.expiresAt then
+				settleRecord(record)
+			elseif isWithinCollectionRadius(record) then
+				settleRecord(record)
+			end
+		end
+	end
+	return true
+end
+
+function PickupService.getPendingCount(player)
+	local ids = player and PickupService._ownerIds[player.UserId]
+	return ids and #ids or 0
+end
+
+function PickupService.settlePlayer(player)
+	if not player then
+		return false
+	end
+	local ids = PickupService._ownerIds[player.UserId]
+	if not ids then
+		return true
+	end
+	local snapshot = {}
+	for _, id in ipairs(ids) do
+		table.insert(snapshot, id)
+	end
+	local allSettled = true
+	for _, id in ipairs(snapshot) do
+		local record = PickupService._records[id]
+		if record and settleRecordForPersistence(record) ~= true then
+			-- Keep authority and the exact amount pending. A later leave/shutdown
+			-- retry may settle it; deleting here would silently lose earned value.
+			allSettled = false
+		end
+	end
+	return allSettled
+end
+
+function PickupService.onPlayerRemoving(player)
+	return PickupService.settlePlayer(player)
+end
+
+function PickupService.settleAllPlayers()
+	local allSettled = true
+	for _, player in ipairs(PickupService._players:GetPlayers()) do
+		if not PickupService.settlePlayer(player) then
+			allSettled = false
+		end
+	end
+	return allSettled
+end
+
+function PickupService.init(dataService, currencyService, questService, masteryService, upgradeTreeService, options)
+	options = type(options) == "table" and options or {}
+	PickupService._dataService = dataService
+	PickupService._currencyService = currencyService
+	PickupService._questService = questService
+	PickupService._masteryService = masteryService
+	PickupService._upgradeTreeService = upgradeTreeService
+	PickupService._players = options.players or Players
+	PickupService._runService = options.runService or RunService
+	PickupService._clock = options.clock or os.clock
+	PickupService._guid = options.guid or function()
+		return HttpService:GenerateGUID(false)
+	end
+	PickupService._visualFactory = options.visualFactory
+	PickupService._records = {}
+	PickupService._ownerIds = {}
+	PickupService._accumulator = 0
+
+	if PickupService._heartbeatConnection then
+		PickupService._heartbeatConnection:Disconnect()
+	end
+	local parent = options.workspace or Workspace
+	local folder = parent:FindFirstChild("CurrencyPickups")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "CurrencyPickups"
+		folder.Parent = parent
+	end
+	PickupService._folder = folder
+	PickupService._heartbeatConnection = PickupService._runService.Heartbeat:Connect(function(deltaTime)
+		PickupService.step(deltaTime)
+	end)
+end
+
+return PickupService
+]]></ProtectedString>
+					</Properties>
+				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX0000007D">
+	<Item class="StarterPlayer" referent="RBX0000007F">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX0000007C">
+		<Item class="StarterPlayerScripts" referent="RBX0000007E">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX0000007B">
+				<Item class="LocalScript" referent="RBX0000007D">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -9401,7 +10021,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -14061,7 +14681,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000076">
+				<Item class="ModuleScript" referent="RBX00000078">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15715,7 +16335,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000077">
+				<Item class="ModuleScript" referent="RBX00000079">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -16630,7 +17250,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000078">
+				<Item class="ModuleScript" referent="RBX0000007A">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -18233,7 +18853,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000079">
+				<Item class="ModuleScript" referent="RBX0000007B">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -18415,7 +19035,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007A">
+				<Item class="ModuleScript" referent="RBX0000007C">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -18994,20 +19614,60 @@ local BalanceConfig = {
 	},
 
 	CoreUpgrades = {
-		-- QOF-11 adds Double Luck to the QOF-10 capacity branches. The aggregate
-		-- gate means that at least one Core branch is live; every branch still has
-		-- its own gate so unrelated approved balance cannot activate accidentally.
+		-- QOF-12 activates server-owned Movement Speed and Magnet branches on top
+		-- of the QOF-10 capacity and QOF-11 Double Luck entitlements. Every branch
+		-- retains an independent runtime gate to prevent accidental activation.
 		RuntimeEnabled = true,
-		SpeedRuntimeEnabled = false,
+		SpeedRuntimeEnabled = true,
 		StorageRuntimeEnabled = true,
-		MagnetRuntimeEnabled = false,
+		MagnetRuntimeEnabled = true,
 		DoubleLuckRuntimeEnabled = true,
 		PetEquipSlotsRuntimeEnabled = true,
+		Movement = {
+			BaseWalkSpeed = 16,
+			MaxWalkSpeed = 128,
+			ReconcileIntervalSeconds = 1,
+		},
+		PickupCollection = {
+			BaseRadius = 8,
+			MaxRadius = 32,
+			PollIntervalSeconds = 0.2,
+			LifetimeSeconds = 15,
+			MaxPendingPerPlayer = 24,
+		},
 		Speed = {
-			{ multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
-			{ multiplier = 1.10, cost = { currency = "coins", amount = 25000 } },
-			{ multiplier = 1.15, cost = { currency = "coins", amount = 100000 } },
-			{ multiplier = 1.20, cost = { currency = "coins", amount = 300000 } },
+			{
+				id = "coreSpeed1",
+				name = "Movement Speed I",
+				description = "Increases tree movement speed to x1.05 total.",
+				requireIds = { "Eggs II" },
+				multiplier = 1.05,
+				cost = { currency = "coins", amount = 5000 },
+			},
+			{
+				id = "coreSpeed2",
+				name = "Movement Speed II",
+				description = "Increases tree movement speed to x1.10 total.",
+				requireIds = { "coreSpeed1" },
+				multiplier = 1.10,
+				cost = { currency = "coins", amount = 25000 },
+			},
+			{
+				id = "coreSpeed3",
+				name = "Movement Speed III",
+				description = "Increases tree movement speed to x1.15 total.",
+				requireIds = { "coreSpeed2" },
+				multiplier = 1.15,
+				cost = { currency = "coins", amount = 100000 },
+			},
+			{
+				id = "coreSpeed4",
+				name = "Movement Speed IV",
+				description = "Increases tree movement speed to x1.20 total.",
+				requireIds = { "coreSpeed3" },
+				multiplier = 1.20,
+				cost = { currency = "coins", amount = 300000 },
+			},
 		},
 		Storage = {
 			{
@@ -19060,9 +19720,30 @@ local BalanceConfig = {
 			},
 		},
 		Magnet = {
-			{ multiplier = 1.25, cost = { currency = "coins", amount = 10000 } },
-			{ multiplier = 1.50, cost = { currency = "coins", amount = 50000 } },
-			{ multiplier = 2.00, cost = { currency = "coins", amount = 200000 } },
+			{
+				id = "coreMagnet1",
+				name = "Magnet I",
+				description = "Increases tree pickup radius to x1.25 total.",
+				requireIds = { "Eggs II" },
+				multiplier = 1.25,
+				cost = { currency = "coins", amount = 10000 },
+			},
+			{
+				id = "coreMagnet2",
+				name = "Magnet II",
+				description = "Increases tree pickup radius to x1.50 total.",
+				requireIds = { "coreMagnet1" },
+				multiplier = 1.50,
+				cost = { currency = "coins", amount = 50000 },
+			},
+			{
+				id = "coreMagnet3",
+				name = "Magnet III",
+				description = "Increases tree pickup radius to x2 total.",
+				requireIds = { "coreMagnet2" },
+				multiplier = 2.00,
+				cost = { currency = "coins", amount = 200000 },
+			},
 		},
 		DoubleLuck = {
 			id = "doubleLuck",
@@ -19316,11 +19997,11 @@ function BalanceConfig.Validate()
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
 	local core = BalanceConfig.CoreUpgrades
-	assert(core.RuntimeEnabled == true, "Core capacity upgrades must be enabled in QOF-10")
+	assert(core.RuntimeEnabled == true, "Core upgrades must be enabled")
 	assert(core.StorageRuntimeEnabled == true, "Storage upgrades must be enabled in QOF-10")
 	assert(core.PetEquipSlotsRuntimeEnabled == true, "Pet Equip upgrades must be enabled in QOF-10")
-	assert(core.SpeedRuntimeEnabled == false, "Speed upgrades must remain dormant")
-	assert(core.MagnetRuntimeEnabled == false, "Magnet upgrades must remain dormant")
+	assert(core.SpeedRuntimeEnabled == true, "Speed upgrades must be enabled in QOF-12")
+	assert(core.MagnetRuntimeEnabled == true, "Magnet upgrades must be enabled in QOF-12")
 	assert(core.DoubleLuckRuntimeEnabled == true, "Double Luck must be enabled in QOF-11")
 	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
 
@@ -19329,6 +20010,32 @@ function BalanceConfig.Validate()
 	end
 	assert(BalanceConfig.Limits.PetInventoryBase <= BalanceConfig.Limits.PetInventoryAbsolute, "pet inventory limits are inverted")
 	assert(BalanceConfig.Limits.EquippedPetsBase <= BalanceConfig.Limits.EquippedPetsAbsolute, "equipped pet limits are inverted")
+
+	local movement = core.Movement
+	assert(movement.BaseWalkSpeed == 16, "base WalkSpeed must remain 16")
+	assert(movement.MaxWalkSpeed == 128, "QOF-12 WalkSpeed cap must remain 128")
+	assert(
+		isFiniteNumber(movement.ReconcileIntervalSeconds) and movement.ReconcileIntervalSeconds > 0,
+		"movement reconcile interval is invalid"
+	)
+	local collection = core.PickupCollection
+	assert(collection.BaseRadius == 8, "base pickup radius must remain 8")
+	assert(collection.MaxRadius == 32, "QOF-12 pickup radius cap must remain 32")
+	assert(collection.MaxRadius >= collection.BaseRadius, "pickup radius limits are inverted")
+	assert(
+		isFiniteNumber(collection.PollIntervalSeconds) and collection.PollIntervalSeconds > 0,
+		"pickup polling interval is invalid"
+	)
+	assert(
+		isFiniteNumber(collection.LifetimeSeconds) and collection.LifetimeSeconds > 0,
+		"pickup lifetime is invalid"
+	)
+	assert(
+		isFiniteNumber(collection.MaxPendingPerPlayer)
+			and collection.MaxPendingPerPlayer > 0
+			and collection.MaxPendingPerPlayer % 1 == 0,
+		"pickup pending cap is invalid"
+	)
 
 	local rarityWeight = 0
 	for name, weight in pairs(BalanceConfig.World.RarityWeights) do
@@ -19444,6 +20151,36 @@ function BalanceConfig.Validate()
 			"Multi-Open count must be an integer above one"
 		)
 	end
+
+	local function validateMultiplierProgression(levels, context, expectedIds, expectedMultipliers, expectedCosts)
+		assert(#levels == #expectedIds, context .. " has an unexpected level count")
+		for index, level in ipairs(levels) do
+			registerEntitlement(level, context .. " " .. tostring(index))
+			assert(level.id == expectedIds[index], context .. " has a non-canonical ID")
+			assert(type(level.description) == "string" and level.description ~= "", context .. " description is invalid")
+			assert(type(level.requireIds) == "table" and #level.requireIds == 1, context .. " must be a strict chain")
+			local expectedRequirement = index == 1 and "Eggs II" or expectedIds[index - 1]
+			assert(level.requireIds[1] == expectedRequirement, context .. " has an invalid prerequisite")
+			assert(level.multiplier == expectedMultipliers[index], context .. " has a non-canonical multiplier")
+			assert(level.cost.currency == "coins" and level.cost.amount == expectedCosts[index], context .. " has a non-canonical cost")
+		end
+		validateIncreasingCosts(levels, context)
+	end
+
+	validateMultiplierProgression(
+		BalanceConfig.CoreUpgrades.Speed,
+		"Movement Speed",
+		{ "coreSpeed1", "coreSpeed2", "coreSpeed3", "coreSpeed4" },
+		{ 1.05, 1.10, 1.15, 1.20 },
+		{ 5000, 25000, 100000, 300000 }
+	)
+	validateMultiplierProgression(
+		BalanceConfig.CoreUpgrades.Magnet,
+		"Magnet",
+		{ "coreMagnet1", "coreMagnet2", "coreMagnet3" },
+		{ 1.25, 1.50, 2.00 },
+		{ 10000, 50000, 200000 }
+	)
 
 	local function validateCapacityLevels(levels, context, expectedIds, expectedBonuses, expectedCosts)
 		assert(#levels == #expectedIds, context .. " has an unexpected level count")
@@ -25200,6 +25937,83 @@ local upgradeTreeData:upgradeTreeData = {
 				portalTo = "mainTree",
 			},
 			{
+				id = "coreSpeed1",
+				name = "Movement Speed I",
+				description = "Increases tree movement speed to x1.05 total.",
+				side = "top",
+				parentId = "playerBack",
+				requireId = { "Eggs II" },
+				requirements = {{ currency = "coins", amount = 5000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreSpeed2",
+				name = "Movement Speed II",
+				description = "Increases tree movement speed to x1.10 total.",
+				side = "top-left",
+				parentId = "coreSpeed1",
+				requireId = { "coreSpeed1" },
+				requirements = {{ currency = "coins", amount = 25000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreSpeed3",
+				name = "Movement Speed III",
+				description = "Increases tree movement speed to x1.15 total.",
+				side = "top-right",
+				parentId = "coreSpeed2",
+				requireId = { "coreSpeed2" },
+				requirements = {{ currency = "coins", amount = 100000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreSpeed4",
+				name = "Movement Speed IV",
+				description = "Increases tree movement speed to x1.20 total.",
+				side = "top",
+				parentId = "coreSpeed3",
+				requireId = { "coreSpeed3" },
+				requirements = {{ currency = "coins", amount = 300000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreMagnet1",
+				name = "Magnet I",
+				description = "Increases tree pickup radius to x1.25 total.",
+				side = "bottom",
+				parentId = "playerBack",
+				requireId = { "Eggs II" },
+				requirements = {{ currency = "coins", amount = 10000 }},
+				upgradeIcon = "star",
+				hexImg = "blue",
+			},
+			{
+				id = "coreMagnet2",
+				name = "Magnet II",
+				description = "Increases tree pickup radius to x1.50 total.",
+				side = "bottom-left",
+				parentId = "coreMagnet1",
+				requireId = { "coreMagnet1" },
+				requirements = {{ currency = "coins", amount = 50000 }},
+				upgradeIcon = "star",
+				hexImg = "blue",
+			},
+			{
+				id = "coreMagnet3",
+				name = "Magnet III",
+				description = "Increases tree pickup radius to x2 total.",
+				side = "bottom-right",
+				parentId = "coreMagnet2",
+				requireId = { "coreMagnet2" },
+				requirements = {{ currency = "coins", amount = 200000 }},
+				upgradeIcon = "star",
+				hexImg = "blue",
+			},
+			{
 				id = "friends1",
 				name = "Friends I",
 				description = "+1% Currency per Friend in Server!",
@@ -25598,9 +26412,8 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-11 activates Double Luck in addition to the QOF-10 capacity and hatch
--- branches. Only explicitly gated entitlements are purchasable; unrelated
--- legacy nodes remain dormant.
+-- QOF-12 activates Movement Speed and Magnet in addition to the existing
+-- hatch, capacity, and Double Luck branches. Unrelated legacy nodes stay dormant.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -25617,6 +26430,16 @@ end
 if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
 	local level = BalanceConfig.CoreUpgrades.DoubleLuck
 	activeById[level.id] = level
+end
+if BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Speed) do
+		activeById[level.id] = level
+	end
+end
+if BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Magnet) do
+		activeById[level.id] = level
+	end
 end
 if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
 	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
@@ -25775,7 +26598,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX0000007E">
+	<Item class="StarterGui" referent="RBX00000080">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -25810,7 +26633,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000007F">
+	<Item class="SoundService" referent="RBX00000081">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

@@ -260,20 +260,60 @@ local BalanceConfig = {
 	},
 
 	CoreUpgrades = {
-		-- QOF-11 adds Double Luck to the QOF-10 capacity branches. The aggregate
-		-- gate means that at least one Core branch is live; every branch still has
-		-- its own gate so unrelated approved balance cannot activate accidentally.
+		-- QOF-12 activates server-owned Movement Speed and Magnet branches on top
+		-- of the QOF-10 capacity and QOF-11 Double Luck entitlements. Every branch
+		-- retains an independent runtime gate to prevent accidental activation.
 		RuntimeEnabled = true,
-		SpeedRuntimeEnabled = false,
+		SpeedRuntimeEnabled = true,
 		StorageRuntimeEnabled = true,
-		MagnetRuntimeEnabled = false,
+		MagnetRuntimeEnabled = true,
 		DoubleLuckRuntimeEnabled = true,
 		PetEquipSlotsRuntimeEnabled = true,
+		Movement = {
+			BaseWalkSpeed = 16,
+			MaxWalkSpeed = 128,
+			ReconcileIntervalSeconds = 1,
+		},
+		PickupCollection = {
+			BaseRadius = 8,
+			MaxRadius = 32,
+			PollIntervalSeconds = 0.2,
+			LifetimeSeconds = 15,
+			MaxPendingPerPlayer = 24,
+		},
 		Speed = {
-			{ multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
-			{ multiplier = 1.10, cost = { currency = "coins", amount = 25000 } },
-			{ multiplier = 1.15, cost = { currency = "coins", amount = 100000 } },
-			{ multiplier = 1.20, cost = { currency = "coins", amount = 300000 } },
+			{
+				id = "coreSpeed1",
+				name = "Movement Speed I",
+				description = "Increases tree movement speed to x1.05 total.",
+				requireIds = { "Eggs II" },
+				multiplier = 1.05,
+				cost = { currency = "coins", amount = 5000 },
+			},
+			{
+				id = "coreSpeed2",
+				name = "Movement Speed II",
+				description = "Increases tree movement speed to x1.10 total.",
+				requireIds = { "coreSpeed1" },
+				multiplier = 1.10,
+				cost = { currency = "coins", amount = 25000 },
+			},
+			{
+				id = "coreSpeed3",
+				name = "Movement Speed III",
+				description = "Increases tree movement speed to x1.15 total.",
+				requireIds = { "coreSpeed2" },
+				multiplier = 1.15,
+				cost = { currency = "coins", amount = 100000 },
+			},
+			{
+				id = "coreSpeed4",
+				name = "Movement Speed IV",
+				description = "Increases tree movement speed to x1.20 total.",
+				requireIds = { "coreSpeed3" },
+				multiplier = 1.20,
+				cost = { currency = "coins", amount = 300000 },
+			},
 		},
 		Storage = {
 			{
@@ -326,9 +366,30 @@ local BalanceConfig = {
 			},
 		},
 		Magnet = {
-			{ multiplier = 1.25, cost = { currency = "coins", amount = 10000 } },
-			{ multiplier = 1.50, cost = { currency = "coins", amount = 50000 } },
-			{ multiplier = 2.00, cost = { currency = "coins", amount = 200000 } },
+			{
+				id = "coreMagnet1",
+				name = "Magnet I",
+				description = "Increases tree pickup radius to x1.25 total.",
+				requireIds = { "Eggs II" },
+				multiplier = 1.25,
+				cost = { currency = "coins", amount = 10000 },
+			},
+			{
+				id = "coreMagnet2",
+				name = "Magnet II",
+				description = "Increases tree pickup radius to x1.50 total.",
+				requireIds = { "coreMagnet1" },
+				multiplier = 1.50,
+				cost = { currency = "coins", amount = 50000 },
+			},
+			{
+				id = "coreMagnet3",
+				name = "Magnet III",
+				description = "Increases tree pickup radius to x2 total.",
+				requireIds = { "coreMagnet2" },
+				multiplier = 2.00,
+				cost = { currency = "coins", amount = 200000 },
+			},
 		},
 		DoubleLuck = {
 			id = "doubleLuck",
@@ -582,11 +643,11 @@ function BalanceConfig.Validate()
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
 	local core = BalanceConfig.CoreUpgrades
-	assert(core.RuntimeEnabled == true, "Core capacity upgrades must be enabled in QOF-10")
+	assert(core.RuntimeEnabled == true, "Core upgrades must be enabled")
 	assert(core.StorageRuntimeEnabled == true, "Storage upgrades must be enabled in QOF-10")
 	assert(core.PetEquipSlotsRuntimeEnabled == true, "Pet Equip upgrades must be enabled in QOF-10")
-	assert(core.SpeedRuntimeEnabled == false, "Speed upgrades must remain dormant")
-	assert(core.MagnetRuntimeEnabled == false, "Magnet upgrades must remain dormant")
+	assert(core.SpeedRuntimeEnabled == true, "Speed upgrades must be enabled in QOF-12")
+	assert(core.MagnetRuntimeEnabled == true, "Magnet upgrades must be enabled in QOF-12")
 	assert(core.DoubleLuckRuntimeEnabled == true, "Double Luck must be enabled in QOF-11")
 	assert(BalanceConfig.Shop.AutoHatchRuntimeEnabled == false, "Shop Auto-Hatch must remain disabled")
 
@@ -595,6 +656,32 @@ function BalanceConfig.Validate()
 	end
 	assert(BalanceConfig.Limits.PetInventoryBase <= BalanceConfig.Limits.PetInventoryAbsolute, "pet inventory limits are inverted")
 	assert(BalanceConfig.Limits.EquippedPetsBase <= BalanceConfig.Limits.EquippedPetsAbsolute, "equipped pet limits are inverted")
+
+	local movement = core.Movement
+	assert(movement.BaseWalkSpeed == 16, "base WalkSpeed must remain 16")
+	assert(movement.MaxWalkSpeed == 128, "QOF-12 WalkSpeed cap must remain 128")
+	assert(
+		isFiniteNumber(movement.ReconcileIntervalSeconds) and movement.ReconcileIntervalSeconds > 0,
+		"movement reconcile interval is invalid"
+	)
+	local collection = core.PickupCollection
+	assert(collection.BaseRadius == 8, "base pickup radius must remain 8")
+	assert(collection.MaxRadius == 32, "QOF-12 pickup radius cap must remain 32")
+	assert(collection.MaxRadius >= collection.BaseRadius, "pickup radius limits are inverted")
+	assert(
+		isFiniteNumber(collection.PollIntervalSeconds) and collection.PollIntervalSeconds > 0,
+		"pickup polling interval is invalid"
+	)
+	assert(
+		isFiniteNumber(collection.LifetimeSeconds) and collection.LifetimeSeconds > 0,
+		"pickup lifetime is invalid"
+	)
+	assert(
+		isFiniteNumber(collection.MaxPendingPerPlayer)
+			and collection.MaxPendingPerPlayer > 0
+			and collection.MaxPendingPerPlayer % 1 == 0,
+		"pickup pending cap is invalid"
+	)
 
 	local rarityWeight = 0
 	for name, weight in pairs(BalanceConfig.World.RarityWeights) do
@@ -710,6 +797,36 @@ function BalanceConfig.Validate()
 			"Multi-Open count must be an integer above one"
 		)
 	end
+
+	local function validateMultiplierProgression(levels, context, expectedIds, expectedMultipliers, expectedCosts)
+		assert(#levels == #expectedIds, context .. " has an unexpected level count")
+		for index, level in ipairs(levels) do
+			registerEntitlement(level, context .. " " .. tostring(index))
+			assert(level.id == expectedIds[index], context .. " has a non-canonical ID")
+			assert(type(level.description) == "string" and level.description ~= "", context .. " description is invalid")
+			assert(type(level.requireIds) == "table" and #level.requireIds == 1, context .. " must be a strict chain")
+			local expectedRequirement = index == 1 and "Eggs II" or expectedIds[index - 1]
+			assert(level.requireIds[1] == expectedRequirement, context .. " has an invalid prerequisite")
+			assert(level.multiplier == expectedMultipliers[index], context .. " has a non-canonical multiplier")
+			assert(level.cost.currency == "coins" and level.cost.amount == expectedCosts[index], context .. " has a non-canonical cost")
+		end
+		validateIncreasingCosts(levels, context)
+	end
+
+	validateMultiplierProgression(
+		BalanceConfig.CoreUpgrades.Speed,
+		"Movement Speed",
+		{ "coreSpeed1", "coreSpeed2", "coreSpeed3", "coreSpeed4" },
+		{ 1.05, 1.10, 1.15, 1.20 },
+		{ 5000, 25000, 100000, 300000 }
+	)
+	validateMultiplierProgression(
+		BalanceConfig.CoreUpgrades.Magnet,
+		"Magnet",
+		{ "coreMagnet1", "coreMagnet2", "coreMagnet3" },
+		{ 1.25, 1.50, 2.00 },
+		{ 10000, 50000, 200000 }
+	)
 
 	local function validateCapacityLevels(levels, context, expectedIds, expectedBonuses, expectedCosts)
 		assert(#levels == #expectedIds, context .. " has an unexpected level count")

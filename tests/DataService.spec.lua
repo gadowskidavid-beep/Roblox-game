@@ -24,9 +24,10 @@ local httpService = {}
 function httpService:GenerateGUID()
 	return "test-guid"
 end
+local currentPlayers = {}
 local playersService = {}
 function playersService:GetPlayers()
-	return {}
+	return currentPlayers
 end
 local runService = {}
 function runService:IsStudio()
@@ -96,5 +97,77 @@ describe("DataService QOF-09 client projection", function()
 		expect(projected._session):toBeNil()
 		projected.hatchPreferences.preferredBatchCount = 1
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+	end)
+end)
+
+describe("DataService shutdown persistence", function()
+	it("runs the pre-save hook before the final releasing save", function()
+		local originalTask = rawget(_G, "task")
+		local originalBindToClose = gameMock.BindToClose
+		local originalSavePlayerData = DataService.savePlayerData
+		local originalUseMemoryOnly = DataService._useMemoryOnly
+		local originalCache = DataService._cache[player.UserId]
+		local originalPlayers = {}
+		for index, existingPlayer in ipairs(currentPlayers) do
+			originalPlayers[index] = existingPlayer
+		end
+
+		local closeCallback = nil
+		local events = {}
+		local savedPlayer = nil
+		local releasedLock = nil
+
+		local ok, testError = pcall(function()
+			for index = #currentPlayers, 1, -1 do
+				currentPlayers[index] = nil
+			end
+			currentPlayers[1] = player
+			DataService._cache[player.UserId] = originalCache or {}
+			DataService._useMemoryOnly = false
+
+			gameMock.BindToClose = function(_, callback)
+				closeCallback = callback
+			end
+			DataService.savePlayerData = function(candidate, releaseLock)
+				table.insert(events, "savePlayerData")
+				savedPlayer = candidate
+				releasedLock = releaseLock
+				return true
+			end
+			rawset(_G, "task", {
+				spawn = function(callback, ...)
+					return callback(...)
+				end,
+				wait = function() end,
+			})
+
+			DataService.bindToClose(function()
+				table.insert(events, "beforeFinalSave")
+				return true
+			end)
+			expect(type(closeCallback)):toBe("function")
+
+			closeCallback()
+
+			expect(events):toEqual({ "beforeFinalSave", "savePlayerData" })
+			expect(savedPlayer):toBe(player)
+			expect(releasedLock):toBeTrue()
+		end)
+
+		rawset(_G, "task", originalTask)
+		gameMock.BindToClose = originalBindToClose
+		DataService.savePlayerData = originalSavePlayerData
+		DataService._useMemoryOnly = originalUseMemoryOnly
+		DataService._cache[player.UserId] = originalCache
+		for index = #currentPlayers, 1, -1 do
+			currentPlayers[index] = nil
+		end
+		for index, existingPlayer in ipairs(originalPlayers) do
+			currentPlayers[index] = existingPlayer
+		end
+
+		if not ok then
+			error(testError, 0)
+		end
 	end)
 end)

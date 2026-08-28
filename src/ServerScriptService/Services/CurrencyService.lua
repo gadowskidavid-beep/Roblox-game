@@ -67,8 +67,8 @@ function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply existing quest/mastery reward bonuses only to earned coin grants.
-local function applyBonuses(player, amount)
+-- Resolve existing quest/mastery reward bonuses exactly once for a future credit.
+local function applyCoinBonuses(player, amount)
 	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
@@ -89,28 +89,19 @@ local function applyBonuses(player, amount)
 	return normalizePositiveAmount(finalAmount, true)
 end
 
-function CurrencyService.addCoins(player, amount)
+function CurrencyService.resolveCoinReward(player, amount)
 	amount = normalizePositiveAmount(amount, false)
-	local data = getProfile(player)
-	if not amount or not data then
-		return false
+	if not amount or not getProfile(player) then
+		return nil
 	end
-	local finalAmount = applyBonuses(player, amount)
-	if not finalAmount then
-		return false
-	end
-	data.coins = data.coins + finalAmount
-	fireCurrencyUpdate(player, data)
-	return true, finalAmount
+	return applyCoinBonuses(player, amount)
 end
 
-function CurrencyService.addDiamonds(player, amount)
+function CurrencyService.resolveDiamondReward(player, amount)
 	amount = normalizePositiveAmount(amount, false)
-	local data = getProfile(player)
-	if not amount or not data then
-		return false
+	if not amount or not getProfile(player) then
+		return nil
 	end
-
 	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local diamondBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "Diamonds")
@@ -118,13 +109,61 @@ function CurrencyService.addDiamonds(player, amount)
 			finalAmount = math.floor(finalAmount * diamondBonus)
 		end
 	end
-	finalAmount = normalizePositiveAmount(finalAmount, true)
+	return normalizePositiveAmount(finalAmount, true)
+end
+
+-- Exact credit for a reward whose bonuses were snapshotted previously. This is
+-- intentionally separate from rollback credit even though both mutate exactly.
+function CurrencyService.creditResolvedReward(player, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount or VALID_CURRENCIES[currency] ~= true then
+		return false
+	end
+	local data = getProfile(player)
+	if not data then
+		return false
+	end
+	data[currency] = data[currency] + amount
+	fireCurrencyUpdate(player, data)
+	return true
+end
+
+-- Shutdown/leave fallback for an already-resolved reward. The caller must pass
+-- the authoritative cached profile before DataService snapshots and releases it.
+function CurrencyService.creditResolvedRewardToProfile(data, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount
+		or VALID_CURRENCIES[currency] ~= true
+		or type(data) ~= "table"
+		or not isFiniteNumber(data.coins)
+		or data.coins < 0
+		or not isFiniteNumber(data.diamonds)
+		or data.diamonds < 0 then
+		return false
+	end
+	data[currency] = data[currency] + amount
+	return true
+end
+
+function CurrencyService.addCoins(player, amount)
+	local finalAmount = CurrencyService.resolveCoinReward(player, amount)
 	if not finalAmount then
 		return false
 	end
+	if not CurrencyService.creditResolvedReward(player, "coins", finalAmount) then
+		return false
+	end
+	return true, finalAmount
+end
 
-	data.diamonds = data.diamonds + finalAmount
-	fireCurrencyUpdate(player, data)
+function CurrencyService.addDiamonds(player, amount)
+	local finalAmount = CurrencyService.resolveDiamondReward(player, amount)
+	if not finalAmount then
+		return false
+	end
+	if not CurrencyService.creditResolvedReward(player, "diamonds", finalAmount) then
+		return false
+	end
 	return true, finalAmount
 end
 

@@ -48,8 +48,8 @@ function ShopService.setEggService(eggService)
 	ShopService._eggService = eggService
 end
 
--- Main.server owns the complete WalkSpeed formula. ShopService only notifies it
--- when a speed potion expires so every non-shop movement bonus is preserved.
+-- MovementService owns the complete WalkSpeed formula. ShopService only notifies
+-- it when a speed potion expires so every non-shop movement source is preserved.
 function ShopService.setWalkSpeedRefreshCallback(callback)
 	ShopService._walkSpeedRefresh = callback
 end

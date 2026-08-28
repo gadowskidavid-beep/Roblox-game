@@ -1,6 +1,6 @@
 --[[
 	UpgradeTreeService.lua - Server-authoritative tree purchases and effects.
-	QOF-11 adds Double Luck to the QOF-10 capacity and hatch entitlements.
+	QOF-12 adds Movement Speed and Magnet to the existing hatch/capacity entitlements.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -51,6 +51,18 @@ if BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled then
 	end
 end
 
+if BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Speed) do
+		registerPurchasable(level, "MovementSpeed")
+	end
+end
+
+if BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Magnet) do
+		registerPurchasable(level, "Magnet")
+	end
+end
+
 if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
 	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
 		registerPurchasable(level, "Storage")
@@ -94,6 +106,8 @@ local function neutralEntitlements()
 		},
 		multiOpenCount = 1,
 		generalLuckMultiplier = 1,
+		movementSpeedMultiplier = 1,
+		magnetRangeMultiplier = 1,
 		storageBonusSlots = 0,
 		petEquipBonusSlots = 0,
 	}
@@ -184,6 +198,24 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 	if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
 		entitlements.generalLuckMultiplier = applyHighestContiguousLevel(
 			{ BalanceConfig.CoreUpgrades.DoubleLuck },
+			purchased,
+			"multiplier",
+			1
+		)
+	end
+
+	if BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled then
+		entitlements.movementSpeedMultiplier = applyHighestContiguousLevel(
+			BalanceConfig.CoreUpgrades.Speed,
+			purchased,
+			"multiplier",
+			1
+		)
+	end
+
+	if BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled then
+		entitlements.magnetRangeMultiplier = applyHighestContiguousLevel(
+			BalanceConfig.CoreUpgrades.Magnet,
 			purchased,
 			"multiplier",
 			1

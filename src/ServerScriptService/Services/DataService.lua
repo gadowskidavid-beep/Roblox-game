@@ -296,12 +296,21 @@ function DataService.startAutoSave()
 	end)
 end
 
-function DataService.bindToClose()
+function DataService.bindToClose(beforeFinalSave)
 	if DataService._useMemoryOnly then
 		return
 	end
 
 	game:BindToClose(function()
+		-- Transient economy owners must commit into cached profiles before any
+		-- final save snapshots or releases those profiles.
+		if type(beforeFinalSave) == "function" then
+			local prepared, prepareResult = pcall(beforeFinalSave)
+			if not prepared or prepareResult == false then
+				warn("[DataService] Pre-save settlement did not complete for every player")
+			end
+		end
+
 		local pending = 0
 		for _, player in ipairs(Players:GetPlayers()) do
 			if DataService._cache[player.UserId] then

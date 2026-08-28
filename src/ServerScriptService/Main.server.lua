@@ -19,6 +19,8 @@ local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
+local MovementService = require(script.Parent.Services.MovementService)
+local PickupService = require(script.Parent.Services.PickupService)
 local BalanceConfig = require(ReplicatedStorage.Shared.BalanceConfig)
 
 ----------------------------------------------
@@ -146,6 +148,7 @@ QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
 UpgradeTreeService.init(DataService, CurrencyService)
+PickupService.init(DataService, CurrencyService, QuestService, MasteryService, UpgradeTreeService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
@@ -171,44 +174,19 @@ end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
+ZoneService.setPickupService(PickupService)
 
 CampaignService.init(DataService, CurrencyService, PetService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Bind to server shutdown to save all player data
-DataService.bindToClose()
+-- Settle transient pickup rewards before shutdown snapshots cached profiles.
+DataService.bindToClose(PickupService.settleAllPlayers)
 
-----------------------------------------------
--- WalkSpeed Buff System
-----------------------------------------------
-
--- Compute and apply walk speed buffs for a player
--- Formula: 16 * sprintingBonus * fasterRunningBonus * shopSpeedMultiplier
-local function applyWalkSpeedBuffs(player)
-	if not player or not player.Character then return end
-	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then return end
-
-	local baseSpeed = 16
-
-	-- Sprinting quest bonus (multiplier from QuestData)
-	local sprintingBonus = QuestService.getUpgradeBonus(player, "Sprinting")
-	local sprintingMultiplier = (sprintingBonus > 0) and sprintingBonus or 1
-
-	-- FasterRunning mastery bonus (multiplier from MasteryData)
-	local fasterRunningBonus = MasteryService.getBuffBonus(player, "FasterRunning")
-	local fasterRunningMultiplier = (fasterRunningBonus > 0) and fasterRunningBonus or 1
-
-	-- Speed Potion shop buff (2x when active, 1 otherwise)
-	local shopSpeedMultiplier = ShopService.getShopMultiplier(player, "speed")
-
-	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
-	humanoid.WalkSpeed = finalSpeed
-end
-
-ShopService.setWalkSpeedRefreshCallback(applyWalkSpeedBuffs)
+-- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
+MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
+ShopService.setWalkSpeedRefreshCallback(MovementService.refresh)
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -410,9 +388,9 @@ getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffI
 		return false, "Invalid buff ID parameter"
 	end
 	local success, msg = MasteryService.purchaseBuff(player, buffId)
-	-- Refresh walkspeed in case FasterRunning was purchased
+	-- Refresh every composed source after a movement mastery purchase.
 	if success then
-		applyWalkSpeedBuffs(player)
+		MovementService.refresh(player)
 	end
 	return success, msg
 end
@@ -448,7 +426,11 @@ getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgra
 	if not isValidIdentifier(upgradeId) then
 		return false, "Invalid upgrade ID", UpgradeTreeService.getState(player)
 	end
-	return UpgradeTreeService.purchase(player, upgradeId)
+	local success, message, state = UpgradeTreeService.purchase(player, upgradeId)
+	if success then
+		MovementService.refresh(player)
+	end
+	return success, message, state
 end
 
 -- ConvertToGoldenPet (2 second cooldown)
@@ -588,9 +570,9 @@ getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
 		return false, "Invalid item ID parameter"
 	end
 	local success, msg, state = ShopService.purchaseItem(player, itemId)
-	-- Refresh walkspeed in case Speed Potion was purchased
+	-- Refresh every composed source after a timed shop mutation.
 	if success then
-		applyWalkSpeedBuffs(player)
+		MovementService.refresh(player)
 	end
 	return success, msg, state
 end
@@ -634,13 +616,8 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Apply walkspeed on CharacterAdded (after Humanoid exists)
-	player.CharacterAdded:Connect(function(character)
-		local humanoid = character:WaitForChild("Humanoid", 10)
-		if humanoid then
-			applyWalkSpeedBuffs(player)
-		end
-	end)
+	-- Bind current and future characters after the authoritative profile is loaded.
+	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
 	local leaderstats = Instance.new("Folder")
@@ -748,6 +725,14 @@ Players.PlayerRemoving:Connect(function(player)
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
 
+	-- Cleanup QOF-12 movement listeners before the profile is released.
+	MovementService.unbindPlayer(player)
+
+	-- Settle transient owner-only pickups before the profile is saved/released.
+	if not PickupService.onPlayerRemoving(player) then
+		warn("[Battle Pets] Pending pickup settlement did not complete before player data cleanup for " .. player.Name)
+	end
+
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
@@ -772,6 +757,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 			return
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
+		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players
 		local leaderstats = player:FindFirstChild("leaderstats")
@@ -857,17 +843,6 @@ task.spawn(function()
 					end
 				end
 			end
-		end
-	end
-end)
-
--- Periodic WalkSpeed refresh: every 5 seconds, reapply walkspeed buffs for all players
--- Handles buff expiry (e.g., Speed Potion wearing off)
-task.spawn(function()
-	while true do
-		task.wait(5)
-		for _, player in ipairs(Players:GetPlayers()) do
-			applyWalkSpeedBuffs(player)
 		end
 	end
 end)

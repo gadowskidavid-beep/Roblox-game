@@ -78,6 +78,32 @@ describe("CurrencyService QOF-07 transactions", function()
 		expect(profile.coins):toBe(1130)
 	end)
 
+	it("snapshots earned bonuses once before an exact delayed credit", function()
+		resetState()
+		bonuses = { LuckyDrops = 2, CoinCollector = 3, DropCloner = 1, Diamonds = 2 }
+		local coins = CurrencyService.resolveCoinReward(player, 10)
+		local diamonds = CurrencyService.resolveDiamondReward(player, 10)
+		expect(coins):toBe(120)
+		expect(diamonds):toBe(20)
+		expect(profile):toEqual({ coins = 1000, diamonds = 500 })
+		expect(#updates):toBe(0)
+
+		bonuses = { LuckyDrops = 10, CoinCollector = 10, DropCloner = 1, Diamonds = 10 }
+		expect(CurrencyService.creditResolvedReward(player, "coins", coins)):toBeTrue()
+		expect(CurrencyService.creditResolvedReward(player, "diamonds", diamonds)):toBeTrue()
+		expect(profile):toEqual({ coins = 1120, diamonds = 520 })
+		expect(#updates):toBe(2)
+	end)
+
+	it("credits a cached profile exactly for leave/shutdown persistence fallback", function()
+		resetState()
+		bonuses = { LuckyDrops = 10, CoinCollector = 10, DropCloner = 1 }
+		expect(CurrencyService.creditResolvedRewardToProfile(profile, "coins", 25)):toBeTrue()
+		expect(profile.coins):toBe(1025)
+		expect(#updates):toBe(0)
+		expect(CurrencyService.creditResolvedRewardToProfile(profile, "gems", 25)):toBeFalse()
+	end)
+
 	it("keeps compatibility deduction wrappers on the hardened spend path", function()
 		resetState()
 		expect(CurrencyService.removeCoins(player, 100)):toBeTrue()

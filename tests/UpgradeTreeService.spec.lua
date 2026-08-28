@@ -123,6 +123,32 @@ describe("UpgradeTreeService QOF-07/QOF-08 entitlements", function()
 		expect(canonical.generalLuckMultiplier):toBe(2)
 	end)
 
+	it("requires canonical contiguous Movement and Magnet chains", function()
+		local forged = UpgradeTreeService.resolveEntitlements({
+			coreSpeed1 = true,
+			coreSpeed4 = true,
+			coreMagnet1 = true,
+			coreMagnet3 = true,
+			["eggSpeed I"] = true,
+		})
+		expect(forged.movementSpeedMultiplier):toBe(1)
+		expect(forged.magnetRangeMultiplier):toBe(1)
+
+		local canonical = UpgradeTreeService.resolveEntitlements({
+			["Eggs I"] = true,
+			["Eggs II"] = true,
+			coreSpeed1 = true,
+			coreSpeed2 = true,
+			coreSpeed3 = true,
+			coreSpeed4 = true,
+			coreMagnet1 = true,
+			coreMagnet2 = true,
+			coreMagnet3 = true,
+		})
+		expect(canonical.movementSpeedMultiplier):toBe(1.2)
+		expect(canonical.magnetRangeMultiplier):toBe(2)
+	end)
+
 	it("grandfathers full legacy capacity chains without external Eggs flags", function()
 		local entitlements = UpgradeTreeService.resolveEntitlements({
 			playtime1 = true,
@@ -246,10 +272,37 @@ describe("UpgradeTreeService QOF-07/QOF-08 purchases", function()
 		expect(state.available.streak3):toBeTrue()
 		expect(state.available.friends3):toBeTrue()
 		expect(state.available.doubleLuck):toBeTrue()
+		expect(state.available.coreSpeed1):toBeTrue()
+		expect(state.available.coreSpeed4):toBeTrue()
+		expect(state.available.coreMagnet1):toBeTrue()
+		expect(state.available.coreMagnet3):toBeTrue()
 		expect(state.entitlements.multiOpenCount):toBe(1)
 		expect(state.entitlements.generalLuckMultiplier):toBe(1)
+		expect(state.entitlements.movementSpeedMultiplier):toBe(1)
+		expect(state.entitlements.magnetRangeMultiplier):toBe(1)
 		expect(state.entitlements.storageBonusSlots):toBe(0)
 		expect(state.entitlements.petEquipBonusSlots):toBe(0)
+	end)
+
+	it("purchases canonical Movement and Magnet roots only after Eggs II", function()
+		resetState()
+		local speedBlocked, speedError = UpgradeTreeService.purchase(player, "coreSpeed1")
+		expect(speedBlocked):toBeFalse()
+		expect(speedError):toBe("Missing prerequisite")
+		local magnetBlocked, magnetError = UpgradeTreeService.purchase(player, "coreMagnet1")
+		expect(magnetBlocked):toBeFalse()
+		expect(magnetError):toBe("Missing prerequisite")
+		expect(#spends):toBe(0)
+
+		expect(UpgradeTreeService.purchase(player, "Eggs I")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "Eggs II")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "coreSpeed1")):toBeTrue()
+		expect(UpgradeTreeService.purchase(player, "coreMagnet1")):toBeTrue()
+		expect(spends[3]):toEqual({ currency = "coins", amount = 5000 })
+		expect(spends[4]):toEqual({ currency = "coins", amount = 10000 })
+		local state = UpgradeTreeService.getState(player)
+		expect(state.entitlements.movementSpeedMultiplier):toBe(1.05)
+		expect(state.entitlements.magnetRangeMultiplier):toBe(1.25)
 	end)
 
 	it("purchases canonical Double Luck only after Eggs II", function()

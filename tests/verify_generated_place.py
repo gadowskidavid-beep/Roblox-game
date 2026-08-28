@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-11 runtime source."""
+"""Verify that the generated Battle Pets place embeds every QOF-12 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -23,6 +23,8 @@ EXPECTED_SOURCES = {
     "EggService": "src/ServerScriptService/Services/EggService.lua",
     "ShopService": "src/ServerScriptService/Services/ShopService.lua",
     "UpgradeTreeService": "src/ServerScriptService/Services/UpgradeTreeService.lua",
+    "MovementService": "src/ServerScriptService/Services/MovementService.lua",
+    "PickupService": "src/ServerScriptService/Services/PickupService.lua",
     "DataSchema": "src/ServerScriptService/Services/DataSchema.lua",
     "DataService": "src/ServerScriptService/Services/DataService.lua",
     "UIController": "src/StarterPlayer/StarterPlayerScripts/UIController.lua",
@@ -30,7 +32,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 62, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 64, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -52,7 +54,7 @@ def all_expected_runtime_paths() -> list[Path]:
         *sorted((ROOT / "src/StarterPlayer/StarterPlayerScripts").glob("*Controller.lua")),
     ]
     assert len(paths) == EXPECTED_SCRIPT_COUNTS["ModuleScript"] + 2, (
-        f"expected 64 runtime source paths, found {len(paths)}"
+        f"expected 66 runtime source paths, found {len(paths)}"
     )
     return paths
 
@@ -68,6 +70,17 @@ def serialized_source_bytes(source: str) -> bytes:
 
 
 def main() -> None:
+    main_source = (ROOT / "src/ServerScriptService/Main.server.lua").read_bytes()
+    assert b"applyWalkSpeedBuffs" not in main_source, (
+        "deleted legacy WalkSpeed helper is still referenced by the server entry point"
+    )
+    for required in (
+        b"MovementService.bindPlayer(player)",
+        b"PickupService.onPlayerRemoving(player)",
+        b"DataService.bindToClose(PickupService.settleAllPlayers)",
+    ):
+        assert required in main_source, f"missing server lifecycle wiring: {required!r}"
+
     root = ET.parse(PLACE).getroot()
     scripts: dict[str, list[str]] = {}
     counts: dict[str, int] = {}
@@ -125,8 +138,8 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-11 runtime source exactly once")
-    print("PASS: all 64 generated script sources have byte-exact source parity")
+    print("PASS: generated place embeds every QOF-12 runtime source exactly once")
+    print("PASS: all 66 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

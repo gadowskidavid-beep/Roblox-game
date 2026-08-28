@@ -17,6 +17,7 @@ ZoneService._currencyService = nil
 ZoneService._petService = nil
 ZoneService._questService = nil
 ZoneService._shopService = nil
+ZoneService._pickupService = nil
 
 -- Active destructibles tracked by unique ID
 ZoneService._destructibles = {}
@@ -1814,6 +1815,29 @@ local function fireCollectCurrency(player, position, amount, currencyType)
 	end
 end
 
+local function queueResolvedCurrency(player, currency, amount, position)
+	if not amount or amount <= 0 then
+		return false
+	end
+	if ZoneService._pickupService then
+		local created = ZoneService._pickupService.createPickup(player, currency, amount, position)
+		if created then
+			return true
+		end
+	end
+
+	-- Fail-safe for world/pickup initialization errors: preserve the exact
+	-- snapshotted reward without reapplying bonuses or losing player currency.
+	local credited = ZoneService._currencyService.creditResolvedReward(player, currency, amount)
+	if credited then
+		fireCollectCurrency(player, position, amount, currency == "coins" and "Coins" or "Diamonds")
+		if currency == "coins" and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", amount)
+		end
+	end
+	return credited
+end
+
 -- Split rewards by actual damage contribution instead of giving everything to the
 -- last hitter. Disconnected contributors are excluded and their share is reallocated.
 function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedDrops)
@@ -1842,28 +1866,24 @@ function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedD
 		local playerRewards = { Coins = 0, Diamonds = 0 }
 		local coinShare = coinAllocations[entry.userId] or 0
 		if coinShare > 0 then
-			-- Coin Potion applies only to newly earned breakable rewards for this contributor.
+			-- Resolve every earned multiplier and random DropCloner roll once at
+			-- destruction. The pickup later performs only an exact one-shot credit.
 			local coinMultiplier = 1
 			if ZoneService._shopService then
 				coinMultiplier = ZoneService._shopService.getShopMultiplier(player, "coins")
 			end
 			local earnedCoins = math.floor(coinShare * coinMultiplier)
-			local success, actualCoins = ZoneService._currencyService.addCoins(player, earnedCoins)
-			if success then
-				playerRewards.Coins = actualCoins or earnedCoins
-				fireCollectCurrency(player, destructible.position, playerRewards.Coins, "Coins")
-				if ZoneService._questService then
-					ZoneService._questService.incrementStat(player, "earnCoins", playerRewards.Coins)
-				end
+			local actualCoins = ZoneService._currencyService.resolveCoinReward(player, earnedCoins)
+			if actualCoins and queueResolvedCurrency(player, "coins", actualCoins, destructible.position) then
+				playerRewards.Coins = actualCoins
 			end
 		end
 
 		local diamondShare = diamondAllocations[entry.userId] or 0
 		if diamondShare > 0 then
-			local success, actualDiamonds = ZoneService._currencyService.addDiamonds(player, diamondShare)
-			if success then
-				playerRewards.Diamonds = actualDiamonds or diamondShare
-				fireCollectCurrency(player, destructible.position, playerRewards.Diamonds, "Diamonds")
+			local actualDiamonds = ZoneService._currencyService.resolveDiamondReward(player, diamondShare)
+			if actualDiamonds and queueResolvedCurrency(player, "diamonds", actualDiamonds, destructible.position) then
+				playerRewards.Diamonds = actualDiamonds
 			end
 		end
 
@@ -1920,6 +1940,57 @@ function ZoneService._clearDestroyedTargetState(destructibleId)
 	for _, windows in pairs(ZoneService._critWindows) do
 		windows[destructibleId] = nil
 	end
+end
+
+local function resolveDrops(drops)
+	local resolved = {}
+	for currencyType, dropValue in pairs(drops) do
+		if type(dropValue) == "table" and dropValue.min and dropValue.max then
+			resolved[currencyType] = math.random(dropValue.min, dropValue.max)
+		else
+			resolved[currencyType] = dropValue
+		end
+	end
+	return resolved
+end
+
+-- One destruction finalizer owns reward snapshotting, pickup creation, cleanup,
+-- replication, and respawn for both pet and Crit-QTE damage paths.
+function ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, fallbackPlayer)
+	destructible.hp = 0
+	local rewardsByUserId = ZoneService._rewardContributors(
+		destructible,
+		fallbackPlayer,
+		resolveDrops(destructible.drops)
+	)
+	ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
+	ZoneService._clearDestroyedTargetState(destructibleId)
+
+	if destructible.model and destructible.model.Parent then
+		destructible.model:Destroy()
+	elseif destructible.part and destructible.part.Parent then
+		destructible.part:Destroy()
+	end
+
+	local zoneId = destructible.zoneId
+	local dtype = destructible.dtype
+	local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
+	ZoneService._destructibles[destructibleId] = nil
+	task.delay(10, function()
+		local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
+		if zoneFolder then
+			local origin = getZoneOrigin(zoneId)
+			local existingPositions = {}
+			for _, active in pairs(ZoneService._destructibles) do
+				if active.position then
+					table.insert(existingPositions, active.position)
+				end
+			end
+			local newPosition = getRandomPositionInZone(origin, existingPositions)
+			ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
+		end
+	end)
+	return rewardsByUserId
 end
 
 -- Attack a destructible (called when a player's pets attack)
@@ -2001,59 +2072,8 @@ function ZoneService.attackDestructible(player, destructibleId)
 	local appliedDamage = recordContribution(destructible, player, totalDamage)
 	destructible.hp = destructible.hp - appliedDamage
 
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
 	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops: support both fixed numbers and {min, max} tables for randomization
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model (or part) from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Schedule respawn after 10 seconds
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		-- Remove from tracking
-		ZoneService._destructibles[destructibleId] = nil
-
-		-- Respawn after delay at a new random position within the zone
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				-- Gather positions of ALL existing destructibles (all zones) to prevent overlap
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
+		ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, player)
 	else
 		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
@@ -2178,61 +2198,8 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 	local appliedDamage = recordContribution(destructible, player, critDamage)
 	destructible.hp = destructible.hp - appliedDamage
 
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
 	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Clean up crit window for this destructible
-		if playerCritWindows then
-			playerCritWindows[destructibleId] = nil
-		end
-
-		-- Schedule respawn
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		ZoneService._destructibles[destructibleId] = nil
-
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
+		ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, player)
 	else
 		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
@@ -2300,6 +2267,11 @@ end
 -- Set shop service reference for contributor-specific breakable rewards.
 function ZoneService.setShopService(shopService)
 	ZoneService._shopService = shopService
+end
+
+-- Set transient server-owned pickup service for breakable currency rewards.
+function ZoneService.setPickupService(pickupService)
+	ZoneService._pickupService = pickupService
 end
 
 --------------------------------------------------------------------------------
