@@ -60,9 +60,11 @@ rawset(_G, "require", sharedRequire)
 local PetHatchMath = originalRequire("src/ReplicatedStorage/Shared/PetHatchMath")
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
 local PetVariantPresentation = originalRequire("src/ReplicatedStorage/Shared/PetVariantPresentation")
+local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
 ReplicatedStorage.Shared.PetHatchMath = PetHatchMath
 ReplicatedStorage.Shared.PetVariantMath = PetVariantMath
 ReplicatedStorage.Shared.PetVariantPresentation = PetVariantPresentation
+ReplicatedStorage.Shared.PetEnchantMath = PetEnchantMath
 
 local function serviceRequire(path)
 	if path == Config then return Config end
@@ -71,6 +73,7 @@ local function serviceRequire(path)
 	if path == PetHatchMath then return PetHatchMath end
 	if path == PetVariantMath then return PetVariantMath end
 	if path == PetVariantPresentation then return PetVariantPresentation end
+	if path == PetEnchantMath then return PetEnchantMath end
 	return originalRequire(path)
 end
 rawset(_G, "require", serviceRequire)
@@ -586,7 +589,7 @@ describe("MachineService QOF-17 rollback and lock semantics", function()
 		end
 	end)
 
-	it("reports failed restorations instead of claiming rollback safety", function()
+	it("retains failed restorations and settles them before lifecycle release", function()
 		for _, mode in ipairs({ "false", "error" }) do
 			resetState()
 			rollbackMode = mode
@@ -601,6 +604,13 @@ describe("MachineService QOF-17 rollback and lock semantics", function()
 			expect(profile.pets[1].id):toBe("pet-1")
 			expect(currencyEvents):toBe(0)
 			expect(inventoryEvents):toBe(0)
+			expect(MachineService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+			expect(MachineService._playerLocks[player.UserId]):toBeTrue()
+
+			rollbackMode = "success"
+			expect(MachineService.cleanup(player)):toBeTrue()
+			expect(profile.diamonds):toBe(10000)
+			expect(MachineService._activeTransactions[player.UserId]):toBeNil()
 			expect(MachineService._playerLocks[player.UserId]):toBeNil()
 		end
 	end)
@@ -621,7 +631,28 @@ describe("MachineService QOF-17 rollback and lock semantics", function()
 		expect(MachineService._playerLocks[player.UserId]):toBeNil()
 	end)
 
-	it("rejects reentrant work under the per-player lock and cleanup releases stale locks", function()
+	it("rejects machine work while enchanting owns the shared inventory lease", function()
+		resetState()
+		local enchantLease = PetService.beginInventoryMutation(player, "EnchantingService")
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(result):toBeNil()
+		expect(message):toBe("Pet inventory mutation already in progress")
+		expect(profile.diamonds):toBe(10000)
+		expect(#profile.pets):toBe(1)
+		expect(PetService.endInventoryMutation(player, enchantLease, false)):toBeTrue()
+	end)
+
+	it("rejects a stale lease release without unlocking its current owner", function()
+		resetState()
+		local first = PetService.beginInventoryMutation(player, "first")
+		expect(PetService.endInventoryMutation(player, first, false)):toBeTrue()
+		local second = PetService.beginInventoryMutation(player, "second")
+		expect(PetService.endInventoryMutation(player, first, false)):toBeFalse()
+		expect(PetService.isInventoryMutationCurrent(player, second)):toBeTrue()
+		expect(PetService.endInventoryMutation(player, second, false)):toBeTrue()
+	end)
+
+	it("rejects reentrant work under the per-player lock and cleans only settled state", function()
 		resetState()
 		local nestedResult = true
 		local nestedMessage = nil
@@ -639,9 +670,22 @@ describe("MachineService QOF-17 rollback and lock semantics", function()
 		expect(result.success):toBeTrue()
 		expect(nestedResult):toBeNil()
 		expect(nestedMessage):toBe("Machine conversion already in progress")
-		MachineService._playerLocks[player.UserId] = true
-		MachineService.cleanup(player)
+		expect(MachineService.cleanup(player)):toBeTrue()
 		expect(MachineService._playerLocks[player.UserId]):toBeNil()
+	end)
+	it("blocks cleanup and shutdown while a machine transaction is executing", function()
+		resetState()
+		local lease = PetService.beginInventoryMutation(player, "MachineService")
+		MachineService._playerLocks[player.UserId] = true
+		MachineService._activeTransactions[player.UserId] = {
+			player = player,
+			inventoryLease = lease,
+			executing = true,
+		}
+		expect(MachineService.cleanup(player)):toBeFalse()
+		expect(MachineService.prepareForShutdown()):toBeFalse()
+		expect(MachineService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+		expect(PetService.isInventoryMutationCurrent(player, lease)):toBeTrue()
 	end)
 end)
 
@@ -841,5 +885,64 @@ describe("MachineService QOF-17 adversarial transaction boundaries", function()
 		expect(profile.discoveredPets.External):toBeTrue()
 		expect(#profile.pets):toBe(1)
 		expect(profile.pets[1].id):toBe("pet-1")
+	end)
+end)
+
+
+describe("MachineService QOF-19 enchant snapshot and consumption", function()
+	it("rejects a concurrent reroll after prepare and restores the debit", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "StrongI"
+		resetState({ enchanted })
+		MachineService.setTransactionHook(function(stage)
+			if stage == "afterSpend" then
+				enchanted.enchantId = "AgileI"
+			end
+		end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(result):toBeNil()
+		expect(message):toBe("Selected pet changed during conversion")
+		expect(profile.diamonds):toBe(10000)
+		expect(profile.pets[1]):toBe(enchanted)
+		expect(profile.pets[1].enchantId):toBe("AgileI")
+	end)
+
+	it("consumes enchanted inputs on normal success and creates an explicitly unenchanted output", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "StrongIII"
+		resetState({ enchanted })
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(message):toBeNil()
+		expect(result.success):toBeTrue()
+		expect(profile.pets[1] == enchanted):toBeFalse()
+		expect(profile.pets[1].enchantId):toBeNil()
+		expect(result.outputPet.enchantId):toBeNil()
+	end)
+
+	it("consumes enchanted inputs on a normal failed chance roll", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "AgileII"
+		resetState({ enchanted })
+		MachineService.setRandomSource(function() return 1 end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(message):toBeNil()
+		expect(result.success):toBeFalse()
+		expect(#profile.pets):toBe(0)
+		expect(result.outputPet):toBeNil()
+	end)
+
+	it("preserves the original enchanted table on technical rollback", function()
+		local enchanted = makePet("pet-1", "Buddy", "Normal", false)
+		enchanted.enchantId = "AgileIII"
+		resetState({ enchanted })
+		MachineService.setTransactionHook(function(stage)
+			if stage == "afterPetMutation" then error("injected enchanted rollback") end
+		end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(result):toBeNil()
+		expect(message):toBe("Conversion failed safely")
+		expect(profile.pets[1]):toBe(enchanted)
+		expect(profile.pets[1].enchantId):toBe("AgileIII")
+		expect(profile.diamonds):toBe(10000)
 	end)
 end)

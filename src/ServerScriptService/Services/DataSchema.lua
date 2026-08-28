@@ -7,10 +7,11 @@
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
+local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 9
+DataSchema.VERSION = 10
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -176,6 +177,14 @@ local function normalizePets(data)
 
 			pet.variant = variant
 			pet.shiny = shiny
+			-- V10 persists only one canonical enchant ID. All derived or legacy
+			-- enchant payloads are untrusted and are removed on every normalize.
+			pet.enchantId = PetEnchantMath.normalizeEnchantId(pet.enchantId)
+			pet.enchant = nil
+			pet.enchantData = nil
+			pet.enchants = nil
+			pet.enchantStat = nil
+			pet.enchantMultiplier = nil
 			-- Keep the current visual/rolling-version compatibility mirror. The
 			-- base variant remains authoritative in V6.
 			pet.golden = variant == "Golden"
