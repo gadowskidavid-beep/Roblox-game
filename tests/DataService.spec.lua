@@ -16,9 +16,39 @@ function DataSchema.deepCopy(value)
 	return copy
 end
 
+function DataSchema.cloneForPersistence(value)
+	return DataSchema.deepCopy(value)
+end
+
+local function normalizeKnownLevel(values, id, maximum)
+	local output = {}
+	if type(values) == "table" then
+		local value = values[id]
+		if type(value) == "number" and value == value and value ~= math.huge
+			and value ~= -math.huge and value % 1 == 0 and value >= 1 and value <= maximum then
+			output[id] = value
+		end
+	end
+	return output
+end
+local ProgressionMath = {}
+function ProgressionMath.normalizeQuestLevels(values)
+	return normalizeKnownLevel(values, "StrongPets", 3)
+end
+function ProgressionMath.normalizeMasteryLevels(values)
+	return normalizeKnownLevel(values, "MoreCoins", 10)
+end
+
+local storedProfiles = {}
+local dataStore = {}
+function dataStore:UpdateAsync(key, transform)
+	local nextValue = transform(storedProfiles[key])
+	if nextValue ~= nil then storedProfiles[key] = nextValue end
+	return nextValue
+end
 local dataStoreService = {}
 function dataStoreService:GetDataStore()
-	return {}
+	return dataStore
 end
 local httpService = {}
 function httpService:GenerateGUID()
@@ -34,14 +64,23 @@ function runService:IsStudio()
 	return false
 end
 
-local SharedMock = { Config = Config }
-local ServicesMock = { DataSchema = DataSchema }
+local SharedMock = { Config = Config, ProgressionMath = ProgressionMath }
+local ProfileTransactionService = originalRequire("src/ServerScriptService/Services/ProfileTransactionService")
+local ServicesMock = {
+	DataSchema = DataSchema,
+	ProfileTransactionService = ProfileTransactionService,
+}
+local replicatedStorage = { Shared = SharedMock }
+function replicatedStorage:FindFirstChild()
+	return nil
+end
 local gameMock = {
 	JobId = "test-job",
 	PlaceId = 1,
-	ReplicatedStorage = { Shared = SharedMock },
+	ReplicatedStorage = replicatedStorage,
 }
 function gameMock:GetService(name)
+	if name == "ReplicatedStorage" then return replicatedStorage end
 	if name == "DataStoreService" then return dataStoreService end
 	if name == "HttpService" then return httpService end
 	if name == "Players" then return playersService end
@@ -53,12 +92,15 @@ rawset(_G, "script", { Parent = ServicesMock })
 
 local function mockRequire(path)
 	if path == Config then return Config end
+	if path == ProgressionMath then return ProgressionMath end
 	if path == DataSchema then return DataSchema end
+	if path == ProfileTransactionService then return ProfileTransactionService end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
 local DataService = originalRequire("src/ServerScriptService/Services/DataService")
 rawset(_G, "require", originalRequire)
+local CurrencyService = originalRequire("src/ServerScriptService/Services/CurrencyService")
 
 local player = { UserId = 42 }
 function player:IsA(className)
@@ -68,7 +110,7 @@ end
 describe("DataService QOF-09 client projection", function()
 	it("projects hatch and potion state as deep copies without private session state", function()
 		local profile = {
-			schemaVersion = 8,
+			schemaVersion = 12,
 			coins = 10,
 			diamonds = 2,
 			pets = {},
@@ -76,13 +118,13 @@ describe("DataService QOF-09 client projection", function()
 			xp = 0,
 			equippedPets = {},
 			unlockedZones = { 1 },
-			upgrades = {},
+			upgrades = { StrongPets = 2, UnknownQuest = 1, FasterPets = 999 },
 			upgradeTreePurchases = {},
 			hatchPreferences = { preferredBatchCount = 5 },
 			questStats = {},
 			campaignProgress = {},
 			masteryPoints = 0,
-			masteryBuffs = {},
+			masteryBuffs = { MoreCoins = 4, UnknownMastery = 1, FasterRunning = "5" },
 			discoveredPets = {},
 			shopPurchases = {},
 			potionInventory = { LuckPotion = 4 },
@@ -96,6 +138,8 @@ describe("DataService QOF-09 client projection", function()
 
 		local projected = DataService.getClientData(player)
 		expect(projected.hatchPreferences):toEqual({ preferredBatchCount = 5 })
+		expect(projected.upgrades):toEqual({ StrongPets = 2 })
+		expect(projected.masteryBuffs):toEqual({ MoreCoins = 4 })
 		expect(projected.potionInventory):toEqual({ LuckPotion = 4 })
 		expect(projected.activeBuffs):toEqual({ luck = { sources = { LuckPotion = { expiresAt = 1500 } } } })
 		expect(projected.potionUpgrades):toEqual({ slots = 3, durationLevel = 1, autoDrink = false })
@@ -103,11 +147,17 @@ describe("DataService QOF-09 client projection", function()
 		expect(projected.potionBuffSources):toBeNil()
 		expect(projected._session):toBeNil()
 		projected.hatchPreferences.preferredBatchCount = 1
+		projected.upgrades.StrongPets = 1
+		projected.masteryBuffs.MoreCoins = 1
 		projected.potionInventory.LuckPotion = 1
 		projected.activeBuffs.luck.sources.LuckPotion.expiresAt = 1
 		projected.potionUpgrades.slots = 5
 		projected.autoDrinkSelection.LuckPotion = nil
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+		expect(profile.upgrades.StrongPets):toBe(2)
+		expect(profile.upgrades.UnknownQuest):toBe(1)
+		expect(profile.masteryBuffs.MoreCoins):toBe(4)
+		expect(profile.masteryBuffs.UnknownMastery):toBe(1)
 		expect(profile.potionInventory.LuckPotion):toBe(4)
 		expect(profile.activeBuffs.luck.sources.LuckPotion.expiresAt):toBe(1500)
 		expect(profile.potionUpgrades.slots):toBe(3)
@@ -491,5 +541,102 @@ describe("DataService retrying profile lifecycle", function()
 		DataService.savePlayerData = originalSave
 		gameMock.BindToClose = originalBind
 		rawset(_G, "task", originalTask)
+	end)
+end)
+
+
+describe("DataService QOF-25 transaction save admission", function()
+	it("refuses before snapshot while an owner is pending and saves only after settlement", function()
+		local candidate = lifecyclePlayer(250, "Atomic")
+		local originalUseMemoryOnly = DataService._useMemoryOnly
+		local originalClone = DataSchema.cloneForPersistence
+		local cloneCalls = 0
+		DataService._useMemoryOnly = false
+		DataService._cache[candidate.UserId] = {
+			coins = 100,
+			diamonds = 50,
+			_session = { id = "test-job" },
+		}
+		DataService._canSave[candidate.UserId] = true
+		DataService._profilePlayers[candidate.UserId] = candidate
+		storedProfiles["Player_250"] = { _session = { id = "test-job" } }
+		DataSchema.cloneForPersistence = function(value)
+			cloneCalls = cloneCalls + 1
+			return DataSchema.deepCopy(value)
+		end
+
+		local owner = ProfileTransactionService.begin(candidate, "QOF25Test")
+		expect(type(owner)):toBe("table")
+		local saved, saveError = DataService.savePlayerData(candidate, false)
+		expect(saved):toBeFalse()
+		expect(saveError):toBe("Profile transaction pending")
+		expect(cloneCalls):toBe(0)
+		expect(ProfileTransactionService.commit(owner)):toBeTrue()
+		expect(DataService.savePlayerData(candidate, false)):toBeTrue()
+		expect(cloneCalls):toBe(1)
+		expect(storedProfiles["Player_250"].coins):toBe(100)
+
+		DataSchema.cloneForPersistence = originalClone
+		DataService._useMemoryOnly = originalUseMemoryOnly
+		DataService._cache[candidate.UserId] = nil
+		DataService._canSave[candidate.UserId] = nil
+		DataService._profilePlayers[candidate.UserId] = nil
+		DataService._saving[candidate.UserId] = nil
+		storedProfiles["Player_250"] = nil
+		ProfileTransactionService.clearProfile(candidate)
+	end)
+
+	it("serializes cross-service reservations and blocks snapshots until cancellation", function()
+		local candidate = lifecyclePlayer(251, "CrossService")
+		local originalUseMemoryOnly = DataService._useMemoryOnly
+		local originalClone = DataSchema.cloneForPersistence
+		local cloneCalls = 0
+		DataService._useMemoryOnly = false
+		DataService._cache[candidate.UserId] = {
+			coins = 100,
+			diamonds = 50,
+			_session = { id = "test-job" },
+		}
+		DataService._canSave[candidate.UserId] = true
+		DataService._profilePlayers[candidate.UserId] = candidate
+		storedProfiles["Player_251"] = { _session = { id = "test-job" } }
+		DataSchema.cloneForPersistence = function(value)
+			cloneCalls = cloneCalls + 1
+			return DataSchema.deepCopy(value)
+		end
+		CurrencyService.init(DataService, nil, ProfileTransactionService)
+
+		local shopReservation = CurrencyService.beginSpendTransaction(
+			candidate,
+			"diamonds",
+			20,
+			"ShopService"
+		)
+		expect(type(shopReservation)):toBe("table")
+		expect(ProfileTransactionService.getOwnerName(candidate)):toBe("ShopService")
+		expect(CurrencyService.beginSpendTransaction(
+			candidate,
+			"coins",
+			1,
+			"UpgradeTreeService"
+		)):toBeNil()
+		expect(DataService._cache[candidate.UserId].diamonds):toBe(50)
+		local saved, saveError = DataService.savePlayerData(candidate, false)
+		expect(saved):toBeFalse()
+		expect(saveError):toBe("Profile transaction pending")
+		expect(cloneCalls):toBe(0)
+		expect(CurrencyService.rollbackSpendTransaction(shopReservation)):toBeTrue()
+		expect(DataService.savePlayerData(candidate, false)):toBeTrue()
+		expect(cloneCalls):toBe(1)
+		expect(storedProfiles["Player_251"].diamonds):toBe(50)
+
+		DataSchema.cloneForPersistence = originalClone
+		DataService._useMemoryOnly = originalUseMemoryOnly
+		DataService._cache[candidate.UserId] = nil
+		DataService._canSave[candidate.UserId] = nil
+		DataService._profilePlayers[candidate.UserId] = nil
+		DataService._saving[candidate.UserId] = nil
+		storedProfiles["Player_251"] = nil
+		ProfileTransactionService.clearProfile(candidate)
 	end)
 end)

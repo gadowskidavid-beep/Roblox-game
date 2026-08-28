@@ -30,6 +30,7 @@ PetService._upgradeTreeService = nil
 -- identity prevents stale cleanup/finally paths from releasing a newer owner.
 PetService._inventoryMutationLeases = {}
 PetService._inventoryMutationIncarnations = {}
+PetService._variantConversionHook = nil
 
 local function deepCopy(value)
 	if type(value) ~= "table" then
@@ -60,6 +61,13 @@ local function isFiniteNumber(value)
 		and value ~= -math.huge
 end
 
+-- Damage multipliers are external/runtime values. Every finite strictly positive
+-- factor is meaningful (including reductions below 1); malformed factors are
+-- neutral instead of corrupting the authoritative damage chain.
+local function normalizedPositiveDamageFactor(value)
+	return isFiniteNumber(value) and value > 0 and value or 1
+end
+
 -- Capacity sources are external service/profile values. Slot bonuses are always
 -- non-negative whole numbers; malformed, negative, or non-finite values are inert.
 local function safeSlotBonus(value, maximum)
@@ -79,6 +87,7 @@ function PetService.init(dataService, currencyService, upgradeService)
 	PetService._upgradeService = upgradeService
 	PetService._inventoryMutationLeases = {}
 	PetService._inventoryMutationIncarnations = {}
+	PetService._variantConversionHook = nil
 end
 
 function PetService.beginInventoryMutation(player, owner)
@@ -963,7 +972,7 @@ end
 
 -- Prepare a canonical variant conversion without mutating inventory, discovery,
 -- currency, quests, or replication. MachineService owns payment and chance.
-function PetService.prepareVariantConversion(player, petInstanceIds, inputVariant, outputVariant)
+function PetService.prepareVariantConversion(player, petInstanceIds, inputVariant, outputVariant, suppliedLease)
 	if not player or type(petInstanceIds) ~= "table" then
 		return nil, "Invalid parameters"
 	end
@@ -996,14 +1005,24 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 	end
 
 	local data = PetService._dataService and PetService._dataService.getPlayerData(player)
+	if suppliedLease == nil or not PetService.isInventoryMutationCurrent(player, suppliedLease) then
+		return nil, "Pet inventory mutation ownership changed"
+	end
 	if type(data) ~= "table" or type(data.pets) ~= "table" then
 		return nil, "No player data"
 	end
 	local petsTable = data.pets
 	local petById = {}
-	for _, pet in ipairs(petsTable) do
+	local petIndexById = {}
+	for index, pet in ipairs(petsTable) do
 		if type(pet) == "table" and type(pet.id) == "string" then
-			petById[pet.id] = pet
+			-- Duplicate instance IDs make ownership ambiguous and must fail closed.
+			if petById[pet.id] ~= nil then
+				petIndexById[pet.id] = false
+			else
+				petById[pet.id] = pet
+				petIndexById[pet.id] = index
+			end
 		end
 	end
 	local equippedById = {}
@@ -1015,6 +1034,7 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 
 	local selectedIds = {}
 	local selectedPets = {}
+	local selectedIndices = {}
 	local selectedSnapshots = {}
 	local speciesId = nil
 	local anyShiny = false
@@ -1028,8 +1048,11 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 		end
 		selectedIds[instanceId] = true
 		local pet = petById[instanceId]
-		if not pet then
-			return nil, "Pet not found in inventory: " .. tostring(instanceId)
+		local petIndex = petIndexById[instanceId]
+		if not pet or petIndex == false then
+			return nil, petIndex == false
+				and "Duplicate pet identity in inventory"
+				or "Pet not found in inventory: " .. tostring(instanceId)
 		end
 		if pet.favorite == true then
 			return nil, "Favorited pets cannot be converted"
@@ -1051,6 +1074,7 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 		end
 		anyShiny = anyShiny or pet.shiny == true
 		selectedPets[index] = pet
+		selectedIndices[index] = petIndex
 		selectedSnapshots[index] = {
 			id = pet.id,
 			petId = pet.petId,
@@ -1066,40 +1090,11 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 		return nil, "Pet inventory has no room for the conversion result"
 	end
 
-	local definition = PetData.Pets[speciesId]
-	local presentation = PetVariantPresentation.resolve({
-		petId = speciesId,
-		variant = outputVariant,
-		shiny = anyShiny,
-	})
-	local outputPet = {
-		id = HttpService:GenerateGUID(false),
-		petId = speciesId,
-		name = presentation.displayPetName,
-		rarity = definition.rarity,
-		damage = PetVariantMath.getBaseDamage(speciesId, outputVariant, anyShiny),
-		variant = outputVariant,
-		shiny = anyShiny,
-		golden = outputVariant == "Golden",
-		favorite = false,
-		equipped = false,
-	}
-	-- Machine success always creates a fresh, explicitly unenchanted output.
-	outputPet.enchantId = nil
-	local discoveryKeys = PetDex.getWriteKeys(speciesId, outputVariant, anyShiny)
-	if not discoveryKeys then
-		return nil, "Invalid output discovery state"
-	end
+	-- Preparation records only authoritative input identity and undo metadata.
+	-- Output identity and discovery keys are deliberately deferred until after RNG.
 	local originalPets = {}
 	for index, pet in ipairs(petsTable) do
 		originalPets[index] = pet
-	end
-	local discoveryTable = type(data.discoveredPets) == "table" and data.discoveredPets or nil
-	local discoverySnapshot = {}
-	if discoveryTable then
-		for key, value in pairs(discoveryTable) do
-			discoverySnapshot[key] = value
-		end
 	end
 
 	return {
@@ -1107,16 +1102,16 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 		data = data,
 		petsTable = petsTable,
 		originalPets = originalPets,
+		expectedPets = originalPets,
 		selectedIds = selectedIds,
 		selectedPets = selectedPets,
+		selectedIndices = selectedIndices,
 		selectedSnapshots = selectedSnapshots,
+		speciesId = speciesId,
+		anyShiny = anyShiny,
 		inputVariant = inputVariant,
 		outputVariant = outputVariant,
-		outputPet = outputPet,
-		discoveryKey = discoveryKeys[1],
-		discoveryKeys = discoveryKeys,
-		discoveryTable = discoveryTable,
-		discoverySnapshot = discoverySnapshot,
+		phase = "VALIDATED",
 		discoveryMutationStarted = false,
 		mutationStarted = false,
 		committed = false,
@@ -1125,44 +1120,26 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 	}, nil
 end
 
-local function discoveryMatchesPreparedSnapshot(data, prepared)
-	if data.discoveredPets ~= prepared.discoveryTable then
+local function arrayMatches(actual, expected)
+	if type(actual) ~= "table" or type(expected) ~= "table" or #actual ~= #expected then
 		return false
 	end
-	if prepared.discoveryTable == nil then
-		return true
-	end
-	for key, value in pairs(prepared.discoveryTable) do
-		if prepared.discoverySnapshot[key] ~= value then
-			return false
-		end
-	end
-	for key, value in pairs(prepared.discoverySnapshot) do
-		if prepared.discoveryTable[key] ~= value then
-			return false
-		end
+	for index, value in ipairs(expected) do
+		if actual[index] ~= value then return false end
 	end
 	return true
 end
 
-local function commitVariantConversionUnlocked(player, prepared, succeeded)
-	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed
-		or type(succeeded) ~= "boolean" then
-		return false, "Invalid prepared conversion"
+local function snapshotCurrentPets(prepared)
+	local snapshot = {}
+	for index, pet in ipairs(prepared.petsTable) do
+		snapshot[index] = pet
 	end
-	local data = PetService._dataService.getPlayerData(player)
-	if data ~= prepared.data or data.pets ~= prepared.petsTable
-		or #data.pets ~= #prepared.originalPets then
-		return false, "Inventory changed during conversion"
-	end
-	if not discoveryMatchesPreparedSnapshot(data, prepared) then
-		return false, "Discovery changed during conversion"
-	end
-	for index, pet in ipairs(prepared.originalPets) do
-		if data.pets[index] ~= pet then
-			return false, "Inventory changed during conversion"
-		end
-	end
+	prepared.expectedPets = snapshot
+end
+
+local function selectedSnapshotsMatch(prepared)
+	local data = prepared.data
 	local equippedById = {}
 	if type(data.equippedPets) == "table" then
 		for _, equippedId in ipairs(data.equippedPets) do
@@ -1177,53 +1154,177 @@ local function commitVariantConversionUnlocked(player, prepared, succeeded)
 			or (rawget(pet, "enchantId") ~= nil) ~= snapshot.enchantPresent
 			or rawget(pet, "enchantId") ~= snapshot.enchantId
 			or pet.favorite == true or pet.equipped == true or equippedById[pet.id] then
-			return false, "Selected pet changed during conversion"
+			return false
 		end
 	end
-	if succeeded and #data.pets - #prepared.selectedPets + 1 > PetService.getMaxInventory(player) then
+	return true
+end
+
+local function invokeVariantConversionHook(stage, prepared, detail)
+	if PetService._variantConversionHook then
+		PetService._variantConversionHook(stage, prepared, detail)
+	end
+end
+
+-- Deterministic fault seam used by transaction tests. Production leaves it nil.
+function PetService.setVariantConversionHook(hook)
+	PetService._variantConversionHook = type(hook) == "function" and hook or nil
+end
+
+local function stageVariantConversionUnlocked(player, prepared)
+	if type(prepared) ~= "table" or prepared.player ~= player
+		or prepared.phase ~= "VALIDATED" or prepared.transactionCommitted then
+		return false, "Invalid prepared conversion"
+	end
+	local data = PetService._dataService and PetService._dataService.getPlayerData(player)
+	if data ~= prepared.data or data.pets ~= prepared.petsTable
+		or not arrayMatches(data.pets, prepared.originalPets) then
+		return false, "Inventory changed during conversion"
+	end
+	if not selectedSnapshotsMatch(prepared) then
+		return false, "Selected pet changed during conversion"
+	end
+
+	local removals = {}
+	for index, petIndex in ipairs(prepared.selectedIndices) do
+		removals[index] = { index = petIndex, pet = prepared.selectedPets[index] }
+	end
+	table.sort(removals, function(left, right) return left.index > right.index end)
+
+	prepared.phase = "STAGING_INPUTS"
+	prepared.mutationStarted = true
+	prepared.removedInputCount = 0
+	for _, removal in ipairs(removals) do
+		local removed = table.remove(data.pets, removal.index)
+		if removed ~= removal.pet then
+			error("Variant conversion removed an unexpected pet")
+		end
+		prepared.removedInputCount = prepared.removedInputCount + 1
+		snapshotCurrentPets(prepared)
+		invokeVariantConversionHook("afterInputRemoval", prepared, prepared.removedInputCount)
+	end
+	prepared.phase = "INPUTS_STAGED"
+	invokeVariantConversionHook("afterAllInputsStaged", prepared, prepared.removedInputCount)
+	return true
+end
+
+function PetService.stageVariantConversion(player, prepared, suppliedLease)
+	if not PetService.isInventoryMutationCurrent(player, suppliedLease) then
+		return false, "Pet inventory mutation ownership changed"
+	end
+	local ok, staged, stageError = xpcall(function()
+		return stageVariantConversionUnlocked(player, prepared)
+	end, debug.traceback)
+	if not ok then return false, "Conversion failed safely" end
+	return staged, stageError
+end
+
+local function finalizeVariantConversionUnlocked(player, prepared, succeeded)
+	if type(prepared) ~= "table" or prepared.player ~= player
+		or prepared.phase ~= "INPUTS_STAGED" or type(succeeded) ~= "boolean"
+		or prepared.transactionCommitted then
+		return false, "Invalid staged conversion"
+	end
+	local data = PetService._dataService and PetService._dataService.getPlayerData(player)
+	if data ~= prepared.data or data.pets ~= prepared.petsTable
+		or not arrayMatches(data.pets, prepared.expectedPets) then
+		return false, "Inventory changed during conversion"
+	end
+
+	prepared.outcomeSucceeded = succeeded
+	if not succeeded then
+		prepared.phase = "OUTCOME_STAGED"
+		prepared.committed = true
+		return true
+	end
+	if #data.pets + 1 > PetService.getMaxInventory(player) then
 		return false, "Pet inventory has no room for the conversion result"
 	end
 
-	prepared.mutationStarted = true
-	local writeIndex = 1
-	for _, pet in ipairs(prepared.originalPets) do
-		if not prepared.selectedIds[pet.id] then
-			data.pets[writeIndex] = pet
-			writeIndex = writeIndex + 1
-		end
+	-- No output identity or Dex write plan exists before this post-RNG phase.
+	local definition = PetData.Pets[prepared.speciesId]
+	local presentation = PetVariantPresentation.resolve({
+		petId = prepared.speciesId,
+		variant = prepared.outputVariant,
+		shiny = prepared.anyShiny,
+	})
+	local discoveryKeys = PetDex.getWriteKeys(
+		prepared.speciesId,
+		prepared.outputVariant,
+		prepared.anyShiny
+	)
+	if not definition or not discoveryKeys then
+		return false, "Invalid output discovery state"
 	end
-	for index = #data.pets, writeIndex, -1 do
-		data.pets[index] = nil
-	end
+	local outputPet = {
+		id = HttpService:GenerateGUID(false),
+		petId = prepared.speciesId,
+		name = presentation.displayPetName,
+		rarity = definition.rarity,
+		damage = PetVariantMath.getBaseDamage(
+			prepared.speciesId,
+			prepared.outputVariant,
+			prepared.anyShiny
+		),
+		variant = prepared.outputVariant,
+		shiny = prepared.anyShiny,
+		golden = prepared.outputVariant == "Golden",
+		favorite = false,
+		equipped = false,
+	}
+	-- Machine outputs are always fresh and explicitly carry no enchant.
+	outputPet.enchantId = nil
+	prepared.outputPet = outputPet
+	prepared.discoveryKey = discoveryKeys[1]
+	prepared.discoveryKeys = discoveryKeys
+	prepared.phase = "STAGING_OUTCOME"
 
-	if succeeded then
-		prepared.isNewDiscovery = not prepared.discoveryTable
-			or prepared.discoveryTable[prepared.discoveryKey] ~= true
-		local discoveryWriteTable = data.discoveredPets
-		local createdDiscoveryTable = false
-		if type(discoveryWriteTable) ~= "table" then
-			discoveryWriteTable = {}
-			data.discoveredPets = discoveryWriteTable
-			createdDiscoveryTable = true
-		end
-		prepared.discoveryWriteTable = discoveryWriteTable
-		prepared.discoveryWrites = {}
-		prepared.discoveryCreatedTable = createdDiscoveryTable
-		prepared.discoveryMutationStarted = true
-		for _, discoveryKey in ipairs(prepared.discoveryKeys) do
-			local previousValue = rawget(discoveryWriteTable, discoveryKey)
-			prepared.discoveryWrites[discoveryKey] = {
-				present = previousValue ~= nil,
-				value = previousValue,
-			}
-			discoveryWriteTable[discoveryKey] = true
-		end
-		table.insert(data.pets, prepared.outputPet)
+	table.insert(data.pets, outputPet)
+	snapshotCurrentPets(prepared)
+	invokeVariantConversionHook("afterOutputInsertion", prepared, outputPet)
+
+	local discoveryWriteTable = data.discoveredPets
+	local createdDiscoveryTable = false
+	if type(discoveryWriteTable) ~= "table" then
+		discoveryWriteTable = {}
+		data.discoveredPets = discoveryWriteTable
+		createdDiscoveryTable = true
 	end
+	prepared.discoveryWriteTable = discoveryWriteTable
+	prepared.discoveryWrites = {}
+	prepared.discoveryCreatedTable = createdDiscoveryTable
+	prepared.discoveryMutationStarted = true
+	prepared.isNewDiscovery = discoveryWriteTable[prepared.discoveryKey] ~= true
+	for index, discoveryKey in ipairs(discoveryKeys) do
+		local previousValue = rawget(discoveryWriteTable, discoveryKey)
+		prepared.discoveryWrites[discoveryKey] = {
+			present = previousValue ~= nil,
+			value = previousValue,
+		}
+		discoveryWriteTable[discoveryKey] = true
+		invokeVariantConversionHook("afterDiscoveryWrite", prepared, index)
+	end
+	invokeVariantConversionHook("afterAllDiscoveryWrites", prepared, #discoveryKeys)
+	prepared.phase = "OUTCOME_STAGED"
 	prepared.committed = true
 	return true
 end
 
+function PetService.finalizeVariantConversion(player, prepared, succeeded, suppliedLease)
+	if not PetService.isInventoryMutationCurrent(player, suppliedLease) then
+		return false, "Pet inventory mutation ownership changed"
+	end
+	local ok, finalized, finalizeError = xpcall(function()
+		return finalizeVariantConversionUnlocked(player, prepared, succeeded)
+	end, debug.traceback)
+	if not ok then return false, "Conversion failed safely" end
+	return finalized, finalizeError
+end
+
+local rollbackVariantConversionUnlocked
+
+-- Compatibility coordinator for internal callers that already know the outcome.
+-- MachineService uses the explicit stage -> RNG -> finalize phases instead.
 function PetService.commitVariantConversion(player, prepared, succeeded, suppliedLease)
 	local lease, ownsLease = acquireInventoryMutation(
 		player,
@@ -1232,36 +1333,42 @@ function PetService.commitVariantConversion(player, prepared, succeeded, supplie
 	)
 	if not lease then return false, "Pet inventory mutation already in progress" end
 	local ok, committed, commitError = xpcall(function()
-		return commitVariantConversionUnlocked(player, prepared, succeeded)
+		if prepared.phase == "VALIDATED" then
+			local staged, stageError = stageVariantConversionUnlocked(player, prepared)
+			if not staged then return false, stageError end
+		end
+		return finalizeVariantConversionUnlocked(player, prepared, succeeded)
 	end, debug.traceback)
-	if ownsLease then
-		PetService.endInventoryMutation(player, lease, ok and committed == true)
+	if not ok or committed ~= true then
+		local restored = rollbackVariantConversionUnlocked and rollbackVariantConversionUnlocked(prepared)
+		if ownsLease then PetService.endInventoryMutation(player, lease, false) end
+		if not restored then return false, "Conversion rollback failed" end
+		return false, ok and commitError or "Conversion failed safely"
 	end
-	if not ok then return false, "Conversion failed safely" end
-	return committed, commitError
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, true)
+	end
+	return true
 end
 
-local function rollbackVariantConversionUnlocked(prepared)
-	if type(prepared) ~= "table" or not prepared.mutationStarted
-		or type(prepared.data) ~= "table" or type(prepared.petsTable) ~= "table" then
+rollbackVariantConversionUnlocked = function(prepared)
+	if type(prepared) ~= "table" or prepared.transactionCommitted then
+		return false
+	end
+	if not prepared.mutationStarted then
 		return true
 	end
-	local petsTable = prepared.petsTable
-	prepared.data.pets = petsTable
-	for index = #petsTable, 1, -1 do
-		petsTable[index] = nil
-	end
-	for index, pet in ipairs(prepared.originalPets) do
-		petsTable[index] = pet
+	if type(prepared.data) ~= "table" or type(prepared.petsTable) ~= "table"
+		or prepared.data.pets ~= prepared.petsTable
+		or not arrayMatches(prepared.petsTable, prepared.expectedPets) then
+		return false
 	end
 
-	-- Roll back only the discovery keys this transaction wrote. Concurrent keys
-	-- or replacement tables belong to other work and must remain untouched.
+	-- Restore only unchanged Dex values written by this transaction. Replacement
+	-- tables and newer values belong to other work and are never overwritten.
 	if prepared.discoveryMutationStarted
 		and prepared.data.discoveredPets == prepared.discoveryWriteTable then
 		for discoveryKey, previous in pairs(prepared.discoveryWrites or {}) do
-			-- Restore only an unchanged value owned by this transaction. If another
-			-- path replaced it, preserve that newer value instead of clobbering it.
 			if rawget(prepared.discoveryWriteTable, discoveryKey) == true then
 				if previous.present then
 					prepared.discoveryWriteTable[discoveryKey] = previous.value
@@ -1276,13 +1383,23 @@ local function rollbackVariantConversionUnlocked(prepared)
 			prepared.data.discoveredPets = nil
 		end
 	end
+
+	for index = #prepared.petsTable, 1, -1 do
+		prepared.petsTable[index] = nil
+	end
+	for index, pet in ipairs(prepared.originalPets) do
+		prepared.petsTable[index] = pet
+	end
+	prepared.expectedPets = prepared.originalPets
 	prepared.discoveryMutationStarted = false
 	prepared.discoveryWriteTable = nil
 	prepared.discoveryWrites = nil
 	prepared.discoveryCreatedTable = nil
 	prepared.mutationStarted = false
 	prepared.committed = false
+	prepared.outcomeSucceeded = nil
 	prepared.isNewDiscovery = false
+	prepared.phase = "ROLLED_BACK"
 	return true
 end
 
@@ -1318,8 +1435,10 @@ function PetService.getInventory(player)
 	return data.pets
 end
 
--- Calculate effective damage from canonical identity and apply active buffs once.
--- pet.damage is a replicated compatibility mirror and is never combat authority.
+-- Calculate effective damage from canonical identity and apply every active
+-- factor to one unrounded intermediate. pet.damage is a replicated compatibility
+-- mirror and is never combat authority. Invalid factors are neutral; an overflowed
+-- complete product fails closed to zero instead of entering combat state.
 function PetService.getPetDamage(pet, player)
 	if type(pet) ~= "table" or not player then
 		return 0
@@ -1329,16 +1448,14 @@ function PetService.getPetDamage(pet, player)
 	if not baseOk or not isFiniteNumber(baseDamage) or baseDamage < 0 then
 		return 0
 	end
-	local enchantOk, enchantMultiplier = pcall(PetEnchantMath.getDamageMultiplier, pet)
-	if not enchantOk or not isFiniteNumber(enchantMultiplier) or enchantMultiplier < 0 then
-		enchantMultiplier = 1
-	end
-	local enchantedDamage = baseDamage * enchantMultiplier
-	if isFiniteNumber(enchantedDamage) and enchantedDamage >= 0 then
-		baseDamage = enchantedDamage
+
+	local enchantMultiplier = 1
+	local enchantOk, enchantValue = pcall(PetEnchantMath.getDamageMultiplier, pet)
+	if enchantOk then
+		enchantMultiplier = normalizedPositiveDamageFactor(enchantValue)
 	end
 
-	local strongBonus = 0
+	local questMultiplier = 1
 	if type(PetService._upgradeService) == "table"
 		and type(PetService._upgradeService.getUpgradeBonus) == "function" then
 		local bonusOk, bonus = pcall(
@@ -1346,33 +1463,29 @@ function PetService.getPetDamage(pet, player)
 			player,
 			"StrongPets"
 		)
-		if bonusOk and isFiniteNumber(bonus) and bonus > 0 then
-			strongBonus = bonus
-		end
-	end
-	if strongBonus > 0 then
-		local candidate = baseDamage * strongBonus
-		if isFiniteNumber(candidate) and candidate >= 0 then
-			baseDamage = math.floor(candidate)
+		if bonusOk then
+			questMultiplier = normalizedPositiveDamageFactor(bonus)
 		end
 	end
 
+	local shopMultiplier = 1
 	if type(PetService._shopService) == "table"
 		and type(PetService._shopService.getShopMultiplier) == "function" then
-		local multiplierOk, shopDamageMultiplier = pcall(
+		local multiplierOk, multiplier = pcall(
 			PetService._shopService.getShopMultiplier,
 			player,
 			"damage"
 		)
-		if multiplierOk and isFiniteNumber(shopDamageMultiplier) and shopDamageMultiplier > 1 then
-			local candidate = baseDamage * shopDamageMultiplier
-			if isFiniteNumber(candidate) and candidate >= 0 then
-				baseDamage = math.floor(candidate)
-			end
+		if multiplierOk then
+			shopMultiplier = normalizedPositiveDamageFactor(multiplier)
 		end
 	end
 
-	return isFiniteNumber(baseDamage) and baseDamage >= 0 and baseDamage or 0
+	local completeDamage = baseDamage
+		* enchantMultiplier
+		* questMultiplier
+		* shopMultiplier
+	return isFiniteNumber(completeDamage) and completeDamage >= 0 and completeDamage or 0
 end
 
 -- Campaign lane movement is snapshotted by CampaignService at deploy. It uses

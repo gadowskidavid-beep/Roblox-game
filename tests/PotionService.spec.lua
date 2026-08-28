@@ -10,8 +10,12 @@ local players = {}
 function players:GetPlayers() return {} end
 
 local stateEvents = {}
+local transactionOrder = {}
+local stateEventShouldError = false
 local potionEvent = {}
 function potionEvent:FireClient(_, state)
+	if stateEventShouldError then error("injected potion notification failure") end
+	table.insert(transactionOrder, "potion")
 	table.insert(stateEvents, state)
 end
 local remotes = {}
@@ -44,28 +48,79 @@ local player = { UserId = 314 }
 local profile = nil
 local currencyEvents = {}
 local pending = {}
+local activeSpendTransaction = nil
+local lastSpendTransaction = nil
+local lastSpendOwnerName = nil
+local spendCommitFails = false
+local spendRollbackFails = false
+local settlerRegistrationFailures = 0
+local spendCommitInspector = nil
+local spendRollbackCalls = 0
 local refreshCalls = 0
 local dataService = {}
 function dataService.getPlayerData() return profile end
 local currencyService = {}
-function currencyService.beginSpendTransaction(_, currency, amount)
-	if profile[currency] < amount then return nil end
+function currencyService.beginSpendTransaction(_, currency, amount, ownerName)
+	if activeSpendTransaction ~= nil or profile[currency] < amount then return nil end
 	local transaction = {}
-	profile[currency] = profile[currency] - amount
-	pending[transaction] = { currency = currency, amount = amount }
+	pending[transaction] = {
+		profile = profile,
+		currency = currency,
+		amount = amount,
+		settler = nil,
+	}
+	lastSpendTransaction = transaction
+	activeSpendTransaction = transaction
+	lastSpendOwnerName = ownerName
 	return transaction
 end
+function currencyService.setSpendSettler(transaction, settler)
+	local state = pending[transaction]
+	if not state or type(settler) ~= "function" then return false end
+	if settlerRegistrationFailures > 0 then
+		settlerRegistrationFailures = settlerRegistrationFailures - 1
+		return false
+	end
+	state.settler = settler
+	return true
+end
 function currencyService.commitSpendTransaction(transaction)
-	if not pending[transaction] then return false end
+	local state = pending[transaction]
+	if activeSpendTransaction ~= transaction or not state or spendCommitFails then return false end
+	if spendCommitInspector then spendCommitInspector(transaction, state) end
+	local balance = state.profile[state.currency]
+	if type(balance) ~= "number" or balance < state.amount then return false end
+	state.profile[state.currency] = balance - state.amount
 	pending[transaction] = nil
-	table.insert(currencyEvents, profile.diamonds)
+	activeSpendTransaction = nil
+	table.insert(transactionOrder, "currency")
+	table.insert(currencyEvents, state.profile.diamonds)
 	return true
 end
 function currencyService.rollbackSpendTransaction(transaction)
 	local state = pending[transaction]
-	if not state then return false end
+	if activeSpendTransaction ~= transaction or not state then return false end
+	spendRollbackCalls = spendRollbackCalls + 1
+	if spendRollbackFails then return false end
 	pending[transaction] = nil
-	profile[state.currency] = profile[state.currency] + state.amount
+	activeSpendTransaction = nil
+	return true
+end
+
+local directProfileOwner = nil
+local directOwnerBegins = 0
+local directOwnerBlockedReason = nil
+local profileTransactionService = {}
+function profileTransactionService.begin(ownerPlayer, ownerName)
+	directOwnerBegins = directOwnerBegins + 1
+	if directProfileOwner ~= nil then return nil, "BUSY" end
+	if directOwnerBlockedReason then return nil, directOwnerBlockedReason end
+	directProfileOwner = { player = ownerPlayer, ownerName = ownerName, profile = profile }
+	return directProfileOwner, nil
+end
+function profileTransactionService.commit(owner)
+	if owner ~= directProfileOwner then return false end
+	directProfileOwner = nil
 	return true
 end
 
@@ -96,13 +151,29 @@ local function resetState()
 	}
 	stateEvents = {}
 	currencyEvents = {}
+	transactionOrder = {}
+	stateEventShouldError = false
 	pending = {}
+	activeSpendTransaction = nil
+	lastSpendTransaction = nil
+	lastSpendOwnerName = nil
+	spendCommitFails = false
+	spendRollbackFails = false
+	settlerRegistrationFailures = 0
+	spendCommitInspector = nil
+	spendRollbackCalls = 0
+	directProfileOwner = nil
+	directOwnerBegins = 0
+	directOwnerBlockedReason = nil
 	refreshCalls = 0
-	PotionService._mutationLocks = {}
+	PotionService._potionLeases = {}
+	PotionService._leaseGenerations = {}
 	PotionService._stateRevisions = {}
-	PotionService._pendingShinyCharges = setmetatable({}, { __mode = "k" })
+	PotionService._pendingShinyCharges = {}
+	PotionService._activeTransactions = {}
+	PotionService._shuttingDown = false
 	PotionService._transactionHook = nil
-	PotionService.init(dataService, currencyService)
+	PotionService.init(dataService, currencyService, profileTransactionService)
 	PotionService.setMovementRefreshCallback(function() refreshCalls = refreshCalls + 1 end)
 end
 
@@ -186,12 +257,19 @@ describe("PotionService QOF-14 timed sources", function()
 		expect(refreshCalls):toBe(1)
 	end)
 
-	it("caps Shiny charges at 30 without applying Duration", function()
+	it("never consumes a Shiny Potion unless all three charges fit", function()
 		resetState()
 		profile.potionUpgrades.durationLevel = 4
-		profile.potionInventory.ShinyPotion = 1
+		profile.potionInventory.ShinyPotion = 2
 		profile.activeBuffs.shinyChance = { charges = 29 }
+		local success, message = PotionService.consume(player, consumeRequest("ShinyPotion"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Maximum Shiny charges reached (30)")
+		expect(profile.potionInventory.ShinyPotion):toBe(2)
+		expect(profile.activeBuffs.shinyChance):toEqual({ charges = 29 })
+		profile.activeBuffs.shinyChance = { charges = 27 }
 		expect(PotionService.consume(player, consumeRequest("ShinyPotion"))):toBeTrue()
+		expect(profile.potionInventory.ShinyPotion):toBe(1)
 		expect(profile.activeBuffs.shinyChance):toEqual({ charges = 30 })
 		expect(PotionService.getState(player).slots.active):toBe(1)
 	end)
@@ -212,25 +290,159 @@ describe("PotionService QOF-14 timed sources", function()
 end)
 
 describe("PotionService QOF-14 upgrades and Auto-Drink", function()
-	it("uses server-owned upgrade costs and silently rolls back faults", function()
+	it("reserves without balance flicker and commits one server-owned upgrade", function()
 		resetState()
-		local success, message, state = PotionService.purchaseUpgrade(player, upgradeRequest("PotionSlot"))
+		PotionService._transactionHook = function(stage)
+			if stage == "afterSpend" then
+				expect(profile.diamonds):toBe(100000)
+				expect(#currencyEvents):toBe(0)
+				expect(#stateEvents):toBe(0)
+			end
+		end
+		spendCommitInspector = function()
+			-- The authoritative upgrade DTO and revision are complete before PONR,
+			-- while the live currency balance is still unchanged.
+			expect(profile.diamonds):toBe(100000)
+			expect(profile.potionUpgrades.slots):toBe(3)
+			expect(PotionService.getState(player).stateRevision):toBe(1)
+			expect(#stateEvents):toBe(0)
+		end
+		local success, message, state = PotionService.purchaseUpgrade(
+			player,
+			upgradeRequest("PotionSlot")
+		)
+		expect(success):toBeTrue()
+		expect(message):toBeNil()
+		expect(lastSpendOwnerName):toBe("PotionService.purchaseUpgrade")
+		expect(profile.diamonds):toBe(99500)
+		expect(profile.potionUpgrades.slots):toBe(3)
+		expect(state.slots.maximum):toBe(3)
+		expect(state.stateRevision):toBe(1)
+		expect(#currencyEvents):toBe(1)
+		expect(#stateEvents):toBe(1)
+		expect(transactionOrder):toEqual({ "currency", "potion" })
+		expect(pending[lastSpendTransaction]):toBeNil()
+	end)
+
+	it("silently cancels a faulted reservation without debit or revision flicker", function()
+		resetState()
+		PotionService._transactionHook = function(stage)
+			if stage == "afterSpend" then
+				expect(profile.diamonds):toBe(100000)
+			end
+			if stage == "afterUpgrade" then error("injected") end
+		end
+		local success, message = PotionService.purchaseUpgrade(player, upgradeRequest("Duration"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Potion upgrade purchase failed")
+		expect(lastSpendOwnerName):toBe("PotionService.purchaseUpgrade")
+		expect(profile.diamonds):toBe(100000)
+		expect(profile.potionUpgrades.durationLevel):toBe(0)
+		expect(PotionService.getState(player).stateRevision):toBe(0)
+		expect(spendRollbackCalls):toBe(1)
+		expect(pending[lastSpendTransaction]):toBeNil()
+		expect(#currencyEvents):toBe(0)
+		expect(#stateEvents):toBe(0)
+	end)
+
+	it("restores the exact upgrade and revision when currency commit fails", function()
+		resetState()
+		spendCommitFails = true
+		local success, message = PotionService.purchaseUpgrade(player, upgradeRequest("Duration"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Potion upgrade purchase failed")
+		expect(profile.diamonds):toBe(100000)
+		expect(profile.potionUpgrades.durationLevel):toBe(0)
+		expect(PotionService._stateRevisions[player.UserId]):toBeNil()
+		expect(PotionService.getState(player).stateRevision):toBe(0)
+		expect(spendRollbackCalls):toBe(1)
+		expect(pending[lastSpendTransaction]):toBeNil()
+		expect(#currencyEvents):toBe(0)
+		expect(#stateEvents):toBe(0)
+	end)
+
+	it("retains rollback ownership and retries the same idempotent settler", function()
+		resetState()
+		spendRollbackFails = true
+		PotionService._transactionHook = function(stage)
+			if stage == "afterUpgrade" then error("injected") end
+		end
+		local success, message = PotionService.purchaseUpgrade(player, upgradeRequest("Duration"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Potion upgrade rollback failed")
+		local retainedTransaction = lastSpendTransaction
+		local retained = pending[retainedTransaction]
+		expect(type(retained)):toBe("table")
+		expect(type(retained.settler)):toBe("function")
+		expect(activeSpendTransaction):toBe(retainedTransaction)
+		expect(profile.diamonds):toBe(100000)
+		expect(profile.potionUpgrades.durationLevel):toBe(0)
+		expect(PotionService.getState(player).stateRevision):toBe(0)
+		expect(#currencyEvents):toBe(0)
+		expect(#stateEvents):toBe(0)
+
+		-- The retained central owner blocks a competing purchase until the exact
+		-- rollback closure succeeds.
+		success = PotionService.purchaseUpgrade(player, upgradeRequest("PotionSlot"))
+		expect(success):toBeFalse()
+		expect(lastSpendTransaction):toBe(retainedTransaction)
+
+		spendRollbackFails = false
+		local settler = retained.settler
+		profile.potionInventory.LuckPotion = 1
+		local blockedState, blockedReason = PotionService.notifyInventoryChanged(player)
+		expect(blockedState):toBeNil()
+		expect(blockedReason):toBe("BUSY")
+		expect(PotionService.getState(player).stateRevision):toBe(0)
+		expect(settler(retainedTransaction)):toBeTrue()
+		expect(settler(retainedTransaction)):toBeTrue()
+		expect(activeSpendTransaction):toBeNil()
+		expect(pending[retainedTransaction]):toBeNil()
+		expect(profile.diamonds):toBe(100000)
+		expect(profile.potionUpgrades.durationLevel):toBe(0)
+		local publishedState = PotionService.notifyInventoryChanged(player)
+		expect(publishedState.stateRevision):toBe(1)
+		expect(PotionService.getState(player).stateRevision):toBe(1)
+	end)
+
+	it("re-registers the same settler after transient setup and cancellation faults", function()
+		resetState()
+		settlerRegistrationFailures = 1
+		spendRollbackFails = true
+		local success, message = PotionService.purchaseUpgrade(player, upgradeRequest("Duration"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Potion upgrade rollback failed")
+		local retainedTransaction = lastSpendTransaction
+		local retained = pending[retainedTransaction]
+		expect(type(retained)):toBe("table")
+		expect(type(retained.settler)):toBe("function")
+		expect(activeSpendTransaction):toBe(retainedTransaction)
+		expect(profile.diamonds):toBe(100000)
+		expect(profile.potionUpgrades.durationLevel):toBe(0)
+		expect(PotionService.getState(player).stateRevision):toBe(0)
+
+		spendRollbackFails = false
+		expect(retained.settler(retainedTransaction)):toBeTrue()
+		expect(activeSpendTransaction):toBeNil()
+		expect(pending[retainedTransaction]):toBeNil()
+	end)
+
+	it("keeps paid success terminal when postcommit potion notification fails", function()
+		resetState()
+		stateEventShouldError = true
+		local success, message, state = PotionService.purchaseUpgrade(
+			player,
+			upgradeRequest("PotionSlot")
+		)
 		expect(success):toBeTrue()
 		expect(message):toBeNil()
 		expect(profile.diamonds):toBe(99500)
 		expect(profile.potionUpgrades.slots):toBe(3)
-		expect(state.slots.maximum):toBe(3)
+		expect(state.stateRevision):toBe(1)
+		expect(PotionService.getState(player).stateRevision):toBe(1)
+		expect(spendRollbackCalls):toBe(0)
 		expect(#currencyEvents):toBe(1)
-
-		PotionService._transactionHook = function(stage)
-			if stage == "afterUpgrade" then error("injected") end
-		end
-		local before = profile.diamonds
-		success = PotionService.purchaseUpgrade(player, upgradeRequest("Duration"))
-		expect(success):toBeFalse()
-		expect(profile.diamonds):toBe(before)
-		expect(profile.potionUpgrades.durationLevel):toBe(0)
-		expect(#currencyEvents):toBe(1)
+		expect(#stateEvents):toBe(0)
 	end)
 
 	it("defaults selection empty and requires the owned Auto-Drink upgrade", function()

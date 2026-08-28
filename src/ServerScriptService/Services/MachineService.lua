@@ -1,8 +1,8 @@
 --[[
-	MachineService.lua - QOF-17 server-authoritative machine transactions.
-	Owns shared Gold/Rainbow payment, pet consumption, chance rolls, rollback,
-	and Gold-only post-commit quest semantics. Both machine definitions use this
-	same transaction path; machine-specific economics remain server-owned.
+	MachineService.lua - QOF-17 authority with QOF-27 staged transactions.
+	Owns shared Gold/Rainbow payment, pre-RNG input staging, chance rolls,
+	phase-aware rollback, and Gold-only post-commit quest semantics. Both machine
+	definitions use this same transaction path; economics remain server-owned.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -146,8 +146,6 @@ local function restoreTransaction(transactionState)
 	if transactionState.committed then
 		return true
 	end
-	local petRolledBack = true
-	local currencyRolledBack = true
 	local prepared = transactionState.prepared
 	if prepared then
 		if prepared.mutationStarted then
@@ -156,25 +154,23 @@ local function restoreTransaction(transactionState)
 				prepared,
 				transactionState.inventoryLease
 			)
-			petRolledBack = callSucceeded and rollbackSucceeded == true
-			if petRolledBack then
-				transactionState.prepared = nil
+			if not callSucceeded or rollbackSucceeded ~= true then
+				return false
 			end
-		else
-			transactionState.prepared = nil
 		end
+		transactionState.prepared = nil
 	end
 	if transactionState.spendTransaction then
 		local callSucceeded, rollbackSucceeded = pcall(
 			MachineService._currencyService.rollbackSpendTransaction,
 			transactionState.spendTransaction
 		)
-		currencyRolledBack = callSucceeded and rollbackSucceeded == true
-		if currencyRolledBack then
-			transactionState.spendTransaction = nil
+		if not callSucceeded or rollbackSucceeded ~= true then
+			return false
 		end
+		transactionState.spendTransaction = nil
 	end
-	return petRolledBack and currencyRolledBack
+	return true
 end
 
 local function executeTransaction(player, machine, machineType, activationToken, petInstanceIds, transactionState)
@@ -208,7 +204,8 @@ local function executeTransaction(player, machine, machineType, activationToken,
 		player,
 		petInstanceIds,
 		machine.inputVariant,
-		machine.outputVariant
+		machine.outputVariant,
+		transactionState.inventoryLease
 	)
 	if not prepared then
 		return nil, prepareError
@@ -218,12 +215,27 @@ local function executeTransaction(player, machine, machineType, activationToken,
 	local spendTransaction = MachineService._currencyService.beginSpendTransaction(
 		player,
 		machine.cost.currency,
-		machine.cost.amount
+		machine.cost.amount,
+		"MachineService"
 	)
 	if not spendTransaction then
 		return nil, "Not enough diamonds"
 	end
 	transactionState.spendTransaction = spendTransaction
+	transactionState.phase = "PROFILE_OWNED"
+	local settlerRegistered = MachineService._currencyService.setSpendSettler(
+		spendTransaction,
+		function(currentSpendTransaction)
+			if transactionState.executing
+				or currentSpendTransaction ~= transactionState.spendTransaction then
+				return false
+			end
+			return restoreTransaction(transactionState)
+		end
+	)
+	if settlerRegistered ~= true then
+		error("Unable to register machine spend settler")
+	end
 
 	local context = {
 		player = player,
@@ -233,26 +245,51 @@ local function executeTransaction(player, machine, machineType, activationToken,
 	}
 	safeHook("afterSpend", context)
 
+	-- Inputs become invisible only after CurrencyService has registered the
+	-- central profile owner and the domain-first lifecycle settler. Persistence
+	-- can therefore never snapshot this reversible staged state.
+	local staged, stageError = MachineService._petService.stageVariantConversion(
+		player,
+		prepared,
+		transactionState.inventoryLease
+	)
+	if not staged then
+		local restored = restoreTransaction(transactionState)
+		if not restored then
+			return nil, "Conversion rollback failed"
+		end
+		return nil, stageError or "Conversion failed safely"
+	end
+	transactionState.phase = "INPUTS_STAGED"
+	safeHook("afterInputStaging", context)
+	safeHook("beforeRNG", context)
+
 	local roll = MachineService._randomSource()
 	if not isFiniteNumber(roll) or roll < 0 or roll > 1 then
 		error("Machine RNG returned an invalid roll")
 	end
 	local success = roll <= chance
+	context.roll = roll
+	context.success = success
+	transactionState.phase = "RNG_RESOLVED"
 
-	local committed, commitError = MachineService._petService.commitVariantConversion(
+	local finalized, finalizeError = MachineService._petService.finalizeVariantConversion(
 		player,
 		prepared,
 		success,
 		transactionState.inventoryLease
 	)
-	if not committed then
+	if not finalized then
 		local restored = restoreTransaction(transactionState)
 		if not restored then
 			return nil, "Conversion rollback failed"
 		end
-		return nil, commitError or "Conversion failed safely"
+		return nil, finalizeError or "Conversion failed safely"
 	end
+	transactionState.phase = "OUTCOME_STAGED"
+	-- Preserve the original seam while exposing the explicit QOF-27 phase name.
 	safeHook("afterPetMutation", context)
+	safeHook("afterOutcomeStaging", context)
 
 	local result = {
 		success = success,
@@ -269,19 +306,24 @@ local function executeTransaction(player, machine, machineType, activationToken,
 		local restored = restoreTransaction(transactionState)
 		return nil, restored and "Conversion failed safely" or "Conversion rollback failed"
 	end
+	-- Currency commit is the unique point of no return. Mark terminal before any
+	-- notification or lease bookkeeping so later faults cannot become retryable.
 	spendTransaction = nil
 	transactionState.spendTransaction = nil
 	prepared.transactionCommitted = true
 	transactionState.prepared = nil
+	transactionState.phase = "PONR"
 	transactionState.committed = true
 
-	-- Notifications are deliberately post-commit and protected. A transport or
-	-- quest event failure must never turn a completed economic transaction into a
-	-- retryable failure or attempt an impossible partial rollback.
+	-- Notifications are deliberately post-commit and protected. A transport,
+	-- quest, or test-seam failure cannot roll back or repeat final economics.
+	pcall(safeHook, "afterCurrencyCommit", context)
 	pcall(MachineService._petService.replicateInventory, player)
+	pcall(safeHook, "afterInventoryNotification", context)
 	if success and machineType == "Gold" and MachineService._questService then
 		pcall(MachineService._questService.incrementStat, player, "goldenPetsConverted", 1)
 	end
+	pcall(safeHook, "afterNotifications", context)
 	return result
 end
 
@@ -317,8 +359,16 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	if not MachineService._dataService
 		or not MachineService._currencyService
 		or not MachineService._petService
+		or type(MachineService._currencyService.beginSpendTransaction) ~= "function"
+		or type(MachineService._currencyService.setSpendSettler) ~= "function"
+		or type(MachineService._currencyService.commitSpendTransaction) ~= "function"
+		or type(MachineService._currencyService.rollbackSpendTransaction) ~= "function"
 		or type(MachineService._petService.beginInventoryMutation) ~= "function"
-		or type(MachineService._petService.endInventoryMutation) ~= "function" then
+		or type(MachineService._petService.endInventoryMutation) ~= "function"
+		or type(MachineService._petService.prepareVariantConversion) ~= "function"
+		or type(MachineService._petService.stageVariantConversion) ~= "function"
+		or type(MachineService._petService.finalizeVariantConversion) ~= "function"
+		or type(MachineService._petService.rollbackVariantConversion) ~= "function" then
 		return nil, "Machine service unavailable"
 	end
 	if MachineService._playerLocks[player.UserId] then
@@ -333,6 +383,7 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	local transactionState = {
 		player = player,
 		inventoryLease = inventoryLease,
+		phase = "LEASED",
 		executing = true,
 	}
 	MachineService._activeTransactions[player.UserId] = transactionState

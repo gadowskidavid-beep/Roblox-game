@@ -1,9 +1,11 @@
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
 
+local updateError = false
 local updates = {}
 local updateEvent = {}
 function updateEvent:FireClient(_, state)
+	if updateError then error("injected notification fault") end
 	table.insert(updates, state)
 end
 local remotes = {}
@@ -43,8 +45,13 @@ local profile = nil
 local pendingCurrency = {}
 local commits = 0
 local rollbacks = 0
+local rollbackExpiryObservations = {}
+local allowCurrencyRollback = true
+local lastSpendOwner = nil
 local hatchCalls = {}
 local hatchError = nil
+local batchStateCalls = 0
+local batchStateErrorAtCall = nil
 local maximumCount = 10
 local stationAllowed = true
 local stationReason = "STATION_INVALID"
@@ -55,32 +62,49 @@ local dataService = {}
 function dataService.getPlayerData() return profile end
 
 local currencyService = {}
-function currencyService.beginSpendTransaction(_, currency, amount)
+function currencyService.beginSpendTransaction(_, currency, amount, ownerName)
 	expect(currency):toBe("diamonds")
 	expect(amount):toBe(500)
 	if profile.diamonds < amount then return nil end
-	profile.diamonds = profile.diamonds - amount
 	local handle = {}
-	pendingCurrency[handle] = amount
+	pendingCurrency[handle] = {
+		profile = profile,
+		currency = currency,
+		amount = amount,
+		ownerName = ownerName,
+		settler = nil,
+	}
+	lastSpendOwner = ownerName
 	return handle
 end
+function currencyService.setSpendSettler(handle, settler)
+	local pending = pendingCurrency[handle]
+	if not pending or type(settler) ~= "function" then return false end
+	pending.settler = settler
+	return true
+end
 function currencyService.commitSpendTransaction(handle)
-	if not pendingCurrency[handle] then return false end
+	local pending = pendingCurrency[handle]
+	if not pending or pending.profile[pending.currency] < pending.amount then return false end
+	pending.profile[pending.currency] = pending.profile[pending.currency] - pending.amount
 	pendingCurrency[handle] = nil
 	commits = commits + 1
 	return true
 end
 function currencyService.rollbackSpendTransaction(handle)
-	local amount = pendingCurrency[handle]
-	if not amount then return false end
-	pendingCurrency[handle] = nil
-	profile.diamonds = profile.diamonds + amount
+	local pending = pendingCurrency[handle]
+	if not pending then return false end
 	rollbacks = rollbacks + 1
+	table.insert(rollbackExpiryObservations, pending.profile.autoHatchExpiresAt)
+	if not allowCurrencyRollback then return false end
+	pendingCurrency[handle] = nil
 	return true
 end
 
 local eggService = {}
 function eggService.getBatchState()
+	batchStateCalls = batchStateCalls + 1
+	if batchStateCalls == batchStateErrorAtCall then error("injected DTO fault") end
 	return {
 		selectedCount = profile.hatchPreferences.preferredBatchCount,
 		maximumCount = maximumCount,
@@ -122,8 +146,14 @@ local function resetState()
 	pendingCurrency = {}
 	commits = 0
 	rollbacks = 0
+	rollbackExpiryObservations = {}
+	allowCurrencyRollback = true
+	lastSpendOwner = nil
 	hatchCalls = {}
 	hatchError = nil
+	batchStateCalls = 0
+	batchStateErrorAtCall = nil
+	updateError = false
 	maximumCount = 10
 	stationAllowed = true
 	stationReason = "STATION_INVALID"
@@ -195,6 +225,8 @@ describe("AutoHatchService QOF-18 strict contract and purchase", function()
 		expect(reason):toBeNil()
 		expect(profile.diamonds):toBe(500)
 		expect(profile.autoHatchExpiresAt):toBe(1600)
+		expect(lastSpendOwner):toBe("AutoHatchService.purchase")
+		expect(next(pendingCurrency)):toBeNil()
 		expect(commits):toBe(1)
 		expect(state.economy.price):toBe(500)
 		expect(state.economy.durationSeconds):toBe(600)
@@ -217,6 +249,9 @@ describe("AutoHatchService QOF-18 strict contract and purchase", function()
 
 		resetState()
 		AutoHatchService._transactionHook = function(stage)
+			-- Reservation and provisional entitlement mutation must not expose a
+			-- debit before the single commit boundary.
+			expect(profile.diamonds):toBe(1000)
 			if stage == "afterMutation" then error("injected") end
 		end
 		success, reason = AutoHatchService.purchase(player, purchaseRequest())
@@ -226,6 +261,87 @@ describe("AutoHatchService QOF-18 strict contract and purchase", function()
 		expect(profile.autoHatchExpiresAt):toBe(0)
 		expect(rollbacks):toBe(1)
 		expect(commits):toBe(0)
+	end)
+
+	it("retains a failed rollback for idempotent lifecycle settlement", function()
+		resetState()
+		profile.autoHatchExpiresAt = 777
+		allowCurrencyRollback = false
+		AutoHatchService._transactionHook = function(stage)
+			if stage == "afterMutation" then error("injected") end
+		end
+
+		local success, reason = AutoHatchService.purchase(player, purchaseRequest())
+		expect(success):toBeFalse()
+		expect(reason):toBe("ROLLBACK_FAILED")
+		expect(profile.diamonds):toBe(1000)
+		expect(profile.autoHatchExpiresAt):toBe(777)
+		expect(rollbackExpiryObservations):toEqual({ 777 })
+		local handle, pending = next(pendingCurrency)
+		expect(handle ~= nil):toBeTrue()
+		expect(type(pending.settler)):toBe("function")
+
+		allowCurrencyRollback = true
+		expect(pending.settler(handle)):toBeTrue()
+		expect(pending.settler(handle)):toBeTrue()
+		expect(profile.diamonds):toBe(1000)
+		expect(profile.autoHatchExpiresAt):toBe(777)
+		expect(rollbackExpiryObservations):toEqual({ 777, 777 })
+		expect(next(pendingCurrency)):toBeNil()
+		expect(commits):toBe(0)
+	end)
+
+	it("rolls back a DTO construction fault before committing payment", function()
+		resetState()
+		AutoHatchService._rejoinRequired[player.UserId] = true
+		AutoHatchService._stoppedReasons[player.UserId] = "ACCESS_EXPIRED"
+		AutoHatchService._actionFeedback[player.UserId] = { action = "START", reason = "ACCESS_REQUIRED" }
+		AutoHatchService._revisions[player.UserId] = 4
+		batchStateErrorAtCall = 1
+		local success, reason = AutoHatchService.purchase(player, purchaseRequest())
+		expect(success):toBeFalse()
+		expect(reason):toBe("TECHNICAL_ERROR")
+		expect(profile.diamonds):toBe(1000)
+		expect(profile.autoHatchExpiresAt):toBe(0)
+		expect(rollbacks):toBe(1)
+		expect(commits):toBe(0)
+		expect(next(pendingCurrency)):toBeNil()
+		expect(AutoHatchService._rejoinRequired[player.UserId]):toBeTrue()
+		expect(AutoHatchService._stoppedReasons[player.UserId]):toBe("ACCESS_EXPIRED")
+		expect(AutoHatchService._actionFeedback[player.UserId]):toEqual({
+			action = "START", reason = "ACCESS_REQUIRED",
+		})
+		expect(AutoHatchService._revisions[player.UserId]):toBe(4)
+	end)
+
+	it("keeps paid success terminal and authoritative across notification faults", function()
+		resetState()
+		AutoHatchService._rejoinRequired[player.UserId] = true
+		AutoHatchService._stoppedReasons[player.UserId] = "ACCESS_EXPIRED"
+		AutoHatchService._actionFeedback[player.UserId] = { action = "START", reason = "ACCESS_REQUIRED" }
+		AutoHatchService._revisions[player.UserId] = 7
+		updateError = true
+
+		local success, reason, state = AutoHatchService.purchase(player, purchaseRequest())
+		expect(success):toBeTrue()
+		expect(reason):toBeNil()
+		expect(state.expiresAt):toBe(1600)
+		expect(state.pauseReason):toBeNil()
+		expect(state.actionFeedback):toBeNil()
+		expect(state.stateRevision):toBe(8)
+		expect(batchStateCalls):toBe(1)
+		expect(profile.diamonds):toBe(500)
+		expect(profile.autoHatchExpiresAt):toBe(1600)
+		expect(AutoHatchService._rejoinRequired[player.UserId]):toBeFalse()
+		expect(AutoHatchService._stoppedReasons[player.UserId]):toBeNil()
+		expect(AutoHatchService._actionFeedback[player.UserId]):toBeNil()
+		expect(AutoHatchService._revisions[player.UserId]):toBe(8)
+		expect(commits):toBe(1)
+		expect(rollbacks):toBe(0)
+
+		local again, activeReason = AutoHatchService.purchase(player, purchaseRequest())
+		expect(again):toBeFalse()
+		expect(activeReason):toBe("ACCESS_ALREADY_ACTIVE")
 	end)
 
 	it("fails closed for fractional live expiries instead of repairing paid time", function()
