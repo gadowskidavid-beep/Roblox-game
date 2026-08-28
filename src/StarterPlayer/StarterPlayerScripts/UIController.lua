@@ -17,11 +17,13 @@
 
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
+local BalanceConfig = require(Shared:WaitForChild("BalanceConfig"))
 local PetData = require(Shared:WaitForChild("PetData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
@@ -104,6 +106,59 @@ local function normalizeZoneId(zoneId)
 	return numericZoneId
 end
 
+local function safeSlotBonus(value)
+	local numeric = tonumber(value)
+	if not numeric
+		or numeric ~= numeric
+		or numeric == math.huge
+		or numeric == -math.huge
+		or numeric <= 0 then
+		return 0
+	end
+	return math.floor(numeric)
+end
+
+local function resolveLevelBonus(definition, rawLevel, valuesKey)
+	if type(definition) ~= "table" then return 0 end
+	local level = tonumber(rawLevel)
+	if not level
+		or level ~= level
+		or level == math.huge
+		or level == -math.huge
+		or level < 1
+		or level % 1 ~= 0 then
+		return 0
+	end
+	local values = definition[valuesKey]
+	if type(values) ~= "table" then return 0 end
+	local levelValue = values[level]
+	if valuesKey == "levels" then
+		levelValue = type(levelValue) == "table" and levelValue.bonus or nil
+	end
+	return safeSlotBonus(levelValue)
+end
+
+local function sanitizeDefinedLevels(source, definitions, valuesKey)
+	source = type(source) == "table" and source or {}
+	local normalized = {}
+	for id, definition in pairs(type(definitions) == "table" and definitions or {}) do
+		local rawLevel = tonumber(source[id])
+		local values = type(definition) == "table" and definition[valuesKey] or nil
+		if rawLevel
+			and rawLevel == rawLevel
+			and rawLevel ~= math.huge
+			and rawLevel ~= -math.huge
+			and rawLevel >= 0
+			and rawLevel % 1 == 0
+			and (rawLevel == 0 or (type(values) == "table" and values[rawLevel] ~= nil)) then
+			normalized[id] = rawLevel
+		else
+			normalized[id] = 0
+		end
+	end
+	return normalized
+end
+
 function UIController.new()
 	local self = setmetatable({}, UIController)
 	self._remotes = nil
@@ -118,23 +173,30 @@ function UIController.new()
 	self._diamonds = 0
 	self._unlockedZones = { [1] = true }
 	self._selectedEggType = nil
-	self._hatchBatchLimit = 1
-	self._selectedHatchCount = 1
-	self._hatchBatchButtons = {}
-	self._hatchBatchSelector = nil
-	self._hatchBatchFeedback = nil
-	self._hatchBatchSelectionCallback = nil
-	self._hatchBatchLayoutConnection = nil
-	self._hatchFeedbackToken = 0
+	self._hatchPurchaseGui = nil
+	self._hatchPurchasePanel = nil
+	self._hatchPurchaseTitle = nil
+	self._hatchPurchaseUnitPrice = nil
+	self._hatchPurchaseFeedback = nil
+	self._hatchPurchaseRefreshButton = nil
+	self._hatchPurchaseOptionButtons = {}
+	self._hatchPurchaseCallbacks = {}
+	self._hatchPurchaseConnections = {}
+	self._activeHatchPurchaseEggType = nil
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
 	self._inventoryTitle = nil
+	self._equippedTitle = nil
 	self._petSortMode = "Default"
 	self._petVariantFilter = "All"
 	self._petSortButton = nil
 	self._petVariantFilterButton = nil
 	self._upgradeData = {}
+	self._treeEntitlements = {
+		storageBonusSlots = 0,
+		petEquipBonusSlots = 0,
+	}
 	self._equippedPets = {}
 	self._equippedBar = nil
 	self._multiSelectMode = false
@@ -197,16 +259,23 @@ function UIController:init(remotes, playerData)
 			end
 		end
 		self._unlockedZones[1] = true
-		self._petInventoryData = playerData.pets or {}
-		self._equippedPets = playerData.equippedPets or {}
-		self._upgradeData = playerData.upgrades or {}
+		self._petInventoryData = type(playerData.pets) == "table" and playerData.pets or {}
+		self._equippedPets = type(playerData.equippedPets) == "table" and playerData.equippedPets or {}
+		self._upgradeData = sanitizeDefinedLevels(playerData.upgrades, QuestData.Quests, "levels")
 		self._currentZone = playerData.currentZone or 1
 		self._masteryState = {
 			masteryPoints = playerData.masteryPoints or 0,
 			level = playerData.level or 1,
-			buffs = playerData.masteryBuffs or {},
+			buffs = sanitizeDefinedLevels(playerData.masteryBuffs, MasteryData.Buffs, "bonusPerLevel"),
 		}
 		self._discoveredPets = playerData.discoveredPets or {}
+		local initialPurchases = type(playerData.shopPurchases) == "table" and playerData.shopPurchases or {}
+		local maxExtraEquipSlots = safeSlotBonus(self._shopState.maxExtraEquipSlots)
+		self._shopState.purchases.extraEquipSlots = math.clamp(
+			safeSlotBonus(initialPurchases.extraEquipSlots),
+			0,
+			maxExtraEquipSlots
+		)
 	end
 
 	-- Create all UI
@@ -244,84 +313,255 @@ function UIController:_createMainHUD(playerData)
 	-- ===== NON-BLOCKING ONBOARDING HINT =====
 	self:_createOnboardingHint(screenGui)
 
-	-- ===== CONTEXTUAL ATOMIC HATCH SELECTOR =====
-	self:_createHatchBatchSelector(screenGui)
+	-- ===== EQUIPPED CAPACITY (display only; server remains authoritative) =====
+	self:_createEquippedCapacityDisplay(screenGui)
+
+	-- ===== QOF-10 MANUAL HATCH PURCHASE DIALOG =====
+	self:_createHatchPurchaseDialog()
 end
 
-function UIController:_createHatchBatchSelector(parent)
+function UIController:_createEquippedCapacityDisplay(parent)
 	local panel = Instance.new("Frame")
-	panel.Name = "HatchBatchSelector"
-	panel.AnchorPoint = Vector2.new(0.5, 1)
-	panel.Size = UDim2.new(0.48, 0, 0, 116)
-	panel.Position = UDim2.new(0.5, 0, 1, -92)
+	panel.Name = "EquippedCapacity"
+	panel.Size = UDim2.new(0.3, 0, 0, 52)
+	panel.Position = UDim2.fromScale(0.02, 0.04)
 	panel.BackgroundColor3 = COLORS.DarkBg
-	panel.BackgroundTransparency = 0.06
+	panel.BackgroundTransparency = 0.08
 	panel.BorderSizePixel = 0
-	panel.Visible = false
 	panel.Parent = parent
-	self._hatchBatchSelector = panel
 
 	local sizeConstraint = Instance.new("UISizeConstraint")
-	sizeConstraint.MinSize = Vector2.new(280, 108)
-	sizeConstraint.MaxSize = Vector2.new(520, 116)
+	sizeConstraint.MinSize = Vector2.new(180, 52)
+	sizeConstraint.MaxSize = Vector2.new(360, 52)
 	sizeConstraint.Parent = panel
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 14)
+	corner.CornerRadius = UDim.new(0, 12)
 	corner.Parent = panel
 
 	local stroke = Instance.new("UIStroke")
 	stroke.Thickness = 3
-	stroke.Color = COLORS.DiamondCyan
+	stroke.Color = COLORS.NavPets
 	stroke.Parent = panel
 
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
-	title.Size = UDim2.new(1, -16, 0, 28)
-	title.Position = UDim2.fromOffset(8, 4)
+	title.Size = UDim2.new(1, -16, 1, -10)
+	title.Position = UDim2.fromOffset(8, 5)
 	title.BackgroundTransparency = 1
-	title.Text = "CHOOSE HATCH AMOUNT"
 	title.TextColor3 = COLORS.White
 	title.Font = Enum.Font.GothamBold
 	title.TextScaled = true
+	title.TextWrapped = true
 	title.Parent = panel
+	self._equippedTitle = title
+	self:_refreshCapacityUI()
+end
 
-	local counts = { 1, 2, 5, 10 }
-	for index, count in ipairs(counts) do
+local function normalizeQuoteInteger(value)
+	local numeric = tonumber(value)
+	if not numeric or numeric ~= numeric or numeric == math.huge or numeric == -math.huge then
+		return 0
+	end
+	return math.max(0, math.floor(numeric))
+end
+
+local function formatHatchCost(value)
+	local formatted = tostring(normalizeQuoteInteger(value))
+	while true do
+		local replacements
+		formatted, replacements = string.gsub(formatted, "^(%d+)(%d%d%d)", "%1,%2")
+		if replacements == 0 then
+			return formatted
+		end
+	end
+end
+
+local function deriveHatchUnavailableReason(quote, count, isMax)
+	local freeSlots = normalizeQuoteInteger(quote.freeSlots)
+	local coins = normalizeQuoteInteger(quote.coins)
+	local unitCost = normalizeQuoteInteger(quote.unitCost)
+	local entitlementCap = normalizeQuoteInteger(quote.entitlementCap)
+
+	if freeSlots < (isMax and 1 or count) then
+		return freeSlots == 0 and "No pet inventory slots" or "Need more pet inventory slots"
+	end
+	if not isMax and entitlementCap < count then
+		return "Multi-Open entitlement required"
+	end
+	if coins < unitCost * (isMax and 1 or count) then
+		return "Not enough Coins"
+	end
+	return "Unavailable right now"
+end
+
+-- QOF-10 API: Main owns quote/purchase requests; UIController owns exactly one
+-- reusable dialog and forwards only the three fixed server intent shapes.
+function UIController:_createHatchPurchaseDialog()
+	if self._hatchPurchaseGui then return end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "HatchPurchaseDialog"
+	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = false
+	pcall(function()
+		screenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+	end)
+	screenGui.DisplayOrder = 40 -- MainHUD < purchase dialog < hatch cinematic (50)
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Enabled = false
+	screenGui.Parent = self._playerGui
+	self._hatchPurchaseGui = screenGui
+
+	local dimmer = Instance.new("TextButton")
+	dimmer.Name = "Dimmer"
+	dimmer.Size = UDim2.fromScale(1, 1)
+	dimmer.BackgroundColor3 = Color3.fromRGB(5, 8, 18)
+	dimmer.BackgroundTransparency = 0.28
+	dimmer.BorderSizePixel = 0
+	dimmer.Text = ""
+	dimmer.AutoButtonColor = false
+	dimmer.Active = true
+	dimmer.Parent = screenGui
+
+	local panel = Instance.new("Frame")
+	panel.Name = "PurchasePanel"
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Size = UDim2.fromScale(0.94, 0.88)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = screenGui
+	self._hatchPurchasePanel = panel
+
+	local panelConstraint = Instance.new("UISizeConstraint")
+	panelConstraint.MaxSize = Vector2.new(680, 610)
+	panelConstraint.Parent = panel
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 20)
+	panelCorner.Parent = panel
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = COLORS.DiamondCyan
+	panelStroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Name = "EggName"
+	title.Size = UDim2.new(1, -28, 0.1, 0)
+	title.Position = UDim2.new(0, 14, 0.025, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "EGG"
+	title.TextColor3 = COLORS.CoinYellow
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextWrapped = true
+	title.Parent = panel
+	self._hatchPurchaseTitle = title
+
+	local instruction = Instance.new("TextLabel")
+	instruction.Name = "Instruction"
+	instruction.Size = UDim2.new(1, -28, 0.055, 0)
+	instruction.Position = UDim2.new(0, 14, 0.13, 0)
+	instruction.BackgroundTransparency = 1
+	instruction.Text = "Choose how many eggs to buy"
+	instruction.TextColor3 = COLORS.White
+	instruction.Font = Enum.Font.GothamBold
+	instruction.TextScaled = true
+	instruction.TextWrapped = true
+	instruction.Parent = panel
+
+	local unitPrice = Instance.new("TextLabel")
+	unitPrice.Name = "UnitPrice"
+	unitPrice.Size = UDim2.new(1, -28, 0.045, 0)
+	unitPrice.Position = UDim2.new(0, 14, 0.19, 0)
+	unitPrice.BackgroundTransparency = 1
+	unitPrice.Text = "Loading current price…"
+	unitPrice.TextColor3 = COLORS.CoinYellow
+	unitPrice.Font = Enum.Font.GothamBold
+	unitPrice.TextScaled = true
+	unitPrice.TextWrapped = true
+	unitPrice.Parent = panel
+	self._hatchPurchaseUnitPrice = unitPrice
+
+	local optionContainer = Instance.new("ScrollingFrame")
+	optionContainer.Name = "Options"
+	optionContainer.Size = UDim2.new(1, -28, 0.47, 0)
+	optionContainer.Position = UDim2.new(0, 14, 0.25, 0)
+	optionContainer.BackgroundTransparency = 1
+	optionContainer.BorderSizePixel = 0
+	optionContainer.ScrollBarThickness = 5
+	optionContainer.ScrollBarImageColor3 = COLORS.DiamondCyan
+	optionContainer.ScrollingDirection = Enum.ScrollingDirection.Y
+	optionContainer.CanvasSize = UDim2.fromOffset(0, 208)
+	optionContainer.Parent = panel
+
+	local optionLayout = Instance.new("UIListLayout")
+	optionLayout.FillDirection = Enum.FillDirection.Vertical
+	optionLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	optionLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+	optionLayout.Padding = UDim.new(0, 8)
+	optionLayout.Parent = optionContainer
+
+	local optionDefinitions = {
+		{ key = "x1", defaultText = "x1" },
+		{ key = "x3", defaultText = "x3" },
+		{ key = "max", defaultText = "MAX" },
+	}
+	for _, definition in ipairs(optionDefinitions) do
 		local button = Instance.new("TextButton")
-		button.Name = "HatchX" .. tostring(count)
-		button.Size = UDim2.new(0.22, 0, 0, 42)
-		button.Position = UDim2.new(0.025 + (index - 1) * 0.2425, 0, 0, 34)
-		button.BackgroundColor3 = COLORS.ButtonGreen
-		button.Text = "x" .. tostring(count)
+		button.Name = "Option_" .. definition.key
+		button.Size = UDim2.new(1, -8, 0, 64)
+		button.BackgroundColor3 = COLORS.NavSettings
+		button.Text = definition.defaultText .. "\nLoading…"
 		button.TextColor3 = COLORS.White
 		button.Font = Enum.Font.GothamBold
 		button.TextScaled = true
-		button.Parent = panel
-		local buttonCorner = Instance.new("UICorner")
-		buttonCorner.CornerRadius = UDim.new(0, 10)
-		buttonCorner.Parent = button
-		self._hatchBatchButtons[count] = button
+		button.TextWrapped = true
+		button.AutoButtonColor = false
+		button.Active = false
+		button.Selectable = false
+		button.Parent = optionContainer
 
-		button.MouseButton1Click:Connect(function()
-			if count > self._hatchBatchLimit then
-				self:showHatchFeedback("Unlock x" .. tostring(count) .. " in the Upgrade Tree", false)
-				return
-			end
-			-- Keep the highlighted preference authoritative: the server response
-			-- applies the selection after entitlement and throttle validation.
-			if self._hatchBatchSelectionCallback then
-				self._hatchBatchSelectionCallback(count)
-			else
-				self:setSelectedHatchCount(count)
+		local buttonConstraint = Instance.new("UISizeConstraint")
+		buttonConstraint.MinSize = Vector2.new(132, 52)
+		buttonConstraint.MaxSize = Vector2.new(640, 82)
+		buttonConstraint.Parent = button
+
+		local buttonCorner = Instance.new("UICorner")
+		buttonCorner.CornerRadius = UDim.new(0, 12)
+		buttonCorner.Parent = button
+
+		local buttonStroke = Instance.new("UIStroke")
+		buttonStroke.Thickness = 3
+		buttonStroke.Color = Color3.fromRGB(75, 82, 105)
+		buttonStroke.Parent = button
+
+		button.Activated:Connect(function()
+			if not button.Active then return end
+			local callback = self._hatchPurchaseCallbacks.confirm
+			if callback then
+				if definition.key == "x1" then
+					callback({ mode = "Fixed", count = 1 })
+				elseif definition.key == "x3" then
+					callback({ mode = "Fixed", count = 3 })
+				else
+					callback({ mode = "Max" })
+				end
 			end
 		end)
+
+		self._hatchPurchaseOptionButtons[definition.key] = {
+			button = button,
+			stroke = buttonStroke,
+		}
 	end
 
 	local feedback = Instance.new("TextLabel")
 	feedback.Name = "Feedback"
-	feedback.Size = UDim2.new(1, -16, 0, 28)
-	feedback.Position = UDim2.fromOffset(8, 82)
+	feedback.Size = UDim2.new(1, -28, 0.075, 0)
+	feedback.Position = UDim2.new(0, 14, 0.735, 0)
 	feedback.BackgroundTransparency = 1
 	feedback.Text = ""
 	feedback.TextColor3 = COLORS.White
@@ -329,70 +569,216 @@ function UIController:_createHatchBatchSelector(parent)
 	feedback.TextScaled = true
 	feedback.TextWrapped = true
 	feedback.Parent = panel
-	self._hatchBatchFeedback = feedback
-	self:_refreshHatchBatchSelector()
-end
+	self._hatchPurchaseFeedback = feedback
 
-function UIController:_refreshHatchBatchSelector()
-	if self._selectedHatchCount > self._hatchBatchLimit then
-		self._selectedHatchCount = 1
-	end
-	for count, button in pairs(self._hatchBatchButtons) do
-		local unlocked = count <= self._hatchBatchLimit
-		local selected = count == self._selectedHatchCount
-		button.BackgroundColor3 = not unlocked and COLORS.NavSettings
-			or selected and COLORS.DiamondCyan
-			or COLORS.ButtonGreen
-		button.TextTransparency = unlocked and 0 or 0.35
-		button.Text = "x" .. tostring(count) .. (unlocked and "" or " [LOCKED]")
-	end
-	if self._hatchBatchSelector then
-		self._hatchBatchSelector.Visible = self._selectedEggType ~= nil
-	end
-end
-
-function UIController:setHatchBatchLimit(maximumCount)
-	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
-	self._hatchBatchLimit = allowed[maximumCount] and maximumCount or 1
-	self:_refreshHatchBatchSelector()
-	self:_updateEggShortfall()
-end
-
-function UIController:setSelectedHatchCount(selectedCount)
-	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
-	if not allowed[selectedCount] or selectedCount > self._hatchBatchLimit then
-		selectedCount = 1
-	end
-	self._selectedHatchCount = selectedCount
-	self:_refreshHatchBatchSelector()
-	self:_updateEggShortfall()
-end
-
-function UIController:setHatchBatchState(maximumCount, selectedCount)
-	self:setHatchBatchLimit(maximumCount)
-	self:setSelectedHatchCount(selectedCount)
-end
-
-function UIController:setHatchBatchSelectionCallback(callback)
-	self._hatchBatchSelectionCallback = type(callback) == "function" and callback or nil
-end
-
-function UIController:getSelectedHatchCount()
-	return self._selectedHatchCount
-end
-
-function UIController:showHatchFeedback(message, success)
-	if not self._hatchBatchFeedback then return end
-	self._hatchFeedbackToken += 1
-	local token = self._hatchFeedbackToken
-	self._hatchBatchFeedback.Text = tostring(message or "")
-	self._hatchBatchFeedback.TextColor3 = success and Color3.fromRGB(145, 255, 170)
-		or Color3.fromRGB(255, 160, 160)
-	task.delay(3, function()
-		if self._hatchFeedbackToken == token and self._hatchBatchFeedback then
-			self._hatchBatchFeedback.Text = ""
-		end
+	local refreshButton = Instance.new("TextButton")
+	refreshButton.Name = "RefreshQuote"
+	refreshButton.AnchorPoint = Vector2.new(0, 1)
+	refreshButton.Size = UDim2.new(0.42, 0, 0, 52)
+	refreshButton.Position = UDim2.new(0.04, 0, 0.97, 0)
+	refreshButton.BackgroundColor3 = COLORS.DiamondCyan
+	refreshButton.Text = "Refresh Quote"
+	refreshButton.TextColor3 = COLORS.White
+	refreshButton.Font = Enum.Font.GothamBold
+	refreshButton.TextScaled = true
+	refreshButton.AutoButtonColor = false
+	refreshButton.Visible = false
+	refreshButton.Parent = panel
+	local refreshConstraint = Instance.new("UISizeConstraint")
+	refreshConstraint.MinSize = Vector2.new(132, 52)
+	refreshConstraint.Parent = refreshButton
+	local refreshCorner = Instance.new("UICorner")
+	refreshCorner.CornerRadius = UDim.new(0, 12)
+	refreshCorner.Parent = refreshButton
+	refreshButton.Activated:Connect(function()
+		if not refreshButton.Active then return end
+		local callback = self._hatchPurchaseCallbacks.refresh
+		if callback then callback() end
 	end)
+	self._hatchPurchaseRefreshButton = refreshButton
+
+	local cancelButton = Instance.new("TextButton")
+	cancelButton.Name = "Cancel"
+	cancelButton.AnchorPoint = Vector2.new(1, 1)
+	cancelButton.Size = UDim2.new(0.42, 0, 0, 52)
+	cancelButton.Position = UDim2.new(0.96, 0, 0.97, 0)
+	cancelButton.BackgroundColor3 = COLORS.ButtonRed
+	cancelButton.Text = "Cancel"
+	cancelButton.TextColor3 = COLORS.White
+	cancelButton.Font = Enum.Font.GothamBold
+	cancelButton.TextScaled = true
+	cancelButton.AutoButtonColor = false
+	cancelButton.Parent = panel
+	local cancelConstraint = Instance.new("UISizeConstraint")
+	cancelConstraint.MinSize = Vector2.new(132, 52)
+	cancelConstraint.Parent = cancelButton
+	local cancelCorner = Instance.new("UICorner")
+	cancelCorner.CornerRadius = UDim.new(0, 12)
+	cancelCorner.Parent = cancelButton
+	cancelButton.Activated:Connect(function()
+		self:_requestHatchPurchaseCancel()
+	end)
+
+	local function updateResponsiveLayout()
+		local size = panel.AbsoluteSize
+		local compactFooter = size.X < 320 or size.Y < 500
+		if compactFooter then
+			optionContainer.Position = UDim2.new(0, 14, 0.23, 0)
+			optionContainer.Size = UDim2.new(1, -28, 0.36, 0)
+			feedback.Position = UDim2.new(0, 14, 0.60, 0)
+			feedback.Size = UDim2.new(1, -28, 0.08, 0)
+
+			refreshButton.AnchorPoint = Vector2.new(0.5, 1)
+			refreshButton.Size = UDim2.new(0.84, 0, 0, 52)
+			refreshButton.Position = UDim2.new(0.5, 0, 0.84, 0)
+			cancelButton.AnchorPoint = Vector2.new(0.5, 1)
+			cancelButton.Size = UDim2.new(0.84, 0, 0, 52)
+			cancelButton.Position = UDim2.new(0.5, 0, 0.98, 0)
+		else
+			optionContainer.Position = UDim2.new(0, 14, 0.25, 0)
+			optionContainer.Size = UDim2.new(1, -28, 0.47, 0)
+			feedback.Position = UDim2.new(0, 14, 0.735, 0)
+			feedback.Size = UDim2.new(1, -28, 0.075, 0)
+
+			refreshButton.AnchorPoint = Vector2.new(0, 1)
+			refreshButton.Size = UDim2.new(0.42, 0, 0, 52)
+			refreshButton.Position = UDim2.new(0.04, 0, 0.97, 0)
+			cancelButton.AnchorPoint = Vector2.new(1, 1)
+			cancelButton.Size = UDim2.new(0.42, 0, 0, 52)
+			cancelButton.Position = UDim2.new(0.96, 0, 0.97, 0)
+		end
+	end
+	table.insert(self._hatchPurchaseConnections, panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(
+		updateResponsiveLayout
+	))
+	task.defer(updateResponsiveLayout)
+
+	table.insert(self._hatchPurchaseConnections, UserInputService.InputBegan:Connect(function(input)
+		if not self:isHatchPurchaseDialogOpen() then return end
+		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
+			self:_requestHatchPurchaseCancel()
+		end
+	end))
+end
+
+function UIController:setHatchPurchaseCallbacks(confirmCallback, cancelCallback, refreshCallback)
+	self._hatchPurchaseCallbacks = {
+		confirm = type(confirmCallback) == "function" and confirmCallback or nil,
+		cancel = type(cancelCallback) == "function" and cancelCallback or nil,
+		refresh = type(refreshCallback) == "function" and refreshCallback or nil,
+	}
+end
+
+function UIController:isHatchPurchaseDialogOpen()
+	return self._hatchPurchaseGui ~= nil and self._hatchPurchaseGui.Enabled == true
+end
+
+function UIController:_requestHatchPurchaseCancel()
+	if not self:isHatchPurchaseDialogOpen() then return end
+	local callback = self._hatchPurchaseCallbacks.cancel
+	if callback then
+		callback()
+	else
+		self:closeHatchPurchaseDialog()
+	end
+end
+
+function UIController:_setHatchPurchaseOption(key, heading, totalCost, available, unavailableReason)
+	local entry = self._hatchPurchaseOptionButtons[key]
+	if not entry then return end
+	local button = entry.button
+	button.Active = available == true
+	button.Selectable = available == true
+	button.BackgroundColor3 = available and COLORS.ButtonGreen or COLORS.NavSettings
+	button.TextColor3 = available and COLORS.White or Color3.fromRGB(220, 225, 235)
+	entry.stroke.Color = available and Color3.fromRGB(0, 125, 55) or Color3.fromRGB(75, 82, 105)
+	local priceText = formatHatchCost(totalCost) .. " Coins"
+	button.Text = heading .. "  •  " .. priceText
+	if not available then
+		button.Text ..= "\n" .. tostring(unavailableReason or "Unavailable")
+	end
+end
+
+function UIController:showHatchPurchaseLoading(eggType)
+	if not self._hatchPurchaseGui then return end
+	self._activeHatchPurchaseEggType = eggType
+	local eggDef = PetData.Eggs[eggType]
+	self._hatchPurchaseTitle.Text = string.upper(tostring(eggDef and eggDef.name or eggType or "Egg"))
+	self._hatchPurchaseUnitPrice.Text = "Loading current price…"
+	self._hatchPurchaseFeedback.Text = "Getting a fresh purchase quote…"
+	self._hatchPurchaseFeedback.TextColor3 = COLORS.White
+	self._hatchPurchaseRefreshButton.Visible = false
+	self._hatchPurchaseRefreshButton.Active = false
+	self._hatchPurchaseOptionButtons.x3.button.Visible = false
+	self:_setHatchPurchaseOption("x1", "x1", 0, false, "Loading…")
+	self:_setHatchPurchaseOption("x3", "x3", 0, false, "Loading…")
+	self:_setHatchPurchaseOption("max", "MAX", 0, false, "Loading…")
+	self._hatchPurchaseGui.Enabled = true
+end
+
+function UIController:showHatchPurchaseQuote(eggType, quote)
+	if not self:isHatchPurchaseDialogOpen() or self._activeHatchPurchaseEggType ~= eggType then return end
+	quote = type(quote) == "table" and quote or {}
+	local eggDef = PetData.Eggs[eggType]
+	self._hatchPurchaseTitle.Text = string.upper(tostring(eggDef and eggDef.name or eggType or "Egg"))
+	self._hatchPurchaseUnitPrice.Text = "Unit price: " .. formatHatchCost(quote.unitCost) .. " Coins"
+	self._hatchPurchaseFeedback.Text = "Quote is current. Confirm one option below."
+	self._hatchPurchaseFeedback.TextColor3 = Color3.fromRGB(145, 255, 170)
+	self._hatchPurchaseRefreshButton.Visible = true
+	self._hatchPurchaseRefreshButton.Active = true
+
+	local x1 = type(quote.x1) == "table" and quote.x1 or {}
+	local x3 = type(quote.x3) == "table" and quote.x3 or {}
+	local maxOption = type(quote.max) == "table" and quote.max or {}
+	local feasibleMax = normalizeQuoteInteger(quote.feasibleMax)
+	local entitlementCap = normalizeQuoteInteger(quote.entitlementCap)
+	self._hatchPurchaseOptionButtons.x3.button.Visible = entitlementCap >= 3
+	self:_setHatchPurchaseOption(
+		"x1", "x1", x1.totalCost, x1.available == true,
+		deriveHatchUnavailableReason(quote, 1, false)
+	)
+	self:_setHatchPurchaseOption(
+		"x3", "x3", x3.totalCost, x3.available == true,
+		deriveHatchUnavailableReason(quote, 3, false)
+	)
+	self:_setHatchPurchaseOption(
+		"max", "MAX x" .. tostring(feasibleMax), maxOption.totalCost,
+		maxOption.available == true and feasibleMax > 0,
+		deriveHatchUnavailableReason(quote, feasibleMax, true)
+	)
+end
+
+function UIController:showHatchPurchaseBusy(message)
+	if not self:isHatchPurchaseDialogOpen() then return end
+	for _, entry in pairs(self._hatchPurchaseOptionButtons) do
+		entry.button.Active = false
+		entry.button.Selectable = false
+		entry.button.BackgroundColor3 = COLORS.NavSettings
+	end
+	self._hatchPurchaseRefreshButton.Visible = false
+	self._hatchPurchaseRefreshButton.Active = false
+	self._hatchPurchaseFeedback.Text = tostring(message or "Processing purchase…")
+	self._hatchPurchaseFeedback.TextColor3 = COLORS.White
+end
+
+function UIController:showHatchPurchaseError(message)
+	if not self:isHatchPurchaseDialogOpen() then return end
+	for _, entry in pairs(self._hatchPurchaseOptionButtons) do
+		entry.button.Active = false
+		entry.button.Selectable = false
+		entry.button.BackgroundColor3 = COLORS.NavSettings
+	end
+	self._hatchPurchaseFeedback.Text = tostring(message or "Could not complete the purchase.")
+	self._hatchPurchaseFeedback.TextColor3 = Color3.fromRGB(255, 160, 160)
+	self._hatchPurchaseRefreshButton.Visible = true
+	self._hatchPurchaseRefreshButton.Active = true
+end
+
+function UIController:closeHatchPurchaseDialog(eggType)
+	if not self._hatchPurchaseGui then return end
+	if eggType ~= nil and self._activeHatchPurchaseEggType ~= eggType then return end
+	self._hatchPurchaseGui.Enabled = false
+	self._activeHatchPurchaseEggType = nil
 end
 
 function UIController:_createOnboardingHint(parent)
@@ -1041,19 +1427,87 @@ function UIController:_createPetInventory()
 	self:_refreshPetGrid()
 end
 
-function UIController:_updateInventoryTitle()
-	if not self._inventoryTitle then return end
-	local bonus = 0
-	local level = self._upgradeData.ExtraSlots or 0
-	local quest = QuestData.Quests.ExtraSlots
-	if quest and level > 0 and quest.levels[level] then
-		bonus = quest.levels[level].bonus or 0
-	end
-	local capacity = math.min(
-		(Config.MaxPetInventoryBase or 100) + bonus,
-		Config.MaxPetInventoryAbsolute or 250
+function UIController:_getInventoryCapacity()
+	local extraSlots = resolveLevelBonus(
+		QuestData.Quests.ExtraSlots,
+		type(self._upgradeData) == "table" and self._upgradeData.ExtraSlots or nil,
+		"levels"
 	)
-	self._inventoryTitle.Text = "My Pets  " .. tostring(#self._petInventoryData) .. "/" .. tostring(capacity)
+	local treeStorage = safeSlotBonus(
+		type(self._treeEntitlements) == "table" and self._treeEntitlements.storageBonusSlots or nil
+	)
+	local limits = BalanceConfig.Limits
+	return math.clamp(
+		limits.PetInventoryBase + extraSlots + treeStorage,
+		limits.PetInventoryBase,
+		limits.PetInventoryAbsolute
+	)
+end
+
+function UIController:_getEquipCapacity()
+	local friendship = resolveLevelBonus(
+		QuestData.Quests.Friendship,
+		type(self._upgradeData) == "table" and self._upgradeData.Friendship or nil,
+		"levels"
+	)
+	local masteryBuffs = type(self._masteryState) == "table" and self._masteryState.buffs or nil
+	local morePetSlots = resolveLevelBonus(
+		MasteryData.Buffs.MorePetSlots,
+		type(masteryBuffs) == "table" and masteryBuffs.MorePetSlots or nil,
+		"bonusPerLevel"
+	)
+	local purchases = type(self._shopState) == "table" and self._shopState.purchases or nil
+	local legacyShop = safeSlotBonus(
+		type(purchases) == "table" and purchases.extraEquipSlots or nil
+	)
+	legacyShop = math.min(legacyShop, ShopData.Items.ExtraEquipSlot.maxPurchases or 5)
+	local treeEquip = safeSlotBonus(
+		type(self._treeEntitlements) == "table" and self._treeEntitlements.petEquipBonusSlots or nil
+	)
+	local limits = BalanceConfig.Limits
+	return math.clamp(
+		limits.EquippedPetsBase + friendship + morePetSlots + legacyShop + treeEquip,
+		limits.EquippedPetsBase,
+		limits.EquippedPetsAbsolute
+	)
+end
+
+function UIController:_countEquippedPets()
+	local count = 0
+	local seen = {}
+	for _, pet in ipairs(type(self._equippedPets) == "table" and self._equippedPets or {}) do
+		local id = type(pet) == "string" and pet
+			or type(pet) == "table" and (pet.uniqueId or pet.id)
+		if type(id) == "string" and id ~= "" and not seen[id] then
+			seen[id] = true
+			count += 1
+		end
+	end
+	return count
+end
+
+function UIController:_refreshCapacityUI()
+	local inventoryCapacity = self:_getInventoryCapacity()
+	if self._inventoryTitle then
+		local absoluteCap = BalanceConfig.Limits.PetInventoryAbsolute
+		local capText = inventoryCapacity >= absoluteCap
+			and "  •  CAP " .. tostring(absoluteCap) or ""
+		self._inventoryTitle.Text = "My Pets  " .. tostring(#self._petInventoryData)
+			.. "/" .. tostring(inventoryCapacity) .. capText
+	end
+
+	local equipCapacity = self:_getEquipCapacity()
+	if self._equippedTitle then
+		local absoluteCap = BalanceConfig.Limits.EquippedPetsAbsolute
+		local capText = equipCapacity >= absoluteCap
+			and "  •  CAP " .. tostring(absoluteCap) or ""
+		self._equippedTitle.Text = "Equipped  " .. tostring(self:_countEquippedPets())
+			.. "/" .. tostring(equipCapacity) .. capText
+	end
+end
+
+function UIController:_updateInventoryTitle()
+	self:_refreshCapacityUI()
 end
 
 function UIController:_buildPetDisplayList()
@@ -2337,9 +2791,10 @@ function UIController:_purchaseMasteryBuff(buffId)
 end
 
 --------------------------------------------------------------------------------
--- EGG STATION - No overlay menu needed (E-key directly hatches via ProximityPrompt)
--- The old ShopWindow/EggPrompt overlay is removed.
--- BillboardGuis showing pet probabilities are created server-side on the egg stations.
+-- EGG STATION CONTEXT - the native E ProximityPrompt remains in the world.
+-- Triggering it opens the reusable QOF-10 purchase dialog created above; the
+-- legacy ShopWindow/EggPrompt overlay remains intentionally empty.
+-- BillboardGuis showing pet probabilities are created server-side on the stations.
 --------------------------------------------------------------------------------
 function UIController:_createShopWindow()
 	-- No shop window overlay needed - E-key hatches directly
@@ -2430,26 +2885,33 @@ function UIController:_updateEggShortfall()
 		return
 	end
 
-	local batchCount = self._selectedHatchCount or 1
+	-- Near a station the native ProximityPrompt is the only call to action. The
+	-- amount is chosen only after E opens a fresh server-quoted purchase dialog.
+	if self._selectedEggType ~= nil then
+		self._eggShortfallLabel.Text = eggDef.name .. ": Press E to choose amount"
+		self._eggShortfallLabel.TextColor3 = COLORS.White
+		return
+	end
+
 	local missing = {}
 	if cost.Coins then
-		local missingCoins = math.max(0, cost.Coins * batchCount - self._coins)
+		local missingCoins = math.max(0, cost.Coins - self._coins)
 		if missingCoins > 0 then
 			table.insert(missing, tostring(missingCoins) .. " Coins")
 		end
 	end
 	if cost.Diamonds then
-		local missingDiamonds = math.max(0, cost.Diamonds * batchCount - self._diamonds)
+		local missingDiamonds = math.max(0, cost.Diamonds - self._diamonds)
 		if missingDiamonds > 0 then
 			table.insert(missing, tostring(missingDiamonds) .. " Diamonds")
 		end
 	end
 
 	if #missing == 0 then
-		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": READY TO HATCH!"
+		self._eggShortfallLabel.Text = eggDef.name .. ": READY TO HATCH!"
 		self._eggShortfallLabel.TextColor3 = COLORS.ButtonGreen
 	else
-		self._eggShortfallLabel.Text = eggDef.name .. " x" .. tostring(batchCount) .. ": Need " .. table.concat(missing, " + ")
+		self._eggShortfallLabel.Text = eggDef.name .. ": Need " .. table.concat(missing, " + ")
 		self._eggShortfallLabel.TextColor3 = COLORS.White
 	end
 end
@@ -2459,15 +2921,16 @@ function UIController:showEggStationPrompt(eggType)
 	if not eggDef or not self._unlockedZones[eggDef.zone] then return end
 
 	self._selectedEggType = eggType
-	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
 function UIController:hideEggStationPrompt(eggType)
 	if self._selectedEggType ~= eggType then return end
 
+	if self._activeHatchPurchaseEggType == eggType then
+		self:_requestHatchPurchaseCancel()
+	end
 	self._selectedEggType = nil
-	self:_refreshHatchBatchSelector()
 	self:_updateEggShortfall()
 end
 
@@ -3062,11 +3525,15 @@ function UIController:_applyShopState(payload)
 	payload = type(payload) == "table" and payload or {}
 	local isFullState = type(payload.buffs) == "table" or type(payload.purchases) == "table"
 	local buffs = isFullState and (payload.buffs or {}) or payload
-	local purchases = isFullState and (payload.purchases or {}) or {}
-	local maxSlots = tonumber(payload.maxExtraEquipSlots)
-		or ShopData.Items.ExtraEquipSlot.maxPurchases
-		or 5
-	local ownedSlots = math.clamp(math.floor(tonumber(purchases.extraEquipSlots) or 0), 0, maxSlots)
+	-- Buff-only legacy payloads must not erase the persisted permanent purchase.
+	local purchases = type(payload.purchases) == "table"
+		and payload.purchases
+		or (type(self._shopState.purchases) == "table" and self._shopState.purchases or {})
+	local maxSlots = safeSlotBonus(payload.maxExtraEquipSlots)
+	if maxSlots == 0 then
+		maxSlots = ShopData.Items.ExtraEquipSlot.maxPurchases or 5
+	end
+	local ownedSlots = math.clamp(safeSlotBonus(purchases.extraEquipSlots), 0, maxSlots)
 
 	local normalizedBuffs = {}
 	local now = os.clock()
@@ -3090,6 +3557,7 @@ function UIController:_applyShopState(payload)
 		maxExtraEquipSlots = maxSlots,
 	}
 	self:_updateShopCardStates()
+	self:_refreshCapacityUI()
 end
 
 function UIController:_refreshShopStateFromServer()
@@ -3141,7 +3609,12 @@ function UIController:_purchaseShopItem(itemId)
 		elseif success then
 			if state then
 				self:_applyShopState(state)
+			else
+				-- Stay display-only: fetch the committed value instead of inventing
+				-- an optimistic permanent slot on the client.
+				self:_refreshShopStateFromServer()
 			end
+			self:_refreshCapacityUI()
 			self:_setShopFeedback(item.displayName .. " purchased!", Color3.fromRGB(35, 160, 62))
 		else
 			self:_setShopFeedback(tostring(err or "Purchase failed."), COLORS.ButtonRed)
@@ -3152,15 +3625,6 @@ end
 
 function UIController:updateShopBuffs(state)
 	self:_applyShopState(state)
-end
-
-function UIController:_hatchEgg(eggType)
-	if self._remotes then
-		local remote = self._remotes:FindFirstChild("HatchEgg")
-		if remote then
-			remote:InvokeServer(eggType)
-		end
-	end
 end
 
 --------------------------------------------------------------------------------
@@ -3442,7 +3906,7 @@ function UIController:updateCurrency(coins, diamonds)
 end
 
 function UIController:updatePetInventory(pets)
-	self._petInventoryData = pets or {}
+	self._petInventoryData = type(pets) == "table" and pets or {}
 
 	-- Drop stale or newly protected selections while preserving valid selections
 	-- across sorting and filtering refreshes.
@@ -3464,7 +3928,7 @@ function UIController:updatePetInventory(pets)
 end
 
 function UIController:updateEquippedPets(equippedPets)
-	self._equippedPets = equippedPets or {}
+	self._equippedPets = type(equippedPets) == "table" and equippedPets or {}
 	-- Also update the equipped boolean on inventory data to keep in sync
 	local equippedIdSet = {}
 	for _, pet in ipairs(self._equippedPets) do
@@ -3483,23 +3947,44 @@ function UIController:updateEquippedPets(equippedPets)
 			petData.equipped = equippedIdSet[id] or false
 		end
 	end
+	self:_refreshCapacityUI()
 	self:_refreshPetGrid()
 end
 
 function UIController:updateUpgrades(upgrades)
-	self._upgradeData = upgrades or {}
-	self:_updateInventoryTitle()
+	self._upgradeData = sanitizeDefinedLevels(upgrades, QuestData.Quests, "levels")
+	self:_refreshCapacityUI()
 	self:_refreshQuestGrid()
 end
 
 function UIController:updateQuestProgress(questProgress)
-	self._questProgress = questProgress or {}
+	self._questProgress = type(questProgress) == "table" and questProgress or {}
 	self:_refreshQuestGrid()
 end
 
 function UIController:updateMastery(masteryState)
-	self._masteryState = masteryState or { masteryPoints = 0, level = 1, buffs = {} }
+	masteryState = type(masteryState) == "table" and masteryState or {}
+	self._masteryState = {
+		masteryPoints = tonumber(masteryState.masteryPoints) or 0,
+		level = tonumber(masteryState.level) or 1,
+		buffs = sanitizeDefinedLevels(masteryState.buffs, MasteryData.Buffs, "bonusPerLevel"),
+	}
+	self:_refreshCapacityUI()
 	self:_refreshMasteryGrid()
+end
+
+-- QOF-10 display-only entitlement snapshot. Server services remain authoritative.
+function UIController:updateUpgradeTree(state)
+	local entitlements = type(state) == "table" and state.entitlements or nil
+	self._treeEntitlements = {
+		storageBonusSlots = safeSlotBonus(
+			type(entitlements) == "table" and entitlements.storageBonusSlots or nil
+		),
+		petEquipBonusSlots = safeSlotBonus(
+			type(entitlements) == "table" and entitlements.petEquipBonusSlots or nil
+		),
+	}
+	self:_refreshCapacityUI()
 end
 
 --------------------------------------------------------------------------------
@@ -3977,8 +4462,7 @@ function UIController:_refreshScreenData(screenName)
 			task.spawn(function()
 				local state = remote:InvokeServer()
 				if state then
-					self._masteryState = state
-					self:_refreshMasteryGrid()
+					self:updateMastery(state)
 				end
 			end)
 		end
@@ -3999,6 +4483,9 @@ function UIController:_refreshScreenData(screenName)
 end
 
 function UIController:openScreen(screenName)
+	-- Navigation always dismisses a pending manual hatch flow and invalidates its
+	-- async request through Main's registered cancel callback.
+	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen then return end
 
@@ -4057,6 +4544,7 @@ function UIController:openScreen(screenName)
 end
 
 function UIController:closeScreen(screenName)
+	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen or not screen.Enabled or self._screenStates[screenName] == "closing" then return end
 
@@ -4088,6 +4576,7 @@ function UIController:closeScreen(screenName)
 end
 
 function UIController:toggleScreen(screenName)
+	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen then return end
 	if screen.Enabled then
@@ -4110,6 +4599,24 @@ function UIController:updateXP(level, xp, xpNeeded)
 end
 
 function UIController:cleanup()
+	self:_requestHatchPurchaseCancel()
+	self:closeHatchPurchaseDialog()
+	for _, connection in ipairs(self._hatchPurchaseConnections) do
+		connection:Disconnect()
+	end
+	self._hatchPurchaseConnections = {}
+	self._hatchPurchaseCallbacks = {}
+	if self._hatchPurchaseGui then
+		self._hatchPurchaseGui:Destroy()
+		self._hatchPurchaseGui = nil
+	end
+	self._hatchPurchasePanel = nil
+	self._hatchPurchaseTitle = nil
+	self._hatchPurchaseUnitPrice = nil
+	self._hatchPurchaseFeedback = nil
+	self._hatchPurchaseRefreshButton = nil
+	self._hatchPurchaseOptionButtons = {}
+	self._activeHatchPurchaseEggType = nil
 	if self._shopTimerConnection then
 		self._shopTimerConnection:Disconnect()
 		self._shopTimerConnection = nil

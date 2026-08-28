@@ -1,5 +1,6 @@
 --[[
-	UpgradeTreeService.lua - Server-authoritative QOF-07/QOF-08 tree purchases and effects.
+	UpgradeTreeService.lua - Server-authoritative tree purchases and effects.
+	QOF-11 adds Double Luck to the QOF-10 capacity and hatch entitlements.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -50,6 +51,22 @@ if BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled then
 	end
 end
 
+if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
+		registerPurchasable(level, "Storage")
+	end
+end
+
+if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.PetEquipSlots) do
+		registerPurchasable(level, "PetEquipSlots")
+	end
+end
+
+if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+	registerPurchasable(BalanceConfig.CoreUpgrades.DoubleLuck, "DoubleLuck")
+end
+
 local function copyBooleanMap(input)
 	local output = {}
 	if type(input) ~= "table" then
@@ -76,11 +93,39 @@ local function neutralEntitlements()
 			Shiny = 1,
 		},
 		multiOpenCount = 1,
+		generalLuckMultiplier = 1,
+		storageBonusSlots = 0,
+		petEquipBonusSlots = 0,
 	}
 end
 
-local function applyHighestContiguousLevel(levels, purchased, valueKey)
-	local value = 1
+local function applyHighestContiguousLevel(levels, purchased, valueKey, neutralValue)
+	local value = neutralValue
+	for _, level in ipairs(levels) do
+		if purchased[level.id] ~= true then
+			break
+		end
+		local prerequisitesMet = true
+		for _, requiredId in ipairs(level.requireIds or {}) do
+			if purchased[requiredId] ~= true then
+				prerequisitesMet = false
+				break
+			end
+		end
+		if not prerequisitesMet then
+			break
+		end
+		value = level[valueKey]
+	end
+	return value
+end
+
+-- Capacity branches reuse legacy purchase IDs. Their effects are grandfathered
+-- from the highest contiguous branch prefix even when an old save predates the
+-- external Eggs II root prerequisite. New purchases still use purchaseUnlocked,
+-- which enforces every canonical requireId before charging.
+local function applyGrandfatheredCapacityPrefix(levels, purchased, valueKey, neutralValue)
+	local value = neutralValue
 	for _, level in ipairs(levels) do
 		if purchased[level.id] ~= true then
 			break
@@ -100,7 +145,8 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 		entitlements.eggQualityMultiplier = applyHighestContiguousLevel(
 			BalanceConfig.Hatch.EggQuality,
 			purchased,
-			"rarityMultiplier"
+			"rarityMultiplier",
+			1
 		)
 	end
 
@@ -109,7 +155,8 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 			entitlements.directVariantMultipliers[variant] = applyHighestContiguousLevel(
 				levels,
 				purchased,
-				"multiplier"
+				"multiplier",
+				1
 			)
 		end
 	end
@@ -128,9 +175,37 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 			entitlements.multiOpenCount = applyHighestContiguousLevel(
 				BalanceConfig.Hatch.MultiOpen,
 				purchased,
-				"eggCount"
+				"eggCount",
+				1
 			)
 		end
+	end
+
+	if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+		entitlements.generalLuckMultiplier = applyHighestContiguousLevel(
+			{ BalanceConfig.CoreUpgrades.DoubleLuck },
+			purchased,
+			"multiplier",
+			1
+		)
+	end
+
+	if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
+		entitlements.storageBonusSlots = applyGrandfatheredCapacityPrefix(
+			BalanceConfig.CoreUpgrades.Storage,
+			purchased,
+			"bonusSlots",
+			0
+		)
+	end
+
+	if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
+		entitlements.petEquipBonusSlots = applyGrandfatheredCapacityPrefix(
+			BalanceConfig.CoreUpgrades.PetEquipSlots,
+			purchased,
+			"bonusSlots",
+			0
+		)
 	end
 
 	return entitlements
@@ -208,6 +283,13 @@ local function purchaseUnlocked(player, upgradeId, transaction)
 	end
 	if data.upgradeTreePurchases[upgradeId] == true then
 		return false, "Already purchased", UpgradeTreeService.getState(player)
+	end
+
+	-- Grandfathered capacity flags grant their historical effects, but never
+	-- bypass the modern Eggs II gate for any newly purchased branch level.
+	if (definition.effectType == "Storage" or definition.effectType == "PetEquipSlots")
+		and data.upgradeTreePurchases["Eggs II"] ~= true then
+		return false, "Missing prerequisite", UpgradeTreeService.getState(player)
 	end
 
 	for _, requiredId in ipairs(definition.requireIds) do

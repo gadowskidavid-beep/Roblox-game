@@ -110,7 +110,16 @@ function UpgradeTreeController.new()
 		_connections = {},
 		_treeCleanup = nil,
 		_feedbackToken = 0,
+		_serverState = nil,
+		_stateObserver = nil,
 	}, UpgradeTreeController)
+end
+
+function UpgradeTreeController:setStateObserver(callback)
+	self._stateObserver = type(callback) == "function" and callback or nil
+	if self._stateObserver and self._serverState then
+		pcall(self._stateObserver, self._serverState)
+	end
 end
 
 function UpgradeTreeController:init(remotes, playerData)
@@ -166,6 +175,10 @@ function UpgradeTreeController:init(remotes, playerData)
 		end
 		if type(serverState.entitlements) == "table" then
 			entitlements(copyMap(serverState.entitlements))
+		end
+		self._serverState = serverState
+		if self._stateObserver then
+			pcall(self._stateObserver, serverState)
 		end
 	end
 

@@ -104,6 +104,9 @@ function currencyService.creditRaw(_, currency, amount)
 end
 
 local petService = {}
+function petService.getMaxInventory()
+	return profile.capacity
+end
 function petService.canAddPets(_, count)
 	if profile.capacityBlocked or #profile.pets + count > profile.capacity then
 		return false, "Pet inventory needs " .. tostring(count) .. " free slots"
@@ -233,8 +236,19 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(questHatches):toBe(1)
 	end)
 
-	it("rejects hostile, unsupported, locked, and out-of-range counts before mutation", function()
-		for _, count in ipairs({ 0, 2.5, 3, 11 }) do
+	it("accepts every whole transaction count through the entitlement cap", function()
+		resetState()
+		local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 3, {
+			bypassStation = false,
+		})
+		expect(err):toBeNil()
+		expect(result.count):toBe(3)
+		expect(spentCoins):toBe(300)
+		expect(#profile.pets):toBe(3)
+	end)
+
+	it("rejects malformed and entitlement-locked transaction counts before mutation", function()
+		for _, count in ipairs({ 0, 2.5 }) do
 			resetState()
 			local result, err = EggService.purchaseAndHatch(player, "BasicEgg", count, {
 				bypassStation = false,
@@ -247,11 +261,13 @@ describe("EggService QOF-08 atomic batches", function()
 
 		resetState()
 		maximumBatchCount = 2
-		local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 5, {
-			bypassStation = false,
-		})
-		expect(result):toBeNil()
-		expect(err):toBe("Multi-Open upgrade required")
+		for _, count in ipairs({ 3, 5, 11 }) do
+			local result, err = EggService.purchaseAndHatch(player, "BasicEgg", count, {
+				bypassStation = false,
+			})
+			expect(result):toBeNil()
+			expect(err):toBe("Multi-Open upgrade required")
+		end
 		expect(spentCoins):toBe(0)
 	end)
 
@@ -372,7 +388,7 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(1)
 	end)
 
-	it("revalidates entitlement during hatch and repairs stale persisted preference", function()
+	it("revalidates entitlement without mutating preferences for explicit manual counts", function()
 		resetState()
 		profile.hatchPreferences.preferredBatchCount = 10
 		maximumBatchCount = 5
@@ -380,12 +396,138 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(result):toBeNil()
 		expect(err):toBe("Multi-Open upgrade required")
 		expect(spentCoins):toBe(0)
-		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(10)
 
 		local autoResult, autoError = EggService.purchaseAndHatch(player, "BasicEgg", nil, true)
 		expect(autoError):toBeNil()
 		expect(autoResult.count):toBe(5)
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+	end)
+
+	it("quotes x1, x3, and feasible Max from fresh server resources", function()
+		resetState()
+		profile.capacity = 4
+		profile.coins = 250
+		profile.hatchPreferences.preferredBatchCount = 10
+		local quote, quoteError = EggService.getHatchPurchaseOptions(player, "BasicEgg")
+		expect(quoteError):toBeNil()
+		expect(quote.unitCost):toBe(100)
+		expect(quote.entitlementCap):toBe(10)
+		expect(quote.freeSlots):toBe(4)
+		expect(quote.feasibleMax):toBe(2)
+		expect(quote.x1.available):toBeTrue()
+		expect(quote.x3.available):toBeFalse()
+		expect(quote.max.count):toBe(2)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(10)
+
+		profile.coins = 10000
+		quote = EggService.getHatchPurchaseOptions(player, "BasicEgg")
+		expect(quote.feasibleMax):toBe(4)
+		expect(quote.x3.available):toBeTrue()
+
+		stationNear = false
+		local unavailable, proximityError = EggService.getHatchPurchaseOptions(player, "BasicEgg")
+		expect(unavailable):toBeNil()
+		expect(proximityError):toBe("Move closer to this egg station")
+	end)
+
+	it("strictly rejects malformed confirmation DTOs without mutation", function()
+		local hostileIntents = {
+			{},
+			{ mode = "Fixed" },
+			{ mode = "Fixed", count = "1" },
+			{ mode = "Fixed", count = 2 },
+			{ mode = "Fixed", count = 1, extra = true },
+			{ mode = "Max", count = 10 },
+			{ mode = "Unknown" },
+		}
+		for _, intent in ipairs(hostileIntents) do
+			resetState()
+			local result, err = EggService.purchaseFromIntent(player, "BasicEgg", intent)
+			expect(result):toBeNil()
+			expect(err):toBe("Invalid hatch intent")
+			expect(spentCoins):toBe(0)
+			expect(#profile.pets):toBe(0)
+		end
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", "Max")
+		expect(result):toBeNil()
+		expect(err):toBe("Invalid hatch intent")
+	end)
+
+	it("enforces x3 entitlement/resources and never changes hatch preferences", function()
+		resetState()
+		profile.hatchPreferences.preferredBatchCount = 5
+		maximumBatchCount = 2
+		local lockedResult, lockedError = EggService.purchaseFromIntent(player, "BasicEgg", {
+			mode = "Fixed",
+			count = 3,
+		})
+		expect(lockedResult):toBeNil()
+		expect(lockedError):toBe("x3 hatch option unavailable")
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+
+		maximumBatchCount = 5
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", {
+			mode = "Fixed",
+			count = 3,
+		})
+		expect(err):toBeNil()
+		expect(result.count):toBe(3)
+		expect(result.totalCost):toBe(300)
+		expect(#profile.pets):toBe(3)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+	end)
+
+	it("serializes intent confirmation before resolving and committing Max", function()
+		resetState()
+		profile.capacity = 4
+		profile.coins = 450
+		local checkedLock = false
+		EggService._transactionHook = function(stage)
+			if stage ~= "afterPrepare" then return end
+			expect(EggService._hatchLock[player.UserId]):toBeTrue()
+			local concurrent, concurrentError = EggService.purchaseFromIntent(player, "BasicEgg", {
+				mode = "Fixed",
+				count = 1,
+			})
+			expect(concurrent):toBeNil()
+			expect(concurrentError):toBe("Already hatching eggs")
+			checkedLock = true
+		end
+
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", { mode = "Max" })
+		expect(err):toBeNil()
+		expect(result.count):toBe(4)
+		expect(checkedLock):toBeTrue()
+		expect(EggService._hatchLock[player.UserId]):toBeNil()
+	end)
+
+	it("resolves variable Max at confirmation and preserves atomic rollback", function()
+		resetState()
+		profile.capacity = 7
+		profile.coins = 450
+		profile.hatchPreferences.preferredBatchCount = 10
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", { mode = "Max" })
+		expect(err):toBeNil()
+		expect(result.count):toBe(4)
+		expect(result.totalCost):toBe(400)
+		expect(profile.coins):toBe(50)
+		expect(#profile.pets):toBe(4)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(10)
+
+		resetState()
+		profile.capacity = 6
+		profile.coins = 550
+		EggService._transactionHook = function(stage)
+			if stage == "afterInventory" then error("injected Max failure") end
+		end
+		local failed, failureError = EggService.purchaseFromIntent(player, "BasicEgg", { mode = "Max" })
+		expect(failed):toBeNil()
+		expect(failureError):toBe("Hatch failed safely")
+		expect(spentCoins):toBe(500)
+		expect(refundedCoins):toBe(500)
+		expect(profile.coins):toBe(550)
+		expect(#profile.pets):toBe(0)
 	end)
 
 	it("cleans transient hatch locks without deleting the persistent preference", function()

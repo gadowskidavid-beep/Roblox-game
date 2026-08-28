@@ -30,13 +30,24 @@ local VALID_BATCH_COUNTS = {
 	[10] = true,
 }
 
-local function isValidBatchCount(value)
+local function isFiniteNumber(value)
 	return type(value) == "number"
 		and value == value
 		and value ~= math.huge
 		and value ~= -math.huge
+end
+
+local function isValidBatchCount(value)
+	return isFiniteNumber(value)
 		and value % 1 == 0
 		and VALID_BATCH_COUNTS[value] == true
+end
+
+local function isValidTransactionCount(value, maximum)
+	return isFiniteNumber(value)
+		and value % 1 == 0
+		and value >= 1
+		and value <= maximum
 end
 
 function EggService.init(dataService, currencyService, petService, upgradeTreeService)
@@ -107,13 +118,27 @@ local function reconcilePreferredBatchCount(player, maximum)
 	return selected
 end
 
-local function validateRequestedCount(player, requestedCount, maximum)
+local function validatePreferredCount(player, requestedCount, maximum)
 	if not isValidBatchCount(requestedCount) then
 		return nil, "Invalid hatch count"
 	end
 	maximum = maximum or getMaximumBatchCount(player)
 	if requestedCount > maximum then
 		return nil, "Multi-Open upgrade required"
+	end
+	return requestedCount, nil
+end
+
+local function validateTransactionCount(player, requestedCount, maximum)
+	maximum = maximum or getMaximumBatchCount(player)
+	if not isFiniteNumber(requestedCount) or requestedCount % 1 ~= 0 or requestedCount < 1 then
+		return nil, "Invalid hatch count"
+	end
+	if requestedCount > maximum then
+		return nil, "Multi-Open upgrade required"
+	end
+	if not isValidTransactionCount(requestedCount, maximum) then
+		return nil, "Invalid hatch count"
 	end
 	return requestedCount, nil
 end
@@ -141,7 +166,7 @@ function EggService.setSelectedBatchCount(player, requestedCount)
 	end
 	local maximum = getMaximumBatchCount(player)
 	reconcilePreferredBatchCount(player, maximum)
-	local count, countError = validateRequestedCount(player, requestedCount, maximum)
+	local count, countError = validatePreferredCount(player, requestedCount, maximum)
 	if not count then
 		return false, countError, EggService.getBatchState(player)
 	end
@@ -185,6 +210,165 @@ local function isNearStation(player, eggType)
 		return EggService._stationValidator(player, eggType) == true
 	end
 	return defaultStationValidator(player, eggType)
+end
+
+local function getManualQuoteContext(player, eggType)
+	if not player or type(eggType) ~= "string" or eggType == "" then
+		return nil, "Invalid parameters"
+	end
+	local eggDef = PetData.Eggs[eggType]
+	if not eggDef then
+		return nil, "Unknown egg type: " .. tostring(eggType)
+	end
+	local data = getPlayerData(player)
+	if not data or type(data.pets) ~= "table" then
+		return nil, "No player data"
+	end
+	if not isUnlockedZone(data, eggDef.zone) then
+		return nil, "Zone not unlocked for this egg type"
+	end
+	local eggCost = Config.EggCosts[eggDef.zone]
+	local unitCost = eggCost and eggCost.Coins
+	if not isFiniteNumber(unitCost) or unitCost < 0 or unitCost % 1 ~= 0 then
+		return nil, "No valid coin cost for egg zone"
+	end
+	if not isNearStation(player, eggType) then
+		return nil, "Move closer to this egg station"
+	end
+
+	local entitlementCap = getMaximumBatchCount(player)
+	local maximumInventory = EggService._petService.getMaxInventory(player)
+	if not isFiniteNumber(maximumInventory) then
+		maximumInventory = #data.pets
+	end
+	local freeSlots = math.max(0, math.floor(maximumInventory) - #data.pets)
+	local coins = isFiniteNumber(data.coins) and math.max(0, math.floor(data.coins)) or 0
+	local affordableCount = unitCost == 0 and entitlementCap or math.floor(coins / unitCost)
+	local feasibleMax = math.max(0, math.min(entitlementCap, freeSlots, affordableCount, 10))
+
+	return {
+		eggType = eggType,
+		zone = eggDef.zone,
+		unitCost = unitCost,
+		entitlementCap = entitlementCap,
+		freeSlots = freeSlots,
+		coins = coins,
+		feasibleMax = feasibleMax,
+		x1 = {
+			count = 1,
+			available = feasibleMax >= 1,
+			totalCost = unitCost,
+			intent = { mode = "Fixed", count = 1 },
+		},
+		x3 = {
+			count = 3,
+			available = entitlementCap >= 3 and feasibleMax >= 3,
+			totalCost = unitCost * 3,
+			intent = { mode = "Fixed", count = 3 },
+		},
+		max = {
+			count = feasibleMax,
+			available = feasibleMax >= 1,
+			totalCost = unitCost * feasibleMax,
+			intent = { mode = "Max" },
+		},
+	}, nil
+end
+
+-- Server-authoritative manual purchase quote. It intentionally does not read or
+-- mutate hatchPreferences; those preferences belong only to the later Auto-Hatch flow.
+function EggService.getHatchPurchaseOptions(player, eggType)
+	return getManualQuoteContext(player, eggType)
+end
+
+local function validateStrictIntent(intent)
+	if type(intent) ~= "table" or getmetatable(intent) ~= nil then
+		return nil, "Invalid hatch intent"
+	end
+	if intent.mode == "Fixed" then
+		local keyCount = 0
+		for key in pairs(intent) do
+			if key ~= "mode" and key ~= "count" then
+				return nil, "Invalid hatch intent"
+			end
+			keyCount = keyCount + 1
+		end
+		if keyCount ~= 2 or (intent.count ~= 1 and intent.count ~= 3) then
+			return nil, "Invalid hatch intent"
+		end
+		return intent.count, nil
+	elseif intent.mode == "Max" then
+		local keyCount = 0
+		for key in pairs(intent) do
+			if key ~= "mode" then
+				return nil, "Invalid hatch intent"
+			end
+			keyCount = keyCount + 1
+		end
+		if keyCount ~= 1 then
+			return nil, "Invalid hatch intent"
+		end
+		return "Max", nil
+	end
+	return nil, "Invalid hatch intent"
+end
+
+local purchaseAndHatchUnlocked
+
+local function withHatchLock(player, callback)
+	if not player then
+		return nil, "Invalid parameters"
+	end
+	local lockKey = player.UserId or player
+	if EggService._hatchLock[lockKey] then
+		return nil, "Already hatching eggs"
+	end
+	EggService._hatchLock[lockKey] = true
+	local callSucceeded, result, hatchError = pcall(callback)
+	EggService._hatchLock[lockKey] = nil
+	if not callSucceeded then
+		return nil, "Hatch failed safely"
+	end
+	return result, hatchError
+end
+
+function EggService.purchaseFromIntent(player, eggType, intent)
+	local selection, intentError = validateStrictIntent(intent)
+	if not selection then
+		return nil, intentError
+	end
+
+	-- Confirmation is serialized before Max is resolved. Quote resolution,
+	-- entitlement/capacity validation, debit, and inventory commit therefore share
+	-- one hatch critical section instead of trusting an earlier client quote.
+	return withHatchLock(player, function()
+		local quote, quoteError = getManualQuoteContext(player, eggType)
+		if not quote then
+			return nil, quoteError
+		end
+
+		local count
+		if selection == "Max" then
+			count = quote.feasibleMax
+		elseif selection == 3 then
+			if not quote.x3.available then
+				return nil, "x3 hatch option unavailable"
+			end
+			count = 3
+		else
+			if not quote.x1.available then
+				return nil, "x1 hatch option unavailable"
+			end
+			count = 1
+		end
+		if count < 1 then
+			return nil, "No feasible hatch purchase"
+		end
+
+		return purchaseAndHatchUnlocked(player, eggType, count, {
+			bypassStation = false,
+		})
+	end)
 end
 
 local function runTransactionHook(stage, transaction)
@@ -250,28 +434,26 @@ end
 
 -- options is server-owned. Manual remote calls pass { bypassStation = false };
 -- auto-hatch passes true and still pays the full batch price.
-function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
+purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
 	options = type(options) == "table" and options or {
 		bypassStation = options == true,
 	}
-	local preferredCount = EggService.getSelectedBatchCount(player)
-	local count = requestedCount == nil and preferredCount or requestedCount
-	local validatedCount, countError = validateRequestedCount(player, count)
+	-- Explicit transaction counts (including manual x3/Max quantities) never
+	-- reconcile or mutate the persisted Auto-Hatch preference.
+	local count = requestedCount
+	if count == nil then
+		count = EggService.getSelectedBatchCount(player)
+	end
+	local validatedCount, countError = validateTransactionCount(player, count)
 	if not validatedCount then
 		return nil, countError
 	end
 	if options.bypassStation ~= true and not isNearStation(player, eggType) then
 		return nil, "Move closer to this egg station"
 	end
-
-	local lockKey = player.UserId or player
-	if EggService._hatchLock[lockKey] then
-		return nil, "Already hatching eggs"
-	end
-	EggService._hatchLock[lockKey] = true
 
 	local transaction = {
 		player = player,
@@ -344,7 +526,6 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 	if not callSucceeded or not result then
 		rollbackSucceeded = rollbackTransaction(transaction)
 	end
-	EggService._hatchLock[lockKey] = nil
 
 	if not rollbackSucceeded then
 		return nil, "Hatch rollback failed"
@@ -358,6 +539,12 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 
 	notifyCommittedBatch(player, result)
 	return result, nil
+end
+
+function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
+	return withHatchLock(player, function()
+		return purchaseAndHatchUnlocked(player, eggType, requestedCount, options)
+	end)
 end
 
 -- Compatibility API for explicitly free server rewards. Auto-hatch does not use

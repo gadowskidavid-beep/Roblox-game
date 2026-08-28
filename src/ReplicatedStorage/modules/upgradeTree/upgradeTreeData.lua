@@ -454,6 +454,17 @@ local upgradeTreeData:upgradeTreeData = {
 				portalTo = "mainTree",
 			},
 			{
+				id = "doubleLuck",
+				name = "Double Luck",
+				description = "Doubles general hatch luck, subject to existing chance caps.",
+				side = "bottom",
+				parentId = "luckBack",
+				requireId = { "Eggs II" },
+				requirements = {{ currency = "diamonds", amount = 5000 }},
+				upgradeIcon = "purpleClover",
+				hexImg = "blue",
+			},
+			{
 				id = "epicLuck1",
 				name = "Epic Luck I",
 				description = "+5% Epic Egg Chance!",
@@ -693,9 +704,9 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-08 activates the imported Eggs III-V branch without changing its stable
--- IDs or layout. Only approved hatch entitlements are purchasable; unrelated
--- legacy nodes remain visible but server-blocked for their owning later QOFs.
+-- QOF-11 activates Double Luck in addition to the QOF-10 capacity and hatch
+-- branches. Only explicitly gated entitlements are purchasable; unrelated
+-- legacy nodes remain dormant.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -709,11 +720,27 @@ end
 for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
 	activeById[level.id] = level
 end
+if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
+	local level = BalanceConfig.CoreUpgrades.DoubleLuck
+	activeById[level.id] = level
+end
+if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do
+		activeById[level.id] = level
+	end
+end
+if BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.PetEquipSlots) do
+		activeById[level.id] = level
+	end
+end
 
 for _, treeUpgrades in pairs(upgradeTreeData.upgrades) do
 	for _, upgrade in ipairs(treeUpgrades) do
 		local active = activeById[upgrade.id]
-		if upgrade.id == "luckPortal" then
+		if upgrade.id == "playerPortal" then
+			upgrade.requireId = { "Eggs II" }
+		elseif upgrade.id == "luckPortal" then
 			upgrade.name = "Variant Chances"
 			upgrade.description = "Gold, Rainbow, and Shiny direct hatch upgrades."
 			upgrade.requireId = {}
