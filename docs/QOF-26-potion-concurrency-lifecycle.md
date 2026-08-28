@@ -2,7 +2,7 @@
 
 Status: **Code-verifiziert – Studio-Test ausstehend**
 
-Implementierungscommit: **wird im gebundenen Handoff-Commit ergänzt**
+Implementierungscommit: `5df4944`
 
 QOF-26 ersetzt unabhängige Potion-Locks durch einen gemeinsamen, opaken per-player Lease. Hatch-Shiny-Reservationen, manuelles Trinken, der vollständige Auto-Drink-Pass, Selection, Potion-Upgrades, Reconciliation und Potion-Shopkäufe können dadurch keinen Zwischenzustand mehr gegenseitig überschreiben. Direkte Potion-Mutationen besitzen zusätzlich den zentralen QOF-25-Profil-Owner und sind damit gegen Autosave, Leave und Shutdown serialisiert.
 
