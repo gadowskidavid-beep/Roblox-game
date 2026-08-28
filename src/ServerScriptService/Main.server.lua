@@ -247,7 +247,7 @@ getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, request
 	})
 end
 
--- SetHatchBatchSize only stores a validated session preference for auto-hatch.
+-- SetHatchBatchSize stores the server-validated persistent preference for Auto-Hatch.
 -- HatchEgg validates the count again for every paid transaction.
 getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
 	if not player or not player:IsA("Player") then
@@ -726,7 +726,7 @@ Players.PlayerRemoving:Connect(function(player)
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
 
-	-- Cleanup QOF-08 hatch locks and session batch preference
+	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
 	-- Cleanup ShopService player state (active buffs)

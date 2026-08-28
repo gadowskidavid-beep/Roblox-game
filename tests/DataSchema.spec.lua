@@ -82,6 +82,14 @@ describe("DataSchema.getDefaultData", function()
 		expect(data.potionUpgrades):toEqual({ slots = 2, durationLevel = 0, autoDrink = false })
 	end)
 
+	it("defaults the persistent hatch preference to x1", function()
+		local first = DataSchema.getDefaultData()
+		local second = DataSchema.getDefaultData()
+		expect(first.hatchPreferences):toEqual({ preferredBatchCount = 1 })
+		first.hatchPreferences.preferredBatchCount = 10
+		expect(second.hatchPreferences.preferredBatchCount):toBe(1)
+	end)
+
 	it("has unlockedZones containing zone 1", function()
 		local data = DataSchema.getDefaultData()
 		expect(data.unlockedZones):toContain(1)
@@ -290,7 +298,7 @@ describe("V6 pet migration", function()
 			equippedPets = {},
 		}, 1000)
 
-		expect(data.schemaVersion):toBe(6)
+		expect(data.schemaVersion):toBe(7)
 		expect(data.pets[1].variant):toBe("Normal")
 		expect(data.pets[1].shiny):toBeFalse()
 		expect(data.pets[1].damage):toBe(1)
@@ -484,5 +492,49 @@ describe("V6 rolling-server and magnitude safety", function()
 		}, 1000)
 		expect(data.potionInventory):toEqual({})
 		expect(data.activeBuffs):toEqual({})
+	end)
+end)
+
+
+describe("V7 persistent hatch preferences", function()
+	it("migrates V6 profiles without a preference to the x1 default", function()
+		local data = DataSchema.migrate({ schemaVersion = 6, coins = 250 }, 1000)
+		expect(data.schemaVersion):toBe(7)
+		expect(data.hatchPreferences):toEqual({ preferredBatchCount = 1 })
+		expect(data.coins):toBe(250)
+	end)
+
+	it("preserves only the fixed x1, x2, x5, and x10 tiers", function()
+		for _, count in ipairs({ 1, 2, 5, 10 }) do
+			local data = DataSchema.migrate({
+				hatchPreferences = { preferredBatchCount = count },
+			}, 1000)
+			expect(data.hatchPreferences.preferredBatchCount):toBe(count)
+		end
+
+		for _, invalid in ipairs({ 0, 3, 2.5, "5", true, math.huge, -math.huge }) do
+			local data = DataSchema.migrate({
+				hatchPreferences = { preferredBatchCount = invalid },
+			}, 1000)
+			expect(data.hatchPreferences.preferredBatchCount):toBe(1)
+		end
+		expect(DataSchema.migrate({ hatchPreferences = "invalid" }, 1000).hatchPreferences)
+			:toEqual({ preferredBatchCount = 1 })
+		expect(DataSchema.migrate({
+			hatchPreferences = { preferredBatchCount = 0 / 0 },
+		}, 1000).hatchPreferences.preferredBatchCount):toBe(1)
+	end)
+
+	it("keeps migration and persistence cloning idempotent and independent", function()
+		local once = DataSchema.migrate({
+			schemaVersion = 6,
+			hatchPreferences = { preferredBatchCount = 5 },
+		}, 1000)
+		local twice = DataSchema.migrate(once, 1000)
+		local snapshot = DataSchema.cloneForPersistence(twice, 1000)
+		expect(twice):toEqual(once)
+		expect(snapshot):toEqual(twice)
+		snapshot.hatchPreferences.preferredBatchCount = 1
+		expect(twice.hatchPreferences.preferredBatchCount):toBe(5)
 	end)
 end)

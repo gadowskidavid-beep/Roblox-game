@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds the QOF-08 runtime sources."""
+"""Verify that the generated Battle Pets place embeds the QOF-09 runtime sources."""
 
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -15,6 +15,7 @@ EXPECTED_SOURCES = {
     "PetHatchMath": "src/ReplicatedStorage/Shared/PetHatchMath.lua",
     "PetVariantMath": "src/ReplicatedStorage/Shared/PetVariantMath.lua",
     "PetVariantPresentation": "src/ReplicatedStorage/Shared/PetVariantPresentation.lua",
+    "HatchCinematicPolicy": "src/ReplicatedStorage/Shared/HatchCinematicPolicy.lua",
     "PetService": "src/ServerScriptService/Services/PetService.lua",
     "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
     "EggService": "src/ServerScriptService/Services/EggService.lua",
@@ -27,7 +28,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 61, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 62, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -77,7 +78,7 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds all QOF-08 sources exactly once")
+    print("PASS: generated place embeds all QOF-09 sources exactly once")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

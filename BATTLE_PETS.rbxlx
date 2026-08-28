@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000073">
+	<Item class="ServerScriptService" referent="RBX00000074">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000072">
+			<Item class="Script" referent="RBX00000073">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -964,7 +964,7 @@ getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, request
 	})
 end
 
--- SetHatchBatchSize only stores a validated session preference for auto-hatch.
+-- SetHatchBatchSize stores the server-validated persistent preference for Auto-Hatch.
 -- HatchEgg validates the count again for every paid transaction.
 getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
 	if not player or not player:IsA("Player") then
@@ -1443,7 +1443,7 @@ Players.PlayerRemoving:Connect(function(player)
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
 
-	-- Cleanup QOF-08 hatch locks and session batch preference
+	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
 	-- Cleanup ShopService player state (active buffs)
@@ -1571,11 +1571,11 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX00000071">
+			<Item class="Folder" referent="RBX00000072">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000065">
+				<Item class="ModuleScript" referent="RBX00000066">
 					<Properties>
 						<string name="Name">DataSchema</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1591,7 +1591,7 @@ local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 6
+DataSchema.VERSION = 7
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -1676,6 +1676,9 @@ function DataSchema.getDefaultData()
 		campaignBossRewards = {},
 		upgrades = {},
 		upgradeTreePurchases = {},
+		hatchPreferences = {
+			preferredBatchCount = 1,
+		},
 		equippedPets = { "starter_pet_1" },
 		questStats = {
 			destroyDestructibles = 0,
@@ -1858,6 +1861,27 @@ local function normalizeActiveBuffs(values, currentTime)
 	return normalized
 end
 
+local VALID_HATCH_BATCH_COUNTS = {
+	[1] = true,
+	[2] = true,
+	[5] = true,
+	[10] = true,
+}
+
+local function normalizeHatchPreferences(values)
+	local preferredBatchCount = type(values) == "table" and values.preferredBatchCount or nil
+	if type(preferredBatchCount) ~= "number"
+		or preferredBatchCount ~= preferredBatchCount
+		or preferredBatchCount == math.huge
+		or preferredBatchCount == -math.huge
+		or not VALID_HATCH_BATCH_COUNTS[preferredBatchCount] then
+		preferredBatchCount = 1
+	end
+	return {
+		preferredBatchCount = preferredBatchCount,
+	}
+end
+
 local function normalizePotionUpgrades(values)
 	if type(values) ~= "table" then
 		values = {}
@@ -1909,6 +1933,7 @@ function DataSchema.normalize(data, currentTime)
 	data.potionInventory = normalizePotionInventory(data.potionInventory)
 	data.activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
 	data.potionUpgrades = normalizePotionUpgrades(data.potionUpgrades)
+	data.hatchPreferences = normalizeHatchPreferences(data.hatchPreferences)
 
 	data.schemaVersion = DataSchema.VERSION
 	data.xpNeeded = nil
@@ -1938,7 +1963,7 @@ return DataSchema
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000066">
+				<Item class="ModuleScript" referent="RBX00000067">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2203,6 +2228,7 @@ function DataService.getClientData(player)
 		unlockedZones = DataSchema.deepCopy(data.unlockedZones),
 		upgrades = DataSchema.deepCopy(data.upgrades),
 		upgradeTreePurchases = DataSchema.deepCopy(data.upgradeTreePurchases or {}),
+		hatchPreferences = DataSchema.deepCopy(data.hatchPreferences or { preferredBatchCount = 1 }),
 		questStats = DataSchema.deepCopy(data.questStats),
 		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,
@@ -2267,7 +2293,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000067">
+				<Item class="ModuleScript" referent="RBX00000068">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2453,7 +2479,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000068">
+				<Item class="ModuleScript" referent="RBX00000069">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3296,7 +3322,7 @@ return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000069">
+				<Item class="ModuleScript" referent="RBX0000006A">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3392,7 +3418,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006A">
+				<Item class="ModuleScript" referent="RBX0000006B">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6043,7 +6069,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006B">
+				<Item class="ModuleScript" referent="RBX0000006C">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6645,7 +6671,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6669,17 +6695,26 @@ EggService._petService = nil
 EggService._questService = nil
 EggService._upgradeTreeService = nil
 EggService._hatchLock = {}
-EggService._selectedBatchCounts = {}
 EggService._transactionHook = nil
 EggService._stationValidator = nil
 EggService._nextBatchId = 0
 
+local BATCH_COUNT_TIERS = { 1, 2, 5, 10 }
 local VALID_BATCH_COUNTS = {
 	[1] = true,
 	[2] = true,
 	[5] = true,
 	[10] = true,
 }
+
+local function isValidBatchCount(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+		and value % 1 == 0
+		and VALID_BATCH_COUNTS[value] == true
+end
 
 function EggService.init(dataService, currencyService, petService, upgradeTreeService)
 	EggService._dataService = dataService
@@ -6707,19 +6742,53 @@ local function getMaximumBatchCount(player)
 	end
 	local entitlements = EggService._upgradeTreeService.getEntitlements(player)
 	local count = type(entitlements) == "table" and entitlements.multiOpenCount or 1
-	if VALID_BATCH_COUNTS[count] then
+	if isValidBatchCount(count) then
 		return count
 	end
 	return 1
 end
 
-local function validateRequestedCount(player, requestedCount)
-	if type(requestedCount) ~= "number" or requestedCount ~= requestedCount
-		or requestedCount == math.huge or requestedCount == -math.huge
-		or requestedCount % 1 ~= 0 or not VALID_BATCH_COUNTS[requestedCount] then
+local function highestAllowedBatchCount(maximum)
+	for index = #BATCH_COUNT_TIERS, 1, -1 do
+		local count = BATCH_COUNT_TIERS[index]
+		if count <= maximum then
+			return count
+		end
+	end
+	return 1
+end
+
+local function getPlayerData(player)
+	if not player or not EggService._dataService then
+		return nil
+	end
+	return EggService._dataService.getPlayerData(player)
+end
+
+local function reconcilePreferredBatchCount(player, maximum)
+	local data = getPlayerData(player)
+	if not data then
+		return 1
+	end
+	if type(data.hatchPreferences) ~= "table" then
+		data.hatchPreferences = { preferredBatchCount = 1 }
+	end
+
+	local selected = data.hatchPreferences.preferredBatchCount
+	if not isValidBatchCount(selected) then
+		selected = 1
+	elseif selected > maximum then
+		selected = highestAllowedBatchCount(maximum)
+	end
+	data.hatchPreferences.preferredBatchCount = selected
+	return selected
+end
+
+local function validateRequestedCount(player, requestedCount, maximum)
+	if not isValidBatchCount(requestedCount) then
 		return nil, "Invalid hatch count"
 	end
-	local maximum = getMaximumBatchCount(player)
+	maximum = maximum or getMaximumBatchCount(player)
 	if requestedCount > maximum then
 		return nil, "Multi-Open upgrade required"
 	end
@@ -6730,20 +6799,15 @@ function EggService.getSelectedBatchCount(player)
 	if not player then
 		return 1
 	end
-	local key = player.UserId or player
-	local selected = EggService._selectedBatchCounts[key] or 1
-	local validated = validateRequestedCount(player, selected)
-	if validated then
-		return selected
-	end
-	EggService._selectedBatchCounts[key] = 1
-	return 1
+	local maximum = getMaximumBatchCount(player)
+	return reconcilePreferredBatchCount(player, maximum)
 end
 
 function EggService.getBatchState(player)
+	local maximum = player and getMaximumBatchCount(player) or 1
 	return {
-		selectedCount = EggService.getSelectedBatchCount(player),
-		maximumCount = getMaximumBatchCount(player),
+		selectedCount = player and reconcilePreferredBatchCount(player, maximum) or 1,
+		maximumCount = maximum,
 		availableCounts = { 1, 2, 5, 10 },
 	}
 end
@@ -6752,11 +6816,17 @@ function EggService.setSelectedBatchCount(player, requestedCount)
 	if not player then
 		return false, "Invalid player", EggService.getBatchState(player)
 	end
-	local count, countError = validateRequestedCount(player, requestedCount)
+	local maximum = getMaximumBatchCount(player)
+	reconcilePreferredBatchCount(player, maximum)
+	local count, countError = validateRequestedCount(player, requestedCount, maximum)
 	if not count then
 		return false, countError, EggService.getBatchState(player)
 	end
-	EggService._selectedBatchCounts[player.UserId or player] = count
+	local data = getPlayerData(player)
+	if not data then
+		return false, "No player data", EggService.getBatchState(player)
+	end
+	data.hatchPreferences.preferredBatchCount = count
 	return true, nil, EggService.getBatchState(player)
 end
 
@@ -6864,7 +6934,8 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 	options = type(options) == "table" and options or {
 		bypassStation = options == true,
 	}
-	local count = requestedCount == nil and EggService.getSelectedBatchCount(player) or requestedCount
+	local preferredCount = EggService.getSelectedBatchCount(player)
+	local count = requestedCount == nil and preferredCount or requestedCount
 	local validatedCount, countError = validateRequestedCount(player, count)
 	if not validatedCount then
 		return nil, countError
@@ -6878,7 +6949,6 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 		return nil, "Already hatching eggs"
 	end
 	EggService._hatchLock[lockKey] = true
-	EggService._selectedBatchCounts[lockKey] = validatedCount
 
 	local transaction = {
 		player = player,
@@ -6980,7 +7050,6 @@ function EggService.onPlayerRemoving(player)
 	if not player then return end
 	local key = player.UserId or player
 	EggService._hatchLock[key] = nil
-	EggService._selectedBatchCounts[key] = nil
 end
 
 function EggService.getAvailableEggs(player)
@@ -7009,7 +7078,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006D">
+				<Item class="ModuleScript" referent="RBX0000006E">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7209,7 +7278,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006E">
+				<Item class="ModuleScript" referent="RBX0000006F">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7359,7 +7428,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006F">
+				<Item class="ModuleScript" referent="RBX00000070">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7619,7 +7688,7 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000070">
+				<Item class="ModuleScript" referent="RBX00000071">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7923,15 +7992,15 @@ return UpgradeTreeService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX0000007C">
+	<Item class="StarterPlayer" referent="RBX0000007D">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX0000007B">
+		<Item class="StarterPlayerScripts" referent="RBX0000007C">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX0000007A">
+				<Item class="LocalScript" referent="RBX0000007B">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -8175,10 +8244,35 @@ uiController:init(Remotes, playerData)
 musicController:init()
 upgradeTreeController:init(Remotes, playerData)
 
+-- Hydrate the persisted Auto-Hatch preference only after the current entitlement
+-- limit is known. This is selector state only; hatch presentation stays unchanged.
+local pendingPreferredBatchCount = type(playerData.hatchPreferences) == "table"
+	and playerData.hatchPreferences.preferredBatchCount or 1
 local function applyHatchEntitlementState(serverState)
 	local entitlements = type(serverState) == "table" and serverState.entitlements or nil
-	local maximumCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
-	uiController:setHatchBatchLimit(maximumCount)
+	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
+	local entitlementCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
+	local maximumCount = type(entitlementCount) == "number"
+		and entitlementCount == entitlementCount
+		and allowed[entitlementCount] and entitlementCount or 1
+	if pendingPreferredBatchCount ~= nil then
+		local selectedCount = type(pendingPreferredBatchCount) == "number"
+			and pendingPreferredBatchCount == pendingPreferredBatchCount
+			and allowed[pendingPreferredBatchCount] and pendingPreferredBatchCount or 1
+		if selectedCount > maximumCount then
+			selectedCount = maximumCount
+		end
+		uiController:setHatchBatchState(maximumCount, selectedCount)
+		pendingPreferredBatchCount = nil
+	else
+		local selectedCount = uiController:getSelectedHatchCount()
+		if type(selectedCount) ~= "number" or selectedCount ~= selectedCount or not allowed[selectedCount] then
+			selectedCount = 1
+		elseif selectedCount > maximumCount then
+			selectedCount = maximumCount
+		end
+		uiController:setHatchBatchState(maximumCount, selectedCount)
+	end
 end
 
 local hatchSelectionRequestToken = 0
@@ -8553,82 +8647,85 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId)
 	end
 end)
 
-local hatchPresentationQueue = {}
-local hatchPresentationActive = false
-
-local function updateHatchPosition()
-	if not player.Character then return end
-	local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-	effectsController._lastHatchPosition = hrp.Position + hrp.CFrame.LookVector * 6
-end
-
-local function processNextHatchPresentation()
-	if hatchPresentationActive or #hatchPresentationQueue == 0 then return end
-	hatchPresentationActive = true
-	local presentation = table.remove(hatchPresentationQueue, 1)
-	local pets = presentation.pets
-	local presentationFinished = false
-
-	local function finishPresentation()
-		if presentationFinished then return end
-		presentationFinished = true
-		effectsController._lastHatchPosition = nil
-		local uiSucceeded, uiError = xpcall(function()
-			uiController:showEggBatch(pets)
-		end, debug.traceback)
-		hatchPresentationActive = false
-		task.defer(processNextHatchPresentation)
-		if not uiSucceeded then
-			warn("[Battle Pets] Hatch results recovered from a UI error:\n" .. tostring(uiError))
+local function normalizeHatchResult(payload)
+	if type(payload) ~= "table" then return nil end
+	local sourcePets = type(payload.pets) == "table" and payload.pets or { payload }
+	local pets = {}
+	for _, petData in ipairs(sourcePets) do
+		if type(petData) == "table" then
+			table.insert(pets, petData)
+			if #pets == 10 then break end
 		end
 	end
+	if #pets == 0 then return nil end
 
-	local revealStarted, revealError = xpcall(function()
-		updateHatchPosition()
-		if not effectsController._isHatching then
-			effectsController:startEggWobble()
-		end
-		effectsController:completeEggHatch(pets[1], #pets, finishPresentation)
-	end, debug.traceback)
-	if not revealStarted then
-		effectsController:cancelEggHatch()
-		finishPresentation()
-		warn("[Battle Pets] Hatch reveal recovered before start:\n" .. tostring(revealError))
-	end
+	-- Preserve the complete authoritative DTO. Only normalize the rolling QOF-07
+	-- shape and clamp the presentation-only list to the supported x10 boundary.
+	local normalized = {}
+	for key, value in pairs(payload) do normalized[key] = value end
+	normalized.pets = pets
+	normalized.count = #pets
+	return normalized
 end
 
 EggHatchStart.OnClientEvent:Connect(function(payload)
-	local eggType = type(payload) == "table" and payload.eggType or payload
-	if type(eggType) ~= "string" then return end
-	updateHatchPosition()
-	-- Start immediate feedback only when no older batch owns the reveal surface.
-	-- Queued results create their own wobble when they reach the front.
-	if not hatchPresentationActive and #hatchPresentationQueue == 0 then
-		effectsController:startEggWobble()
+	local started, startError = xpcall(function()
+		effectsController:handleHatchStart(payload)
+	end, debug.traceback)
+	if not started then
+		warn("[Battle Pets] Hatch start feedback recovered from an error:\n" .. tostring(startError))
 	end
 end)
 
 EggHatchResult.OnClientEvent:Connect(function(payload)
-	local pets = type(payload) == "table" and payload.pets or nil
-	if type(pets) ~= "table" then
-		-- Rolling-server compatibility with the QOF-07 single-pet event contract.
-		pets = type(payload) == "table" and { payload } or {}
+	local resultDto = normalizeHatchResult(payload)
+	if not resultDto then
+		local cleaned, cleanupError = xpcall(function()
+			effectsController:handleInvalidHatchResult(payload)
+		end, debug.traceback)
+		if not cleaned then
+			warn("[Battle Pets] Invalid hatch cleanup recovered from an error:\n" .. tostring(cleanupError))
+		end
+		return
 	end
-	if #pets == 0 then return end
 
+	-- Onboarding follows the committed server result, never presentation timing.
 	completeOnboardingStep("egg")
-	for _, petData in ipairs(pets) do
-		if type(petData) == "table" and petData.isNewDiscovery == true then
-			uiController:enqueueDiscoveryToast(petData)
+	local pets = resultDto.pets
+	local presented = false
+	local function onPresented()
+		if presented then return end
+		presented = true
+		local gridSucceeded, gridError = xpcall(function()
+			uiController:showEggBatch(pets)
+		end, debug.traceback)
+		if not gridSucceeded then
+			warn("[Battle Pets] Hatch result grid recovered from a UI error:\n" .. tostring(gridError))
+		end
+
+		-- DisplayOrder 100 discovery toasts are released only after the DisplayOrder
+		-- 50 cinematic has finalized, so they cannot cover the rare reveal.
+		for _, petData in ipairs(pets) do
+			if petData.isNewDiscovery == true then
+				local toastSucceeded, toastError = xpcall(function()
+					uiController:enqueueDiscoveryToast(petData)
+				end, debug.traceback)
+				if not toastSucceeded then
+					warn("[Battle Pets] Discovery toast recovered from a UI error:\n" .. tostring(toastError))
+				end
+			end
 		end
 	end
 
-	table.insert(hatchPresentationQueue, {
-		batchId = type(payload) == "table" and payload.batchId or nil,
-		pets = pets,
-	})
-	processNextHatchPresentation()
+	local enqueueSucceeded, acceptedOrError = xpcall(function()
+		return effectsController:enqueueHatchBatch(resultDto, onPresented)
+	end, debug.traceback)
+	if not enqueueSucceeded then
+		-- A controller boundary error must not lose the committed result.
+		onPresented()
+		warn("[Battle Pets] Hatch queue recovered from an error:\n" .. tostring(acceptedOrError))
+	end
+	-- acceptedOrError == false is the intentional bounded batchId dedupe path.
 end)
 
 CampaignBattleUpdate.OnClientEvent:Connect(function(battleState)
@@ -8864,7 +8961,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000074">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -13017,7 +13114,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000076">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -14671,7 +14768,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000076">
+				<Item class="ModuleScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15586,7 +15683,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000077">
+				<Item class="ModuleScript" referent="RBX00000078">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15603,6 +15700,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
+local HatchCinematicPolicy = require(Shared:WaitForChild("HatchCinematicPolicy"))
 
 local EffectsController = {}
 EffectsController.__index = EffectsController
@@ -15628,6 +15726,13 @@ function EffectsController.new()
 	self._initialized = false
 	self._lastHatchPosition = nil
 	self._isHatching = false
+	self._hatchPresentationQueue = {}
+	self._hatchPresentationActive = false
+	self._activeHatchScope = nil
+	self._finalizingHatchScope = nil
+	self._hatchCleanupCallbacks = {}
+	self._seenHatchBatchIds = {}
+	self._seenHatchBatchOrder = {}
 	return self
 end
 
@@ -15637,6 +15742,9 @@ function EffectsController:init()
 	self._effectsFolder = Instance.new("Folder")
 	self._effectsFolder.Name = "ClientEffects"
 	self._effectsFolder.Parent = workspace
+	self._characterRemovingConnection = self._player.CharacterRemoving:Connect(function()
+		self:cancelEggHatch("character_removed")
+	end)
 	self._initialized = true
 end
 
@@ -15747,128 +15855,660 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 end
 
 --------------------------------------------------------------------------------
--- Egg Hatch Animation (split into two phases for smoother experience):
---   startEggWobble()      - immediately shows overlay + egg + smooth infinite wobble
---   completeEggHatch(pet) - cancels wobble, does intense shakes, flash, reveal
---   showEggHatchAnimation - legacy fallback that calls both in sequence
---
--- Pure ScreenGui animation - no 3D Parts, no camera changes.
+-- QOF-09 Egg Hatch Presentation
+-- EffectsController owns the lossless FIFO and renders one complete batch in one
+-- responsive ScreenGui. UIController remains the only result-grid owner.
 --------------------------------------------------------------------------------
 
--- Helper: create the egg overlay UI elements and return references table
-function EffectsController:_createEggUI()
-	-- Create full-screen overlay ScreenGui (unique name to avoid collision with UIController)
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "EffectsController_EggHatchAnim"
-	screenGui.IgnoreGuiInset = true
-	screenGui.DisplayOrder = 50
-	screenGui.ResetOnSpawn = false
-	screenGui.Parent = self._playerGui
+-- QOF-09 constants. Sound IDs are intentionally blank until product-owned
+-- assets are configured; blank cues never create Sound instances.
+local HATCH_START_TIMEOUT = 2.25
+local HATCH_SEEN_CACHE_LIMIT = 128
+local HATCH_PARTICLE_LIMIT = 24
+local HATCH_SOUND_IDS = { Pop = "", RareAccent = "", Hero = "" }
+local UPGRADE_TREE_GUI_NAME = "UpgradeTreeGui"
 
-	-- Semi-transparent dark background overlay
-	local overlay = Instance.new("Frame")
-	overlay.Name = "DarkOverlay"
-	overlay.Size = UDim2.fromScale(1, 1)
-	overlay.Position = UDim2.fromScale(0, 0)
-	overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-	overlay.BackgroundTransparency = 0.5
-	overlay.BorderSizePixel = 0
-	overlay.Parent = screenGui
+local function shallowCopy(source)
+	local copy = {}
+	for key, value in pairs(source) do copy[key] = value end
+	return copy
+end
 
-	-- Container frame to hold the egg (centered)
-	local eggContainer = Instance.new("Frame")
-	eggContainer.Name = "EggContainer"
-	eggContainer.Size = UDim2.fromOffset(120, 160)
-	eggContainer.Position = UDim2.fromScale(0.5, 0.5)
-	eggContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-	eggContainer.BackgroundTransparency = 1
-	eggContainer.Parent = overlay
+local function safeDisconnect(connection)
+	if connection then pcall(function() connection:Disconnect() end) end
+end
 
-	-- Main egg shape: oval Frame with large UICorner (cream/white)
-	local eggFrame = Instance.new("Frame")
-	eggFrame.Name = "EggShape"
-	eggFrame.Size = UDim2.fromScale(1, 1)
-	eggFrame.Position = UDim2.fromScale(0, 0)
-	eggFrame.BackgroundColor3 = Color3.fromRGB(255, 248, 220)
-	eggFrame.BorderSizePixel = 0
-	eggFrame.Parent = eggContainer
+local function safeCancel(tween)
+	if tween then pcall(function() tween:Cancel() end) end
+end
 
-	local eggCorner = Instance.new("UICorner")
-	eggCorner.CornerRadius = UDim.new(0.5, 0)
-	eggCorner.Parent = eggFrame
+local function findVisibleUpgradeTreeOverlay(playerGui)
+	for _, child in ipairs(playerGui:GetChildren()) do
+		if child.Name == UPGRADE_TREE_GUI_NAME and child:IsA("ScreenGui") then
+			for _, directChild in ipairs(child:GetChildren()) do
+				if directChild:IsA("GuiObject") and directChild.Visible then
+					return directChild
+				end
+			end
+		end
+	end
+	return nil
+end
 
-	-- Egg outline stroke for definition
-	local eggStroke = Instance.new("UIStroke")
-	eggStroke.Thickness = 3
-	eggStroke.Color = Color3.fromRGB(210, 190, 140)
-	eggStroke.Parent = eggFrame
+local function releaseHeroFovOwnership(scope)
+	if scope.heroFovOwnershipReleased then return end
+	scope.heroFovOwnershipReleased = true
+	scope.heroFovOwned = false
+	safeCancel(scope.heroFovTween)
+	scope.heroFovTween = nil
+end
 
-	-- Inner gradient to give the egg a 3D shading feel
-	local eggGradient = Instance.new("UIGradient")
-	eggGradient.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-		ColorSequenceKeypoint.new(0.4, Color3.fromRGB(255, 248, 220)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(225, 210, 170)),
-	})
-	eggGradient.Rotation = 180
-	eggGradient.Parent = eggFrame
+local function observeUpgradeTreeFovConflict(scope, playerGui)
+	local observedGuis = {}
+	local observedOverlays = {}
 
-	-- Speckle texture: 8 small darker spots on the egg using nested Frames
-	local specklePositions = {
-		{0.25, 0.3}, {0.6, 0.2}, {0.4, 0.55}, {0.7, 0.5},
-		{0.3, 0.7}, {0.55, 0.75}, {0.2, 0.5}, {0.75, 0.35},
-	}
-	for _, pos in ipairs(specklePositions) do
-		local speckle = Instance.new("Frame")
-		speckle.Name = "Speckle"
-		speckle.Size = UDim2.fromOffset(6 + math.random(0, 4), 6 + math.random(0, 4))
-		speckle.Position = UDim2.fromScale(pos[1], pos[2])
-		speckle.AnchorPoint = Vector2.new(0.5, 0.5)
-		speckle.BackgroundColor3 = Color3.fromRGB(200, 175, 120)
-		speckle.BackgroundTransparency = 0.4
-		speckle.BorderSizePixel = 0
-		speckle.Parent = eggFrame
-
-		local speckleCorner = Instance.new("UICorner")
-		speckleCorner.CornerRadius = UDim.new(1, 0)
-		speckleCorner.Parent = speckle
+	local function observeOverlay(overlay)
+		if not overlay:IsA("GuiObject") or observedOverlays[overlay] then return end
+		observedOverlays[overlay] = true
+		if overlay.Visible then releaseHeroFovOwnership(scope) end
+		table.insert(scope.connections, overlay:GetPropertyChangedSignal("Visible"):Connect(function()
+			if overlay.Visible then releaseHeroFovOwnership(scope) end
+		end))
 	end
 
-	-- Highlight shine on upper-left of the egg
-	local shine = Instance.new("Frame")
-	shine.Name = "Shine"
-	shine.Size = UDim2.fromOffset(20, 30)
-	shine.Position = UDim2.fromScale(0.25, 0.18)
-	shine.AnchorPoint = Vector2.new(0.5, 0.5)
-	shine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	shine.BackgroundTransparency = 0.5
-	shine.BorderSizePixel = 0
-	shine.Rotation = -15
-	shine.Parent = eggFrame
+	local function observeGui(gui)
+		if gui.Name ~= UPGRADE_TREE_GUI_NAME or not gui:IsA("ScreenGui") or observedGuis[gui] then return end
+		observedGuis[gui] = true
+		for _, child in ipairs(gui:GetChildren()) do observeOverlay(child) end
+		table.insert(scope.connections, gui.ChildAdded:Connect(observeOverlay))
+	end
 
-	local shineCorner = Instance.new("UICorner")
-	shineCorner.CornerRadius = UDim.new(0.5, 0)
-	shineCorner.Parent = shine
+	table.insert(scope.connections, playerGui.ChildAdded:Connect(observeGui))
+	for _, child in ipairs(playerGui:GetChildren()) do observeGui(child) end
+end
 
-	-- White flash frame (used during break - starts invisible)
-	local whiteFlash = Instance.new("Frame")
-	whiteFlash.Name = "WhiteFlash"
-	whiteFlash.Size = UDim2.fromScale(1, 1)
-	whiteFlash.Position = UDim2.fromScale(0, 0)
-	whiteFlash.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	whiteFlash.BackgroundTransparency = 1
-	whiteFlash.BorderSizePixel = 0
-	whiteFlash.ZIndex = 5
-	whiteFlash.Parent = screenGui
+local function scopeWait(controller, scope, duration)
+	if duration > 0 then task.wait(duration) end
+	return controller._activeHatchScope == scope and not scope.finished
+end
 
+local function getBatchId(payload)
+	local batchId = type(payload) == "table" and payload.batchId or nil
+	return type(batchId) == "string" and batchId ~= "" and batchId or nil
+end
+
+local function normalizeHatchPayload(payload)
+	if type(payload) ~= "table" then return nil end
+	local sourcePets = type(payload.pets) == "table" and payload.pets or { payload }
+	local pets = {}
+	for _, petData in ipairs(sourcePets) do
+		if type(petData) == "table" then
+			table.insert(pets, petData)
+			if #pets == HatchCinematicPolicy.MAX_PETS then break end
+		end
+	end
+	if #pets == 0 then return nil end
+	local normalized = shallowCopy(payload)
+	normalized.batchId = getBatchId(payload)
+	normalized.count = #pets
+	normalized.pets = pets
+	return normalized
+end
+
+local function trackTween(scope, tween)
+	table.insert(scope.tweens, tween)
+	tween:Play()
+	return tween
+end
+
+local function addCorner(parent, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = parent
+end
+
+function EffectsController:_playHatchSound(scope, cue)
+	local soundId = HATCH_SOUND_IDS[cue]
+	if type(soundId) ~= "string" or soundId == "" then return end
+	local sound = Instance.new("Sound")
+	sound.Name = "QOF09_" .. cue
+	sound.SoundId = soundId
+	sound.Volume = 0.65
+	sound.Parent = scope.screenGui
+	table.insert(scope.sounds, sound)
+	sound:Play()
+end
+
+function EffectsController:_layoutHatchCards(scope)
+	local size = scope.overlay.AbsoluteSize
+	local count = #scope.cards
+	if size.X <= 0 or size.Y <= 0 or count == 0 then return end
+	local narrow = size.X < 700 or size.Y > size.X
+	local columns = count == 1 and 1 or (narrow and math.min(2, count) or math.min(5, count))
+	local rows = math.ceil(count / columns)
+	local gap = narrow and (rows >= 4 and 5 or 8) or 12
+	local horizontalPadding = narrow and 12 or 24
+	local topReserve = narrow and 66 or 74
+	local bottomReserve = narrow and 72 or 80
+	local availableWidth = math.max(1, math.min(size.X - horizontalPadding * 2, 980))
+	local availableHeight = math.max(1, math.min(size.Y - topReserve - bottomReserve, 620))
+	local cardWidth = math.floor((availableWidth - gap * (columns - 1)) / columns)
+	local cardHeight = math.floor((availableHeight - gap * (rows - 1)) / rows)
+	cardWidth = math.max(1, math.min(cardWidth, count == 1 and 260 or 184))
+	cardHeight = math.max(1, math.min(cardHeight, count == 1 and 300 or 210))
+	local gridWidth = columns * cardWidth + (columns - 1) * gap
+	local gridHeight = rows * cardHeight + (rows - 1) * gap
+	scope.stage.Size = UDim2.fromOffset(gridWidth, gridHeight)
+	scope.stage.Position = UDim2.new(0.5, 0, 0, topReserve + availableHeight * 0.5)
+
+	for index, card in ipairs(scope.cards) do
+		local row = math.floor((index - 1) / columns)
+		local column = (index - 1) % columns
+		local rowCount = math.min(columns, count - row * columns)
+		local rowWidth = rowCount * cardWidth + (rowCount - 1) * gap
+		card.frame.Size = UDim2.fromOffset(cardWidth, cardHeight)
+		card.frame.Position = UDim2.fromOffset(
+			(gridWidth - rowWidth) * 0.5 + column * (cardWidth + gap),
+			row * (cardHeight + gap)
+		)
+	end
+end
+
+function EffectsController:_createHatchCard(scope, index)
+	local frame = Instance.new("Frame")
+	frame.Name = "Egg_" .. tostring(index)
+	frame.BackgroundColor3 = Color3.fromRGB(26, 29, 44)
+	frame.BackgroundTransparency = 0.08
+	frame.BorderSizePixel = 0
+	frame.ClipsDescendants = true
+	frame.Parent = scope.stage
+	addCorner(frame, 16)
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "AccentStroke"
+	stroke.Color = Color3.fromRGB(120, 130, 160)
+	stroke.Thickness = 2
+	stroke.Transparency = 0.25
+	stroke.Parent = frame
+	local scale = Instance.new("UIScale")
+	scale.Parent = frame
+
+	local egg = Instance.new("Frame")
+	egg.Name = "EggShell"
+	egg.Size = UDim2.fromScale(0.38, 0.58)
+	egg.Position = UDim2.fromScale(0.5, 0.48)
+	egg.AnchorPoint = Vector2.new(0.5, 0.5)
+	egg.BackgroundColor3 = Color3.fromRGB(255, 248, 220)
+	egg.BorderSizePixel = 0
+	egg.Parent = frame
+	addCorner(egg, 999)
+	local eggStroke = Instance.new("UIStroke")
+	eggStroke.Color = Color3.fromRGB(210, 190, 140)
+	eggStroke.Thickness = 2
+	eggStroke.Parent = egg
+
+	local result = Instance.new("Frame")
+	result.Name = "Result"
+	result.Size = UDim2.fromScale(1, 1)
+	result.BackgroundTransparency = 1
+	result.Visible = false
+	result.Parent = frame
+	local accent = Instance.new("Frame")
+	accent.Name = "VariantAccent"
+	accent.Size = UDim2.new(1, 0, 0, 7)
+	accent.BackgroundColor3 = Color3.fromRGB(160, 170, 190)
+	accent.BorderSizePixel = 0
+	accent.Parent = result
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "PetName"
+	nameLabel.Size = UDim2.new(1, -12, 0.46, 0)
+	nameLabel.Position = UDim2.new(0, 6, 0.14, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	nameLabel.TextStrokeTransparency = 0.35
+	nameLabel.TextScaled = true
+	nameLabel.TextWrapped = true
+	nameLabel.Parent = result
+	local rarityLabel = Instance.new("TextLabel")
+	rarityLabel.Name = "Rarity"
+	rarityLabel.Size = UDim2.new(1, -12, 0.22, 0)
+	rarityLabel.Position = UDim2.new(0, 6, 0.61, 0)
+	rarityLabel.BackgroundTransparency = 1
+	rarityLabel.Font = Enum.Font.GothamBold
+	rarityLabel.TextScaled = true
+	rarityLabel.Parent = result
+	local variantLabel = Instance.new("TextLabel")
+	variantLabel.Name = "Variant"
+	variantLabel.Size = UDim2.new(1, -12, 0.16, 0)
+	variantLabel.Position = UDim2.new(0, 6, 0.82, 0)
+	variantLabel.BackgroundTransparency = 1
+	variantLabel.Font = Enum.Font.GothamMedium
+	variantLabel.TextScaled = true
+	variantLabel.Parent = result
+
+	trackTween(scope, TweenService:Create(
+		egg,
+		TweenInfo.new(0.22, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ Rotation = index % 2 == 0 and -10 or 10 }
+	))
 	return {
-		screenGui = screenGui,
-		overlay = overlay,
-		eggContainer = eggContainer,
-		eggFrame = eggFrame,
-		eggStroke = eggStroke,
-		whiteFlash = whiteFlash,
+		frame = frame, stroke = stroke, scale = scale, egg = egg, result = result,
+		accent = accent, nameLabel = nameLabel, rarityLabel = rarityLabel,
+		variantLabel = variantLabel,
 	}
+end
+
+function EffectsController:_createHatchScope(payload, waitingForResult, scope)
+	local count = math.clamp(math.floor(tonumber(payload.count) or 1), 1, HatchCinematicPolicy.MAX_PETS)
+	scope = scope or {}
+	scope.batchId = getBatchId(payload)
+	scope.waitingForResult = waitingForResult
+	scope.finished = false
+	scope.cards = {}
+	scope.tweens = {}
+	scope.connections = {}
+	scope.sounds = {}
+	scope.animatedGradients = {}
+	scope.lightStrips = {}
+	scope.particleCount = 0
+	local screenGui = Instance.new("ScreenGui")
+	scope.screenGui = screenGui
+	screenGui.Name = "EffectsController_QOF09Hatch"
+	screenGui.DisplayOrder = 50
+	screenGui.IgnoreGuiInset = false
+	screenGui.ResetOnSpawn = false
+	pcall(function() screenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets end)
+	screenGui.Parent = self._playerGui
+	local overlay = Instance.new("Frame")
+	overlay.Name = "HatchOverlay"
+	overlay.Size = UDim2.fromScale(1, 1)
+	overlay.BackgroundColor3 = Color3.fromRGB(5, 7, 15)
+	overlay.BackgroundTransparency = 0.18
+	overlay.BorderSizePixel = 0
+	overlay.Parent = screenGui
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(0.8, 0, 0, 42)
+	title.Position = UDim2.new(0.1, 0, 0.045, 0)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.Text = waitingForResult and "HATCHING..." or "HATCH RESULTS"
+	title.TextColor3 = Color3.fromRGB(255, 245, 210)
+	title.TextScaled = true
+	title.Parent = overlay
+	local stage = Instance.new("Frame")
+	stage.Name = "BatchStage"
+	stage.Position = UDim2.fromScale(0.5, 0.49)
+	stage.AnchorPoint = Vector2.new(0.5, 0.5)
+	stage.BackgroundTransparency = 1
+	stage.Parent = overlay
+	local skipButton = Instance.new("TextButton")
+	skipButton.Name = "Skip"
+	skipButton.Size = UDim2.fromOffset(132, 52)
+	skipButton.Position = UDim2.new(1, -20, 1, -20)
+	skipButton.AnchorPoint = Vector2.new(1, 1)
+	skipButton.BackgroundColor3 = Color3.fromRGB(35, 40, 60)
+	skipButton.Font = Enum.Font.GothamBold
+	skipButton.Text = waitingForResult and "WAITING" or "SKIP"
+	skipButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	skipButton.TextSize = 20
+	skipButton.Active = not waitingForResult
+	skipButton.AutoButtonColor = not waitingForResult
+	skipButton.Parent = overlay
+	addCorner(skipButton, 12)
+	local skipStroke = Instance.new("UIStroke")
+	skipStroke.Color = Color3.fromRGB(190, 200, 230)
+	skipStroke.Thickness = 2
+	skipStroke.Parent = skipButton
+
+	scope.overlay = overlay
+	scope.title = title
+	scope.stage = stage
+	scope.skipButton = skipButton
+	for index = 1, count do table.insert(scope.cards, self:_createHatchCard(scope, index)) end
+	self:_layoutHatchCards(scope)
+	-- Exactly one AbsoluteSize reflow connection belongs to this scope.
+	table.insert(scope.connections, overlay:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		if self._activeHatchScope == scope and not scope.finished then self:_layoutHatchCards(scope) end
+	end))
+	table.insert(scope.connections, skipButton.Activated:Connect(function() self:skipEggHatch() end))
+	table.insert(scope.connections, screenGui.Destroying:Connect(function()
+		if not scope.destroying then self:_finalizeHatchScope(scope, "gui_destroyed") end
+	end))
+	return scope
+end
+
+function EffectsController:_addHatchParticle(scope, parent, color)
+	if scope.particleCount >= HATCH_PARTICLE_LIMIT then return end
+	scope.particleCount += 1
+	local particle = Instance.new("TextLabel")
+	particle.Name = "VariantStar"
+	particle.Size = UDim2.fromOffset(18, 18)
+	particle.Position = UDim2.fromScale(0.15 + math.random() * 0.7, 0.2 + math.random() * 0.6)
+	particle.AnchorPoint = Vector2.new(0.5, 0.5)
+	particle.BackgroundTransparency = 1
+	particle.Font = Enum.Font.GothamBold
+	particle.Text = "*"
+	particle.TextColor3 = color
+	particle.TextScaled = true
+	particle.ZIndex = 8
+	particle.Parent = parent
+	trackTween(scope, TweenService:Create(particle,
+		TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Position = particle.Position - UDim2.fromOffset(0, 22),
+			TextTransparency = 1,
+			Rotation = math.random(-45, 45),
+		}))
+end
+
+function EffectsController:_configureVariantCard(scope, card, petData, entry)
+	local presentation = PetVariantPresentation.resolve(petData)
+	local rarity = petData.rarity or "Common"
+	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+	local accentColor = presentation.baseVariant == "Normal" and rarityColor or rgbToColor(presentation.accentRGB)
+	if presentation.isShiny then accentColor = rgbToColor(presentation.shinyRGB) end
+	card.nameLabel.Text = presentation.displayPetName
+	card.rarityLabel.Text = rarity
+	card.rarityLabel.TextColor3 = rarityColor
+	card.variantLabel.Text = presentation.variantLabel
+	card.variantLabel.TextColor3 = accentColor
+	card.accent.BackgroundColor3 = accentColor
+	card.stroke.Color = accentColor
+
+	if presentation.baseVariant == "Golden" then
+		card.stroke.Thickness = 4
+		card.stroke.Transparency = 0
+		for _ = 1, 3 do self:_addHatchParticle(scope, card.frame, Color3.fromRGB(255, 220, 70)) end
+	end
+	if presentation.baseVariant == "Rainbow" then
+		local gradient = Instance.new("UIGradient")
+		gradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 80, 110)),
+			ColorSequenceKeypoint.new(0.33, Color3.fromRGB(90, 230, 255)),
+			ColorSequenceKeypoint.new(0.66, Color3.fromRGB(150, 100, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 220, 70)),
+		})
+		gradient.Parent = card.accent
+		table.insert(scope.animatedGradients, gradient)
+	end
+	if presentation.isShiny then
+		for _ = 1, 3 do self:_addHatchParticle(scope, card.frame, Color3.fromRGB(190, 250, 255)) end
+		local strip = Instance.new("Frame")
+		strip.Name = "ShinyLightStrip"
+		strip.Size = UDim2.new(0, 18, 1.4, 0)
+		strip.Position = UDim2.new(0, -24, -0.2, 0)
+		strip.Rotation = 16
+		strip.BackgroundColor3 = Color3.fromRGB(235, 255, 255)
+		strip.BackgroundTransparency = 0.32
+		strip.BorderSizePixel = 0
+		strip.ZIndex = 7
+		strip.Parent = card.result
+		table.insert(scope.lightStrips, strip)
+	end
+	if entry.classification ~= "Normal" and not entry.isHero then
+		trackTween(scope, TweenService:Create(card.stroke,
+			TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 1, true),
+			{ Thickness = math.max(card.stroke.Thickness, 4), Transparency = 0 }))
+	end
+end
+
+function EffectsController:_startVariantAnimation(scope)
+	if #scope.animatedGradients == 0 and #scope.lightStrips == 0 then return end
+	local startedAt = os.clock()
+	table.insert(scope.connections, RunService.RenderStepped:Connect(function()
+		if self._activeHatchScope ~= scope or scope.finished then return end
+		local elapsed = os.clock() - startedAt
+		for _, gradient in ipairs(scope.animatedGradients) do
+			if gradient.Parent then gradient.Rotation = (elapsed * 150) % 360 end
+		end
+		for _, strip in ipairs(scope.lightStrips) do
+			if strip.Parent then strip.Position = UDim2.new((elapsed * 1.8) % 1.4 - 0.2, -10, -0.2, 0) end
+		end
+	end))
+end
+
+function EffectsController:_finalizeHatchScope(scope, reason)
+	if not scope or scope.finished then return end
+	scope.finished = true
+
+	-- The presentation gate remains held through the result callback. This makes
+	-- GUI/FOV teardown, result-grid presentation, discovery queueing, and FIFO
+	-- advancement one serialized exactly-once operation.
+	self._hatchPresentationActive = true
+	self._finalizingHatchScope = scope
+	if scope.heroFovOwned and findVisibleUpgradeTreeOverlay(self._playerGui) then
+		releaseHeroFovOwnership(scope)
+	end
+	for _, tween in ipairs(scope.tweens) do safeCancel(tween) end
+	for _, connection in ipairs(scope.connections) do safeDisconnect(connection) end
+	for _, sound in ipairs(scope.sounds) do
+		pcall(function() sound:Stop() sound:Destroy() end)
+	end
+	if scope.heroFovOwned and scope.camera and scope.cameraFieldOfView then
+		pcall(function() scope.camera.FieldOfView = scope.cameraFieldOfView end)
+		scope.heroFovOwned = false
+	end
+	scope.destroying = true
+	if scope.screenGui and scope.screenGui.Parent then pcall(function() scope.screenGui:Destroy() end) end
+	if self._activeHatchScope == scope then self._activeHatchScope = nil end
+	self._lastHatchPosition = nil
+	local onPresented = scope.onPresented
+	scope.onPresented = nil
+	task.defer(function()
+		if type(onPresented) == "function" then
+			local callbackSucceeded, callbackError = xpcall(function() onPresented(reason) end, debug.traceback)
+			if not callbackSucceeded then
+				warn("[EffectsController] Hatch callback recovered from an error:\n" .. tostring(callbackError))
+			end
+		end
+
+		-- cleanup() may add callbacks while an active/finalizing scope is being
+		-- torn down. Drain them in FIFO order under the same presentation gate.
+		while #self._hatchCleanupCallbacks > 0 do
+			local pending = table.remove(self._hatchCleanupCallbacks, 1)
+			local callbackSucceeded, callbackError = xpcall(function()
+				pending.onPresented(pending.reason)
+			end, debug.traceback)
+			if not callbackSucceeded then
+				warn("[EffectsController] Queued hatch cleanup callback failed:\n" .. tostring(callbackError))
+			end
+		end
+
+		-- A stale task from an older scope may arrive after cancellation. It must
+		-- never release the gate owned by a newer finalizer.
+		if self._finalizingHatchScope ~= scope then return end
+		self._finalizingHatchScope = nil
+		self._hatchPresentationActive = false
+		self._isHatching = false
+		self:_processHatchPresentationQueue()
+	end)
+end
+
+function EffectsController:_runHatchPresentation(scope, item)
+	task.spawn(function()
+		local succeeded, failure = xpcall(function()
+			local pets = item.payload.pets
+			local plan = HatchCinematicPolicy.buildPlan(pets)
+			if plan.count == 0 then return end
+			scope.title.Text = plan.hasRare and "RARE HATCH!" or "HATCH RESULTS"
+			scope.waitingForResult = false
+			for _, tween in ipairs(scope.tweens) do safeCancel(tween) end
+			scope.tweens = {}
+			for _, card in ipairs(scope.cards) do card.egg.Rotation = 0 end
+
+			if not scopeWait(self, scope, HatchCinematicPolicy.TIMINGS.IntroDuration) then return end
+			local popStartedAt = os.clock()
+			for index, entry in ipairs(plan.entries) do
+				local remainingDelay = entry.delay - (os.clock() - popStartedAt)
+				if remainingDelay > 0 and not scopeWait(self, scope, remainingDelay) then return end
+				if self._activeHatchScope ~= scope or scope.finished then return end
+				local card = scope.cards[index]
+				card.egg.Visible = false
+				card.result.Visible = true
+				card.scale.Scale = 0.35
+				self:_configureVariantCard(scope, card, pets[index], entry)
+				trackTween(scope, TweenService:Create(card.scale,
+					TweenInfo.new(HatchCinematicPolicy.TIMINGS.PopDuration, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+					{ Scale = plan.hasRare and entry.isHero and 1.08 or 1 }))
+				self:_playHatchSound(scope, "Pop")
+				if entry.classification ~= "Normal" and not entry.isHero then self:_playHatchSound(scope, "RareAccent") end
+			end
+			self:_startVariantAnimation(scope)
+			if not scopeWait(self, scope, HatchCinematicPolicy.TIMINGS.PopDuration) then return end
+
+			local holdDuration = plan.hasRare and HatchCinematicPolicy.TIMINGS.HeroHoldDuration
+				or HatchCinematicPolicy.TIMINGS.StandardHoldDuration
+			if plan.hasRare then
+				self:_playHatchSound(scope, "Hero")
+				for index, card in ipairs(scope.cards) do
+					if index ~= plan.heroIndex then
+						card.frame.BackgroundTransparency = 0.55
+						card.nameLabel.TextTransparency = 0.42
+						card.rarityLabel.TextTransparency = 0.42
+						card.variantLabel.TextTransparency = 0.42
+					end
+				end
+				observeUpgradeTreeFovConflict(scope, self._playerGui)
+				if not scope.heroFovOwnershipReleased and not findVisibleUpgradeTreeOverlay(self._playerGui) then
+					local camera = workspace.CurrentCamera
+					if camera then
+						scope.camera = camera
+						scope.cameraFieldOfView = camera.FieldOfView
+						scope.heroFovOwned = true
+						local heroFovTween = TweenService:Create(camera,
+							TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+							{ FieldOfView = math.max(35, scope.cameraFieldOfView - 7) })
+						scope.heroFovTween = heroFovTween
+						trackTween(scope, heroFovTween)
+					end
+				end
+			end
+			if not scopeWait(self, scope, math.min(holdDuration, HatchCinematicPolicy.TIMINGS.HeroHoldDuration)) then return end
+			if scope.heroFovOwned and scope.camera and scope.cameraFieldOfView then
+				local restoreFovTween = TweenService:Create(scope.camera,
+					TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ FieldOfView = scope.cameraFieldOfView })
+				scope.heroFovTween = restoreFovTween
+				trackTween(scope, restoreFovTween)
+			end
+			trackTween(scope, TweenService:Create(scope.overlay,
+				TweenInfo.new(HatchCinematicPolicy.TIMINGS.OutroDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+				{ BackgroundTransparency = 1 }))
+			if not scopeWait(self, scope, HatchCinematicPolicy.TIMINGS.OutroDuration) then return end
+		end, debug.traceback)
+		if not succeeded then warn("[EffectsController] Hatch cinematic recovered from an error:\n" .. tostring(failure)) end
+		self:_finalizeHatchScope(scope, succeeded and "completed" or "error")
+	end)
+end
+
+function EffectsController:_processHatchPresentationQueue()
+	local activeScope = self._activeHatchScope
+	if activeScope and not activeScope.finished then
+		if not activeScope.waitingForResult or #self._hatchPresentationQueue == 0 then return end
+		local nextItem = self._hatchPresentationQueue[1]
+		local idsMatch = activeScope.batchId == nil or nextItem.batchId == nil or activeScope.batchId == nextItem.batchId
+		if not idsMatch or #activeScope.cards ~= #nextItem.payload.pets then
+			self:_finalizeHatchScope(activeScope, "start_replaced")
+			return
+		end
+		table.remove(self._hatchPresentationQueue, 1)
+		activeScope.item = nextItem
+		activeScope.onPresented = nextItem.onPresented
+		activeScope.waitingForResult = false
+		activeScope.skipButton.Active = true
+		activeScope.skipButton.AutoButtonColor = true
+		activeScope.skipButton.Text = "SKIP"
+		self._hatchPresentationActive = true
+		self:_runHatchPresentation(activeScope, nextItem)
+		return
+	end
+	if self._hatchPresentationActive or #self._hatchPresentationQueue == 0 then return end
+	local item = table.remove(self._hatchPresentationQueue, 1)
+	self._hatchPresentationActive = true
+	local partialScope = {}
+	local created, scopeOrError = xpcall(function()
+		return self:_createHatchScope(item.payload, false, partialScope)
+	end, debug.traceback)
+	if not created then
+		warn("[EffectsController] Hatch surface recovered from an error:\n" .. tostring(scopeOrError))
+		partialScope.onPresented = item.onPresented
+		self:_finalizeHatchScope(partialScope, "error")
+		return
+	end
+	local scope = scopeOrError
+	scope.item = item
+	scope.onPresented = item.onPresented
+	self._activeHatchScope = scope
+	self._isHatching = true
+	self:_runHatchPresentation(scope, item)
+end
+
+function EffectsController:handleHatchStart(payload)
+	if not self._initialized then return false end
+	local eggType = type(payload) == "table" and payload.eggType or payload
+	if type(eggType) ~= "string" or eggType == "" then return false end
+	if self._activeHatchScope or self._hatchPresentationActive or #self._hatchPresentationQueue > 0 then return true end
+	local startPayload = type(payload) == "table" and shallowCopy(payload) or { eggType = eggType, count = 1 }
+	startPayload.count = math.clamp(math.floor(tonumber(startPayload.count) or 1), 1, HatchCinematicPolicy.MAX_PETS)
+	local partialScope = {}
+	local created, scopeOrError = xpcall(function()
+		return self:_createHatchScope(startPayload, true, partialScope)
+	end, debug.traceback)
+	if not created then
+		warn("[EffectsController] Hatch start feedback recovered from an error:\n" .. tostring(scopeOrError))
+		self:_finalizeHatchScope(partialScope, "create_error")
+		return false
+	end
+	local scope = scopeOrError
+	self._activeHatchScope = scope
+	self._isHatching = true
+	task.delay(HATCH_START_TIMEOUT, function()
+		if self._activeHatchScope == scope and scope.waitingForResult and not scope.finished then
+			self:_finalizeHatchScope(scope, "start_timeout")
+		end
+	end)
+	return true
+end
+
+function EffectsController:handleInvalidHatchResult(payload)
+	local scope = self._activeHatchScope
+	if not scope or scope.finished or not scope.waitingForResult then return false end
+	local resultBatchId = getBatchId(payload)
+	if scope.batchId and resultBatchId and scope.batchId ~= resultBatchId then return false end
+	self:_finalizeHatchScope(scope, "invalid_result")
+	return true
+end
+
+function EffectsController:enqueueHatchBatch(payload, onPresented)
+	local normalized = normalizeHatchPayload(payload)
+	if not normalized then
+		self:handleInvalidHatchResult(payload)
+		return false
+	end
+	if not self._initialized then
+		if type(onPresented) == "function" then
+			table.insert(self._hatchCleanupCallbacks, { onPresented = onPresented, reason = "not_initialized" })
+			if not self._finalizingHatchScope then
+				self:_finalizeHatchScope({ finished = false, tweens = {}, connections = {}, sounds = {} }, "not_initialized")
+			end
+		end
+		return false
+	end
+	local batchId = normalized.batchId
+	if batchId and self._seenHatchBatchIds[batchId] then return false end
+	if batchId then
+		self._seenHatchBatchIds[batchId] = true
+		table.insert(self._seenHatchBatchOrder, batchId)
+		if #self._seenHatchBatchOrder > HATCH_SEEN_CACHE_LIMIT then
+			self._seenHatchBatchIds[table.remove(self._seenHatchBatchOrder, 1)] = nil
+		end
+	end
+	table.insert(self._hatchPresentationQueue, { batchId = batchId, payload = normalized, onPresented = onPresented })
+	self:_processHatchPresentationQueue()
+	return true
 end
 
 --------------------------------------------------------------------------------
@@ -15876,209 +16516,47 @@ end
 -- Called immediately when EggHatchStart fires so the player sees feedback right away.
 --------------------------------------------------------------------------------
 function EffectsController:startEggWobble()
-	if not self._initialized then return end
-
-	-- Reentrancy guard: prevent stacking overlays from rapid successive hatch events
-	if self._isHatching then return end
-	self._isHatching = true
-
-	-- Create UI elements
-	local ui = self:_createEggUI()
-	self._hatchScreenGui = ui.screenGui
-	self._hatchOverlay = ui.overlay
-	self._hatchEggContainer = ui.eggContainer
-	self._hatchEggFrame = ui.eggFrame
-	self._hatchEggStroke = ui.eggStroke
-	self._hatchWhiteFlash = ui.whiteFlash
-
-	-- Start smooth infinite wobble tween (Sine in-out, reverses, repeats forever)
-	local wobbleInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
-	local wobbleTween = TweenService:Create(ui.eggContainer, wobbleInfo, { Rotation = 12 })
-	wobbleTween:Play()
-	self._hatchWobbleTween = wobbleTween
+	return self:handleHatchStart({ eggType = "Legacy", count = 1 })
 end
 
-function EffectsController:cancelEggHatch()
-	if self._hatchWobbleTween then
-		pcall(function()
-			self._hatchWobbleTween:Cancel()
-		end)
-	end
-	if self._hatchScreenGui and self._hatchScreenGui.Parent then
-		self._hatchScreenGui:Destroy()
-	end
-	self._hatchScreenGui = nil
-	self._hatchOverlay = nil
-	self._hatchEggContainer = nil
-	self._hatchEggFrame = nil
-	self._hatchEggStroke = nil
-	self._hatchWhiteFlash = nil
-	self._hatchWobbleTween = nil
-	self._isHatching = false
+function EffectsController:skipEggHatch()
+	local scope = self._activeHatchScope
+	if not scope or scope.finished or scope.waitingForResult then return false end
+	self:_finalizeHatchScope(scope, "skipped")
+	return true
+end
+
+function EffectsController:cancelEggHatch(reason)
+	local scope = self._activeHatchScope
+	if not scope or scope.finished then return false end
+	self:_finalizeHatchScope(scope, reason or "cancelled")
+	return true
 end
 
 --------------------------------------------------------------------------------
--- completeEggHatch(petData, batchCount): cancels the infinite wobble and plays
--- one shared reveal. Multi-Open never stacks ten blocking single-pet animations.
+-- Legacy complete API accepts one pet, a pet array, or a complete batch DTO and
+-- delegates to the same FIFO. No parallel single-egg reveal engine remains.
 function EffectsController:completeEggHatch(petData, batchCount, onComplete)
-	if not self._initialized then return end
-	batchCount = math.max(1, math.floor(tonumber(batchCount) or 1))
-
-	local rarity = petData and petData.rarity or "Common"
-	local presentation = PetVariantPresentation.resolve(petData)
-	local petName = presentation.displayPetName
-	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
-	local baseColor = presentation.baseVariant == "Normal"
-		and rarityColor
-		or rgbToColor(presentation.accentRGB)
-	local shinyColor = rgbToColor(presentation.shinyRGB)
-	local flashColor = presentation.isShiny and shinyColor or baseColor
-
-	-- If wobble was never started (edge case), start the full UI now
-	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
-		self._isHatching = false
-		self:startEggWobble()
+	local payload
+	if type(petData) == "table" and type(petData.pets) == "table" then
+		payload = petData
+	elseif type(petData) == "table" and #petData > 0 then
+		payload = { pets = petData, count = #petData }
+	else
+		payload = {
+			pets = { petData },
+			count = math.max(1, math.floor(tonumber(batchCount) or 1)),
+		}
 	end
-
-	local screenGui = self._hatchScreenGui
-	local overlay = self._hatchOverlay
-	local eggContainer = self._hatchEggContainer
-	local eggFrame = self._hatchEggFrame
-	local eggStroke = self._hatchEggStroke
-	local whiteFlash = self._hatchWhiteFlash
-
-	-- Cancel the infinite wobble tween
-	if self._hatchWobbleTween then
-		self._hatchWobbleTween:Cancel()
-		self._hatchWobbleTween = nil
-	end
-	-- Reset rotation before intense shakes
-	eggContainer.Rotation = 0
-
-	-- Run the completion animation in a coroutine. Cleanup and callback dispatch
-	-- happen after xpcall so one presentation error cannot wedge Auto-Hatch.
-	task.spawn(function()
-		local animationSucceeded, animationError = xpcall(function()
-			-- Phase 1: Quick intense shakes (3 fast shakes with increasing intensity)
-		local shakeAngles = { 8, -14, 18 }
-		for _, angle in ipairs(shakeAngles) do
-			local shakeInfo = TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-			local shakeTween = TweenService:Create(eggContainer, shakeInfo, { Rotation = angle })
-			shakeTween:Play()
-			shakeTween.Completed:Wait()
-		end
-
-		-- Phase 2: Flash egg to rarity/variant color and scale up
-		local crackInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		TweenService:Create(eggFrame, crackInfo, {
-			BackgroundColor3 = flashColor,
-		}):Play()
-		TweenService:Create(eggContainer, crackInfo, {
-			Size = UDim2.fromOffset(150, 200),
-		}):Play()
-		TweenService:Create(eggStroke, crackInfo, {
-			Color = flashColor,
-		}):Play()
-		task.wait(0.2)
-
-		-- Phase 3: Break - full-screen white flash, hide egg
-		eggContainer.Visible = false
-		whiteFlash.BackgroundTransparency = 0
-
-		local flashFadeInfo = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		TweenService:Create(whiteFlash, flashFadeInfo, {
-			BackgroundTransparency = 1,
-		}):Play()
-		task.wait(0.25)
-
-		-- Phase 4: Reveal pet name and rarity with bounce animation
-		local revealContainer = Instance.new("Frame")
-		revealContainer.Name = "RevealContainer"
-		revealContainer.Size = UDim2.fromScale(0.3, 0.15)
-		revealContainer.Position = UDim2.fromScale(0.5, 0.5)
-		revealContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-		revealContainer.BackgroundTransparency = 1
-		revealContainer.ZIndex = 6
-		revealContainer.Parent = screenGui
-
-		local petNameLabel = Instance.new("TextLabel")
-		petNameLabel.Name = "PetNameLabel"
-		petNameLabel.Size = UDim2.fromScale(1, 0.55)
-		petNameLabel.Position = UDim2.fromScale(0, 0.1)
-		petNameLabel.BackgroundTransparency = 1
-		petNameLabel.Text = batchCount > 1
-			and ("x" .. tostring(batchCount) .. " EGGS OPENED!")
-			or petName
-		petNameLabel.TextColor3 = baseColor
-		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		petNameLabel.TextStrokeTransparency = 0
-		petNameLabel.Font = Enum.Font.GothamBold
-		petNameLabel.TextScaled = true
-		petNameLabel.TextTransparency = 0
-		petNameLabel.ZIndex = 6
-		petNameLabel.Parent = revealContainer
-
-		local rarityLabel = Instance.new("TextLabel")
-		rarityLabel.Name = "RarityLabel"
-		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
-		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
-		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = batchCount > 1
-			and "Results ready"
-			or (presentation.variantLabel .. " • " .. rarity)
-		rarityLabel.TextColor3 = presentation.isShiny and shinyColor or baseColor
-		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		rarityLabel.TextStrokeTransparency = 0.2
-		rarityLabel.Font = Enum.Font.GothamBold
-		rarityLabel.TextScaled = true
-		rarityLabel.TextTransparency = 0
-		rarityLabel.ZIndex = 6
-		rarityLabel.Parent = revealContainer
-
-		-- Bounce scale-in on reveal
-		local revealBounce = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-		TweenService:Create(revealContainer, revealBounce, {
-			Size = UDim2.fromScale(0.6, 0.3),
-		}):Play()
-		task.wait(0.4)
-
-		-- Keep the complete shared reveal below the three-second Auto-Hatch cadence
-		-- so normal automation cannot build an ever-growing presentation queue.
-		task.wait(0.75)
-
-		local fadeOutInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		TweenService:Create(overlay, fadeOutInfo, {
-			BackgroundTransparency = 1,
-		}):Play()
-		TweenService:Create(petNameLabel, fadeOutInfo, {
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
-		}):Play()
-		TweenService:Create(rarityLabel, fadeOutInfo, {
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
-		}):Play()
-
-			task.wait(0.35)
-		end, debug.traceback)
-		if not animationSucceeded then
-			warn("[EffectsController] Hatch reveal recovered from an error:\n" .. tostring(animationError))
-		end
-
-		self:cancelEggHatch()
-		if type(onComplete) == "function" then
-			task.defer(onComplete)
-		end
-	end)
+	return self:enqueueHatchBatch(payload, onComplete)
 end
 
 --------------------------------------------------------------------------------
 -- showEggHatchAnimation: legacy fallback that calls both phases in sequence.
 -- Retained for API compatibility. eggPosition is unused (screen-space animation).
 --------------------------------------------------------------------------------
-function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
+function EffectsController:showEggHatchAnimation(_eggPosition, resultPet)
 	self:startEggWobble()
-	-- Small delay to let wobble play before completing
 	task.delay(1.0, function()
 		self:completeEggHatch(resultPet)
 	end)
@@ -16663,6 +17141,26 @@ end
 -- Cleanup
 --------------------------------------------------------------------------------
 function EffectsController:cleanup()
+	self._initialized = false
+	local queuedPresentations = self._hatchPresentationQueue
+	self._hatchPresentationQueue = {}
+	for _, item in ipairs(queuedPresentations) do
+		if type(item.onPresented) == "function" then
+			table.insert(self._hatchCleanupCallbacks, {
+				onPresented = item.onPresented,
+				reason = "cleanup",
+			})
+		end
+	end
+
+	local activeScope = self._activeHatchScope
+	if activeScope and not activeScope.finished then
+		self:_finalizeHatchScope(activeScope, "cleanup")
+	elseif not self._finalizingHatchScope and #self._hatchCleanupCallbacks > 0 then
+		self:_finalizeHatchScope({ finished = false, tweens = {}, connections = {}, sounds = {} }, "cleanup")
+	end
+	safeDisconnect(self._characterRemovingConnection)
+	self._characterRemovingConnection = nil
 	for _, gui in pairs(self._progressBars) do
 		gui:Destroy()
 	end
@@ -16788,7 +17286,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000078">
+				<Item class="ModuleScript" referent="RBX00000079">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -16970,7 +17468,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000079">
+				<Item class="ModuleScript" referent="RBX0000007A">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17262,11 +17760,11 @@ return UpgradeTreeController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX00000064">
+	<Item class="ReplicatedStorage" referent="RBX00000065">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX0000003B">
+			<Item class="Folder" referent="RBX0000003C">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
@@ -18580,6 +19078,146 @@ return PetVariantPresentation
 				</Item>
 				<Item class="ModuleScript" referent="RBX00000036">
 					<Properties>
+						<string name="Name">HatchCinematicPolicy</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	HatchCinematicPolicy.lua - Pure QOF-09 rare hatch presentation policy.
+	It classifies already-authoritative hatch results and builds deterministic
+	client timing metadata only. It never mutates pets or grants gameplay value.
+]]
+
+local HatchCinematicPolicy = {}
+
+local TIMINGS = {
+	IntroDuration = 0.18,
+	PopStagger = 0.12,
+	PopDuration = 0.24,
+	StandardHoldDuration = 0.36,
+	HeroHoldDuration = 0.72,
+	OutroDuration = 0.30,
+	MaxTotalDuration = 3.00,
+}
+
+HatchCinematicPolicy.TIMINGS = TIMINGS
+HatchCinematicPolicy.Timings = TIMINGS
+HatchCinematicPolicy.MAX_PETS = 10
+
+local CLASSIFICATION_PRIORITY = {
+	Normal = 0,
+	Rare = 1,
+	Epic = 2,
+	Legendary = 3,
+	Golden = 4,
+	Rainbow = 5,
+	Shiny = 6,
+}
+
+local function normalizeBaseVariant(pet)
+	if pet.variant == "Rainbow" then
+		return "Rainbow"
+	end
+	if pet.variant == "Golden" or pet.golden == true then
+		return "Golden"
+	end
+	return "Normal"
+end
+
+local function isShiny(pet)
+	return pet.shiny == true or pet.variant == "Shiny"
+end
+
+function HatchCinematicPolicy.classifyPet(pet)
+	if type(pet) ~= "table" then
+		return "Normal"
+	end
+
+	if isShiny(pet) then
+		return "Shiny"
+	end
+
+	local baseVariant = normalizeBaseVariant(pet)
+	if baseVariant == "Rainbow" then
+		return "Rainbow"
+	end
+	if baseVariant == "Golden" then
+		return "Golden"
+	end
+
+	if pet.rarity == "Legendary" then
+		return "Legendary"
+	end
+	if pet.rarity == "Epic" then
+		return "Epic"
+	end
+	if pet.rarity == "Rare" then
+		return "Rare"
+	end
+	return "Normal"
+end
+
+local function getPriority(pet)
+	return CLASSIFICATION_PRIORITY[HatchCinematicPolicy.classifyPet(pet)]
+end
+
+function HatchCinematicPolicy.chooseHero(pets)
+	if type(pets) ~= "table" or #pets == 0 then
+		return nil
+	end
+
+	local heroIndex = 1
+	local heroPriority = getPriority(pets[1])
+	local count = math.min(#pets, HatchCinematicPolicy.MAX_PETS)
+	for index = 2, count do
+		local priority = getPriority(pets[index])
+		if priority > heroPriority then
+			heroIndex = index
+			heroPriority = priority
+		end
+	end
+	return heroIndex
+end
+
+function HatchCinematicPolicy.buildPlan(pets)
+	pets = type(pets) == "table" and pets or {}
+	local count = math.min(#pets, HatchCinematicPolicy.MAX_PETS)
+	local heroIndex = HatchCinematicPolicy.chooseHero(pets)
+	local entries = {}
+
+	for index = 1, count do
+		entries[index] = {
+			delay = (index - 1) * TIMINGS.PopStagger,
+			isHero = index == heroIndex,
+			classification = HatchCinematicPolicy.classifyPet(pets[index]),
+		}
+	end
+
+	local heroClassification = heroIndex and entries[heroIndex].classification or "Normal"
+	local hasRare = heroClassification ~= "Normal"
+	local totalDuration = 0
+	if count > 0 then
+		local holdDuration = hasRare and TIMINGS.HeroHoldDuration or TIMINGS.StandardHoldDuration
+		totalDuration = TIMINGS.IntroDuration
+			+ entries[count].delay
+			+ TIMINGS.PopDuration
+			+ holdDuration
+			+ TIMINGS.OutroDuration
+	end
+
+	return {
+		heroIndex = heroIndex,
+		hasRare = hasRare,
+		count = count,
+		entries = entries,
+		totalDuration = math.min(totalDuration, TIMINGS.MaxTotalDuration),
+	}
+end
+
+return HatchCinematicPolicy
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000037">
+					<Properties>
 						<string name="Name">ZoneData</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
@@ -18793,7 +19431,7 @@ return ZoneData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000037">
+				<Item class="ModuleScript" referent="RBX00000038">
 					<Properties>
 						<string name="Name">CampaignData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -18976,7 +19614,7 @@ return CampaignData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000038">
+				<Item class="ModuleScript" referent="RBX00000039">
 					<Properties>
 						<string name="Name">QuestData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19278,7 +19916,7 @@ return QuestData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000039">
+				<Item class="ModuleScript" referent="RBX0000003A">
 					<Properties>
 						<string name="Name">MasteryData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19430,7 +20068,7 @@ return MasteryData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003A">
+				<Item class="ModuleScript" referent="RBX0000003B">
 					<Properties>
 						<string name="Name">ShopData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19535,11 +20173,11 @@ return ShopData
 					</Properties>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000057">
+			<Item class="Folder" referent="RBX00000058">
 				<Properties>
 					<string name="Name">packages</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000056">
+				<Item class="ModuleScript" referent="RBX00000057">
 					<Properties>
 						<string name="Name">vide</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19555,7 +20193,7 @@ export type Context<T> = vide.Context<T>
 return vide
 ]]></ProtectedString>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX0000003C">
+					<Item class="ModuleScript" referent="RBX0000003D">
 						<Properties>
 							<string name="Name">action</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19587,7 +20225,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003D">
+					<Item class="ModuleScript" referent="RBX0000003E">
 						<Properties>
 							<string name="Name">apply</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19756,7 +20394,7 @@ return apply
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003E">
+					<Item class="ModuleScript" referent="RBX0000003F">
 						<Properties>
 							<string name="Name">batch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19786,7 +20424,7 @@ return batch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003F">
+					<Item class="ModuleScript" referent="RBX00000040">
 						<Properties>
 							<string name="Name">branch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19833,7 +20471,7 @@ return branch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000040">
+					<Item class="ModuleScript" referent="RBX00000041">
 						<Properties>
 							<string name="Name">changed</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19858,7 +20496,7 @@ return changed
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000041">
+					<Item class="ModuleScript" referent="RBX00000042">
 						<Properties>
 							<string name="Name">cleanup</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19908,7 +20546,7 @@ return cleanup ::
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000042">
+					<Item class="ModuleScript" referent="RBX00000043">
 						<Properties>
 							<string name="Name">context</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19989,7 +20627,7 @@ return context
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000043">
+					<Item class="ModuleScript" referent="RBX00000044">
 						<Properties>
 							<string name="Name">create</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20106,7 +20744,7 @@ return (create :: any) :: Create
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000044">
+					<Item class="ModuleScript" referent="RBX00000045">
 						<Properties>
 							<string name="Name">defaults</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20226,7 +20864,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000045">
+					<Item class="ModuleScript" referent="RBX00000046">
 						<Properties>
 							<string name="Name">derive</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20251,7 +20889,7 @@ return derive
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000046">
+					<Item class="ModuleScript" referent="RBX00000047">
 						<Properties>
 							<string name="Name">effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20270,7 +20908,7 @@ return effect :: (<T>(callback: (T) -> T, initial_value: T) -> ()) & ((callback:
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000047">
+					<Item class="ModuleScript" referent="RBX00000048">
 						<Properties>
 							<string name="Name">flags</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20289,7 +20927,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000048">
+					<Item class="ModuleScript" referent="RBX00000049">
 						<Properties>
 							<string name="Name">graph</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20617,7 +21255,7 @@ return table.freeze {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000049">
+					<Item class="ModuleScript" referent="RBX0000004A">
 						<Properties>
 							<string name="Name">implicit_effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20749,7 +21387,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004A">
+					<Item class="ModuleScript" referent="RBX0000004B">
 						<Properties>
 							<string name="Name">indexes</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20877,7 +21515,7 @@ return indexes
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004B">
+					<Item class="ModuleScript" referent="RBX0000004C">
 						<Properties>
 							<string name="Name">lib</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21004,7 +21642,7 @@ return vide
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004C">
+					<Item class="ModuleScript" referent="RBX0000004D">
 						<Properties>
 							<string name="Name">mount</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21022,7 +21660,7 @@ return mount :: (<T>(component: () -> T, target: Instance) -> () -> ()) & ((comp
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004D">
+					<Item class="ModuleScript" referent="RBX0000004E">
 						<Properties>
 							<string name="Name">read</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21034,7 +21672,7 @@ return read
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004E">
+					<Item class="ModuleScript" referent="RBX0000004F">
 						<Properties>
 							<string name="Name">root</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21076,7 +21714,7 @@ return root :: <T...>(fn: (destroy: () -> ()) -> T...) -> (() -> (), T...)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004F">
+					<Item class="ModuleScript" referent="RBX00000050">
 						<Properties>
 							<string name="Name">show</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21119,7 +21757,7 @@ return show
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000050">
+					<Item class="ModuleScript" referent="RBX00000051">
 						<Properties>
 							<string name="Name">source</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21157,7 +21795,7 @@ return source :: (<T>(initial_value: T) -> Source<T>) & (<T>() -> Source<T>)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000051">
+					<Item class="ModuleScript" referent="RBX00000052">
 						<Properties>
 							<string name="Name">spring</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21492,7 +22130,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000052">
+					<Item class="ModuleScript" referent="RBX00000053">
 						<Properties>
 							<string name="Name">switch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21613,7 +22251,7 @@ return switch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000053">
+					<Item class="ModuleScript" referent="RBX00000054">
 						<Properties>
 							<string name="Name">timeout</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21647,7 +22285,7 @@ return function() return timeout, update_timeouts end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000054">
+					<Item class="ModuleScript" referent="RBX00000055">
 						<Properties>
 							<string name="Name">untrack</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21679,7 +22317,7 @@ return untrack :: ( <T>(fn: () -> T) -> T ) & ( (fn: () -> ()) -> () )
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000055">
+					<Item class="ModuleScript" referent="RBX00000056">
 						<Properties>
 							<string name="Name">values</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21819,11 +22457,11 @@ return values
 					</Item>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000063">
+			<Item class="Folder" referent="RBX00000064">
 				<Properties>
 					<string name="Name">modules</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000062">
+				<Item class="ModuleScript" referent="RBX00000063">
 					<Properties>
 						<string name="Name">formatNumber</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -21875,11 +22513,11 @@ return formatNumber
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="Folder" referent="RBX00000061">
+				<Item class="Folder" referent="RBX00000062">
 					<Properties>
 						<string name="Name">upgradeTree</string>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX00000058">
+					<Item class="ModuleScript" referent="RBX00000059">
 						<Properties>
 							<string name="Name">upgradeState</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21982,7 +22620,7 @@ end
 return createUpgradeState]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000059">
+					<Item class="ModuleScript" referent="RBX0000005A">
 						<Properties>
 							<string name="Name">upgradeTree</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -23151,7 +23789,7 @@ return createUpgradeTree
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005A">
+					<Item class="ModuleScript" referent="RBX0000005B">
 						<Properties>
 							<string name="Name">upgradeTreeData</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -23901,7 +24539,7 @@ return upgradeTreeData
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005B">
+					<Item class="ModuleScript" referent="RBX0000005C">
 						<Properties>
 							<string name="Name">upgradeTreeSettings</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -23979,29 +24617,29 @@ return upgradeTreeSettings
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="Folder" referent="RBX00000060">
+					<Item class="Folder" referent="RBX00000061">
 						<Properties>
 							<string name="Name">sounds</string>
 						</Properties>
-						<Item class="Sound" referent="RBX0000005C">
+						<Item class="Sound" referent="RBX0000005D">
 							<Properties>
 								<string name="Name">close</string>
 								<Content name="SoundId"><url>rbxassetid://134438769993456</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005D">
+						<Item class="Sound" referent="RBX0000005E">
 							<Properties>
 								<string name="Name">hover</string>
 								<Content name="SoundId"><url>rbxassetid://86397706758188</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005E">
+						<Item class="Sound" referent="RBX0000005F">
 							<Properties>
 								<string name="Name">open</string>
 								<Content name="SoundId"><url>rbxassetid://72320208051245</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005F">
+						<Item class="Sound" referent="RBX00000060">
 							<Properties>
 								<string name="Name">upgrade</string>
 								<Content name="SoundId"><url>rbxassetid://72362215248423</url></Content>
@@ -24011,7 +24649,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX0000007D">
+	<Item class="StarterGui" referent="RBX0000007E">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -24046,7 +24684,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000007E">
+	<Item class="SoundService" referent="RBX0000007F">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

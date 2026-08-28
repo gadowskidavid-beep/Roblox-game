@@ -18,17 +18,26 @@ EggService._petService = nil
 EggService._questService = nil
 EggService._upgradeTreeService = nil
 EggService._hatchLock = {}
-EggService._selectedBatchCounts = {}
 EggService._transactionHook = nil
 EggService._stationValidator = nil
 EggService._nextBatchId = 0
 
+local BATCH_COUNT_TIERS = { 1, 2, 5, 10 }
 local VALID_BATCH_COUNTS = {
 	[1] = true,
 	[2] = true,
 	[5] = true,
 	[10] = true,
 }
+
+local function isValidBatchCount(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+		and value % 1 == 0
+		and VALID_BATCH_COUNTS[value] == true
+end
 
 function EggService.init(dataService, currencyService, petService, upgradeTreeService)
 	EggService._dataService = dataService
@@ -56,19 +65,53 @@ local function getMaximumBatchCount(player)
 	end
 	local entitlements = EggService._upgradeTreeService.getEntitlements(player)
 	local count = type(entitlements) == "table" and entitlements.multiOpenCount or 1
-	if VALID_BATCH_COUNTS[count] then
+	if isValidBatchCount(count) then
 		return count
 	end
 	return 1
 end
 
-local function validateRequestedCount(player, requestedCount)
-	if type(requestedCount) ~= "number" or requestedCount ~= requestedCount
-		or requestedCount == math.huge or requestedCount == -math.huge
-		or requestedCount % 1 ~= 0 or not VALID_BATCH_COUNTS[requestedCount] then
+local function highestAllowedBatchCount(maximum)
+	for index = #BATCH_COUNT_TIERS, 1, -1 do
+		local count = BATCH_COUNT_TIERS[index]
+		if count <= maximum then
+			return count
+		end
+	end
+	return 1
+end
+
+local function getPlayerData(player)
+	if not player or not EggService._dataService then
+		return nil
+	end
+	return EggService._dataService.getPlayerData(player)
+end
+
+local function reconcilePreferredBatchCount(player, maximum)
+	local data = getPlayerData(player)
+	if not data then
+		return 1
+	end
+	if type(data.hatchPreferences) ~= "table" then
+		data.hatchPreferences = { preferredBatchCount = 1 }
+	end
+
+	local selected = data.hatchPreferences.preferredBatchCount
+	if not isValidBatchCount(selected) then
+		selected = 1
+	elseif selected > maximum then
+		selected = highestAllowedBatchCount(maximum)
+	end
+	data.hatchPreferences.preferredBatchCount = selected
+	return selected
+end
+
+local function validateRequestedCount(player, requestedCount, maximum)
+	if not isValidBatchCount(requestedCount) then
 		return nil, "Invalid hatch count"
 	end
-	local maximum = getMaximumBatchCount(player)
+	maximum = maximum or getMaximumBatchCount(player)
 	if requestedCount > maximum then
 		return nil, "Multi-Open upgrade required"
 	end
@@ -79,20 +122,15 @@ function EggService.getSelectedBatchCount(player)
 	if not player then
 		return 1
 	end
-	local key = player.UserId or player
-	local selected = EggService._selectedBatchCounts[key] or 1
-	local validated = validateRequestedCount(player, selected)
-	if validated then
-		return selected
-	end
-	EggService._selectedBatchCounts[key] = 1
-	return 1
+	local maximum = getMaximumBatchCount(player)
+	return reconcilePreferredBatchCount(player, maximum)
 end
 
 function EggService.getBatchState(player)
+	local maximum = player and getMaximumBatchCount(player) or 1
 	return {
-		selectedCount = EggService.getSelectedBatchCount(player),
-		maximumCount = getMaximumBatchCount(player),
+		selectedCount = player and reconcilePreferredBatchCount(player, maximum) or 1,
+		maximumCount = maximum,
 		availableCounts = { 1, 2, 5, 10 },
 	}
 end
@@ -101,11 +139,17 @@ function EggService.setSelectedBatchCount(player, requestedCount)
 	if not player then
 		return false, "Invalid player", EggService.getBatchState(player)
 	end
-	local count, countError = validateRequestedCount(player, requestedCount)
+	local maximum = getMaximumBatchCount(player)
+	reconcilePreferredBatchCount(player, maximum)
+	local count, countError = validateRequestedCount(player, requestedCount, maximum)
 	if not count then
 		return false, countError, EggService.getBatchState(player)
 	end
-	EggService._selectedBatchCounts[player.UserId or player] = count
+	local data = getPlayerData(player)
+	if not data then
+		return false, "No player data", EggService.getBatchState(player)
+	end
+	data.hatchPreferences.preferredBatchCount = count
 	return true, nil, EggService.getBatchState(player)
 end
 
@@ -213,7 +257,8 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 	options = type(options) == "table" and options or {
 		bypassStation = options == true,
 	}
-	local count = requestedCount == nil and EggService.getSelectedBatchCount(player) or requestedCount
+	local preferredCount = EggService.getSelectedBatchCount(player)
+	local count = requestedCount == nil and preferredCount or requestedCount
 	local validatedCount, countError = validateRequestedCount(player, count)
 	if not validatedCount then
 		return nil, countError
@@ -227,7 +272,6 @@ function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 		return nil, "Already hatching eggs"
 	end
 	EggService._hatchLock[lockKey] = true
-	EggService._selectedBatchCounts[lockKey] = validatedCount
 
 	local transaction = {
 		player = player,
@@ -329,7 +373,6 @@ function EggService.onPlayerRemoving(player)
 	if not player then return end
 	local key = player.UserId or player
 	EggService._hatchLock[key] = nil
-	EggService._selectedBatchCounts[key] = nil
 end
 
 function EggService.getAvailableEggs(player)
