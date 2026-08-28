@@ -5,9 +5,11 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ZoneData = require(game.ReplicatedStorage.Shared.ZoneData)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 
 local ZoneService = {}
 
@@ -51,11 +53,148 @@ local DESTRUCTIBLES_PER_ZONE = 20
 -- Minimum distance between spawned destructibles (studs) - prevents overlap between all types
 local MIN_SPAWN_DISTANCE = 15
 
+-- QOF-16 machine authority. This registry is intentionally module-private: a
+-- replicated name, attribute, or token copied onto another Instance can never
+-- replace the exact server-created references retained here.
+local GOLD_MACHINE_MAX_DISTANCE = 12
+local GOLD_MACHINE_ANCHOR_SIZE = Vector3.new(12, 6, 8)
+local machineRegistry = {}
+
+local function profileHasUnlockedZone(data, zoneId)
+	if type(data) ~= "table" or type(data.unlockedZones) ~= "table" then
+		return false
+	end
+	for _, unlockedZoneId in ipairs(data.unlockedZones) do
+		if unlockedZoneId == zoneId then
+			return true
+		end
+	end
+	return false
+end
+
+local function spawnGoldMachineStation(zonesFolder)
+	local definition = BalanceConfig.Machines.Gold
+	if BalanceConfig.Machines.RuntimeEnabled ~= true
+		or type(definition) ~= "table"
+		or definition.RuntimeEnabled ~= true then
+		error("Gold machine runtime configuration is unavailable")
+	end
+
+	local zoneFolder = zonesFolder:FindFirstChild("Zone_" .. tostring(definition.zoneId))
+	if not zoneFolder then
+		error("Gold machine zone was not generated")
+	end
+
+	local model = Instance.new("Model")
+	model.Name = definition.id
+	model:SetAttribute("MachineId", definition.id)
+	model:SetAttribute("MachineZoneId", definition.zoneId)
+	local identityToken = HttpService:GenerateGUID(false)
+	model:SetAttribute("MachineIdentityToken", identityToken)
+
+	local anchor = Instance.new("Part")
+	anchor.Name = "Anchor"
+	anchor.Anchored = true
+	anchor.CanCollide = true
+	anchor.Size = GOLD_MACHINE_ANCHOR_SIZE
+	anchor.CFrame = CFrame.new((definition.zoneId - 1) * ZONE_SPACING, 3, -55)
+	anchor.Color = Color3.fromRGB(255, 194, 32)
+	anchor.Material = Enum.Material.Metal
+	anchor.Parent = model
+	model.PrimaryPart = anchor
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "UseMachinePrompt"
+	prompt.ActionText = "Use Machine"
+	prompt.ObjectText = "Gold Machine"
+	prompt.Enabled = true
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = GOLD_MACHINE_MAX_DISTANCE
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = anchor
+
+	model.Parent = zoneFolder
+	machineRegistry[definition.id] = {
+		model = model,
+		anchor = anchor,
+		prompt = prompt,
+		zoneFolder = zoneFolder,
+		zonesFolder = zonesFolder,
+		machineId = definition.id,
+		zoneId = definition.zoneId,
+		identityToken = identityToken,
+		anchorCFrame = anchor.CFrame,
+	}
+end
+
+local function validateMachineActivation(player, machineId, activationToken)
+	local record = machineRegistry[machineId]
+	if not record or machineId ~= BalanceConfig.Machines.Gold.id then
+		return false, "Machine activation denied"
+	end
+	if type(activationToken) ~= "string" or activationToken ~= record.identityToken then
+		return false, "Machine activation denied"
+	end
+	if not player or not player:IsA("Player") then
+		return false, "Machine activation denied"
+	end
+
+	local model = record.model
+	local anchor = record.anchor
+	local prompt = record.prompt
+	if not model or not model:IsA("Model")
+		or model.Name ~= record.machineId
+		or model.Parent ~= record.zoneFolder
+		or not model:IsDescendantOf(record.zonesFolder)
+		or record.zonesFolder:FindFirstChild("Zone_" .. tostring(record.zoneId)) ~= record.zoneFolder
+		or model.PrimaryPart ~= anchor
+		or model:GetAttribute("MachineId") ~= record.machineId
+		or model:GetAttribute("MachineZoneId") ~= record.zoneId
+		or model:GetAttribute("MachineIdentityToken") ~= record.identityToken then
+		return false, "Machine station integrity check failed"
+	end
+	if not anchor or not anchor:IsA("BasePart")
+		or anchor.Name ~= "Anchor"
+		or anchor.Parent ~= model
+		or not anchor:IsDescendantOf(model)
+		or anchor.Anchored ~= true
+		or anchor.Size ~= GOLD_MACHINE_ANCHOR_SIZE
+		or anchor.CFrame ~= record.anchorCFrame then
+		return false, "Machine station integrity check failed"
+	end
+	if not prompt or not prompt:IsA("ProximityPrompt")
+		or prompt.Name ~= "UseMachinePrompt"
+		or prompt.Parent ~= anchor
+		or not prompt:IsDescendantOf(model)
+		or prompt.Enabled ~= true
+		or prompt.MaxActivationDistance ~= GOLD_MACHINE_MAX_DISTANCE
+		or prompt.ActionText ~= "Use Machine"
+		or prompt.ObjectText ~= "Gold Machine" then
+		return false, "Machine prompt integrity check failed"
+	end
+
+	local data = ZoneService._dataService and ZoneService._dataService.getPlayerData(player)
+	if not profileHasUnlockedZone(data, record.zoneId) then
+		return false, "Machine zone is locked"
+	end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not root or not root:IsA("BasePart") or not root:IsDescendantOf(character) then
+		return false, "Character is unavailable"
+	end
+	local distance = (root.Position - anchor.Position).Magnitude
+	if distance ~= distance or distance > GOLD_MACHINE_MAX_DISTANCE then
+		return false, "Too far from machine"
+	end
+	return true
+end
+
 function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._dataService = dataService
 	ZoneService._currencyService = currencyService
 	ZoneService._petService = petService
 	ZoneService._questService = nil -- set later via setQuestService
+	machineRegistry = {}
 
 	-- Create zones folder in workspace
 	local workspace = game:GetService("Workspace")
@@ -86,6 +225,12 @@ function ZoneService.init(dataService, currencyService, petService)
 
 	-- Spawn invisible barriers at zone edges to prevent falling off
 	ZoneService._spawnBarriers()
+
+	-- Publish the validator only after every world-generation step completed.
+	-- Main wires this returned closure atomically; any init failure leaves
+	-- MachineService without world authority.
+	spawnGoldMachineStation(zonesFolder)
+	return validateMachineActivation
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)

@@ -1,9 +1,8 @@
 --[[
-	MachineService.lua - Dormant QOF-15 machine transaction foundation.
-	Owns validated Gold/Rainbow payment, pet consumption, chance rolls, rollback,
-	and post-commit quest semantics. Public activation remains fail-closed until a
-	future QOF injects an authoritative world/proximity validator and enables the
-	BalanceConfig runtime gate.
+	MachineService.lua - QOF-16 server-authoritative machine transactions.
+	Owns Gold payment, pet consumption, chance rolls, rollback, and post-commit
+	quest semantics. The global gate is active, Gold is enabled per definition,
+	and Rainbow remains explicitly dormant before all activation/economic work.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -37,6 +36,7 @@ local function resolveMachine(machineId)
 			-- Never retain or expose the mutable canonical balance table. The
 			-- transaction consumes only this scalar snapshot.
 			return {
+				RuntimeEnabled = definition.RuntimeEnabled == true,
 				id = definition.id,
 				zoneId = definition.zoneId,
 				inputVariant = definition.inputVariant,
@@ -124,8 +124,8 @@ function MachineService.setQuestService(questService)
 	MachineService._questService = questService
 end
 
--- A future world-owning service must inject a validator that checks the exact
--- runtime station and player proximity. Nil/non-function always means denied.
+-- The world-owning service injects a validator over its private station
+-- registry. Nil/non-function always means denied.
 function MachineService.setActivationValidator(validator)
 	MachineService._activationValidator = type(validator) == "function" and validator or nil
 end
@@ -158,7 +158,7 @@ local function rollbackTechnicalFailure(prepared, spendTransaction)
 	return petRolledBack and currencyRolledBack
 end
 
-local function executeTransaction(player, machine, machineType, petInstanceIds, transactionState)
+local function executeTransaction(player, machine, machineType, activationToken, petInstanceIds, transactionState)
 	local data = MachineService._dataService and MachineService._dataService.getPlayerData(player)
 	if type(data) ~= "table" then
 		return nil, "No player data"
@@ -172,17 +172,14 @@ local function executeTransaction(player, machine, machineType, petInstanceIds, 
 	if not isFiniteNumber(chance) or chance < 0 or chance > 1 then
 		return nil, "Machine configuration unavailable"
 	end
-	-- The callback receives a disposable facts DTO, never the canonical balance
-	-- definition or the private transaction snapshot consumed below.
-	local activationFacts = {
-		machineId = machine.id,
-		zoneId = machine.zoneId,
-	}
+	-- The validator receives only scalar request identity. Station instances,
+	-- ancestry, prompt integrity, profile unlocks, and distance remain private to
+	-- ZoneService's registry and cannot be supplied or rewritten by the caller.
 	local activationOk, activationAllowed, activationError = pcall(
 		MachineService._activationValidator,
 		player,
 		machine.id,
-		activationFacts
+		activationToken
 	)
 	if not activationOk or activationAllowed ~= true then
 		return nil, activationOk and (activationError or "Machine activation denied") or "Machine activation denied"
@@ -271,7 +268,7 @@ local function executeTransaction(player, machine, machineType, petInstanceIds, 
 	return result
 end
 
-function MachineService.attemptConversion(player, machineId, petInstanceIds)
+function MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
 	if BalanceConfig.Machines.RuntimeEnabled ~= true then
 		return nil, "Machines are not available"
 	end
@@ -281,6 +278,15 @@ function MachineService.attemptConversion(player, machineId, petInstanceIds)
 	local machine, machineType = resolveMachine(machineId)
 	if not machine then
 		return nil, "Unknown machine"
+	end
+	-- Definition dormancy is checked before token/list validation, profile access,
+	-- world validation, pet preparation, RNG, or currency work. In particular,
+	-- Rainbow cannot become reachable merely because the global runtime is live.
+	if machine.RuntimeEnabled ~= true then
+		return nil, "Machine is not available"
+	end
+	if type(activationToken) ~= "string" or activationToken == "" or #activationToken > 128 then
+		return nil, "Invalid machine activation"
 	end
 	local ids, idsError = validateDenseUniqueIds(petInstanceIds)
 	if not ids then
@@ -301,7 +307,7 @@ function MachineService.attemptConversion(player, machineId, petInstanceIds)
 	MachineService._playerLocks[player.UserId] = true
 	local transactionState = {}
 	local ok, result, transactionError = xpcall(function()
-		return executeTransaction(player, machine, machineType, ids, transactionState)
+		return executeTransaction(player, machine, machineType, activationToken, ids, transactionState)
 	end, debug.traceback)
 	MachineService._playerLocks[player.UserId] = nil
 

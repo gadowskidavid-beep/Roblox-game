@@ -61,6 +61,34 @@ local function isValidIdentifier(value)
 	return type(value) == "string" and #value > 0 and #value <= 64
 end
 
+local function isValidMachinePetIdList(petInstanceIds)
+	if type(petInstanceIds) ~= "table" or getmetatable(petInstanceIds) ~= nil then
+		return false
+	end
+	local count = 0
+	for key in next, petInstanceIds do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+			return false
+		end
+		count = count + 1
+		if count > BalanceConfig.Machines.MaxInputs then
+			return false
+		end
+	end
+	if count < BalanceConfig.Machines.MinInputs
+		or count > BalanceConfig.Machines.MaxInputs
+		or rawlen(petInstanceIds) ~= count then
+		return false
+	end
+	for index = 1, count do
+		local petId = rawget(petInstanceIds, index)
+		if type(petId) ~= "string" or petId == "" or #petId > 128 then
+			return false
+		end
+	end
+	return true
+end
+
 local function isValidShopPurchaseRequest(request)
 	if type(request) == "string" then
 		-- ExtraEquipSlot is the sole legacy purchase contract. AutoHatch is
@@ -144,7 +172,7 @@ local remoteFunctions = {
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
-	"ConvertToGoldenPet",
+	"UseMachine",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
@@ -192,8 +220,6 @@ PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
 MachineService.init(DataService, CurrencyService, PetService)
 MachineService.setQuestService(QuestService)
--- QOF-15 intentionally supplies no activation validator: with the runtime gate
--- disabled and no world authority injected, every machine attempt fails closed.
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
 EggService.setPotionService(PotionService)
@@ -202,11 +228,15 @@ ShopService.setEggService(EggService)
 -- World generation should not prevent remotes, player data, and the GUI from
 -- starting if a future world builder fails. The current failure is still logged
 -- with a traceback so it is visible in the Roblox Studio server output.
-local zoneInitSucceeded, zoneInitError = xpcall(function()
-	ZoneService.init(DataService, CurrencyService, PetService)
+local zoneInitSucceeded, activationValidatorOrError = xpcall(function()
+	return ZoneService.init(DataService, CurrencyService, PetService)
 end, debug.traceback)
 if not zoneInitSucceeded then
-	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(zoneInitError))
+	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(activationValidatorOrError))
+elseif type(activationValidatorOrError) == "function" then
+	MachineService.setActivationValidator(activationValidatorOrError)
+else
+	warn("[Battle Pets] ZoneService did not provide machine activation authority")
 end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
@@ -472,33 +502,29 @@ getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgra
 	return success, message, state
 end
 
--- ConvertToGoldenPet (2 second cooldown)
-getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceIds)
+-- UseMachine is the sole machine entry point. Main validates only request
+-- identity/shape and abuse limits; all world, pet, currency, RNG, and quest
+-- semantics remain owned by MachineService and its injected ZoneService authority.
+getRemoteFunction("UseMachine").OnServerInvoke = function(player, machineId, activationToken, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
-	if not canCall(player, "ConvertToGoldenPet", 2) then
-		return nil, "Please wait before converting again"
+	-- Account every request from a valid player before traversing caller-owned
+	-- data so malformed traffic cannot bypass either abuse-control bucket.
+	if not canCall(player, "UseMachine", 0.25)
+		or not canCallBurst(player, "UseMachine", 8, 10) then
+		return nil, "Please wait before using a machine again"
 	end
-	if type(petInstanceIds) ~= "table" then
-		return nil, "Invalid pet IDs parameter (expected list)"
+	if not isValidIdentifier(machineId) then
+		return nil, "Invalid machine ID"
 	end
-	-- Validate each ID is a string
-	for _, id in ipairs(petInstanceIds) do
-		if type(id) ~= "string" then
-			return nil, "Invalid pet ID in list"
-		end
+	if type(activationToken) ~= "string" or activationToken == "" or #activationToken > 128 then
+		return nil, "Invalid machine activation"
 	end
-	-- Limit to 7 pets max
-	if #petInstanceIds < 1 or #petInstanceIds > 7 then
-		return nil, "Must sacrifice between 1 and 7 pets"
+	if not isValidMachinePetIdList(petInstanceIds) then
+		return nil, "Invalid pet IDs parameter (expected plain dense list)"
 	end
-	local result, err = PetService.convertToGoldenPet(player, petInstanceIds)
-	if result and result.success then
-		-- Track quest progress for golden pet conversion
-		QuestService.incrementStat(player, "goldenPetsConverted", 1)
-	end
-	return result, err
+	return MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
 end
 
 -- StartCampaignLevel (2 second cooldown)
@@ -807,8 +833,7 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
-	-- Cleanup QOF-15 machine locks before profile persistence. No activation
-	-- validator, remote, station, prompt, event, or client UI is wired yet.
+	-- Cleanup QOF-16 machine transaction locks.
 	MachineService.cleanup(player)
 
 	-- Cleanup QOF-14 potion locks/reservations before profile persistence.

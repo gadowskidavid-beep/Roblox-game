@@ -231,7 +231,9 @@ local BalanceConfig = {
 	},
 
 	Machines = {
-		RuntimeEnabled = false,
+		-- QOF-16 activates the machine runtime while retaining an explicit
+		-- per-definition gate. Gold is live; Rainbow remains fail-closed.
+		RuntimeEnabled = true,
 		MinInputs = 1,
 		MaxInputs = 7,
 		SuccessChanceByInput = {
@@ -244,6 +246,7 @@ local BalanceConfig = {
 			[7] = 1.00,
 		},
 		Gold = {
+			RuntimeEnabled = true,
 			id = "GoldMachine",
 			zoneId = 3,
 			inputVariant = "Normal",
@@ -251,6 +254,7 @@ local BalanceConfig = {
 			cost = { currency = "diamonds", amount = 750 },
 		},
 		Rainbow = {
+			RuntimeEnabled = false,
 			id = "RainbowMachine",
 			zoneId = 6,
 			inputVariant = "Golden",
@@ -638,18 +642,16 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == true, "Multi-Open must be enabled in QOF-08")
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
-		Machines = BalanceConfig.Machines,
 		Enchanting = BalanceConfig.Enchanting,
 	}
 	for name, section in pairs(futureSections) do
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
 
-	-- QOF-15 ships the complete machine transaction definition while keeping its
-	-- public runtime dormant. These exact values are the sole authority used by
-	-- MachineService and must not drift toward the retained legacy conversion.
+	-- QOF-16 exposes only the Gold machine. The global gate remains an emergency
+	-- kill switch and each definition has an independent activation gate.
 	local machines = BalanceConfig.Machines
-	assert(machines.RuntimeEnabled == false, "Machines must remain publicly dormant in QOF-15")
+	assert(machines.RuntimeEnabled == true, "Machines must be globally enabled in QOF-16")
 	assert(machines.MinInputs == 1 and machines.MaxInputs == 7, "machine input bounds must be 1..7")
 	local expectedMachineChances = { 0.13, 0.26, 0.39, 0.50, 0.63, 0.88, 1.00 }
 	for count, expectedChance in ipairs(expectedMachineChances) do
@@ -662,12 +664,13 @@ function BalanceConfig.Validate()
 		assert(type(key) == "number" and key % 1 == 0 and key >= 1 and key <= 7, "unknown machine chance key")
 	end
 	local expectedMachines = {
-		Gold = { id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
-		Rainbow = { id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
+		Gold = { runtimeEnabled = true, id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
+		Rainbow = { runtimeEnabled = false, id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
 	}
 	for machineType, expected in pairs(expectedMachines) do
 		local machine = machines[machineType]
 		assert(type(machine) == "table", machineType .. " machine definition is missing")
+		assert(machine.RuntimeEnabled == expected.runtimeEnabled, machineType .. " machine runtime gate changed")
 		assert(machine.id == expected.id, machineType .. " machine ID changed")
 		assert(machine.zoneId == expected.zoneId, machineType .. " machine zone changed")
 		assert(machine.inputVariant == expected.inputVariant, machineType .. " input variant changed")
