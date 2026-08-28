@@ -80,6 +80,7 @@ local function dependenciesReady()
 		and type(dataService.getPlayerData) == "function"
 		and type(currencyService) == "table"
 		and type(currencyService.beginSpendTransaction) == "function"
+		and type(currencyService.setSpendSettler) == "function"
 		and type(currencyService.commitSpendTransaction) == "function"
 		and type(currencyService.rollbackSpendTransaction) == "function"
 		and type(eggService) == "table"
@@ -94,20 +95,20 @@ local function runtimeAvailable()
 	return AutoHatchService._started == true and dependenciesReady()
 end
 
-local function normalizeLiveExpiry(data, now)
+local function readLiveExpiry(data, now, shouldNormalize)
 	if type(data) ~= "table" then return 0 end
 	local value = data.autoHatchExpiresAt
-	if not isFiniteNumber(value) or value % 1 ~= 0 then
-		data.autoHatchExpiresAt = 0
+	if not isFiniteNumber(value) or value % 1 ~= 0
+		or value <= now or value > now + DEFINITION.durationSeconds then
+		if shouldNormalize then data.autoHatchExpiresAt = 0 end
 		return 0
 	end
-	local expiresAt = value
-	if expiresAt <= now or expiresAt > now + DEFINITION.durationSeconds then
-		data.autoHatchExpiresAt = 0
-		return 0
-	end
-	data.autoHatchExpiresAt = expiresAt
-	return expiresAt
+	if shouldNormalize then data.autoHatchExpiresAt = value end
+	return value
+end
+
+local function normalizeLiveExpiry(data, now)
+	return readLiveExpiry(data, now, true)
 end
 
 local function nextGeneration(userId)
@@ -186,10 +187,10 @@ local function getBatchState(player)
 	}
 end
 
-function AutoHatchService.getState(player)
+local function buildState(player, shouldNormalizeExpiry)
 	local now = math.floor(AutoHatchService._now())
 	local data = getData(player)
-	local expiresAt = normalizeLiveExpiry(data, now)
+	local expiresAt = readLiveExpiry(data, now, shouldNormalizeExpiry)
 	local userId = userIdFor(player)
 	local session = userId and AutoHatchService._sessions[userId] or nil
 	local batchState = getBatchState(player)
@@ -237,6 +238,10 @@ function AutoHatchService.getState(player)
 		actionFeedback = userId and deepCopy(AutoHatchService._actionFeedback[userId]) or nil,
 		inFlight = inFlight,
 	}
+end
+
+function AutoHatchService.getState(player)
+	return buildState(player, true)
 end
 
 local function fireStateUpdated(player, state)
@@ -325,42 +330,150 @@ function AutoHatchService.purchase(player, request)
 		local data = getData(player)
 		if type(data) ~= "table" then reason = "NO_PROFILE" return end
 		local now = math.floor(AutoHatchService._now())
-		if normalizeLiveExpiry(data, now) > now then reason = "ACCESS_ALREADY_ACTIVE" return end
+		local currentExpiry = data.autoHatchExpiresAt
+		if isFiniteNumber(currentExpiry)
+			and currentExpiry % 1 == 0
+			and currentExpiry > now
+			and currentExpiry <= now + DEFINITION.durationSeconds then
+			reason = "ACCESS_ALREADY_ACTIVE"
+			return
+		end
 
 		local currencyTransaction = AutoHatchService._currencyService.beginSpendTransaction(
-			player, DEFINITION.cost.currency, DEFINITION.cost.amount
+			player,
+			DEFINITION.cost.currency,
+			DEFINITION.cost.amount,
+			"AutoHatchService.purchase"
 		)
 		if type(currencyTransaction) ~= "table" then reason = "INSUFFICIENT_DIAMONDS" return end
-		local oldExpiry = data.autoHatchExpiresAt
-		local context = { player = player, oldExpiry = oldExpiry, currencyTransaction = currencyTransaction }
+
+		local context = {
+			player = player,
+			data = data,
+			oldExpiry = currentExpiry,
+			newExpiry = now + DEFINITION.durationSeconds,
+			currencyTransaction = currencyTransaction,
+			expiryMutationStarted = false,
+			expiryRestored = false,
+			oldRejoinRequired = AutoHatchService._rejoinRequired[userId],
+			oldStoppedReason = AutoHatchService._stoppedReasons[userId],
+			oldActionFeedback = AutoHatchService._actionFeedback[userId],
+			oldRevision = AutoHatchService._revisions[userId],
+			transientMutationStarted = false,
+			transientRestored = false,
+			committed = false,
+		}
+		local function settleTransaction()
+			if context.committed then return true end
+			if context.expiryMutationStarted then
+				local liveExpiry = context.data.autoHatchExpiresAt
+				if not context.expiryRestored then
+					if liveExpiry == context.newExpiry then
+						context.data.autoHatchExpiresAt = context.oldExpiry
+					elseif liveExpiry ~= context.oldExpiry then
+						return false
+					end
+					context.expiryRestored = true
+				elseif liveExpiry ~= context.oldExpiry then
+					return false
+				end
+			end
+			if context.transientMutationStarted then
+				local expectedRevision = (context.oldRevision or 0) + 1
+				if not context.transientRestored then
+					local stillProjected = AutoHatchService._rejoinRequired[userId] == false
+						and AutoHatchService._stoppedReasons[userId] == nil
+						and AutoHatchService._actionFeedback[userId] == nil
+						and AutoHatchService._revisions[userId] == expectedRevision
+					local alreadyRestored = AutoHatchService._rejoinRequired[userId] == context.oldRejoinRequired
+						and AutoHatchService._stoppedReasons[userId] == context.oldStoppedReason
+						and AutoHatchService._actionFeedback[userId] == context.oldActionFeedback
+						and AutoHatchService._revisions[userId] == context.oldRevision
+					if stillProjected then
+						AutoHatchService._rejoinRequired[userId] = context.oldRejoinRequired
+						AutoHatchService._stoppedReasons[userId] = context.oldStoppedReason
+						AutoHatchService._actionFeedback[userId] = context.oldActionFeedback
+						AutoHatchService._revisions[userId] = context.oldRevision
+					elseif not alreadyRestored then
+						return false
+					end
+					context.transientRestored = true
+				elseif AutoHatchService._rejoinRequired[userId] ~= context.oldRejoinRequired
+					or AutoHatchService._stoppedReasons[userId] ~= context.oldStoppedReason
+					or AutoHatchService._actionFeedback[userId] ~= context.oldActionFeedback
+					or AutoHatchService._revisions[userId] ~= context.oldRevision then
+					return false
+				end
+			end
+			if context.currencyTransaction == nil then return true end
+			local rollbackCallOk, rolledBack = pcall(
+				AutoHatchService._currencyService.rollbackSpendTransaction,
+				context.currencyTransaction
+			)
+			if not rollbackCallOk or rolledBack ~= true then return false end
+			context.currencyTransaction = nil
+			return true
+		end
+
+		local settlerCallOk, settlerRegistered = pcall(
+			AutoHatchService._currencyService.setSpendSettler,
+			currencyTransaction,
+			settleTransaction
+		)
+		if not settlerCallOk or settlerRegistered ~= true then
+			local rollbackCallOk, rolledBack = pcall(settleTransaction)
+			if not rollbackCallOk or rolledBack ~= true then
+				reason = "ROLLBACK_FAILED"
+			end
+			return
+		end
+
 		local transactionOk = pcall(function()
 			invokeTransactionHook("afterSpend", context)
-			data.autoHatchExpiresAt = now + DEFINITION.durationSeconds
+			context.expiryMutationStarted = true
+			data.autoHatchExpiresAt = context.newExpiry
 			invokeTransactionHook("afterMutation", context)
-			-- Build the full DTO before the commit boundary so serialization faults
-			-- restore both the silent debit and the prior profile state.
-			AutoHatchService.getState(player)
+			context.transientMutationStarted = true
+			AutoHatchService._rejoinRequired[userId] = false
+			AutoHatchService._stoppedReasons[userId] = nil
+			AutoHatchService._actionFeedback[userId] = nil
+			AutoHatchService._revisions[userId] = (context.oldRevision or 0) + 1
+			-- Build and retain the full authoritative DTO before the point of no
+			-- return. If best-effort post-commit publication fails, this remains a
+			-- successful paid response rather than inviting a duplicate retry.
+			state = AutoHatchService.getState(player)
 			if AutoHatchService._currencyService.commitSpendTransaction(currencyTransaction) ~= true then
 				error("currency commit failed")
 			end
+			context.committed = true
+			context.currencyTransaction = nil
 		end)
 		if not transactionOk then
-			data.autoHatchExpiresAt = oldExpiry
-			local rollbackOk = AutoHatchService._currencyService.rollbackSpendTransaction(currencyTransaction)
-			if rollbackOk ~= true then reason = "ROLLBACK_FAILED" end
+			state = nil
+			local rollbackCallOk, rolledBack = pcall(settleTransaction)
+			if not rollbackCallOk or rolledBack ~= true then
+				reason = "ROLLBACK_FAILED"
+			end
 			return
 		end
-		AutoHatchService._rejoinRequired[userId] = false
-		AutoHatchService._stoppedReasons[userId] = nil
+
+		-- Currency commit is the economic point of no return. The authoritative
+		-- response and revision already exist; post-commit replication is
+		-- best-effort and cannot change the paid result into a retryable failure.
 		success = true
 		reason = nil
-		state = publish(player)
+		pcall(fireStateUpdated, player, state)
 	end)
 	AutoHatchService._purchaseLocks[userId] = nil
-	if not callOk then
-		return false, "TECHNICAL_ERROR", AutoHatchService.getState(player)
+	if state == nil then
+		local stateCallOk, fallbackState = pcall(buildState, player, false)
+		if stateCallOk then state = fallbackState end
 	end
-	return success, reason, state or AutoHatchService.getState(player)
+	if not callOk then
+		if success then return true, nil, state end
+		return false, "TECHNICAL_ERROR", state
+	end
+	return success, reason, state
 end
 
 function AutoHatchService.setBatch(player, request)

@@ -126,6 +126,7 @@ local specFiles = {
 	"tests/DataSchema.spec",
 	"tests/ProgressionServices.spec",
 	"tests/DataService.spec",
+	"tests/ProfileTransactionService.spec",
 	"tests/CurrencyService.spec",
 	"tests/UpgradeTreeService.spec",
 	"tests/MovementService.spec",

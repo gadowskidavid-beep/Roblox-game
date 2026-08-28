@@ -9,6 +9,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- Require all services
 local DataService = require(script.Parent.Services.DataService)
+local ProfileTransactionService = require(script.Parent.Services.ProfileTransactionService)
 local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
@@ -209,7 +210,7 @@ end
 ----------------------------------------------
 
 -- Init currency first (with nil upgradeService, we set it after)
-CurrencyService.init(DataService, nil)
+CurrencyService.init(DataService, nil, ProfileTransactionService)
 UpgradeService.init(DataService, CurrencyService)
 -- Now set the upgrade reference for CurrencyService
 CurrencyService._upgradeService = UpgradeService
@@ -234,7 +235,13 @@ PetService.setUpgradeTreeService(UpgradeTreeService)
 MachineService.init(DataService, CurrencyService, PetService)
 MachineService.setQuestService(QuestService)
 EnchantingService.init(DataService, CurrencyService, PetService)
-EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
+EggService.init(
+	DataService,
+	CurrencyService,
+	PetService,
+	UpgradeTreeService,
+	ProfileTransactionService
+)
 EggService.setQuestService(QuestService)
 EggService.setPotionService(PotionService)
 ShopService.setEggService(EggService)
@@ -270,7 +277,7 @@ ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
 ZoneService.setPickupService(PickupService)
 
-CampaignService.init(DataService, CurrencyService, PetService)
+CampaignService.init(DataService, CurrencyService, PetService, EggService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
@@ -290,9 +297,10 @@ DataService.bindToClose({
 		local machinesSettled = MachineService.cleanup(player)
 		local enchantingSettled = EnchantingService.cleanup(player)
 		local pickupsSettled = PickupService.settlePlayer(player)
+		local profileSettled = ProfileTransactionService.settlePlayer(player)
 		local inventoryIdle = PetService.isInventoryMutationIdle(player)
 		return eggSettled and machinesSettled and enchantingSettled
-			and pickupsSettled and inventoryIdle
+			and pickupsSettled and profileSettled and inventoryIdle
 	end,
 })
 
@@ -981,9 +989,10 @@ Players.PlayerRemoving:Connect(function(player)
 		local eggSettled = EggService.onPlayerRemoving(player)
 		local machineSettled = MachineService.onPlayerRemoving(player)
 		local enchantingSettled = EnchantingService.onPlayerRemoving(player)
+		local profileSettled = ProfileTransactionService.settlePlayer(player)
 		local inventoryIdle = PetService.isInventoryMutationIdle(player)
 		if not (pickupsSettled and eggSettled and machineSettled
-			and enchantingSettled and inventoryIdle) then
+			and enchantingSettled and profileSettled and inventoryIdle) then
 			return false
 		end
 		if not postSettlementCleanupDone then

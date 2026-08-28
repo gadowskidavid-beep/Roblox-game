@@ -49,15 +49,20 @@ function dataService.getPlayerData()
 end
 
 local currencyService = {}
-function currencyService.beginSpendTransaction(_, currency, amount)
-	table.insert(beginCalls, { currency = currency, amount = amount })
+function currencyService.beginSpendTransaction(_, currency, amount, ownerName)
+	table.insert(beginCalls, { currency = currency, amount = amount, ownerName = ownerName })
 	if not profile or type(profile[currency]) ~= "number" or profile[currency] < amount then
 		return nil
 	end
 	local transaction = {}
 	pending[transaction] = { profile = profile, currency = currency, amount = amount }
-	profile[currency] = profile[currency] - amount
 	return transaction
+end
+function currencyService.setSpendSettler(transaction, settler)
+	local entry = pending[transaction]
+	if not entry or type(settler) ~= "function" then return false end
+	entry.settler = settler
+	return true
 end
 function currencyService.commitSpendTransaction(transaction)
 	commitCalls = commitCalls + 1
@@ -65,6 +70,8 @@ function currencyService.commitSpendTransaction(transaction)
 	if not entry then return false end
 	if commitMode == "error" then error("injected commit error") end
 	if commitMode == "false" then return false end
+	if entry.profile[entry.currency] < entry.amount then return false end
+	entry.profile[entry.currency] = entry.profile[entry.currency] - entry.amount
 	pending[transaction] = nil
 	currencyEvents = currencyEvents + 1
 	return true
@@ -76,7 +83,6 @@ function currencyService.rollbackSpendTransaction(transaction)
 	if rollbackMode == "error" then error("injected rollback error") end
 	if rollbackMode == "false" then return false end
 	pending[transaction] = nil
-	entry.profile[entry.currency] = entry.profile[entry.currency] + entry.amount
 	return true
 end
 
@@ -248,7 +254,11 @@ describe("EnchantingService QOF-19 weighted roll and concurrency", function()
 			expect(state.pet.enchantId):toBe(case[2])
 			expect(state.stateRevision):toBe(1)
 			expect(profile.diamonds):toBe(1500)
-			expect(beginCalls[1]):toEqual({ currency = "diamonds", amount = 500 })
+			expect(beginCalls[1]):toEqual({
+				currency = "diamonds",
+				amount = 500,
+				ownerName = "EnchantingService",
+			})
 			expect(currencyEvents):toBe(1)
 			expect(inventoryEvents):toBe(1)
 		end
@@ -397,7 +407,7 @@ describe("EnchantingService QOF-19 rollback and lifecycle", function()
 		local success, reason = roll()
 		expect(success):toBeFalse()
 		expect(reason):toBe("ROLLBACK_FAILED")
-		expect(profile.diamonds):toBe(1500)
+		expect(profile.diamonds):toBe(2000)
 
 		reset("StrongI")
 		EnchantingService.setTransactionHook(function(stage)
@@ -427,13 +437,39 @@ describe("EnchantingService QOF-19 rollback and lifecycle", function()
 		expect(rollbackCalls):toBe(0)
 	end)
 
-	it("keeps a paid commit successful when post-commit state refresh fails", function()
+	it("builds the complete projected response before the currency PONR", function()
+		reset(nil, 500)
+		local sawProjectedState = false
+		EnchantingService.setTransactionHook(function(stage, transaction)
+			if stage == "beforeCommit" then
+				sawProjectedState = true
+				expect(profile.diamonds):toBe(500)
+				expect(transaction.resultState.pet.enchantId):toBe("StrongI")
+				expect(transaction.resultState.stateRevision):toBe(1)
+				expect(transaction.resultState.availability):toEqual({
+					canRoll = false,
+					reason = "INSUFFICIENT_BALANCE",
+				})
+			end
+		end)
+		local success, reason, state = roll()
+		expect(success):toBeTrue()
+		expect(reason):toBeNil()
+		expect(sawProjectedState):toBeTrue()
+		expect(state.pet.enchantId):toBe("StrongI")
+		expect(state.stateRevision):toBe(1)
+		expect(profile.diamonds):toBe(0)
+	end)
+
+	it("returns the retained precommit DTO when post-commit profile refresh would fail", function()
 		reset()
 		breakProfileAfterReplication = true
 		local success, reason, state = roll()
 		expect(success):toBeTrue()
 		expect(reason):toBeNil()
-		expect(state):toBeNil()
+		expect(type(state)):toBe("table")
+		expect(state.pet.enchantId):toBe("StrongI")
+		expect(state.stateRevision):toBe(1)
 		expect(profile.diamonds):toBe(1500)
 		expect(profile.pets[1].enchantId):toBe("StrongI")
 		expect(commitCalls):toBe(1)
@@ -448,13 +484,13 @@ describe("EnchantingService QOF-19 rollback and lifecycle", function()
 		local success, reason = roll()
 		expect(success):toBeFalse()
 		expect(reason):toBe("ROLLBACK_FAILED")
-		expect(profile.diamonds):toBe(1500)
+		expect(profile.diamonds):toBe(2000)
 		expect(EnchantingService._activeTransactions[player.UserId] ~= nil):toBeTrue()
 		expect(EnchantingService._playerLocks[player.UserId]):toBeTrue()
 		expect(inventoryLease ~= nil):toBeTrue()
 
 		expect(EnchantingService.cleanup(player)):toBeFalse()
-		expect(profile.diamonds):toBe(1500)
+		expect(profile.diamonds):toBe(2000)
 		expect(EnchantingService._activeTransactions[player.UserId] ~= nil):toBeTrue()
 
 		rollbackMode = "success"

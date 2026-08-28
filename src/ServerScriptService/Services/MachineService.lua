@@ -146,8 +146,6 @@ local function restoreTransaction(transactionState)
 	if transactionState.committed then
 		return true
 	end
-	local petRolledBack = true
-	local currencyRolledBack = true
 	local prepared = transactionState.prepared
 	if prepared then
 		if prepared.mutationStarted then
@@ -156,25 +154,23 @@ local function restoreTransaction(transactionState)
 				prepared,
 				transactionState.inventoryLease
 			)
-			petRolledBack = callSucceeded and rollbackSucceeded == true
-			if petRolledBack then
-				transactionState.prepared = nil
+			if not callSucceeded or rollbackSucceeded ~= true then
+				return false
 			end
-		else
-			transactionState.prepared = nil
 		end
+		transactionState.prepared = nil
 	end
 	if transactionState.spendTransaction then
 		local callSucceeded, rollbackSucceeded = pcall(
 			MachineService._currencyService.rollbackSpendTransaction,
 			transactionState.spendTransaction
 		)
-		currencyRolledBack = callSucceeded and rollbackSucceeded == true
-		if currencyRolledBack then
-			transactionState.spendTransaction = nil
+		if not callSucceeded or rollbackSucceeded ~= true then
+			return false
 		end
+		transactionState.spendTransaction = nil
 	end
-	return petRolledBack and currencyRolledBack
+	return true
 end
 
 local function executeTransaction(player, machine, machineType, activationToken, petInstanceIds, transactionState)
@@ -218,12 +214,26 @@ local function executeTransaction(player, machine, machineType, activationToken,
 	local spendTransaction = MachineService._currencyService.beginSpendTransaction(
 		player,
 		machine.cost.currency,
-		machine.cost.amount
+		machine.cost.amount,
+		"MachineService"
 	)
 	if not spendTransaction then
 		return nil, "Not enough diamonds"
 	end
 	transactionState.spendTransaction = spendTransaction
+	local settlerRegistered = MachineService._currencyService.setSpendSettler(
+		spendTransaction,
+		function(currentSpendTransaction)
+			if transactionState.executing
+				or currentSpendTransaction ~= transactionState.spendTransaction then
+				return false
+			end
+			return restoreTransaction(transactionState)
+		end
+	)
+	if settlerRegistered ~= true then
+		error("Unable to register machine spend settler")
+	end
 
 	local context = {
 		player = player,
@@ -317,6 +327,10 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	if not MachineService._dataService
 		or not MachineService._currencyService
 		or not MachineService._petService
+		or type(MachineService._currencyService.beginSpendTransaction) ~= "function"
+		or type(MachineService._currencyService.setSpendSettler) ~= "function"
+		or type(MachineService._currencyService.commitSpendTransaction) ~= "function"
+		or type(MachineService._currencyService.rollbackSpendTransaction) ~= "function"
 		or type(MachineService._petService.beginInventoryMutation) ~= "function"
 		or type(MachineService._petService.endInventoryMutation) ~= "function" then
 		return nil, "Machine service unavailable"

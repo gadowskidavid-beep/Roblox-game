@@ -13,6 +13,7 @@ local RunService = game:GetService("RunService")
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 local DataSchema = require(script.Parent.DataSchema)
+local ProfileTransactionService = require(script.Parent.ProfileTransactionService)
 
 local DataService = {}
 
@@ -82,6 +83,7 @@ local function waitForCurrentSave(userId)
 end
 
 local function clearProfile(userId)
+	ProfileTransactionService.clearProfile(userId)
 	DataService._cache[userId] = nil
 	DataService._canSave[userId] = nil
 	DataService._saving[userId] = nil
@@ -188,6 +190,16 @@ function DataService.savePlayerData(player, releaseLock)
 	if not data then return false, "No cached data" end
 
 	DataService._saving[player.UserId] = true
+	-- The save flag closes the opposite side of the begin/save race: a new owner
+	-- cannot start after this point, and an existing owner blocks before cloning.
+	if ProfileTransactionService.hasPending(player) then
+		DataService._saving[player.UserId] = nil
+		return false, "Profile transaction pending"
+	end
+	if not releaseLock and DataService._pendingProfiles[player.UserId] ~= nil then
+		DataService._saving[player.UserId] = nil
+		return false, "Profile departure pending"
+	end
 	local key = profileKey(player.UserId)
 	local snapshot = DataSchema.cloneForPersistence(data)
 	local sessionLost = false
@@ -226,6 +238,10 @@ function DataService.savePlayerData(player, releaseLock)
 	return true
 end
 
+function DataService.isProfileSaveInProgress(player)
+	return player ~= nil and DataService._saving[player.UserId] == true
+end
+
 function DataService.closeMutationAdmission(player)
 	if not player or not player:IsA("Player") then return false end
 	local userId = player.UserId
@@ -234,7 +250,7 @@ function DataService.closeMutationAdmission(player)
 	if DataService._cache[userId] == nil then return false end
 	DataService._profilePlayers[userId] = owner or player
 	DataService._mutationAdmissionClosed[userId] = player
-	return true
+	return ProfileTransactionService.closeAdmission(player)
 end
 
 function DataService.isMutationAdmissionOpen(player)
@@ -244,6 +260,7 @@ function DataService.isMutationAdmissionOpen(player)
 	return DataService._cache[userId] ~= nil
 		and (owner == nil or owner == player)
 		and DataService._mutationAdmissionClosed[userId] == nil
+		and ProfileTransactionService.isAdmissionOpen(player)
 		and DataService._pendingProfiles[userId] == nil
 end
 
@@ -290,7 +307,9 @@ local function attemptPendingRecord(record)
 	record.settling = true
 	if not record.settled then
 		local ok, settled = pcall(record.settle, record.player)
-		if not ok or settled ~= true then
+		local profileSettled = ok and settled == true
+			and ProfileTransactionService.settlePlayer(record.player)
+		if not profileSettled then
 			record.attempts = record.attempts + 1
 			record.lastError = ok and "Settlement unresolved" or tostring(settled)
 			record.settling = false
@@ -369,6 +388,7 @@ function DataService.startAutoSave()
 			for _, player in ipairs(Players:GetPlayers()) do
 				if DataService._cache[player.UserId]
 					and not DataService._pendingProfiles[player.UserId]
+					and not ProfileTransactionService.hasPending(player)
 					and not DataService._saving[player.UserId] then
 					task.spawn(DataService.savePlayerData, player, false)
 				end
@@ -453,5 +473,9 @@ function DataService.bindToClose(lifecycle)
 		end
 	end)
 end
+
+-- DataService owns the profile incarnation; initialize the central transaction
+-- registry only after every admission/save callback above has been defined.
+ProfileTransactionService.init(DataService)
 
 return DataService

@@ -16,6 +16,7 @@ local CampaignService = {}
 CampaignService._dataService = nil
 CampaignService._currencyService = nil
 CampaignService._petService = nil
+CampaignService._eggService = nil
 
 -- Active battles indexed by player UserId
 CampaignService._activeBattles = {}
@@ -33,10 +34,11 @@ local function isFiniteNumber(value)
 		and value ~= -math.huge
 end
 
-function CampaignService.init(dataService, currencyService, petService)
+function CampaignService.init(dataService, currencyService, petService, eggService)
 	CampaignService._dataService = dataService
 	CampaignService._currencyService = currencyService
 	CampaignService._petService = petService
+	CampaignService._eggService = eggService
 
 	-- Connect to Heartbeat for battle updates
 	RunService.Heartbeat:Connect(function(dt)
@@ -526,36 +528,43 @@ function CampaignService._onVictory(userId, battle)
 		end
 
 		if rewards.SpecialEgg then
-			if type(data.campaignBossRewards) ~= "table" then
-				data.campaignBossRewards = {}
-			end
-			local claimKey = tostring(battle.levelNum)
-			if data.campaignBossRewards[claimKey] ~= true then
-				local rewardPet, rewardError = CampaignService._petService.hatchEgg(player, rewards.SpecialEgg, true)
-				if rewardPet then
-					data.campaignBossRewards[claimKey] = true
-					rewardsForClient.SpecialPet = rewardPet.name
-					rewardsForClient.SpecialEggClaimed = true
-					rewardPet.isNewDiscovery = nil
-				else
-					rewardsForClient.SpecialEggPending = true
-					rewardsForClient.SpecialEggError = rewardError or "Reward could not be claimed"
+			local claimOk, claimResult, claimError = pcall(function()
+				if type(CampaignService._eggService) ~= "table"
+					or type(CampaignService._eggService.claimCampaignBossReward) ~= "function" then
+					return nil, "Campaign reward service unavailable"
 				end
-			else
+				return CampaignService._eggService.claimCampaignBossReward(
+					player,
+					rewards.SpecialEgg,
+					battle.levelNum
+				)
+			end)
+			if claimOk and type(claimResult) == "table"
+				and claimResult.status == "CLAIMED" then
+				rewardsForClient.SpecialPet = claimResult.petName
+				rewardsForClient.SpecialEggClaimed = true
+			elseif claimOk and type(claimResult) == "table"
+				and claimResult.status == "ALREADY_CLAIMED" then
 				rewardsForClient.SpecialEggAlreadyClaimed = true
+			else
+				rewardsForClient.SpecialEggPending = true
+				rewardsForClient.SpecialEggError = claimOk
+					and (claimError or "Reward could not be claimed")
+					or "Reward could not be claimed"
 			end
 		end
 	end
 
+	-- Victory economics are already terminal. Clear the battle before best-effort
+	-- transport so a throwing client notification cannot expose a replayable battle.
+	CampaignService._activeBattles[userId] = nil
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("CampaignVictory")
 		if event then
-			event:FireClient(player, battle.levelNum, rewardsForClient)
+			pcall(event.FireClient, event, player, battle.levelNum, rewardsForClient)
 		end
 	end
-
-	CampaignService._activeBattles[userId] = nil
 end
 
 -- Handle defeat

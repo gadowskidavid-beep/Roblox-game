@@ -10,8 +10,15 @@ function heartbeat:Connect(callback)
 	return { Disconnect = function() end }
 end
 local RunService = { Heartbeat = heartbeat }
+local campaignVictoryEvent = nil
+local remotes = {}
+function remotes:FindFirstChild(name)
+	if name == "CampaignVictory" then return campaignVictoryEvent end
+	return nil
+end
 local ReplicatedStorage = { Shared = { Config = Config, CampaignData = CampaignData } }
-function ReplicatedStorage:FindFirstChild()
+function ReplicatedStorage:FindFirstChild(name)
+	if name == "Remotes" and campaignVictoryEvent ~= nil then return remotes end
 	return nil
 end
 local Players = {}
@@ -222,18 +229,26 @@ describe("CampaignService QOF-23 hostile boss claim state", function()
 			campaignProgress = {},
 			campaignBossRewards = { ["6"] = "claimed" },
 		}
-		local hatchCalls = 0
+		local claimCalls = 0
 		CampaignService._dataService = { getPlayerData = function() return profile end }
 		CampaignService._currencyService = {
 			addCoins = function() end,
 			addDiamonds = function() end,
 		}
 		CampaignService._petService = {
-			hatchEgg = function(_, eggId, bypass)
+			hatchEgg = function() error("legacy campaign hatch must not be called") end,
+		}
+		CampaignService._eggService = {
+			claimCampaignBossReward = function(_, eggId, levelNum)
 				expect(eggId):toBe("BasicEgg")
-				expect(bypass):toBeTrue()
-				hatchCalls = hatchCalls + 1
-				return { name = "Buddy", isNewDiscovery = true }
+				expect(levelNum):toBe(6)
+				claimCalls = claimCalls + 1
+				if profile.campaignBossRewards["6"] == true then
+					return { status = "ALREADY_CLAIMED" }
+				end
+				-- The specialized EggService owns pet creation and this marker together.
+				profile.campaignBossRewards["6"] = true
+				return { status = "CLAIMED", petName = "Buddy" }
 			end,
 		}
 
@@ -243,7 +258,7 @@ describe("CampaignService QOF-23 hostile boss claim state", function()
 			levelDef = CampaignData.Levels[6],
 		}
 		CampaignService._onVictory(player.UserId, CampaignService._activeBattles[player.UserId])
-		expect(hatchCalls):toBe(1)
+		expect(claimCalls):toBe(1)
 		expect(profile.campaignBossRewards["6"]):toBeTrue()
 
 		CampaignService._activeBattles[player.UserId] = {
@@ -252,7 +267,43 @@ describe("CampaignService QOF-23 hostile boss claim state", function()
 			levelDef = CampaignData.Levels[6],
 		}
 		CampaignService._onVictory(player.UserId, CampaignService._activeBattles[player.UserId])
-		expect(hatchCalls):toBe(1)
+		expect(claimCalls):toBe(2)
 		CampaignService._activeBattles[player.UserId] = nil
+	end)
+
+	it("maps retryable claim failures and keeps victory terminal when transport throws", function()
+		local player = { UserId = 2324 }
+		function Players:GetPlayerByUserId(userId)
+			return userId == player.UserId and player or nil
+		end
+		local profile = { campaignProgress = {}, campaignBossRewards = {} }
+		local delivered = nil
+		campaignVictoryEvent = {}
+		function campaignVictoryEvent:FireClient(_, _, rewards)
+			delivered = rewards
+			error("injected CampaignVictory transport failure")
+		end
+		CampaignService._dataService = { getPlayerData = function() return profile end }
+		CampaignService._currencyService = {
+			addCoins = function() end,
+			addDiamonds = function() end,
+		}
+		CampaignService._eggService = {
+			claimCampaignBossReward = function()
+				return nil, "Pet inventory is full"
+			end,
+		}
+		local battle = {
+			active = true,
+			levelNum = 6,
+			levelDef = CampaignData.Levels[6],
+		}
+		CampaignService._activeBattles[player.UserId] = battle
+		CampaignService._onVictory(player.UserId, battle)
+		expect(delivered.SpecialEggPending):toBeTrue()
+		expect(delivered.SpecialEggError):toBe("Pet inventory is full")
+		expect(profile.campaignBossRewards["6"]):toBeNil()
+		expect(CampaignService._activeBattles[player.UserId]):toBeNil()
+		campaignVictoryEvent = nil
 	end)
 end)

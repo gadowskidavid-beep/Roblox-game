@@ -16,6 +16,10 @@ function DataSchema.deepCopy(value)
 	return copy
 end
 
+function DataSchema.cloneForPersistence(value)
+	return DataSchema.deepCopy(value)
+end
+
 local function normalizeKnownLevel(values, id, maximum)
 	local output = {}
 	if type(values) == "table" then
@@ -35,9 +39,16 @@ function ProgressionMath.normalizeMasteryLevels(values)
 	return normalizeKnownLevel(values, "MoreCoins", 10)
 end
 
+local storedProfiles = {}
+local dataStore = {}
+function dataStore:UpdateAsync(key, transform)
+	local nextValue = transform(storedProfiles[key])
+	if nextValue ~= nil then storedProfiles[key] = nextValue end
+	return nextValue
+end
 local dataStoreService = {}
 function dataStoreService:GetDataStore()
-	return {}
+	return dataStore
 end
 local httpService = {}
 function httpService:GenerateGUID()
@@ -54,13 +65,22 @@ function runService:IsStudio()
 end
 
 local SharedMock = { Config = Config, ProgressionMath = ProgressionMath }
-local ServicesMock = { DataSchema = DataSchema }
+local ProfileTransactionService = originalRequire("src/ServerScriptService/Services/ProfileTransactionService")
+local ServicesMock = {
+	DataSchema = DataSchema,
+	ProfileTransactionService = ProfileTransactionService,
+}
+local replicatedStorage = { Shared = SharedMock }
+function replicatedStorage:FindFirstChild()
+	return nil
+end
 local gameMock = {
 	JobId = "test-job",
 	PlaceId = 1,
-	ReplicatedStorage = { Shared = SharedMock },
+	ReplicatedStorage = replicatedStorage,
 }
 function gameMock:GetService(name)
+	if name == "ReplicatedStorage" then return replicatedStorage end
 	if name == "DataStoreService" then return dataStoreService end
 	if name == "HttpService" then return httpService end
 	if name == "Players" then return playersService end
@@ -74,11 +94,13 @@ local function mockRequire(path)
 	if path == Config then return Config end
 	if path == ProgressionMath then return ProgressionMath end
 	if path == DataSchema then return DataSchema end
+	if path == ProfileTransactionService then return ProfileTransactionService end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
 local DataService = originalRequire("src/ServerScriptService/Services/DataService")
 rawset(_G, "require", originalRequire)
+local CurrencyService = originalRequire("src/ServerScriptService/Services/CurrencyService")
 
 local player = { UserId = 42 }
 function player:IsA(className)
@@ -519,5 +541,102 @@ describe("DataService retrying profile lifecycle", function()
 		DataService.savePlayerData = originalSave
 		gameMock.BindToClose = originalBind
 		rawset(_G, "task", originalTask)
+	end)
+end)
+
+
+describe("DataService QOF-25 transaction save admission", function()
+	it("refuses before snapshot while an owner is pending and saves only after settlement", function()
+		local candidate = lifecyclePlayer(250, "Atomic")
+		local originalUseMemoryOnly = DataService._useMemoryOnly
+		local originalClone = DataSchema.cloneForPersistence
+		local cloneCalls = 0
+		DataService._useMemoryOnly = false
+		DataService._cache[candidate.UserId] = {
+			coins = 100,
+			diamonds = 50,
+			_session = { id = "test-job" },
+		}
+		DataService._canSave[candidate.UserId] = true
+		DataService._profilePlayers[candidate.UserId] = candidate
+		storedProfiles["Player_250"] = { _session = { id = "test-job" } }
+		DataSchema.cloneForPersistence = function(value)
+			cloneCalls = cloneCalls + 1
+			return DataSchema.deepCopy(value)
+		end
+
+		local owner = ProfileTransactionService.begin(candidate, "QOF25Test")
+		expect(type(owner)):toBe("table")
+		local saved, saveError = DataService.savePlayerData(candidate, false)
+		expect(saved):toBeFalse()
+		expect(saveError):toBe("Profile transaction pending")
+		expect(cloneCalls):toBe(0)
+		expect(ProfileTransactionService.commit(owner)):toBeTrue()
+		expect(DataService.savePlayerData(candidate, false)):toBeTrue()
+		expect(cloneCalls):toBe(1)
+		expect(storedProfiles["Player_250"].coins):toBe(100)
+
+		DataSchema.cloneForPersistence = originalClone
+		DataService._useMemoryOnly = originalUseMemoryOnly
+		DataService._cache[candidate.UserId] = nil
+		DataService._canSave[candidate.UserId] = nil
+		DataService._profilePlayers[candidate.UserId] = nil
+		DataService._saving[candidate.UserId] = nil
+		storedProfiles["Player_250"] = nil
+		ProfileTransactionService.clearProfile(candidate)
+	end)
+
+	it("serializes cross-service reservations and blocks snapshots until cancellation", function()
+		local candidate = lifecyclePlayer(251, "CrossService")
+		local originalUseMemoryOnly = DataService._useMemoryOnly
+		local originalClone = DataSchema.cloneForPersistence
+		local cloneCalls = 0
+		DataService._useMemoryOnly = false
+		DataService._cache[candidate.UserId] = {
+			coins = 100,
+			diamonds = 50,
+			_session = { id = "test-job" },
+		}
+		DataService._canSave[candidate.UserId] = true
+		DataService._profilePlayers[candidate.UserId] = candidate
+		storedProfiles["Player_251"] = { _session = { id = "test-job" } }
+		DataSchema.cloneForPersistence = function(value)
+			cloneCalls = cloneCalls + 1
+			return DataSchema.deepCopy(value)
+		end
+		CurrencyService.init(DataService, nil, ProfileTransactionService)
+
+		local shopReservation = CurrencyService.beginSpendTransaction(
+			candidate,
+			"diamonds",
+			20,
+			"ShopService"
+		)
+		expect(type(shopReservation)):toBe("table")
+		expect(ProfileTransactionService.getOwnerName(candidate)):toBe("ShopService")
+		expect(CurrencyService.beginSpendTransaction(
+			candidate,
+			"coins",
+			1,
+			"UpgradeTreeService"
+		)):toBeNil()
+		expect(DataService._cache[candidate.UserId].diamonds):toBe(50)
+		local saved, saveError = DataService.savePlayerData(candidate, false)
+		expect(saved):toBeFalse()
+		expect(saveError):toBe("Profile transaction pending")
+		expect(cloneCalls):toBe(0)
+		expect(CurrencyService.rollbackSpendTransaction(shopReservation)):toBeTrue()
+		expect(DataService.savePlayerData(candidate, false)):toBeTrue()
+		expect(cloneCalls):toBe(1)
+		expect(storedProfiles["Player_251"].diamonds):toBe(50)
+
+		DataSchema.cloneForPersistence = originalClone
+		DataService._useMemoryOnly = originalUseMemoryOnly
+		DataService._cache[candidate.UserId] = nil
+		DataService._canSave[candidate.UserId] = nil
+		DataService._profilePlayers[candidate.UserId] = nil
+		DataService._saving[candidate.UserId] = nil
+		storedProfiles["Player_251"] = nil
+		ProfileTransactionService.clearProfile(candidate)
 	end)
 end)
