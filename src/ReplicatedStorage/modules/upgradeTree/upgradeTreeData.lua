@@ -306,6 +306,83 @@ local upgradeTreeData:upgradeTreeData = {
 				portalTo = "mainTree",
 			},
 			{
+				id = "coreSpeed1",
+				name = "Movement Speed I",
+				description = "Increases tree movement speed to x1.05 total.",
+				side = "top",
+				parentId = "playerBack",
+				requireId = { "Eggs II" },
+				requirements = {{ currency = "coins", amount = 5000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreSpeed2",
+				name = "Movement Speed II",
+				description = "Increases tree movement speed to x1.10 total.",
+				side = "top-left",
+				parentId = "coreSpeed1",
+				requireId = { "coreSpeed1" },
+				requirements = {{ currency = "coins", amount = 25000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreSpeed3",
+				name = "Movement Speed III",
+				description = "Increases tree movement speed to x1.15 total.",
+				side = "top-right",
+				parentId = "coreSpeed2",
+				requireId = { "coreSpeed2" },
+				requirements = {{ currency = "coins", amount = 100000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreSpeed4",
+				name = "Movement Speed IV",
+				description = "Increases tree movement speed to x1.20 total.",
+				side = "top",
+				parentId = "coreSpeed3",
+				requireId = { "coreSpeed3" },
+				requirements = {{ currency = "coins", amount = 300000 }},
+				upgradeIcon = "lightning",
+				hexImg = "blue",
+			},
+			{
+				id = "coreMagnet1",
+				name = "Magnet I",
+				description = "Increases tree pickup radius to x1.25 total.",
+				side = "bottom",
+				parentId = "playerBack",
+				requireId = { "Eggs II" },
+				requirements = {{ currency = "coins", amount = 10000 }},
+				upgradeIcon = "star",
+				hexImg = "blue",
+			},
+			{
+				id = "coreMagnet2",
+				name = "Magnet II",
+				description = "Increases tree pickup radius to x1.50 total.",
+				side = "bottom-left",
+				parentId = "coreMagnet1",
+				requireId = { "coreMagnet1" },
+				requirements = {{ currency = "coins", amount = 50000 }},
+				upgradeIcon = "star",
+				hexImg = "blue",
+			},
+			{
+				id = "coreMagnet3",
+				name = "Magnet III",
+				description = "Increases tree pickup radius to x2 total.",
+				side = "bottom-right",
+				parentId = "coreMagnet2",
+				requireId = { "coreMagnet2" },
+				requirements = {{ currency = "coins", amount = 200000 }},
+				upgradeIcon = "star",
+				hexImg = "blue",
+			},
+			{
 				id = "friends1",
 				name = "Friends I",
 				description = "+1% Currency per Friend in Server!",
@@ -704,9 +781,8 @@ local upgradeTreeData:upgradeTreeData = {
 	}
 }
 
--- QOF-11 activates Double Luck in addition to the QOF-10 capacity and hatch
--- branches. Only explicitly gated entitlements are purchasable; unrelated
--- legacy nodes remain dormant.
+-- QOF-12 activates Movement Speed and Magnet in addition to the existing
+-- hatch, capacity, and Double Luck branches. Unrelated legacy nodes stay dormant.
 local activeById = {}
 for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 	activeById[level.id] = level
@@ -723,6 +799,16 @@ end
 if BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled then
 	local level = BalanceConfig.CoreUpgrades.DoubleLuck
 	activeById[level.id] = level
+end
+if BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Speed) do
+		activeById[level.id] = level
+	end
+end
+if BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.CoreUpgrades.Magnet) do
+		activeById[level.id] = level
+	end
 end
 if BalanceConfig.CoreUpgrades.StorageRuntimeEnabled then
 	for _, level in ipairs(BalanceConfig.CoreUpgrades.Storage) do

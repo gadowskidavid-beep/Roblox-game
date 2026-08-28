@@ -12,13 +12,17 @@ local DataService = require(script.Parent.Services.DataService)
 local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
+local MachineService = require(script.Parent.Services.MachineService)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local PotionService = require(script.Parent.Services.PotionService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
+local MovementService = require(script.Parent.Services.MovementService)
+local PickupService = require(script.Parent.Services.PickupService)
 local BalanceConfig = require(ReplicatedStorage.Shared.BalanceConfig)
 
 ----------------------------------------------
@@ -57,6 +61,29 @@ local function isValidIdentifier(value)
 	return type(value) == "string" and #value > 0 and #value <= 64
 end
 
+local function isValidShopPurchaseRequest(request)
+	if type(request) == "string" then
+		-- ExtraEquipSlot is the sole legacy purchase contract. AutoHatch is
+		-- admitted only so ShopService can return its specific dormant gate.
+		return request == "ExtraEquipSlot" or request == "AutoHatch"
+	end
+	if type(request) ~= "table" then
+		return false
+	end
+	local fieldCount = 0
+	for key in pairs(request) do
+		if key ~= "contractVersion" and key ~= "action" and key ~= "itemId" and key ~= "quantity" then
+			return false
+		end
+		fieldCount = fieldCount + 1
+	end
+	return fieldCount == 4
+		and request.contractVersion == 2
+		and request.action == "purchasePotion"
+		and isValidIdentifier(request.itemId)
+		and request.quantity == 1
+end
+
 ----------------------------------------------
 -- Create Remotes Folder in ReplicatedStorage
 ----------------------------------------------
@@ -86,6 +113,7 @@ local remoteEvents = {
 	"QuestProgressUpdated",
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
+	"PotionStateUpdated",
 	"UpgradeTreeUpdated",
 }
 
@@ -121,6 +149,10 @@ local remoteFunctions = {
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
 	"GetShopBuffs",
+	"GetPotionState",
+	"ConsumePotion",
+	"PurchasePotionUpgrade",
+	"SetAutoDrinkSelection",
 	"PurchaseTreeUpgrade",
 	"GetUpgradeTreeState",
 }
@@ -145,7 +177,10 @@ CurrencyService._upgradeService = UpgradeService
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
+PotionService.init(DataService, CurrencyService)
+ShopService.setPotionService(PotionService)
 UpgradeTreeService.init(DataService, CurrencyService)
+PickupService.init(DataService, CurrencyService, QuestService, MasteryService, UpgradeTreeService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
@@ -155,8 +190,13 @@ PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
+MachineService.init(DataService, CurrencyService, PetService)
+MachineService.setQuestService(QuestService)
+-- QOF-15 intentionally supplies no activation validator: with the runtime gate
+-- disabled and no world authority injected, every machine attempt fails closed.
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
+EggService.setPotionService(PotionService)
 ShopService.setEggService(EggService)
 
 -- World generation should not prevent remotes, player data, and the GUI from
@@ -171,44 +211,21 @@ end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
+ZoneService.setPickupService(PickupService)
 
 CampaignService.init(DataService, CurrencyService, PetService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Bind to server shutdown to save all player data
-DataService.bindToClose()
+-- Settle transient pickup rewards before shutdown snapshots cached profiles.
+DataService.bindToClose(PickupService.settleAllPlayers)
 
-----------------------------------------------
--- WalkSpeed Buff System
-----------------------------------------------
-
--- Compute and apply walk speed buffs for a player
--- Formula: 16 * sprintingBonus * fasterRunningBonus * shopSpeedMultiplier
-local function applyWalkSpeedBuffs(player)
-	if not player or not player.Character then return end
-	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then return end
-
-	local baseSpeed = 16
-
-	-- Sprinting quest bonus (multiplier from QuestData)
-	local sprintingBonus = QuestService.getUpgradeBonus(player, "Sprinting")
-	local sprintingMultiplier = (sprintingBonus > 0) and sprintingBonus or 1
-
-	-- FasterRunning mastery bonus (multiplier from MasteryData)
-	local fasterRunningBonus = MasteryService.getBuffBonus(player, "FasterRunning")
-	local fasterRunningMultiplier = (fasterRunningBonus > 0) and fasterRunningBonus or 1
-
-	-- Speed Potion shop buff (2x when active, 1 otherwise)
-	local shopSpeedMultiplier = ShopService.getShopMultiplier(player, "speed")
-
-	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
-	humanoid.WalkSpeed = finalSpeed
-end
-
-ShopService.setWalkSpeedRefreshCallback(applyWalkSpeedBuffs)
+-- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
+MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
+ShopService.setWalkSpeedRefreshCallback(MovementService.refresh)
+PotionService.setMovementRefreshCallback(MovementService.refresh)
+PotionService.start()
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -410,9 +427,9 @@ getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffI
 		return false, "Invalid buff ID parameter"
 	end
 	local success, msg = MasteryService.purchaseBuff(player, buffId)
-	-- Refresh walkspeed in case FasterRunning was purchased
+	-- Refresh every composed source after a movement mastery purchase.
 	if success then
-		applyWalkSpeedBuffs(player)
+		MovementService.refresh(player)
 	end
 	return success, msg
 end
@@ -448,7 +465,11 @@ getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgra
 	if not isValidIdentifier(upgradeId) then
 		return false, "Invalid upgrade ID", UpgradeTreeService.getState(player)
 	end
-	return UpgradeTreeService.purchase(player, upgradeId)
+	local success, message, state = UpgradeTreeService.purchase(player, upgradeId)
+	if success then
+		MovementService.refresh(player)
+	end
+	return success, message, state
 end
 
 -- ConvertToGoldenPet (2 second cooldown)
@@ -576,26 +597,23 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	return data.discoveredPets or {}
 end
 
--- PurchaseShopItem (2 second cooldown)
-getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
+-- PurchaseShopItem accepts the exact QOF-13 potion DTO plus the one retained
+-- ExtraEquipSlot string contract. Validate bounded input before consuming quota.
+getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, request)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not isValidShopPurchaseRequest(request) then
+		return false, "Invalid purchase request"
 	end
 	if not canCall(player, "PurchaseShopItem", 2) then
 		return false, "Please wait before purchasing again"
 	end
-	if type(itemId) ~= "string" then
-		return false, "Invalid item ID parameter"
-	end
-	local success, msg, state = ShopService.purchaseItem(player, itemId)
-	-- Refresh walkspeed in case Speed Potion was purchased
-	if success then
-		applyWalkSpeedBuffs(player)
-	end
-	return success, msg, state
+	return ShopService.purchaseItem(player, request)
 end
 
--- GetShopBuffs is a legacy remote name; it now returns the full shop state.
+-- GetShopBuffs is a legacy remote name; it now returns the purchase state and
+-- a delegated potion-state snapshot for rolling clients.
 getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return nil
@@ -604,6 +622,39 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 		return nil
 	end
 	return ShopService.getShopState(player)
+end
+
+getRemoteFunction("GetPotionState").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then return nil end
+	if not canCall(player, "GetPotionState", 0.2) then return nil end
+	return PotionService.getState(player)
+end
+
+getRemoteFunction("ConsumePotion").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid consume request" end
+	if not canCall(player, "ConsumePotion", 0.2) then
+		return false, "Please wait before drinking again", PotionService.getState(player)
+	end
+	return PotionService.consume(player, request)
+end
+
+getRemoteFunction("PurchasePotionUpgrade").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid upgrade request" end
+	if not canCall(player, "PurchasePotionUpgrade", 0.5) then
+		return false, "Please wait before purchasing again", PotionService.getState(player)
+	end
+	return PotionService.purchaseUpgrade(player, request)
+end
+
+getRemoteFunction("SetAutoDrinkSelection").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid Auto-Drink request" end
+	if not canCall(player, "SetAutoDrinkSelection", 0.15) then
+		return false, "Please wait before changing Auto-Drink", PotionService.getState(player)
+	end
+	return PotionService.setAutoDrinkSelection(player, request)
 end
 
 ----------------------------------------------
@@ -634,13 +685,10 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Apply walkspeed on CharacterAdded (after Humanoid exists)
-	player.CharacterAdded:Connect(function(character)
-		local humanoid = character:WaitForChild("Humanoid", 10)
-		if humanoid then
-			applyWalkSpeedBuffs(player)
-		end
-	end)
+	-- Reconcile persisted absolute potion timers and online-only Auto-Drink before
+	-- binding movement so the first character speed uses authoritative state.
+	PotionService.onPlayerAdded(player)
+	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
 	local leaderstats = Instance.new("Folder")
@@ -748,11 +796,26 @@ Players.PlayerRemoving:Connect(function(player)
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
 
+	-- Cleanup QOF-12 movement listeners before the profile is released.
+	MovementService.unbindPlayer(player)
+
+	-- Settle transient owner-only pickups before the profile is saved/released.
+	if not PickupService.onPlayerRemoving(player) then
+		warn("[Battle Pets] Pending pickup settlement did not complete before player data cleanup for " .. player.Name)
+	end
+
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
-	-- Cleanup ShopService player state (active buffs)
-	ShopService._activeBuffs[player.UserId] = nil
+	-- Cleanup QOF-15 machine locks before profile persistence. No activation
+	-- validator, remote, station, prompt, event, or client UI is wired yet.
+	MachineService.cleanup(player)
+
+	-- Cleanup QOF-14 potion locks/reservations before profile persistence.
+	PotionService.onPlayerRemoving(player)
+
+	-- Cleanup ShopService transient locks and legacy buff compatibility state.
+	ShopService.onPlayerRemoving(player)
 
 	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
 	ZoneService.onPlayerRemoving(player)
@@ -772,6 +835,8 @@ for _, player in ipairs(Players:GetPlayers()) do
 			return
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
+		PotionService.onPlayerAdded(player)
+		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players
 		local leaderstats = player:FindFirstChild("leaderstats")
@@ -857,17 +922,6 @@ task.spawn(function()
 					end
 				end
 			end
-		end
-	end
-end)
-
--- Periodic WalkSpeed refresh: every 5 seconds, reapply walkspeed buffs for all players
--- Handles buff expiry (e.g., Speed Potion wearing off)
-task.spawn(function()
-	while true do
-		task.wait(5)
-		for _, player in ipairs(Players:GetPlayers()) do
-			applyWalkSpeedBuffs(player)
 		end
 	end
 end)

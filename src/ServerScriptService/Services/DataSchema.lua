@@ -10,7 +10,7 @@ local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 7
+DataSchema.VERSION = 8
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -24,9 +24,15 @@ local POTION_UPGRADES = BalanceConfig.Potions.Upgrades
 local POTION_PERSISTENCE = BalanceConfig.Potions.Persistence
 local TIMED_BUFF_TYPES = {}
 local CHARGE_BUFF_TYPES = {}
-for _, potion in pairs(POTION_CATALOG) do
+local LEGACY_TIMED_SOURCE_BY_BUFF = {
+	luck = "LuckPotion",
+	speed = "SpeedPotion",
+	coins = "CoinPotion",
+}
+for potionId, potion in pairs(POTION_CATALOG) do
 	if potion.durationSeconds ~= nil then
-		TIMED_BUFF_TYPES[potion.buffType] = true
+		TIMED_BUFF_TYPES[potion.buffType] = TIMED_BUFF_TYPES[potion.buffType] or {}
+		TIMED_BUFF_TYPES[potion.buffType][potionId] = true
 	elseif potion.hatchCharges ~= nil then
 		CHARGE_BUFF_TYPES[potion.buffType] = true
 	end
@@ -115,11 +121,15 @@ function DataSchema.getDefaultData()
 		},
 		potionInventory = {},
 		activeBuffs = {},
+		-- Persistence-only rolling-version mirror. QOF-13 preserves this unknown
+		-- root field even though it rewrites structured activeBuffs as schema V7.
+		potionBuffSources = {},
 		potionUpgrades = {
 			slots = POTION_UPGRADES.BaseSlots,
 			durationLevel = 0,
 			autoDrink = false,
 		},
+		autoDrinkSelection = {},
 	}
 end
 
@@ -251,6 +261,26 @@ local function normalizePotionInventory(values)
 	return normalized
 end
 
+local function normalizeTimedSource(sourceState, currentTime)
+	local expiresAt = sourceState
+	if type(sourceState) == "table" then
+		expiresAt = sourceState.expiresAt
+	end
+	if type(expiresAt) ~= "number" then
+		return nil
+	end
+	expiresAt = math.floor(finiteNumber(expiresAt, 0, 0))
+	if expiresAt <= currentTime then
+		return nil
+	end
+	return {
+		expiresAt = math.min(
+			expiresAt,
+			currentTime + POTION_PERSISTENCE.MaxTimedBuffSeconds
+		),
+	}
+end
+
 local function normalizeActiveBuffs(values, currentTime)
 	local normalized = {}
 	if type(values) ~= "table" then
@@ -258,13 +288,36 @@ local function normalizeActiveBuffs(values, currentTime)
 	end
 
 	for buffType, state in pairs(values) do
-		if TIMED_BUFF_TYPES[buffType] and type(state) == "number" then
-			local expiresAt = math.floor(finiteNumber(state, 0, 0))
-			if expiresAt > currentTime then
-				normalized[buffType] = math.min(
-					expiresAt,
-					currentTime + POTION_PERSISTENCE.MaxTimedBuffSeconds
-				)
+		local validSources = TIMED_BUFF_TYPES[buffType]
+		if validSources then
+			local sources = {}
+			-- V7 stored one ambiguous numeric timer per type. Map it to the
+			-- conservative canonical source (Luck becomes x2, never an invented x5).
+			if type(state) == "number" then
+				local legacySource = LEGACY_TIMED_SOURCE_BY_BUFF[buffType]
+				local source = legacySource and normalizeTimedSource(state, currentTime)
+				if source then
+					sources[legacySource] = source
+				end
+			elseif type(state) == "table" then
+				local inputSources = type(state.sources) == "table" and state.sources or nil
+				-- Accept the short-lived pre-V8 structured prototype safely.
+				if not inputSources and state.expiresAt ~= nil then
+					local sourceId = validSources[state.sourceId] and state.sourceId
+						or LEGACY_TIMED_SOURCE_BY_BUFF[buffType]
+					inputSources = sourceId and { [sourceId] = state } or nil
+				end
+				for sourceId, sourceState in pairs(inputSources or {}) do
+					if validSources[sourceId] then
+						local source = normalizeTimedSource(sourceState, currentTime)
+						if source then
+							sources[sourceId] = source
+						end
+					end
+				end
+			end
+			if next(sources) ~= nil then
+				normalized[buffType] = { sources = sources }
 			end
 		elseif CHARGE_BUFF_TYPES[buffType] and type(state) == "table" then
 			local charges = math.clamp(
@@ -278,6 +331,53 @@ local function normalizeActiveBuffs(values, currentTime)
 		end
 	end
 	return normalized
+end
+
+local function normalizePotionBuffSources(values, currentTime)
+	local normalized = {}
+	if type(values) ~= "table" then
+		return normalized
+	end
+	for potionId, sourceState in pairs(values) do
+		local potion = POTION_CATALOG[potionId]
+		if potion and potion.durationSeconds ~= nil then
+			local source = normalizeTimedSource(sourceState, currentTime)
+			if source then
+				normalized[potionId] = source
+			end
+		end
+	end
+	return normalized
+end
+
+local function mergePotionBuffSources(activeBuffs, backupSources)
+	for potionId, source in pairs(backupSources) do
+		local potion = POTION_CATALOG[potionId]
+		local state = activeBuffs[potion.buffType]
+		if type(state) ~= "table" or type(state.sources) ~= "table" then
+			state = { sources = {} }
+			activeBuffs[potion.buffType] = state
+		end
+		local existing = state.sources[potionId]
+		if type(existing) ~= "table" or existing.expiresAt < source.expiresAt then
+			state.sources[potionId] = source
+		end
+	end
+end
+
+local function buildPotionBuffSources(activeBuffs)
+	local synchronized = {}
+	for buffType, state in pairs(activeBuffs) do
+		local validSources = TIMED_BUFF_TYPES[buffType]
+		if validSources and type(state) == "table" and type(state.sources) == "table" then
+			for potionId, source in pairs(state.sources) do
+				if validSources[potionId] then
+					synchronized[potionId] = { expiresAt = source.expiresAt }
+				end
+			end
+		end
+	end
+	return synchronized
 end
 
 local VALID_HATCH_BATCH_COUNTS = {
@@ -350,8 +450,22 @@ function DataSchema.normalize(data, currentTime)
 	)
 
 	data.potionInventory = normalizePotionInventory(data.potionInventory)
-	data.activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
+	local activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
+	local backupSources = normalizePotionBuffSources(data.potionBuffSources, currentTime)
+	-- The runtime consumes only activeBuffs. The flat mirror exists solely so a
+	-- rolling QOF-13 server can preserve V8 source identity while dropping the
+	-- structured field. Prefer the later valid expiry; timed effects have no
+	-- cancellation operation, so a stale rolling save must never shorten one.
+	mergePotionBuffSources(activeBuffs, backupSources)
+	data.activeBuffs = activeBuffs
+	data.potionBuffSources = buildPotionBuffSources(activeBuffs)
 	data.potionUpgrades = normalizePotionUpgrades(data.potionUpgrades)
+	data.autoDrinkSelection = normalizeBooleanMap(data.autoDrinkSelection, 64)
+	for potionId in pairs(data.autoDrinkSelection) do
+		if not POTION_CATALOG[potionId] then
+			data.autoDrinkSelection[potionId] = nil
+		end
+	end
 	data.hatchPreferences = normalizeHatchPreferences(data.hatchPreferences)
 
 	data.schemaVersion = DataSchema.VERSION

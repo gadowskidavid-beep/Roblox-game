@@ -95,10 +95,27 @@ describe("BalanceConfig validation", function()
 		})
 	end)
 
-	it("defines bounded dormant potion persistence", function()
+	it("defines the active QOF-14 purchase and consumption catalog", function()
+		expect(BalanceConfig.Potions.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Potions.ConsumeRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Potions.Persistence.MaxInventoryPerPotion):toBe(999)
 		expect(BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds):toBe(2592000)
 		expect(BalanceConfig.Potions.Upgrades.MaxShinyCharges):toBe(30)
+
+		local costs = {}
+		for itemId, potion in pairs(BalanceConfig.Potions.Catalog) do
+			expect(potion.cost.currency):toBe("diamonds")
+			costs[itemId] = potion.cost.amount
+		end
+		expect(costs):toEqual({
+			LuckPotion = 100,
+			MegaLuckPotion = 350,
+			SpeedPotion = 50,
+			CoinPotion = 125,
+			ShinyPotion = 1000,
+		})
+		expect(BalanceConfig.Potions.Catalog.LuckyPotion):toBeNil()
+		expect(BalanceConfig.Potions.Catalog.PowerPotion):toBeNil()
 	end)
 
 	it("binds save-compatible QOF-07 IDs to canonical costs and highest-stage effects", function()
@@ -122,7 +139,7 @@ describe("BalanceConfig validation", function()
 		end
 	end)
 
-	it("activates QOF-11 Double Luck while keeping movement and collection dormant", function()
+	it("activates QOF-14 potion consumption while unrelated future systems remain dormant", function()
 		expect(BalanceConfig.Variants.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.EggQualityRuntimeEnabled):toBeTrue()
@@ -135,12 +152,52 @@ describe("BalanceConfig validation", function()
 		expect(BalanceConfig.CoreUpgrades.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.StorageRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.PetEquipSlotsRuntimeEnabled):toBeTrue()
-		expect(BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled):toBeFalse()
-		expect(BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.CoreUpgrades.SpeedRuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
-		expect(BalanceConfig.Potions.RuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Potions.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Potions.ConsumeRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Enchanting.RuntimeEnabled):toBeFalse()
+	end)
+
+	it("binds exact QOF-12 Movement and Magnet contracts", function()
+		expect(BalanceConfig.CoreUpgrades.Movement):toEqual({
+			BaseWalkSpeed = 16,
+			MaxWalkSpeed = 128,
+			ReconcileIntervalSeconds = 1,
+		})
+		expect(BalanceConfig.CoreUpgrades.PickupCollection):toEqual({
+			BaseRadius = 8,
+			MaxRadius = 32,
+			PollIntervalSeconds = 0.2,
+			LifetimeSeconds = 15,
+			MaxPendingPerPlayer = 24,
+		})
+
+		local function project(levels)
+			local result = {}
+			for _, level in ipairs(levels) do
+				table.insert(result, {
+					id = level.id,
+					requireIds = level.requireIds,
+					multiplier = level.multiplier,
+					cost = level.cost,
+				})
+			end
+			return result
+		end
+		expect(project(BalanceConfig.CoreUpgrades.Speed)):toEqual({
+			{ id = "coreSpeed1", requireIds = { "Eggs II" }, multiplier = 1.05, cost = { currency = "coins", amount = 5000 } },
+			{ id = "coreSpeed2", requireIds = { "coreSpeed1" }, multiplier = 1.10, cost = { currency = "coins", amount = 25000 } },
+			{ id = "coreSpeed3", requireIds = { "coreSpeed2" }, multiplier = 1.15, cost = { currency = "coins", amount = 100000 } },
+			{ id = "coreSpeed4", requireIds = { "coreSpeed3" }, multiplier = 1.20, cost = { currency = "coins", amount = 300000 } },
+		})
+		expect(project(BalanceConfig.CoreUpgrades.Magnet)):toEqual({
+			{ id = "coreMagnet1", requireIds = { "Eggs II" }, multiplier = 1.25, cost = { currency = "coins", amount = 10000 } },
+			{ id = "coreMagnet2", requireIds = { "coreMagnet1" }, multiplier = 1.50, cost = { currency = "coins", amount = 50000 } },
+			{ id = "coreMagnet3", requireIds = { "coreMagnet2" }, multiplier = 2.00, cost = { currency = "coins", amount = 200000 } },
+		})
 	end)
 
 	it("binds exact QOF-11 Double Luck without reusing legacy Luck IDs", function()

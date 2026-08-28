@@ -16,6 +16,11 @@ local VALID_CURRENCIES = {
 	diamonds = true,
 }
 
+-- Opaque pending debits keep the already validated profile reference private.
+-- Shop transactions can therefore roll back silently without a second
+-- DataService lookup or any pre-commit client event.
+local pendingSpendTransactions = setmetatable({}, { __mode = "k" })
+
 local function isFiniteNumber(value)
 	return type(value) == "number"
 		and value == value
@@ -67,8 +72,8 @@ function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply existing quest/mastery reward bonuses only to earned coin grants.
-local function applyBonuses(player, amount)
+-- Resolve existing quest/mastery reward bonuses exactly once for a future credit.
+local function applyCoinBonuses(player, amount)
 	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
@@ -89,28 +94,19 @@ local function applyBonuses(player, amount)
 	return normalizePositiveAmount(finalAmount, true)
 end
 
-function CurrencyService.addCoins(player, amount)
+function CurrencyService.resolveCoinReward(player, amount)
 	amount = normalizePositiveAmount(amount, false)
-	local data = getProfile(player)
-	if not amount or not data then
-		return false
+	if not amount or not getProfile(player) then
+		return nil
 	end
-	local finalAmount = applyBonuses(player, amount)
-	if not finalAmount then
-		return false
-	end
-	data.coins = data.coins + finalAmount
-	fireCurrencyUpdate(player, data)
-	return true, finalAmount
+	return applyCoinBonuses(player, amount)
 end
 
-function CurrencyService.addDiamonds(player, amount)
+function CurrencyService.resolveDiamondReward(player, amount)
 	amount = normalizePositiveAmount(amount, false)
-	local data = getProfile(player)
-	if not amount or not data then
-		return false
+	if not amount or not getProfile(player) then
+		return nil
 	end
-
 	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local diamondBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "Diamonds")
@@ -118,30 +114,122 @@ function CurrencyService.addDiamonds(player, amount)
 			finalAmount = math.floor(finalAmount * diamondBonus)
 		end
 	end
-	finalAmount = normalizePositiveAmount(finalAmount, true)
-	if not finalAmount then
-		return false
-	end
-
-	data.diamonds = data.diamonds + finalAmount
-	fireCurrencyUpdate(player, data)
-	return true, finalAmount
+	return normalizePositiveAmount(finalAmount, true)
 end
 
--- Canonical deduction API. Currency and amount always come from server-owned
--- configuration; only exact positive integer transactions are accepted.
-function CurrencyService.spend(player, currency, amount)
+-- Exact credit for a reward whose bonuses were snapshotted previously. This is
+-- intentionally separate from rollback credit even though both mutate exactly.
+function CurrencyService.creditResolvedReward(player, currency, amount)
 	amount = normalizePositiveAmount(amount, true)
 	if not amount or VALID_CURRENCIES[currency] ~= true then
 		return false
 	end
 	local data = getProfile(player)
-	if not data or data[currency] < amount then
+	if not data then
 		return false
 	end
-	data[currency] = data[currency] - amount
+	data[currency] = data[currency] + amount
 	fireCurrencyUpdate(player, data)
 	return true
+end
+
+-- Shutdown/leave fallback for an already-resolved reward. The caller must pass
+-- the authoritative cached profile before DataService snapshots and releases it.
+function CurrencyService.creditResolvedRewardToProfile(data, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount
+		or VALID_CURRENCIES[currency] ~= true
+		or type(data) ~= "table"
+		or not isFiniteNumber(data.coins)
+		or data.coins < 0
+		or not isFiniteNumber(data.diamonds)
+		or data.diamonds < 0 then
+		return false
+	end
+	data[currency] = data[currency] + amount
+	return true
+end
+
+function CurrencyService.addCoins(player, amount)
+	local finalAmount = CurrencyService.resolveCoinReward(player, amount)
+	if not finalAmount then
+		return false
+	end
+	if not CurrencyService.creditResolvedReward(player, "coins", finalAmount) then
+		return false
+	end
+	return true, finalAmount
+end
+
+function CurrencyService.addDiamonds(player, amount)
+	local finalAmount = CurrencyService.resolveDiamondReward(player, amount)
+	if not finalAmount then
+		return false
+	end
+	if not CurrencyService.creditResolvedReward(player, "diamonds", finalAmount) then
+		return false
+	end
+	return true, finalAmount
+end
+
+-- Begin a silent exact debit against one already validated profile. The opaque
+-- handle can be committed once (publishing one CurrencyUpdated event) or rolled
+-- back once (publishing nothing). This is the atomic boundary used by systems
+-- that must mutate another profile field before the purchase can commit.
+function CurrencyService.beginSpendTransaction(player, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount or VALID_CURRENCIES[currency] ~= true then
+		return nil
+	end
+	local data = getProfile(player)
+	if not data or data[currency] < amount then
+		return nil
+	end
+
+	data[currency] = data[currency] - amount
+	local transaction = {}
+	pendingSpendTransactions[transaction] = {
+		player = player,
+		profile = data,
+		currency = currency,
+		amount = amount,
+	}
+	return transaction
+end
+
+function CurrencyService.commitSpendTransaction(transaction)
+	local pending = type(transaction) == "table" and pendingSpendTransactions[transaction] or nil
+	if not pending then
+		return false
+	end
+	pendingSpendTransactions[transaction] = nil
+	fireCurrencyUpdate(pending.player, pending.profile)
+	return true
+end
+
+function CurrencyService.rollbackSpendTransaction(transaction)
+	local pending = type(transaction) == "table" and pendingSpendTransactions[transaction] or nil
+	if not pending then
+		return false
+	end
+	pendingSpendTransactions[transaction] = nil
+	local balance = pending.profile[pending.currency]
+	if not isFiniteNumber(balance) or balance < 0 then
+		return false
+	end
+	pending.profile[pending.currency] = balance + pending.amount
+	return true
+end
+
+-- Canonical immediate deduction API. Currency and amount always come from
+-- server-owned configuration; only exact positive integer transactions are
+-- accepted. Composite purchases use the explicit transaction API above.
+function CurrencyService.spend(player, currency, amount)
+	local transaction = CurrencyService.beginSpendTransaction(player, currency, amount)
+	if not transaction then
+		return false
+	end
+	return CurrencyService.commitSpendTransaction(transaction)
 end
 
 -- Exact, bonus-free credit for transaction rollback. This must never call the

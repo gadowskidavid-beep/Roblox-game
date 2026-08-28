@@ -1,4 +1,4 @@
--- ShopService.spec.lua - QOF-10 dormant Auto-Hatch gate regressions.
+-- ShopService.spec.lua - Focused QOF-13 persistent potion purchase regressions.
 
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
@@ -21,6 +21,21 @@ local players = {}
 function players:GetPlayers()
 	return {}
 end
+
+local eventPayloads = {}
+local eventShouldError = false
+local shopEvent = {}
+function shopEvent:FireClient(_, state)
+	if eventShouldError then
+		error("injected event failure")
+	end
+	table.insert(eventPayloads, state)
+end
+local remotes = {}
+function remotes:FindFirstChild(name)
+	if name == "ShopBuffsUpdated" then return shopEvent end
+	return nil
+end
 local replicatedStorage = {
 	Shared = {
 		PetData = PetData,
@@ -29,7 +44,8 @@ local replicatedStorage = {
 		ShopData = ShopData,
 	},
 }
-function replicatedStorage:FindFirstChild()
+function replicatedStorage:FindFirstChild(name)
+	if name == "Remotes" then return remotes end
 	return nil
 end
 local gameMock = { ReplicatedStorage = replicatedStorage }
@@ -53,15 +69,46 @@ rawset(_G, "require", originalRequire)
 
 local player = { UserId = 55 }
 local profile = nil
-local charged = 0
+local spendCalls = {}
+local refundCalls = {}
+local currencyEvents = {}
+local pendingCurrencyTransactions = {}
 local hatchCalls = 0
 local dataService = {}
 function dataService.getPlayerData()
 	return profile
 end
 local currencyService = {}
-function currencyService.removeDiamonds(_, amount)
-	charged = charged + amount
+function currencyService.beginSpendTransaction(_, currency, amount)
+	table.insert(spendCalls, { currency = currency, amount = amount })
+	if not profile or type(profile[currency]) ~= "number" or profile[currency] < amount then
+		return nil
+	end
+	local transaction = {}
+	pendingCurrencyTransactions[transaction] = {
+		profile = profile,
+		currency = currency,
+		amount = amount,
+	}
+	profile[currency] = profile[currency] - amount
+	return transaction
+end
+function currencyService.commitSpendTransaction(transaction)
+	local pending = pendingCurrencyTransactions[transaction]
+	if not pending then return false end
+	pendingCurrencyTransactions[transaction] = nil
+	table.insert(currencyEvents, {
+		coins = pending.profile.coins,
+		diamonds = pending.profile.diamonds,
+	})
+	return true
+end
+function currencyService.rollbackSpendTransaction(transaction)
+	local pending = pendingCurrencyTransactions[transaction]
+	if not pending then return false end
+	pendingCurrencyTransactions[transaction] = nil
+	pending.profile[pending.currency] = pending.profile[pending.currency] + pending.amount
+	table.insert(refundCalls, { currency = pending.currency, amount = pending.amount })
 	return true
 end
 local eggService = {}
@@ -69,48 +116,358 @@ function eggService.purchaseAndHatch()
 	hatchCalls = hatchCalls + 1
 end
 
+local function potionRequest(itemId)
+	return {
+		contractVersion = 2,
+		action = "purchasePotion",
+		itemId = itemId,
+		quantity = 1,
+	}
+end
+
 local function resetState()
-	profile = { shopPurchases = { extraEquipSlots = 0 }, unlockedZones = { 1 } }
-	charged = 0
+	profile = {
+		coins = 100000,
+		diamonds = 100000,
+		shopPurchases = { extraEquipSlots = 0 },
+		potionInventory = {},
+		activeBuffs = {},
+		potionUpgrades = { slots = 2, durationLevel = 0, autoDrink = false },
+		unlockedZones = { 1 },
+	}
+	spendCalls = {}
+	refundCalls = {}
+	currencyEvents = {}
+	pendingCurrencyTransactions = {}
+	eventPayloads = {}
+	eventShouldError = false
 	hatchCalls = 0
 	ShopService._activeBuffs = {}
+	ShopService._purchaseLocks = {}
+	ShopService._transactionHook = nil
+	ShopService.setPotionService(nil)
+	ShopService.setWalkSpeedRefreshCallback(nil)
 	ShopService.init(dataService, currencyService)
 	ShopService.setEggService(eggService)
 end
 
-describe("ShopService QOF-10 Auto-Hatch gate", function()
-	it("removes Auto-Hatch from both shared catalog surfaces", function()
-		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
-		expect(ShopData.Items.AutoHatch):toBeNil()
-		for _, itemId in ipairs(ShopData.Order) do
-			if itemId == "AutoHatch" then
-				error("AutoHatch leaked into ShopData.Order")
-			end
+describe("ShopService QOF-13 canonical potion purchases", function()
+	it("purchases all five canonical IDs at server-owned catalog costs", function()
+		local expected = {
+			LuckPotion = 100,
+			MegaLuckPotion = 350,
+			SpeedPotion = 50,
+			CoinPotion = 125,
+			ShinyPotion = 1000,
+		}
+		for itemId, amount in pairs(expected) do
+			resetState()
+			local success, message, state = ShopService.purchaseItem(player, potionRequest(itemId))
+			expect(success):toBeTrue()
+			expect(message):toBeNil()
+			expect(profile.potionInventory[itemId]):toBe(1)
+			expect(spendCalls):toEqual({ { currency = "diamonds", amount = amount } })
+			expect(state.contractVersion):toBe(2)
+			expect(state.purchaseMode):toBe("inventoryOnly")
+			expect(state.potionInventory[itemId]):toBe(1)
+			expect(state.maxPotionInventory):toBe(999)
 		end
 	end)
 
-	it("rejects direct Auto-Hatch purchases without charging", function()
+	it("allows 998 to 999 and rejects the next purchase without debit", function()
 		resetState()
+		profile.potionInventory.LuckPotion = 998
+		local before = profile.diamonds
+		expect(ShopService.purchaseItem(player, potionRequest("LuckPotion"))):toBeTrue()
+		expect(profile.potionInventory.LuckPotion):toBe(999)
+		expect(profile.diamonds):toBe(before - 100)
+
+		local success = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		expect(success):toBeFalse()
+		expect(profile.potionInventory.LuckPotion):toBe(999)
+		expect(profile.diamonds):toBe(before - 100)
+		expect(#spendCalls):toBe(1)
+	end)
+
+	it("applies the inventory cap independently per canonical ID", function()
+		resetState()
+		profile.potionInventory.LuckPotion = 999
+		expect(ShopService.purchaseItem(player, potionRequest("LuckPotion"))):toBeFalse()
+		expect(ShopService.purchaseItem(player, potionRequest("SpeedPotion"))):toBeTrue()
+		expect(profile.potionInventory.LuckPotion):toBe(999)
+		expect(profile.potionInventory.SpeedPotion):toBe(1)
+		expect(spendCalls):toEqual({ { currency = "diamonds", amount = 50 } })
+	end)
+
+	it("fails closed for insufficient balance, unknown IDs, invalid DTOs, and no profile", function()
+		resetState()
+		profile.diamonds = 99
+		expect(ShopService.purchaseItem(player, potionRequest("LuckPotion"))):toBeFalse()
+		expect(profile.potionInventory):toEqual({})
+		expect(profile.diamonds):toBe(99)
+
+		resetState()
+		expect(ShopService.purchaseItem(player, potionRequest("UnknownPotion"))):toBeFalse()
+		expect(ShopService.purchaseItem(player, {
+			contractVersion = 2,
+			action = "purchasePotion",
+			itemId = "LuckPotion",
+			quantity = 2,
+		})):toBeFalse()
+		expect(ShopService.purchaseItem(player, {
+			contractVersion = 2,
+			action = "purchasePotion",
+			itemId = "LuckPotion",
+			quantity = 1,
+			extra = true,
+		})):toBeFalse()
+		expect(#spendCalls):toBe(0)
+
+		profile = nil
+		expect(ShopService.purchaseItem(player, potionRequest("LuckPotion"))):toBeFalse()
+		expect(#spendCalls):toBe(0)
+	end)
+
+	it("rejects every legacy potion string, including overlapping IDs, without debit", function()
+		resetState()
+		for _, itemId in ipairs({ "LuckyPotion", "PowerPotion", "SpeedPotion", "CoinPotion" }) do
+			expect(ShopService.purchaseItem(player, itemId)):toBeFalse()
+		end
+		expect(#spendCalls):toBe(0)
+		expect(profile.potionInventory):toEqual({})
+	end)
+
+	it("rejects concurrent purchase attempts under the per-player lock", function()
+		resetState()
+		ShopService._purchaseLocks[player.UserId] = true
+		local success, message = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase already in progress")
+		expect(#spendCalls):toBe(0)
+		expect(profile.potionInventory):toEqual({})
+	end)
+end)
+
+describe("ShopService QOF-13 transaction boundaries", function()
+	it("refunds exactly and emits no event when afterSpend fails", function()
+		resetState()
+		local before = profile.diamonds
+		ShopService._transactionHook = function(stage)
+			if stage == "afterSpend" then error("injected afterSpend") end
+		end
+		local success = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		expect(success):toBeFalse()
+		expect(profile.diamonds):toBe(before)
+		expect(profile.potionInventory.LuckPotion):toBeNil()
+		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 100 } })
+		expect(#currencyEvents):toBe(0)
+		expect(#eventPayloads):toBe(0)
+		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
+	end)
+
+	it("restores an absent inventory key, refunds exactly, and emits no event after mutation failure", function()
+		resetState()
+		local before = profile.diamonds
+		ShopService._transactionHook = function(stage)
+			if stage == "afterMutation" then error("injected afterMutation") end
+		end
+		local success = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		expect(success):toBeFalse()
+		expect(profile.diamonds):toBe(before)
+		expect(profile.potionInventory.LuckPotion):toBeNil()
+		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 100 } })
+		expect(#currencyEvents):toBe(0)
+		expect(#eventPayloads):toBe(0)
+	end)
+
+	it("commits before a protected event and returns independent DTO copies", function()
+		resetState()
+		local success, _, state = ShopService.purchaseItem(player, potionRequest("CoinPotion"))
+		expect(success):toBeTrue()
+		expect(#currencyEvents):toBe(1)
+		expect(currencyEvents[1]):toEqual({ coins = 100000, diamonds = 100000 - 125 })
+		expect(#eventPayloads):toBe(1)
+		state.potionInventory.CoinPotion = 77
+		state.purchases.extraEquipSlots = 4
+		expect(profile.potionInventory.CoinPotion):toBe(1)
+		expect(eventPayloads[1].potionInventory.CoinPotion):toBe(1)
+		eventPayloads[1].potionInventory.CoinPotion = 88
+		expect(profile.potionInventory.CoinPotion):toBe(1)
+
+		resetState()
+		eventShouldError = true
+		success = ShopService.purchaseItem(player, potionRequest("SpeedPotion"))
+		expect(success):toBeTrue()
+		expect(profile.potionInventory.SpeedPotion):toBe(1)
+		expect(profile.diamonds):toBe(100000 - 50)
+	end)
+
+	it("never mutates legacy buffs or refreshes movement while building purchase state", function()
+		resetState()
+		local refreshCalls = 0
+		ShopService.setWalkSpeedRefreshCallback(function()
+			refreshCalls = refreshCalls + 1
+		end)
+		profile.activeBuffs = { luck = 1500 }
+		ShopService._activeBuffs[player.UserId] = { speed = os.clock() - 1 }
+		local activeBuffs = profile.activeBuffs
+		local transientBuffs = ShopService._activeBuffs
+		local legacyPlayerBuffs = ShopService._activeBuffs[player.UserId]
+		local success, _, state = ShopService.purchaseItem(player, potionRequest("SpeedPotion"))
+		expect(success):toBeTrue()
+		expect(profile.activeBuffs):toBe(activeBuffs)
+		expect(profile.activeBuffs):toEqual({ luck = 1500 })
+		expect(ShopService._activeBuffs):toBe(transientBuffs)
+		expect(ShopService._activeBuffs[player.UserId]):toBe(legacyPlayerBuffs)
+		expect(ShopService._activeBuffs[player.UserId].speed ~= nil):toBeTrue()
+		expect(state.buffs):toEqual({})
+		expect(refreshCalls):toBe(0)
+
+		resetState()
+		expect(ShopService.getShopMultiplier(player, "speed")):toBe(1)
+	end)
+
+	it("rolls back debit and inventory when authoritative state construction fails", function()
+		resetState()
+		local before = profile.diamonds
+		local calls = 0
+		local originalGetPlayerData = dataService.getPlayerData
+		dataService.getPlayerData = function()
+			calls = calls + 1
+			if calls == 1 then
+				return profile
+			end
+			error("injected state construction failure")
+		end
+		local success, message = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		dataService.getPlayerData = originalGetPlayerData
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase failed")
+		expect(profile.diamonds):toBe(before)
+		expect(profile.potionInventory.LuckPotion):toBeNil()
+		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 100 } })
+		expect(#currencyEvents):toBe(0)
+		expect(#eventPayloads):toBe(0)
+		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
+	end)
+
+	it("keeps unexpected dependency errors generic and releases the lock", function()
+		resetState()
+		local originalGetPlayerData = dataService.getPlayerData
+		dataService.getPlayerData = function()
+			error("private dependency detail")
+		end
+		local success, message = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		dataService.getPlayerData = originalGetPlayerData
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase failed")
+		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
+		expect(#spendCalls):toBe(0)
+	end)
+end)
+
+describe("ShopService retained shop contracts", function()
+	it("keeps ExtraEquipSlot price, maximum, lock, rollback, and state semantics", function()
+		resetState()
+		local success, message, state = ShopService.purchaseItem(player, "ExtraEquipSlot")
+		expect(success):toBeTrue()
+		expect(message):toBeNil()
+		expect(spendCalls):toEqual({ { currency = "diamonds", amount = 1000 } })
+		expect(profile.shopPurchases.extraEquipSlots):toBe(1)
+		expect(state.purchases.extraEquipSlots):toBe(1)
+		expect(state.maxExtraEquipSlots):toBe(5)
+
+		resetState()
+		profile.shopPurchases.extraEquipSlots = 5
+		expect(ShopService.purchaseItem(player, "ExtraEquipSlot")):toBeFalse()
+		expect(#spendCalls):toBe(0)
+
+		resetState()
+		ShopService._purchaseLocks[player.UserId] = true
+		expect(ShopService.purchaseItem(player, "ExtraEquipSlot")):toBeFalse()
+		expect(#spendCalls):toBe(0)
+
+		resetState()
+		ShopService._transactionHook = function(stage)
+			if stage == "afterMutation" then error("extra slot failure") end
+		end
+		expect(ShopService.purchaseItem(player, "ExtraEquipSlot")):toBeFalse()
+		expect(profile.shopPurchases.extraEquipSlots):toBe(0)
+		expect(profile.diamonds):toBe(100000)
+		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 1000 } })
+		expect(#currencyEvents):toBe(0)
+		expect(#eventPayloads):toBe(0)
+	end)
+
+	it("keeps AutoHatch specifically gated and never processes stale state", function()
+		resetState()
+		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
+		expect(ShopData.Items.AutoHatch):toBeNil()
 		local success, message = ShopService.purchaseItem(player, "AutoHatch")
 		expect(success):toBeFalse()
 		expect(message):toBe("Auto-Hatch is not available yet")
-		expect(charged):toBe(0)
-		expect(ShopService._activeBuffs[player.UserId]):toBeNil()
-	end)
+		expect(#spendCalls):toBe(0)
 
-	it("never processes even a stale in-memory Auto-Hatch buff", function()
-		resetState()
 		ShopService._activeBuffs[player.UserId] = { autoHatch = os.clock() + 600 }
 		expect(ShopService._processAutoHatch()):toBeFalse()
 		expect(hatchCalls):toBe(0)
 	end)
 
-	it("keeps other shop purchases unchanged", function()
+	it("delegates potion state and effect reads while retaining purchase ownership", function()
 		resetState()
-		local success, message = ShopService.purchaseItem(player, "ExtraEquipSlot")
-		expect(success):toBeTrue()
-		expect(message):toBeNil()
-		expect(charged):toBe(1000)
-		expect(profile.shopPurchases.extraEquipSlots):toBe(1)
+		local potionReads = 0
+		local potionService = {}
+		function potionService.getMultiplier(_, buffType)
+			expect(buffType):toBe("luck")
+			return 5
+		end
+		function potionService.getState()
+			potionReads = potionReads + 1
+			return { contractVersion = 1, potionInventory = { LuckPotion = 2 } }
+		end
+		ShopService.setPotionService(potionService)
+		expect(ShopService.getShopMultiplier(player, "luck")):toBe(5)
+		local state = ShopService.getShopState(player)
+		expect(state.contractVersion):toBe(2)
+		expect(state.purchaseMode):toBe("inventoryOnly")
+		expect(state.potionState.contractVersion):toBe(1)
+		expect(potionReads):toBe(1)
+	end)
+
+	it("clears only transient locks and legacy buffs on player removal", function()
+		resetState()
+		profile.potionInventory.LuckPotion = 3
+		ShopService._purchaseLocks[player.UserId] = true
+		ShopService._activeBuffs[player.UserId] = { luck = os.clock() + 60 }
+		ShopService.onPlayerRemoving(player)
+		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
+		expect(ShopService._activeBuffs[player.UserId]):toBeNil()
+		expect(profile.potionInventory.LuckPotion):toBe(3)
+	end)
+end)
+
+
+describe("ShopData QOF-13 inventory-only presentation", function()
+	it("exposes only the five canonical potions plus ExtraEquipSlot", function()
+		expect(ShopData.ContractVersion):toBe(2)
+		expect(ShopData.PurchaseMode):toBe("inventoryOnly")
+		expect(ShopData.MaxPotionInventory):toBe(999)
+		expect(ShopData.Order):toEqual({
+			"LuckPotion",
+			"MegaLuckPotion",
+			"SpeedPotion",
+			"CoinPotion",
+			"ShinyPotion",
+			"ExtraEquipSlot",
+		})
+		expect(ShopData.Items.LuckyPotion):toBeNil()
+		expect(ShopData.Items.PowerPotion):toBeNil()
+		expect(ShopData.Items.AutoHatch):toBeNil()
+		for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
+			local item = ShopData.Items[potionId]
+			expect(item.itemType):toBe("potion")
+			expect(item.cost):toBe(potion.cost.amount)
+			expect(item.currency):toBe(potion.cost.currency)
+		end
 	end)
 end)

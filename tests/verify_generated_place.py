@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-11 runtime source."""
+"""Verify that the generated Battle Pets place embeds every QOF-15 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -19,10 +19,14 @@ EXPECTED_SOURCES = {
     "PetVariantPresentation": "src/ReplicatedStorage/Shared/PetVariantPresentation.lua",
     "HatchCinematicPolicy": "src/ReplicatedStorage/Shared/HatchCinematicPolicy.lua",
     "PetService": "src/ServerScriptService/Services/PetService.lua",
+    "MachineService": "src/ServerScriptService/Services/MachineService.lua",
     "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
     "EggService": "src/ServerScriptService/Services/EggService.lua",
     "ShopService": "src/ServerScriptService/Services/ShopService.lua",
+    "PotionService": "src/ServerScriptService/Services/PotionService.lua",
     "UpgradeTreeService": "src/ServerScriptService/Services/UpgradeTreeService.lua",
+    "MovementService": "src/ServerScriptService/Services/MovementService.lua",
+    "PickupService": "src/ServerScriptService/Services/PickupService.lua",
     "DataSchema": "src/ServerScriptService/Services/DataSchema.lua",
     "DataService": "src/ServerScriptService/Services/DataService.lua",
     "UIController": "src/StarterPlayer/StarterPlayerScripts/UIController.lua",
@@ -30,7 +34,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 62, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 66, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -52,7 +56,7 @@ def all_expected_runtime_paths() -> list[Path]:
         *sorted((ROOT / "src/StarterPlayer/StarterPlayerScripts").glob("*Controller.lua")),
     ]
     assert len(paths) == EXPECTED_SCRIPT_COUNTS["ModuleScript"] + 2, (
-        f"expected 64 runtime source paths, found {len(paths)}"
+        f"expected 68 runtime source paths, found {len(paths)}"
     )
     return paths
 
@@ -68,6 +72,118 @@ def serialized_source_bytes(source: str) -> bytes:
 
 
 def main() -> None:
+    main_source = (ROOT / "src/ServerScriptService/Main.server.lua").read_bytes()
+    assert b"applyWalkSpeedBuffs" not in main_source, (
+        "deleted legacy WalkSpeed helper is still referenced by the server entry point"
+    )
+    for required in (
+        b"MovementService.bindPlayer(player)",
+        b"PickupService.onPlayerRemoving(player)",
+        b"DataService.bindToClose(PickupService.settleAllPlayers)",
+        b"request.contractVersion == 2",
+        b"ShopService.onPlayerRemoving(player)",
+        b"PotionService.onPlayerAdded(player)",
+        b'getRemoteFunction("ConsumePotion")',
+        b'getRemoteFunction("PurchasePotionUpgrade")',
+        b'getRemoteFunction("SetAutoDrinkSelection")',
+        b"MachineService.init(DataService, CurrencyService, PetService)",
+        b"MachineService.setQuestService(QuestService)",
+        b"MachineService.cleanup(player)",
+    ):
+        assert required in main_source, f"missing server lifecycle or purchase wiring: {required!r}"
+    assert b'"AttemptMachineConversion"' not in main_source, (
+        "QOF-15 must not add a public machine remote"
+    )
+    assert b"MachineService.setActivationValidator" not in main_source, (
+        "QOF-15 Main must not inject machine activation authority"
+    )
+    assert b"PetService.convertToGoldenPet(player, petInstanceIds)" in main_source, (
+        "legacy ConvertToGoldenPet routing changed before QOF-16"
+    )
+
+    balance_source = (
+        ROOT / "src/ReplicatedStorage/Shared/BalanceConfig.lua"
+    ).read_bytes()
+    assert b"Machines = {\n\t\tRuntimeEnabled = false," in balance_source, (
+        "QOF-15 machine runtime must remain dormant"
+    )
+
+    machine_service_source = (
+        ROOT / "src/ServerScriptService/Services/MachineService.lua"
+    ).read_bytes()
+    for required in (
+        b"function MachineService.init",
+        b"function MachineService.setQuestService",
+        b"function MachineService.setActivationValidator",
+        b"function MachineService.attemptConversion",
+        b"function MachineService.cleanup",
+        b"beginSpendTransaction",
+        b"commitSpendTransaction",
+        b"rollbackSpendTransaction",
+        b"prepareVariantConversion",
+        b"commitVariantConversion",
+        b"rollbackVariantConversion",
+        b'"goldenPetsConverted"',
+    ):
+        assert required in machine_service_source, f"missing QOF-15 machine authority: {required!r}"
+
+    purchase_handler = main_source.split(
+        b'getRemoteFunction("PurchaseShopItem").OnServerInvoke', 1
+    )[1].split(b"-- GetShopBuffs", 1)[0]
+    assert b"isValidShopPurchaseRequest(request)" in purchase_handler
+    assert b"MovementService.refresh" not in purchase_handler, (
+        "inventory-only potion purchases must not refresh movement effects"
+    )
+
+    shop_service_source = (
+        ROOT / "src/ServerScriptService/Services/ShopService.lua"
+    ).read_bytes()
+    for required in (
+        b'local PURCHASE_MODE = "inventoryOnly"',
+        b"_purchaseLocks",
+        b"beginSpendTransaction",
+        b"rollbackSpendTransaction",
+        b"commitSpendTransaction",
+        b"data.potionInventory[itemId] = count + POTION_QUANTITY",
+    ):
+        assert required in shop_service_source, f"missing QOF-13 shop authority: {required!r}"
+
+    potion_service_source = (
+        ROOT / "src/ServerScriptService/Services/PotionService.lua"
+    ).read_bytes()
+    for required in (
+        b'local CONTRACT_VERSION = 1',
+        b'os.time()',
+        b'beginShinyChargeTransaction',
+        b'processAutoDrink',
+        b'purchaseUpgrade',
+        b'setAutoDrinkSelection',
+        b'stateRevision',
+        b'notifyInventoryChanged',
+    ):
+        assert required in potion_service_source, f"missing QOF-14 potion authority: {required!r}"
+
+    shop_data_source = (ROOT / "src/ReplicatedStorage/Shared/ShopData.lua").read_bytes()
+    assert b'"LuckPotion"' in shop_data_source and b'"ShinyPotion"' in shop_data_source
+    assert b"LuckyPotion =" not in shop_data_source and b"PowerPotion =" not in shop_data_source
+
+    ui_source = (
+        ROOT / "src/StarterPlayer/StarterPlayerScripts/UIController.lua"
+    ).read_bytes()
+    for required in (
+        b"contractVersion = ShopData.ContractVersion",
+        b"purchaseMode == ShopData.PurchaseMode",
+        b'card.status.Text = "OWNED "',
+        b'PotionContractVersion',
+        b'revision < self._potionStateRevision',
+        b'drinkBtn.Name = "DrinkBtn"',
+        b'consumeAvailability = type(payload.consumeAvailability) == "table"',
+        b'availability.reason == "Maximum timed duration reached (30 days)"',
+        b'autoBtn.Name = "AutoDrinkBtn"',
+        b'_purchasePotionUpgrade',
+    ):
+        assert required in ui_source, f"missing QOF-13 inventory UI contract: {required!r}"
+
     root = ET.parse(PLACE).getroot()
     scripts: dict[str, list[str]] = {}
     counts: dict[str, int] = {}
@@ -125,8 +241,8 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-11 runtime source exactly once")
-    print("PASS: all 64 generated script sources have byte-exact source parity")
+    print("PASS: generated place embeds every QOF-15 runtime source exactly once")
+    print("PASS: all 68 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 
 
