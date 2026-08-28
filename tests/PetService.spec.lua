@@ -19,6 +19,7 @@ local PetHatchMath = originalRequire("src/ReplicatedStorage/Shared/PetHatchMath"
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
 local PetVariantPresentation = originalRequire("src/ReplicatedStorage/Shared/PetVariantPresentation")
 local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
+local PetDex = originalRequire("src/ReplicatedStorage/Shared/PetDex")
 
 local Config = {
 	MaxPetInventoryBase = 100,
@@ -50,6 +51,7 @@ local ReplicatedStorage = {
 		PetVariantMath = PetVariantMath,
 		PetVariantPresentation = PetVariantPresentation,
 		PetEnchantMath = PetEnchantMath,
+		PetDex = PetDex,
 	},
 }
 function ReplicatedStorage:FindFirstChild(name)
@@ -73,6 +75,7 @@ local function mockRequire(path)
 	if path == PetVariantMath then return PetVariantMath end
 	if path == PetVariantPresentation then return PetVariantPresentation end
 	if path == PetEnchantMath then return PetEnchantMath end
+	if path == PetDex then return PetDex end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -226,12 +229,12 @@ describe("PetService QOF-07 canonical single hatch", function()
 		masteryLuckMultiplier = 0
 		shopLuckMultiplier = 1
 		local cases = {
-			{ 0.5, 0.5, "Normal", false, "Buddy", 1, "Buddy" },
-			{ 0.5, 0, "Normal", true, "Shiny Buddy", 1.5, "Shiny_Buddy" },
-			{ 0.001, 0.5, "Golden", false, "Gold Buddy", 2, "Golden_Buddy" },
-			{ 0.001, 0, "Golden", true, "Gold Shiny Buddy", 3, "Shiny_Buddy" },
-			{ 0, 0.5, "Rainbow", false, "Rainbow Buddy", 5, "Rainbow_Buddy" },
-			{ 0, 0, "Rainbow", true, "Rainbow Shiny Buddy", 7.5, "Shiny_Buddy" },
+			{ 0.5, 0.5, "Normal", false, "Buddy", 1, "Buddy|Normal", "Buddy" },
+			{ 0.5, 0, "Normal", true, "Shiny Buddy", 1.5, "Buddy|Normal|Shiny", "Shiny_Buddy" },
+			{ 0.001, 0.5, "Golden", false, "Gold Buddy", 2, "Buddy|Golden", "Golden_Buddy" },
+			{ 0.001, 0, "Golden", true, "Gold Shiny Buddy", 3, "Buddy|Golden|Shiny", "Shiny_Buddy" },
+			{ 0, 0.5, "Rainbow", false, "Rainbow Buddy", 5, "Buddy|Rainbow", "Rainbow_Buddy" },
+			{ 0, 0, "Rainbow", true, "Rainbow Shiny Buddy", 7.5, "Buddy|Rainbow|Shiny", "Shiny_Buddy" },
 		}
 
 		for _, case in ipairs(cases) do
@@ -244,6 +247,7 @@ describe("PetService QOF-07 canonical single hatch", function()
 			expect(pet.damage):toBe(case[6])
 			expect(pet.golden):toBe(case[3] == "Golden")
 			expect(profile.discoveredPets[case[7]]):toBeTrue()
+			expect(profile.discoveredPets[case[8]]):toBeTrue()
 		end
 	end)
 
@@ -312,13 +316,19 @@ describe("PetService QOF-07 canonical single hatch", function()
 		treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
 	end)
 
-	it("keeps legacy discovery categories for combined Shiny outcomes", function()
+	it("uses six canonical keys while preserving four rolling compatibility keys", function()
+		expect(PetService.getDiscoveryKey("Buddy", "Normal", false)):toBe("Buddy|Normal")
+		expect(PetService.getDiscoveryKey("Buddy", "Normal", true)):toBe("Buddy|Normal|Shiny")
+		expect(PetService.getDiscoveryKey("Buddy", "Golden", false)):toBe("Buddy|Golden")
+		expect(PetService.getDiscoveryKey("Buddy", "Golden", true)):toBe("Buddy|Golden|Shiny")
+		expect(PetService.getDiscoveryKey("Buddy", "Rainbow", false)):toBe("Buddy|Rainbow")
+		expect(PetService.getDiscoveryKey("Buddy", "Rainbow", true)):toBe("Buddy|Rainbow|Shiny")
 		expect(PetService.getLegacyDiscoveryKey("Buddy", "Normal", false)):toBe("Buddy")
 		expect(PetService.getLegacyDiscoveryKey("Buddy", "Golden", false)):toBe("Golden_Buddy")
 		expect(PetService.getLegacyDiscoveryKey("Buddy", "Rainbow", false)):toBe("Rainbow_Buddy")
 		expect(PetService.getLegacyDiscoveryKey("Buddy", "Golden", true)):toBe("Shiny_Buddy")
 		expect(PetService.getLegacyDiscoveryKey("Buddy", "Rainbow", true)):toBe("Shiny_Buddy")
-		expect(PetService.getLegacyDiscoveryKey(nil, "Normal", false)):toBeNil()
+		expect(PetService.getDiscoveryKey(nil, "Normal", false)):toBeNil()
 	end)
 end)
 
@@ -451,6 +461,7 @@ describe("PetService QOF-08 prepared batch boundary", function()
 		expect(#prepared.pets):toBe(2)
 		expect(#profile.pets):toBe(0)
 		expect(profile.discoveredPets.Buddy):toBeNil()
+		expect(profile.discoveredPets["Buddy|Normal"]):toBeNil()
 		expect(prepared.pets[1].isNewDiscovery):toBeTrue()
 		expect(prepared.pets[2].isNewDiscovery):toBeFalse()
 
@@ -459,10 +470,12 @@ describe("PetService QOF-08 prepared batch boundary", function()
 		expect(commitError):toBeNil()
 		expect(#profile.pets):toBe(2)
 		expect(profile.discoveredPets.Buddy):toBeTrue()
+		expect(profile.discoveredPets["Buddy|Normal"]):toBeTrue()
 
 		expect(PetService.rollbackHatchBatch(prepared)):toBeTrue()
 		expect(#profile.pets):toBe(0)
 		expect(profile.discoveredPets.Buddy):toBeNil()
+		expect(profile.discoveredPets["Buddy|Normal"]):toBeNil()
 	end)
 
 	it("boosts exactly the first reserved Shiny rolls without changing other variants", function()

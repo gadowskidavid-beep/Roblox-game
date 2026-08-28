@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that a generated Battle Pets place embeds every QOF-19 runtime source."""
+"""Verify that a generated Battle Pets place embeds every QOF-20/21 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -18,6 +18,7 @@ EXPECTED_SOURCES = {
     "PetVariantMath": "src/ReplicatedStorage/Shared/PetVariantMath.lua",
     "PetVariantPresentation": "src/ReplicatedStorage/Shared/PetVariantPresentation.lua",
     "PetEnchantMath": "src/ReplicatedStorage/Shared/PetEnchantMath.lua",
+    "PetDex": "src/ReplicatedStorage/Shared/PetDex.lua",
     "HatchCinematicPolicy": "src/ReplicatedStorage/Shared/HatchCinematicPolicy.lua",
     "AutoHatchClientSession": "src/ReplicatedStorage/Shared/AutoHatchClientSession.lua",
     "EnchantingClientSession": "src/ReplicatedStorage/Shared/EnchantingClientSession.lua",
@@ -40,7 +41,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 74, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 75, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -303,10 +304,62 @@ def main() -> None:
     data_schema_source = (
         ROOT / "src/ServerScriptService/Services/DataSchema.lua"
     ).read_bytes()
-    assert b'DataSchema.VERSION = 10' in data_schema_source
+    assert b'DataSchema.VERSION = 11' in data_schema_source
     assert b'autoHatchExpiresAt = 0' in data_schema_source
     assert b'normalizeAutoHatchExpiry' in data_schema_source
     assert b'or value % 1 ~= 0' in data_schema_source
+
+    # QOF-20 keeps one pure six-state contract across schema, server mutations,
+    # defensive remote snapshots, and confirmed client live updates.
+    pet_dex_source = (
+        ROOT / "src/ReplicatedStorage/Shared/PetDex.lua"
+    ).read_bytes()
+    for required in (
+        b'PetDex.CONTRACT_VERSION = 1',
+        b'{ id = "NormalShiny", baseVariant = "Normal", shiny = true }',
+        b'{ id = "GoldenShiny", baseVariant = "Golden", shiny = true }',
+        b'{ id = "RainbowShiny", baseVariant = "Rainbow", shiny = true }',
+        b'function PetDex.getStates()',
+        b'function PetDex.getCanonicalKey',
+        b'function PetDex.getWriteKeys',
+        b'function PetDex.projectDiscovery',
+        b'function PetDex.normalizeDiscovery',
+        b'function PetDex.recordPet',
+        b'if not hasExactShiny then',
+    ):
+        assert required in pet_dex_source, f"missing QOF-20 Pet Dex contract: {required!r}"
+
+    pet_service_source = (
+        ROOT / "src/ServerScriptService/Services/PetService.lua"
+    ).read_bytes()
+    for required in (
+        b'PetDex.getCanonicalKey(petId, baseVariant, isShiny == true)',
+        b'PetDex.getWriteKeys(petId, baseVariant, isShiny)',
+        b'newPet.isNewDiscovery = discovered[discoveryKeys[1]] ~= true',
+    ):
+        assert required in pet_service_source, f"missing QOF-20 mutation contract: {required!r}"
+
+    for required in (
+        b'getRemoteFunction("GetDiscoveredPets").OnServerInvoke',
+        b'if not canCall(player, "GetDiscoveredPets", 0.25) then return nil end',
+        b'local discovered = {}',
+        b'discovered[key] = true',
+        b'return discovered',
+    ):
+        assert required in main_source, f"missing defensive QOF-20 remote: {required!r}"
+
+    for required in (
+        b'function UIController:recordPetDiscoveries(pets)',
+        b'PetDex.recordPet(self._discoveredPets, pet)',
+        b'local states = PetDex.getStates()',
+        b'PetDex.getCanonicalKey(',
+        b'self._petIndexRefreshGeneration = self._petIndexRefreshGeneration + 1',
+        b'local invoked, discovered = pcall(remote.InvokeServer, remote)',
+        b'generation ~= self._petIndexRefreshGeneration',
+        b'or not screen or not screen.Enabled or not projected then',
+    ):
+        assert required in ui_source, f"missing QOF-20 client contract: {required!r}"
+    assert b'uiController:recordPetDiscoveries(pets)' in client_source
 
     data_service_source = (
         ROOT / "src/ServerScriptService/Services/DataService.lua"
@@ -464,7 +517,7 @@ def main() -> None:
     assert b"RuntimeEnabled = false" not in enchanting_balance
 
     for required in (
-        b"DataSchema.VERSION = 10",
+        b"DataSchema.VERSION = 11",
         b"PetEnchantMath.normalizeEnchantId(pet.enchantId)",
         b"pet.enchant = nil",
         b"pet.enchantData = nil",
@@ -472,7 +525,7 @@ def main() -> None:
         b"pet.enchantStat = nil",
         b"pet.enchantMultiplier = nil",
     ):
-        assert required in data_schema_source, f"missing V10 whitelist-only persistence: {required!r}"
+        assert required in data_schema_source, f"missing V11 whitelist-only persistence: {required!r}"
     assert b"pet.enchantId = pet.enchant" not in data_schema_source
     assert b"pet.enchantId = pet.enchantData" not in data_schema_source
 
@@ -762,7 +815,7 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-19 runtime source exactly once")
+    print("PASS: generated place embeds every QOF-20/21 runtime source exactly once")
     print(f"PASS: all {EXPECTED_SCRIPT_COUNTS['ModuleScript'] + 2} generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 

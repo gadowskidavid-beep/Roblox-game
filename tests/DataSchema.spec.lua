@@ -31,6 +31,7 @@ local function mockRequire(path)
 	if path == PetData then return PetData end
 	if path == SharedMock.PetVariantMath then return SharedMock.PetVariantMath end
 	if path == SharedMock.PetEnchantMath then return SharedMock.PetEnchantMath end
+	if path == SharedMock.PetDex then return SharedMock.PetDex end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -48,6 +49,8 @@ local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantM
 SharedMock.PetVariantMath = PetVariantMath
 local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
 SharedMock.PetEnchantMath = PetEnchantMath
+local PetDex = originalRequire("src/ReplicatedStorage/Shared/PetDex")
+SharedMock.PetDex = PetDex
 local DataSchema = originalRequire("src/ServerScriptService/Services/DataSchema")
 
 -- Restore require
@@ -303,7 +306,7 @@ describe("V6 pet migration", function()
 			equippedPets = {},
 		}, 1000)
 
-		expect(data.schemaVersion):toBe(10)
+		expect(data.schemaVersion):toBe(DataSchema.VERSION)
 		expect(data.pets[1].variant):toBe("Normal")
 		expect(data.pets[1].shiny):toBeFalse()
 		expect(data.pets[1].damage):toBe(1)
@@ -419,7 +422,7 @@ describe("V6 potion persistence normalization", function()
 		}, 1000)
 		local snapshot = DataSchema.cloneForPersistence(migrated, 1000)
 		local reloaded = DataSchema.migrate(snapshot, 1000)
-		expect(reloaded.schemaVersion):toBe(10)
+		expect(reloaded.schemaVersion):toBe(DataSchema.VERSION)
 		expect(reloaded.potionInventory):toEqual({ LuckPotion = 7, MegaLuckPotion = 3 })
 		snapshot.potionInventory.LuckPotion = 1
 		expect(migrated.potionInventory.LuckPotion):toBe(7)
@@ -429,11 +432,13 @@ end)
 describe("V6 compatibility guarantees", function()
 	it("preserves discovery and upgrade tree purchases while removing malformed entries", function()
 		local data = DataSchema.migrate({
+			pets = {},
+			equippedPets = {},
 			discoveredPets = {
-				Dog = true,
-				Golden_Dog = true,
-				Shiny_Dog = true,
-				Rainbow_Dog = true,
+				Buddy = true,
+				Golden_Buddy = true,
+				Shiny_Buddy = true,
+				Rainbow_Buddy = true,
 				Ignored = false,
 				[12] = true,
 			},
@@ -446,10 +451,14 @@ describe("V6 compatibility guarantees", function()
 			},
 		}, 1000)
 		expect(data.discoveredPets):toEqual({
-			Dog = true,
-			Golden_Dog = true,
-			Shiny_Dog = true,
-			Rainbow_Dog = true,
+			Buddy = true,
+			Golden_Buddy = true,
+			Shiny_Buddy = true,
+			Rainbow_Buddy = true,
+			["Buddy|Normal"] = true,
+			["Buddy|Golden"] = true,
+			["Buddy|Normal|Shiny"] = true,
+			["Buddy|Rainbow"] = true,
 		})
 		expect(data.upgradeTreePurchases):toEqual({
 			["Eggs I"] = true,
@@ -538,7 +547,7 @@ end)
 describe("V7 persistent hatch preferences", function()
 	it("migrates V6 profiles without a preference to the x1 default", function()
 		local data = DataSchema.migrate({ schemaVersion = 6, coins = 250 }, 1000)
-		expect(data.schemaVersion):toBe(10)
+		expect(data.schemaVersion):toBe(DataSchema.VERSION)
 		expect(data.hatchPreferences):toEqual({ preferredBatchCount = 1 })
 		expect(data.coins):toBe(250)
 	end)
@@ -663,7 +672,7 @@ describe("V8 structured potion sources and Auto-Drink selection", function()
 		expect(rollingQof13Save.potionBuffSources):toEqual(v8.potionBuffSources)
 
 		local recovered = DataSchema.migrate(rollingQof13Save, 1000)
-		expect(recovered.schemaVersion):toBe(10)
+		expect(recovered.schemaVersion):toBe(DataSchema.VERSION)
 		expect(recovered.activeBuffs):toEqual({
 			luck = { sources = {
 				LuckPotion = { expiresAt = 1600 },
@@ -734,7 +743,7 @@ describe("V9 paid Auto-Hatch absolute expiry", function()
 	it("preserves only a canonical integer expiry in the exact live window", function()
 		for _, expiresAt in ipairs({ 1001, 1300, 1600 }) do
 			local data = DataSchema.migrate({ autoHatchExpiresAt = expiresAt }, 1000)
-			expect(data.schemaVersion):toBe(10)
+			expect(data.schemaVersion):toBe(DataSchema.VERSION)
 			expect(data.autoHatchExpiresAt):toBe(expiresAt)
 		end
 	end)
@@ -769,7 +778,7 @@ describe("DataSchema V10 pet enchant persistence", function()
 			},
 			equippedPets = {},
 		}, 1000)
-		expect(data.schemaVersion):toBe(10)
+		expect(data.schemaVersion):toBe(DataSchema.VERSION)
 		expect(data.pets[1].enchantId):toBeNil()
 		expect(data.pets[1].damage):toBe(1)
 	end)
@@ -824,5 +833,81 @@ describe("DataSchema V10 pet enchant persistence", function()
 		expect(twice):toEqual(once)
 		expect(snapshot):toEqual(once)
 		expect(reloaded):toEqual(once)
+	end)
+end)
+
+
+describe("DataSchema V11 six-state Pet Dex migration", function()
+	it("backfills the starter as an exact Normal discovery for new profiles", function()
+		local data = DataSchema.migrate(nil, 1000)
+		expect(data.schemaVersion):toBe(11)
+		expect(data.discoveredPets.Buddy):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
+	end)
+
+	it("maps four legacy categories conservatively into canonical states", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 10,
+			pets = {},
+			equippedPets = {},
+			discoveredPets = {
+				Buddy = true,
+				Golden_Buddy = true,
+				Rainbow_Buddy = true,
+				Shiny_Buddy = true,
+				forged = true,
+				["Buddy|Golden|Shiny"] = false,
+			},
+		}, 1000)
+		expect(data.discoveredPets.Buddy):toBeTrue()
+		expect(data.discoveredPets.Golden_Buddy):toBeTrue()
+		expect(data.discoveredPets.Rainbow_Buddy):toBeTrue()
+		expect(data.discoveredPets.Shiny_Buddy):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Golden"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Rainbow"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal|Shiny"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Golden|Shiny"]):toBeNil()
+		expect(data.discoveredPets.forged):toBeNil()
+	end)
+
+	it("backfills exact owned combined states without inventing another Shiny", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 10,
+			pets = {
+				{ id = "gold-shiny", petId = "Buddy", variant = "Golden", shiny = true },
+				{ id = "rainbow", petId = "Whiskers", variant = "Rainbow", shiny = false },
+			},
+			equippedPets = {},
+			discoveredPets = {},
+		}, 1000)
+		expect(data.discoveredPets["Buddy|Golden|Shiny"]):toBeTrue()
+		expect(data.discoveredPets.Shiny_Buddy):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
+		expect(data.discoveredPets["Whiskers|Rainbow"]):toBeTrue()
+		expect(data.discoveredPets.Rainbow_Whiskers):toBeTrue()
+	end)
+
+	it("keeps canonical progress through a rolling V10 stamp and remains idempotent", function()
+		local once = DataSchema.migrate({
+			schemaVersion = 10,
+			pets = {},
+			equippedPets = {},
+			discoveredPets = {
+				Shiny_Buddy = true,
+				["Buddy|Rainbow|Shiny"] = true,
+			},
+		}, 1000)
+		expect(once.discoveredPets["Buddy|Rainbow|Shiny"]):toBeTrue()
+		expect(once.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
+		local rolling = DataSchema.deepCopy(once)
+		rolling.schemaVersion = 10
+		local twice = DataSchema.migrate(rolling, 1000)
+		local snapshot = DataSchema.cloneForPersistence(twice, 1000)
+		expect(twice):toEqual(once)
+		expect(snapshot):toEqual(once)
+		snapshot.discoveredPets["Buddy|Rainbow|Shiny"] = nil
+		expect(once.discoveredPets["Buddy|Rainbow|Shiny"]):toBeTrue()
 	end)
 end)

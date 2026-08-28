@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "version": "0.9.1",
+  "descriptor": null,
+  "platforms": {
+    "linux-amd64": {
+      "sha256": "057c4b3e70c928af73646975d1df11579b0a5ccfa72f274af8c6d135fc9f4d34"
+    }
+  }
+}

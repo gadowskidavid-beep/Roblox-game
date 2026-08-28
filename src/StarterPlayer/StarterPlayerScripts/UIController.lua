@@ -2,7 +2,7 @@
 	UIController.lua - Complete Pet Simulator 1 style UI for Battle Pets
 	Creates all UI elements procedurally via code (no external assets).
 	Responsive layout using UDim2 scale values for PC, tablet, and phone.
-	
+
 	Screens:
 	- MainHUD: currency display, XP bar, navigation buttons, equipped pets bar
 	- PetInventory: scrollable pet grid with equip/delete/multi-select
@@ -10,7 +10,7 @@
 	- MasteryWindow: mastery buff spending tab
 	- ShopWindow: egg station hatch prompt (station-based, like Pet Simulator)
 	- CampaignSelect: delegated to CampaignController but toggled from here
-	
+
 	Style: Large rounded buttons, thick UIStroke borders, bright saturated colors,
 	dark navy backgrounds, bold text, cartoon style.
 ]]
@@ -29,6 +29,7 @@ local MasteryData = require(Shared:WaitForChild("MasteryData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local ShopData = require(Shared:WaitForChild("ShopData"))
 local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
+local PetDex = require(Shared:WaitForChild("PetDex"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -317,6 +318,7 @@ function UIController.new()
 	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
 	-- Pet index (collection book) state
 	self._discoveredPets = {}
+	self._petIndexRefreshGeneration = 0
 	-- Purchase state remains V2 inventory-only. QOF-14 potion effects use their
 	-- own strict V1 state/event and are never predicted by the client.
 	self._shopState = {
@@ -394,7 +396,7 @@ function UIController:init(remotes, playerData)
 			level = playerData.level or 1,
 			buffs = sanitizeDefinedLevels(playerData.masteryBuffs, MasteryData.Buffs, "bonusPerLevel"),
 		}
-		self._discoveredPets = playerData.discoveredPets or {}
+		self._discoveredPets = PetDex.projectDiscovery(playerData.discoveredPets) or {}
 		local initialPurchases = type(playerData.shopPurchases) == "table" and playerData.shopPurchases or {}
 		local maxExtraEquipSlots = safeSlotBonus(self._shopState.maxExtraEquipSlots)
 		self._shopState.purchases.extraEquipSlots = math.clamp(
@@ -3055,6 +3057,9 @@ function UIController:showMachineResult(result, requestError)
 		resultLabel.Text = "SUCCESS! Got " .. outputName .. "!"
 		resultLabel.TextColor3 = self._machineUi
 			and self._machineUi.buttonColor or Color3.fromRGB(255, 220, 0)
+		if result.outputPet then
+			self:recordPetDiscoveries({ result.outputPet })
+		end
 		if result.outputPet and result.isNewDiscovery == true then
 			self:enqueueDiscoveryToast(result.outputPet)
 		end
@@ -4885,7 +4890,7 @@ function UIController:_createPetIndex()
 	progressLabel.Size = UDim2.fromScale(0.4, 0.05)
 	progressLabel.Position = UDim2.fromScale(0.3, 0.09)
 	progressLabel.BackgroundTransparency = 1
-	progressLabel.Text = "0/16 Discovered"
+	progressLabel.Text = "0/" .. tostring(PetDex.getTotalStateCount()) .. " Discovered"
 	progressLabel.TextColor3 = Color3.fromRGB(200, 200, 220)
 	progressLabel.Font = Enum.Font.GothamBold
 	progressLabel.TextScaled = true
@@ -4936,6 +4941,26 @@ function UIController:_createPetIndex()
 	self:_refreshPetIndex()
 end
 
+function UIController:recordPetDiscoveries(pets)
+	if type(pets) ~= "table" then return false end
+	local changed = false
+	for _, pet in ipairs(pets) do
+		if PetDex.recordPet(self._discoveredPets, pet) then
+			changed = true
+		end
+	end
+	local screen = self._screens.PetIndex
+	if changed then
+		-- A confirmed mutation is newer than every snapshot already in flight.
+		-- Invalidate those callbacks before they can replace this monotone update.
+		self._petIndexRefreshGeneration = self._petIndexRefreshGeneration + 1
+	end
+	if changed and screen and screen.Enabled then
+		self:_refreshPetIndex()
+	end
+	return changed
+end
+
 function UIController:_refreshPetIndex()
 	local screenGui = self._screens.PetIndex
 	if not screenGui then return end
@@ -4952,7 +4977,7 @@ function UIController:_refreshPetIndex()
 	end
 
 	local discoveredPets = self._discoveredPets or {}
-	local variants = PetData.Variants or {"Normal", "Golden", "Shiny", "Rainbow"}
+	local states = PetDex.getStates()
 
 	-- Derive pet list from PetData.Pets keys (sorted alphabetically)
 	local petIds = {}
@@ -4961,43 +4986,39 @@ function UIController:_refreshPetIndex()
 	end
 	table.sort(petIds)
 
-	-- Variant colors for display
-	local variantColors = {
-		Normal = Color3.fromRGB(200, 200, 200),
-		Golden = Color3.fromRGB(255, 200, 0),
-		Shiny = Color3.fromRGB(0, 220, 255),
-		Rainbow = Color3.fromRGB(255, 100, 200),
-	}
-
 	local discoveredCount = 0
-	local totalCount = #petIds * #variants
+	local totalCount = #petIds * #states
 	local order = 0
 
 	for _, petId in ipairs(petIds) do
 		local petDef = PetData.Pets[petId]
 		if not petDef then continue end
 
-		for _, variant in ipairs(variants) do
+		for _, state in ipairs(states) do
 			order = order + 1
 
-			-- Build discovery key
-			local discoveryKey
-			if variant == "Normal" then
-				discoveryKey = petId
-			else
-				discoveryKey = variant .. "_" .. petId
-			end
+			local discoveryKey = PetDex.getCanonicalKey(
+				petId,
+				state.baseVariant,
+				state.shiny
+			)
+			local presentation = PetVariantPresentation.resolve({
+				petId = petId,
+				variant = state.baseVariant,
+				shiny = state.shiny,
+			})
 
-			local isDiscovered = discoveredPets[discoveryKey] == true
+			local isDiscovered = discoveryKey ~= nil and discoveredPets[discoveryKey] == true
 			if isDiscovered then
 				discoveredCount = discoveredCount + 1
 			end
 
-			local variantColor = variantColors[variant] or Color3.fromRGB(200, 200, 200)
+			local accentRGB = state.shiny and presentation.shinyRGB or presentation.accentRGB
+			local variantColor = Color3.fromRGB(accentRGB[1], accentRGB[2], accentRGB[3])
 			local rarityColor = RARITY_COLORS[petDef.rarity or "Common"] or RARITY_COLORS.Common
 
 			local card = Instance.new("Frame")
-			card.Name = "IndexCard_" .. petId .. "_" .. variant
+			card.Name = "IndexCard_" .. petId .. "_" .. state.id
 			card.BackgroundColor3 = isDiscovered and COLORS.DarkBg or Color3.fromRGB(15, 18, 35)
 			card.LayoutOrder = order
 			card.Parent = scrollFrame
@@ -5051,7 +5072,7 @@ function UIController:_refreshPetIndex()
 			variantLabel.Size = UDim2.fromScale(0.9, 0.12)
 			variantLabel.Position = UDim2.fromScale(0.05, 0.6)
 			variantLabel.BackgroundTransparency = 1
-			variantLabel.Text = variant
+			variantLabel.Text = presentation.variantLabel
 			variantLabel.TextColor3 = isDiscovered and variantColor or Color3.fromRGB(50, 50, 70)
 			variantLabel.Font = Enum.Font.GothamBold
 			variantLabel.TextScaled = true
@@ -5764,12 +5785,18 @@ function UIController:_refreshScreenData(screenName)
 	elseif screenName == "PetIndex" then
 		local remote = self._remotes:FindFirstChild("GetDiscoveredPets")
 		if remote then
+			self._petIndexRefreshGeneration = self._petIndexRefreshGeneration + 1
+			local generation = self._petIndexRefreshGeneration
 			task.spawn(function()
-				local discovered = remote:InvokeServer()
-				if discovered then
-					self._discoveredPets = discovered
-					self:_refreshPetIndex()
+				local invoked, discovered = pcall(remote.InvokeServer, remote)
+				local projected = invoked and PetDex.projectDiscovery(discovered) or nil
+				local screen = self._screens.PetIndex
+				if generation ~= self._petIndexRefreshGeneration
+					or not screen or not screen.Enabled or not projected then
+					return
 				end
+				self._discoveredPets = projected
+				self:_refreshPetIndex()
 			end)
 		end
 	elseif screenName == "ShopScreen" then

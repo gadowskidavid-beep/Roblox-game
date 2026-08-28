@@ -83,7 +83,6 @@ local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
 local UseMachine = Remotes:WaitForChild("UseMachine")
-local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
 local GetPotionState = Remotes:WaitForChild("GetPotionState")
@@ -1119,6 +1118,9 @@ EggHatchResult.OnClientEvent:Connect(function(payload)
 	-- Onboarding follows the committed server result, never presentation timing.
 	completeOnboardingStep("egg")
 	local pets = resultDto.pets
+	-- Every pet came from one committed server result. Update the local Dex cache
+	-- immediately; GetDiscoveredPets remains the recovery source on reopen.
+	uiController:recordPetDiscoveries(pets)
 	local presented = false
 	local function onPresented()
 		if presented then return end

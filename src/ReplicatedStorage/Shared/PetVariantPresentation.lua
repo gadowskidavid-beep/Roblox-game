@@ -78,8 +78,8 @@ function PetVariantPresentation.resolve(petData)
 		namePrefix = namePrefix .. "Shiny "
 	end
 
-	-- Legacy inventory filtering and Pet Index stay four-category compatible
-	-- until their dedicated migration. Labels and visuals remain fully combined.
+	-- Inventory filters retain their four compact categories. The Pet Dex uses
+	-- PetDex's independent six-state contract instead of this projection.
 	local legacyCategory = shiny and "Shiny" or baseVariant
 
 	return {

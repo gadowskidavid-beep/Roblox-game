@@ -14,6 +14,7 @@ local PetHatchMath = require(game.ReplicatedStorage.Shared.PetHatchMath)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 local PetVariantPresentation = require(game.ReplicatedStorage.Shared.PetVariantPresentation)
 local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
+local PetDex = require(game.ReplicatedStorage.Shared.PetDex)
 
 local PetService = {}
 
@@ -306,20 +307,13 @@ function PetService.canAddPet(player)
 	return PetService.canAddPets(player, 1)
 end
 
--- Preserve the four-category discovery contract until the dedicated combined
--- Pet Dex migration. Any Shiny composition maps to the existing Shiny category.
+-- Legacy mirrors remain additive while canonical six-state keys own discovery.
 function PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
-	if type(petId) ~= "string" or petId == "" then
-		return nil
-	end
-	if isShiny == true then
-		return "Shiny_" .. petId
-	elseif baseVariant == "Golden" then
-		return "Golden_" .. petId
-	elseif baseVariant == "Rainbow" then
-		return "Rainbow_" .. petId
-	end
-	return petId
+	return PetDex.getLegacyKey(petId, baseVariant, isShiny == true)
+end
+
+function PetService.getDiscoveryKey(petId, baseVariant, isShiny)
+	return PetDex.getCanonicalKey(petId, baseVariant, isShiny == true)
 end
 
 local function copyBooleanMap(input)
@@ -380,10 +374,15 @@ local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, disco
 		equipped = false,
 	}
 
-	local discoveryKey = PetService.getLegacyDiscoveryKey(petId, baseVariant, isShiny)
-	newPet.isNewDiscovery = discovered[discoveryKey] ~= true
-	discovered[discoveryKey] = true
-	return newPet, discoveryKey
+	local discoveryKeys = PetDex.getWriteKeys(petId, baseVariant, isShiny)
+	if not discoveryKeys then
+		return nil, "Invalid pet discovery state"
+	end
+	newPet.isNewDiscovery = discovered[discoveryKeys[1]] ~= true
+	for _, discoveryKey in ipairs(discoveryKeys) do
+		discovered[discoveryKey] = true
+	end
+	return newPet, discoveryKeys
 end
 
 -- Prepare every random outcome without mutating inventory, discovery, currency,
@@ -429,7 +428,7 @@ function PetService.prepareHatchBatch(player, eggType, count, options)
 	local pets = {}
 	local newDiscoveryKeys = {}
 	for index = 1, count do
-		local pet, discoveryKeyOrError = buildPreparedPet(
+		local pet, discoveryKeysOrError = buildPreparedPet(
 			eggDef,
 			luckMultiplier,
 			hatchEntitlements,
@@ -437,11 +436,13 @@ function PetService.prepareHatchBatch(player, eggType, count, options)
 			index <= shinyBoostCount
 		)
 		if not pet then
-			return nil, discoveryKeyOrError
+			return nil, discoveryKeysOrError
 		end
 		table.insert(pets, pet)
-		if pet.isNewDiscovery then
-			newDiscoveryKeys[discoveryKeyOrError] = true
+		for _, discoveryKey in ipairs(discoveryKeysOrError) do
+			if discoverySnapshot[discoveryKey] ~= true then
+				newDiscoveryKeys[discoveryKey] = true
+			end
 		end
 	end
 
@@ -1085,7 +1086,10 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 	}
 	-- Machine success always creates a fresh, explicitly unenchanted output.
 	outputPet.enchantId = nil
-	local discoveryKey = PetService.getLegacyDiscoveryKey(speciesId, outputVariant, anyShiny)
+	local discoveryKeys = PetDex.getWriteKeys(speciesId, outputVariant, anyShiny)
+	if not discoveryKeys then
+		return nil, "Invalid output discovery state"
+	end
 	local originalPets = {}
 	for index, pet in ipairs(petsTable) do
 		originalPets[index] = pet
@@ -1109,7 +1113,8 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 		inputVariant = inputVariant,
 		outputVariant = outputVariant,
 		outputPet = outputPet,
-		discoveryKey = discoveryKey,
+		discoveryKey = discoveryKeys[1],
+		discoveryKeys = discoveryKeys,
 		discoveryTable = discoveryTable,
 		discoverySnapshot = discoverySnapshot,
 		discoveryMutationStarted = false,
@@ -1202,12 +1207,17 @@ local function commitVariantConversionUnlocked(player, prepared, succeeded)
 			createdDiscoveryTable = true
 		end
 		prepared.discoveryWriteTable = discoveryWriteTable
-		prepared.discoveryPreviousValue = rawget(discoveryWriteTable, prepared.discoveryKey)
-		prepared.discoveryPreviousPresent = prepared.discoveryPreviousValue ~= nil
-		prepared.discoveryWrittenValue = true
+		prepared.discoveryWrites = {}
 		prepared.discoveryCreatedTable = createdDiscoveryTable
 		prepared.discoveryMutationStarted = true
-		discoveryWriteTable[prepared.discoveryKey] = prepared.discoveryWrittenValue
+		for _, discoveryKey in ipairs(prepared.discoveryKeys) do
+			local previousValue = rawget(discoveryWriteTable, discoveryKey)
+			prepared.discoveryWrites[discoveryKey] = {
+				present = previousValue ~= nil,
+				value = previousValue,
+			}
+			discoveryWriteTable[discoveryKey] = true
+		end
 		table.insert(data.pets, prepared.outputPet)
 	end
 	prepared.committed = true
@@ -1245,16 +1255,20 @@ local function rollbackVariantConversionUnlocked(prepared)
 		petsTable[index] = pet
 	end
 
-	-- Roll back only the discovery key this transaction wrote. Concurrent keys
+	-- Roll back only the discovery keys this transaction wrote. Concurrent keys
 	-- or replacement tables belong to other work and must remain untouched.
 	if prepared.discoveryMutationStarted
-		and prepared.data.discoveredPets == prepared.discoveryWriteTable
-		and rawget(prepared.discoveryWriteTable, prepared.discoveryKey)
-			== prepared.discoveryWrittenValue then
-		if prepared.discoveryPreviousPresent then
-			prepared.discoveryWriteTable[prepared.discoveryKey] = prepared.discoveryPreviousValue
-		else
-			prepared.discoveryWriteTable[prepared.discoveryKey] = nil
+		and prepared.data.discoveredPets == prepared.discoveryWriteTable then
+		for discoveryKey, previous in pairs(prepared.discoveryWrites or {}) do
+			-- Restore only an unchanged value owned by this transaction. If another
+			-- path replaced it, preserve that newer value instead of clobbering it.
+			if rawget(prepared.discoveryWriteTable, discoveryKey) == true then
+				if previous.present then
+					prepared.discoveryWriteTable[discoveryKey] = previous.value
+				else
+					prepared.discoveryWriteTable[discoveryKey] = nil
+				end
+			end
 		end
 		if prepared.discoveryCreatedTable
 			and prepared.data.discoveredPets == prepared.discoveryWriteTable
@@ -1264,9 +1278,7 @@ local function rollbackVariantConversionUnlocked(prepared)
 	end
 	prepared.discoveryMutationStarted = false
 	prepared.discoveryWriteTable = nil
-	prepared.discoveryPreviousValue = nil
-	prepared.discoveryPreviousPresent = nil
-	prepared.discoveryWrittenValue = nil
+	prepared.discoveryWrites = nil
 	prepared.discoveryCreatedTable = nil
 	prepared.mutationStarted = false
 	prepared.committed = false
@@ -1526,14 +1538,16 @@ local function convertToGoldenPetUnlocked(player, petInstanceIds)
 		}
 		table.insert(data.pets, goldenPet)
 
-		-- Track golden discovery (collection book)
-		local goldenKey = "Golden_" .. requiredPetId
+		-- Track canonical discovery and retain the QOF-19 compatibility mirror.
 		if not data.discoveredPets then
 			data.discoveredPets = {}
 		end
-		if not data.discoveredPets[goldenKey] then
-			data.discoveredPets[goldenKey] = true
-			isNewDiscovery = true
+		local discoveryKeys = PetDex.getWriteKeys(requiredPetId, "Golden", false)
+		if discoveryKeys then
+			isNewDiscovery = data.discoveredPets[discoveryKeys[1]] ~= true
+			for _, discoveryKey in ipairs(discoveryKeys) do
+				data.discoveredPets[discoveryKey] = true
+			end
 		end
 	end
 

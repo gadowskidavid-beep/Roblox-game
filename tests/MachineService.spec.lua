@@ -61,10 +61,12 @@ local PetHatchMath = originalRequire("src/ReplicatedStorage/Shared/PetHatchMath"
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
 local PetVariantPresentation = originalRequire("src/ReplicatedStorage/Shared/PetVariantPresentation")
 local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
+local PetDex = originalRequire("src/ReplicatedStorage/Shared/PetDex")
 ReplicatedStorage.Shared.PetHatchMath = PetHatchMath
 ReplicatedStorage.Shared.PetVariantMath = PetVariantMath
 ReplicatedStorage.Shared.PetVariantPresentation = PetVariantPresentation
 ReplicatedStorage.Shared.PetEnchantMath = PetEnchantMath
+ReplicatedStorage.Shared.PetDex = PetDex
 
 local function serviceRequire(path)
 	if path == Config then return Config end
@@ -74,6 +76,7 @@ local function serviceRequire(path)
 	if path == PetVariantMath then return PetVariantMath end
 	if path == PetVariantPresentation then return PetVariantPresentation end
 	if path == PetEnchantMath then return PetEnchantMath end
+	if path == PetDex then return PetDex end
 	return originalRequire(path)
 end
 rawset(_G, "require", serviceRequire)
@@ -389,6 +392,8 @@ describe("MachineService QOF-17 chance and business outcomes", function()
 		expect(output.damage):toBe(3)
 		expect(output.isNewDiscovery):toBeNil()
 		expect(profile.discoveredPets.Shiny_Buddy):toBeTrue()
+		expect(profile.discoveredPets["Buddy|Golden|Shiny"]):toBeTrue()
+		expect(profile.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
 		expect(result.isNewDiscovery):toBeTrue()
 		expect(questCalls):toEqual({ { statType = "goldenPetsConverted", amount = 1 } })
 		expect(profile.questStats.goldenPetsConverted):toBe(1)
@@ -415,6 +420,10 @@ describe("MachineService QOF-17 chance and business outcomes", function()
 		expect(output.golden):toBeFalse()
 		expect(output.name):toBe("Rainbow Shiny Buddy")
 		expect(output.damage):toBe(7.5)
+		expect(profile.discoveredPets.Shiny_Buddy):toBeTrue()
+		expect(profile.discoveredPets["Buddy|Rainbow|Shiny"]):toBeTrue()
+		expect(profile.discoveredPets["Buddy|Golden|Shiny"]):toBeNil()
+		expect(result.isNewDiscovery):toBeTrue()
 		expect(profile.questStats.goldenPetsConverted):toBe(0)
 		expect(#questCalls):toBe(0)
 		expect(currencyEvents):toBe(1)
@@ -855,7 +864,9 @@ describe("MachineService QOF-17 adversarial transaction boundaries", function()
 		expect(profile.pets[1]):toBe(originalPet)
 		expect(profile.discoveredPets):toBe(discovery)
 		expect(profile.discoveredPets.External):toBeTrue()
-		expect(profile.discoveredPets[capturedPrepared.discoveryKey]):toBeNil()
+		for _, discoveryKey in ipairs(capturedPrepared.discoveryKeys) do
+			expect(profile.discoveredPets[discoveryKey]):toBeNil()
+		end
 		expect(rollbackCalls):toBe(1)
 
 		local secondRollback = PetService.rollbackVariantConversion(capturedPrepared)
