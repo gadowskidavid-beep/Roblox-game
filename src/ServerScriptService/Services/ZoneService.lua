@@ -10,6 +10,7 @@ local HttpService = game:GetService("HttpService")
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ZoneData = require(game.ReplicatedStorage.Shared.ZoneData)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local PetData = require(game.ReplicatedStorage.Shared.PetData)
 
 local ZoneService = {}
 
@@ -74,8 +75,177 @@ local MACHINE_PRESENTATION = {
 	},
 }
 local machineRegistry = {}
+local profileHasUnlockedZone
 
-local function profileHasUnlockedZone(data, zoneId)
+-- QOF-18 egg authority mirrors the machine registry but binds every auto-hatch
+-- session to one exact server-created station. IDs are stable presentation keys;
+-- GUIDs are per-server capabilities and exact Instance references remain private.
+local EGG_MAX_DISTANCE = 10
+local eggStationRegistry = {}
+
+local function eggRegistryContainsToken(identityToken)
+	for _, record in pairs(eggStationRegistry) do
+		if record.identityToken == identityToken then
+			return true
+		end
+	end
+	return false
+end
+
+local function hasConflictingEggStationIdentity(record)
+	if not record.stationsFolder or not record.stationsFolder:IsA("Folder") then
+		return true
+	end
+	for _, candidate in ipairs(record.stationsFolder:GetDescendants()) do
+		if candidate:IsA("BasePart") and candidate ~= record.egg then
+			if candidate:GetAttribute("EggStationId") == record.stationId
+				or candidate:GetAttribute("EggStationIdentityToken") == record.identityToken then
+				return true
+			end
+		elseif candidate:IsA("ProximityPrompt")
+			and candidate ~= record.prompt
+			and candidate:IsDescendantOf(record.egg) then
+			return true
+		end
+	end
+	return false
+end
+
+local function validateEggRecordIntegrity(record)
+	if not record or hasConflictingEggStationIdentity(record) then
+		return false, "STATION_INVALID"
+	end
+	local folder = record.stationsFolder
+	local pedestal = record.pedestal
+	local egg = record.egg
+	local prompt = record.prompt
+	if folder.Parent ~= record.workspace
+		or record.workspace:FindFirstChild("EggStations") ~= folder
+		or pedestal.Parent ~= folder
+		or pedestal.Name ~= record.pedestalName
+		or pedestal.Shape ~= record.pedestalShape
+		or pedestal.Anchored ~= record.pedestalAnchored
+		or pedestal.CanCollide ~= record.pedestalCanCollide
+		or pedestal.Size ~= record.pedestalSize
+		or pedestal.CFrame ~= record.pedestalCFrame
+		or pedestal.Color ~= record.pedestalColor
+		or pedestal.Material ~= record.pedestalMaterial
+		or egg.Parent ~= folder
+		or egg.Name ~= "EggModel"
+		or egg.Shape ~= record.eggShape
+		or egg.Anchored ~= record.eggAnchored
+		or egg.CanCollide ~= record.eggCanCollide
+		or egg.Size ~= record.eggSize
+		or egg.CFrame ~= record.eggCFrame
+		or egg.Color ~= record.eggColor
+		or egg.Material ~= record.eggMaterial
+		or egg:GetAttribute("EggStationId") ~= record.stationId
+		or egg:GetAttribute("EggStationIdentityToken") ~= record.identityToken
+		or egg:GetAttribute("EggType") ~= record.eggType
+		or egg:GetAttribute("EggZoneId") ~= record.zoneId then
+		return false, "STATION_INVALID"
+	end
+	if not record.eggTypeTag or record.eggTypeTag.Parent ~= egg
+		or record.eggTypeTag.Name ~= "EggType" or record.eggTypeTag.Value ~= record.eggType
+		or not record.zoneTag or record.zoneTag.Parent ~= egg
+		or record.zoneTag.Name ~= "StationZone" or record.zoneTag.Value ~= record.zoneId
+		or not record.promptEggTag or record.promptEggTag.Parent ~= egg
+		or record.promptEggTag.Name ~= "PromptEggType" or record.promptEggTag.Value ~= record.eggType then
+		return false, "STATION_INVALID"
+	end
+	if not prompt or not prompt:IsA("ProximityPrompt")
+		or prompt.Parent ~= egg or prompt.Name ~= "HatchPrompt"
+		or prompt.Enabled ~= true or prompt.ActionText ~= "Hatch"
+		or prompt.ObjectText ~= record.promptObjectText
+		or prompt.KeyboardKeyCode ~= Enum.KeyCode.E
+		or prompt.HoldDuration ~= 0
+		or prompt.MaxActivationDistance ~= EGG_MAX_DISTANCE
+		or prompt.RequiresLineOfSight ~= false then
+		return false, "STATION_INVALID"
+	end
+	if not record.interactZone or record.interactZone.Parent ~= folder
+		or record.interactZone.Name ~= record.interactZoneName
+		or record.interactZone.Shape ~= record.interactZoneShape
+		or record.interactZone.Anchored ~= record.interactZoneAnchored
+		or record.interactZone.CanCollide ~= record.interactZoneCanCollide
+		or record.interactZone.Transparency ~= record.interactZoneTransparency
+		or record.interactZone.Size ~= record.interactZoneSize
+		or record.interactZone.CFrame ~= record.interactZoneCFrame
+		or record.interactZone.Color ~= record.interactZoneColor
+		or record.interactZone.Material ~= record.interactZoneMaterial
+		or not record.interactTag or record.interactTag.Parent ~= record.interactZone
+		or record.interactTag.Value ~= record.eggType then
+		return false, "STATION_INVALID"
+	end
+	return true
+end
+
+local function validateEggSelection(player, stationId, identityToken, expectedEggType, expectedZone, requireProximity)
+	if type(stationId) ~= "string" or #stationId < 1 or #stationId > 64
+		or type(identityToken) ~= "string" or #identityToken < 1 or #identityToken > 128 then
+		return nil, "STATION_INVALID"
+	end
+	local record = eggStationRegistry[stationId]
+	if not record or record.stationId ~= stationId or record.identityToken ~= identityToken then
+		return nil, "STATION_INVALID"
+	end
+	if expectedEggType ~= nil and expectedEggType ~= record.eggType then
+		return nil, "STATION_INVALID"
+	end
+	if expectedZone ~= nil and expectedZone ~= record.zoneId then
+		return nil, "STATION_INVALID"
+	end
+	if not player or not player:IsA("Player") then
+		return nil, "INVALID_PLAYER"
+	end
+	local integrityOk, integrityError = validateEggRecordIntegrity(record)
+	if not integrityOk then
+		return nil, integrityError
+	end
+	local data = ZoneService._dataService and ZoneService._dataService.getPlayerData(player)
+	if not profileHasUnlockedZone(data, record.zoneId) then
+		return nil, "ZONE_LOCKED"
+	end
+	if requireProximity == true then
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if not character or not root or not root:IsA("BasePart") or not root:IsDescendantOf(character) then
+			return nil, "CHARACTER_UNAVAILABLE"
+		end
+		local distance = (root.Position - record.egg.Position).Magnitude
+		if distance ~= distance or distance > EGG_MAX_DISTANCE then
+			return nil, "TOO_FAR"
+		end
+	end
+	return {
+		stationId = record.stationId,
+		eggType = record.eggType,
+		zone = record.zoneId,
+	}, nil
+end
+
+local function buildEggAuthority()
+	return {
+		validateManual = function(player, eggType)
+			for stationId, record in pairs(eggStationRegistry) do
+				if record.eggType == eggType then
+					local station = validateEggSelection(
+						player, stationId, record.identityToken, eggType, record.zoneId, true
+					)
+					return station ~= nil
+				end
+			end
+			return false
+		end,
+		validateSelection = function(player, stationId, identityToken, expectedEggType, expectedZone, requireProximity)
+			return validateEggSelection(
+				player, stationId, identityToken, expectedEggType, expectedZone, requireProximity == true
+			)
+		end,
+	}
+end
+
+profileHasUnlockedZone = function(data, zoneId)
 	if type(data) ~= "table" or type(data.unlockedZones) ~= "table" then
 		return false
 	end
@@ -275,6 +445,7 @@ function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._petService = petService
 	ZoneService._questService = nil -- set later via setQuestService
 	machineRegistry = {}
+	eggStationRegistry = {}
 
 	-- Create zones folder in workspace
 	local workspace = game:GetService("Workspace")
@@ -311,7 +482,7 @@ function ZoneService.init(dataService, currencyService, petService)
 	-- MachineService without world authority.
 	spawnMachineStation(zonesFolder, "Gold")
 	spawnMachineStation(zonesFolder, "Rainbow")
-	return validateMachineActivation
+	return validateMachineActivation, buildEggAuthority()
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -1209,6 +1380,9 @@ function ZoneService._spawnEggStations()
 		stationsFolder = Instance.new("Folder")
 		stationsFolder.Name = "EggStations"
 		stationsFolder.Parent = workspace
+	elseif not stationsFolder:IsA("Folder") or stationsFolder.Parent ~= workspace
+		or #stationsFolder:GetChildren() > 0 then
+		error("Egg station authority requires one empty canonical folder")
 	end
 
 	-- Egg station definitions per zone (type maps to PetData.Eggs keys)
@@ -1224,6 +1398,15 @@ function ZoneService._spawnEggStations()
 	}
 
 	for zoneId, stationDef in pairs(stationDefs) do
+		local stationId = "EggStation-" .. tostring(zoneId) .. "-" .. stationDef.eggType
+		if #stationId > 64 or eggStationRegistry[stationId] then
+			error("Duplicate or invalid egg station ID: " .. stationId)
+		end
+		local identityToken = HttpService:GenerateGUID(false)
+		if type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128
+			or eggRegistryContainsToken(identityToken) then
+			error("Egg station identity generation failed")
+		end
 		-- Position the egg station at a prominent spot near the zone entrance
 		local zoneCenter = (zoneId - 1) * ZONE_SPACING
 		local stationPos = Vector3.new(zoneCenter - 40, 0, -70)
@@ -1244,6 +1427,10 @@ function ZoneService._spawnEggStations()
 		-- Egg on top (ball)
 		local egg = Instance.new("Part")
 		egg.Name = "EggModel"
+		egg:SetAttribute("EggStationId", stationId)
+		egg:SetAttribute("EggStationIdentityToken", identityToken)
+		egg:SetAttribute("EggType", stationDef.eggType)
+		egg:SetAttribute("EggZoneId", zoneId)
 		egg.Shape = Enum.PartType.Ball
 		egg.Size = Vector3.new(4, 5, 4)
 		egg.Position = stationPos + Vector3.new(0, 5, 0)
@@ -1310,7 +1497,6 @@ function ZoneService._spawnEggStations()
 		costLabel.Parent = billboard
 
 		-- BillboardGui showing which pets are in this egg with their % chance
-		local PetData = require(game.ReplicatedStorage.Shared.PetData)
 		local eggDef = PetData.Eggs[stationDef.eggType]
 		if eggDef and eggDef.petPool then
 			-- Calculate total weight for percentage
@@ -1406,6 +1592,7 @@ function ZoneService._spawnEggStations()
 		proximityPrompt.ActionText = "Hatch"
 		proximityPrompt.ObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)"
 		proximityPrompt.KeyboardKeyCode = Enum.KeyCode.E
+		proximityPrompt.Enabled = true
 		proximityPrompt.HoldDuration = 0
 		proximityPrompt.MaxActivationDistance = 10
 		proximityPrompt.RequiresLineOfSight = false
@@ -1416,6 +1603,48 @@ function ZoneService._spawnEggStations()
 		promptEggTag.Name = "PromptEggType"
 		promptEggTag.Value = stationDef.eggType
 		promptEggTag.Parent = egg
+
+		eggStationRegistry[stationId] = {
+			workspace = workspace,
+			stationsFolder = stationsFolder,
+			stationId = stationId,
+			identityToken = identityToken,
+			eggType = stationDef.eggType,
+			zoneId = zoneId,
+			pedestal = pedestal,
+			pedestalName = pedestal.Name,
+			pedestalShape = pedestal.Shape,
+			pedestalAnchored = pedestal.Anchored,
+			pedestalCanCollide = pedestal.CanCollide,
+			pedestalSize = pedestal.Size,
+			pedestalCFrame = pedestal.CFrame,
+			pedestalColor = pedestal.Color,
+			pedestalMaterial = pedestal.Material,
+			egg = egg,
+			eggShape = egg.Shape,
+			eggAnchored = egg.Anchored,
+			eggCanCollide = egg.CanCollide,
+			eggSize = egg.Size,
+			eggCFrame = egg.CFrame,
+			eggColor = egg.Color,
+			eggMaterial = egg.Material,
+			eggTypeTag = eggTypeTag,
+			zoneTag = zoneTag,
+			promptEggTag = promptEggTag,
+			prompt = proximityPrompt,
+			promptObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)",
+			interactZone = interactZone,
+			interactZoneName = interactZone.Name,
+			interactZoneShape = interactZone.Shape,
+			interactZoneAnchored = interactZone.Anchored,
+			interactZoneCanCollide = interactZone.CanCollide,
+			interactZoneTransparency = interactZone.Transparency,
+			interactZoneSize = interactZone.Size,
+			interactZoneCFrame = interactZone.CFrame,
+			interactZoneColor = interactZone.Color,
+			interactZoneMaterial = interactZone.Material,
+			interactTag = interactTag,
+		}
 	end
 end
 

@@ -18,6 +18,7 @@ rawset(_G, "require", bootstrapRequire)
 local PetHatchMath = originalRequire("src/ReplicatedStorage/Shared/PetHatchMath")
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
 local PetVariantPresentation = originalRequire("src/ReplicatedStorage/Shared/PetVariantPresentation")
+local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
 
 local Config = {
 	MaxPetInventoryBase = 100,
@@ -39,6 +40,7 @@ function HttpService:GenerateGUID()
 	return "test-guid-" .. tostring(guidCounter)
 end
 
+local testRemotes = nil
 local ReplicatedStorage = {
 	Shared = {
 		Config = Config,
@@ -47,9 +49,11 @@ local ReplicatedStorage = {
 		PetHatchMath = PetHatchMath,
 		PetVariantMath = PetVariantMath,
 		PetVariantPresentation = PetVariantPresentation,
+		PetEnchantMath = PetEnchantMath,
 	},
 }
-function ReplicatedStorage:FindFirstChild()
+function ReplicatedStorage:FindFirstChild(name)
+	if name == "Remotes" then return testRemotes end
 	return nil
 end
 
@@ -68,6 +72,7 @@ local function mockRequire(path)
 	if path == PetHatchMath then return PetHatchMath end
 	if path == PetVariantMath then return PetVariantMath end
 	if path == PetVariantPresentation then return PetVariantPresentation end
+	if path == PetEnchantMath then return PetEnchantMath end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -88,10 +93,16 @@ local questFriendshipBonus = 0
 local masteryPetSlotsBonus = 0
 local treeStorageBonus = 0
 local treeEquipBonus = 0
+local upgradeShouldError = false
+local shopShouldError = false
 
+local admissionOpen = true
 local dataService = {}
 function dataService.getPlayerData()
 	return profile
+end
+function dataService.isMutationAdmissionOpen()
+	return admissionOpen
 end
 local currencyService = {}
 function currencyService.removeCoins()
@@ -99,6 +110,7 @@ function currencyService.removeCoins()
 end
 local upgradeService = {}
 function upgradeService.getUpgradeBonus(_, upgradeName)
+	if upgradeShouldError then error("injected upgrade failure") end
 	if upgradeName == "StrongPets" then return strongMultiplier end
 	if upgradeName == "LuckyEggs" then return questLuckMultiplier end
 	if upgradeName == "ExtraSlots" then return questStorageBonus end
@@ -113,6 +125,7 @@ function masteryService.getBuffBonus(_, buffType)
 end
 local shopService = {}
 function shopService.getShopMultiplier(_, buffType)
+	if shopShouldError then error("injected shop failure") end
 	if buffType == "damage" then return shopDamageMultiplier end
 	if buffType == "luck" then return shopLuckMultiplier end
 	return 1
@@ -172,6 +185,38 @@ describe("PetService canonical combat damage", function()
 	it("gives unknown species zero damage even with a forged mirror", function()
 		local pet = { petId = "Unknown", variant = "Rainbow", shiny = true, damage = 999999 }
 		expect(PetService.getPetDamage(pet, player)):toBe(0)
+	end)
+
+	it("neutralizes missing, throwing, and malformed damage providers", function()
+		local pet = { petId = "Buddy", variant = "Normal", shiny = false }
+		for _, malformed in ipairs({ "bad", math.huge, -math.huge, 0 / 0 }) do
+			strongMultiplier = malformed
+			shopDamageMultiplier = malformed
+			expect(PetService.getPetDamage(pet, player)):toBe(1)
+		end
+		upgradeShouldError = true
+		shopShouldError = true
+		expect(PetService.getPetDamage(pet, player)):toBe(1)
+		upgradeShouldError = false
+		shopShouldError = false
+		PetService._upgradeService = nil
+		PetService._shopService = nil
+		expect(PetService.getPetDamage(pet, player)):toBe(1)
+		PetService._upgradeService = upgradeService
+		PetService._shopService = shopService
+		strongMultiplier = 0
+		shopDamageMultiplier = 1
+	end)
+
+	it("always returns finite neutral values for malformed pets and lane inputs", function()
+		expect(PetService.getPetDamage(nil, player)):toBe(0)
+		expect(PetService.getPetDamage("forged", player)):toBe(0)
+		expect(PetService.getPetDamage({ petId = "Buddy" }, nil)):toBe(0)
+		local hostile = setmetatable({}, {
+			__index = function() error("hostile pet index") end,
+		})
+		expect(PetService.getCampaignLaneSpeed(hostile)):toBe(0)
+		expect(PetService.getCampaignLaneSpeed({ petId = 12 })):toBe(0)
 	end)
 end)
 
@@ -459,5 +504,144 @@ describe("PetService QOF-08 prepared batch boundary", function()
 		expect(prepared):toBeNil()
 		expect(prepareError):toBe("Pet inventory needs 2 free slots (100 max)")
 		expect(#profile.pets):toBe(99)
+	end)
+end)
+
+
+describe("PetService QOF-19 enchant runtime", function()
+	it("applies Strong exactly once after canonical variant damage and before player buffs", function()
+		strongMultiplier = 2
+		shopDamageMultiplier = 3
+		local pet = {
+			petId = "Buddy", variant = "Normal", shiny = true, damage = 999999,
+			enchantId = "StrongII", enchantStat = "damage", enchantMultiplier = 999,
+		}
+		-- 1.5 canonical * 1.25 StrongII = 1.875, floor(*2) = 3, floor(*3) = 9.
+		expect(PetService.getPetDamage(pet, player)):toBe(9)
+		strongMultiplier = 0
+		shopDamageMultiplier = 1
+	end)
+
+	it("ignores Agile and forged enchant payloads for damage", function()
+		strongMultiplier = 0
+		shopDamageMultiplier = 1
+		expect(PetService.getPetDamage({
+			petId = "Buddy", variant = "Normal", shiny = false,
+			enchantId = "AgileIII", enchantStat = "damage", enchantMultiplier = 999,
+		}, player)):toBe(1)
+		expect(PetService.getPetDamage({
+			petId = "Buddy", variant = "Normal", shiny = false,
+			enchantId = "Forged", enchantStat = "damage", enchantMultiplier = 999,
+		}, player)):toBe(1)
+	end)
+
+	it("uses only PetData baseSpeed and Agile for campaign lane speed", function()
+		expect(PetService.getCampaignLaneSpeed({ petId = "Buddy", enchantId = "AgileIII", speed = 999 })):toBe(13.5)
+		expect(PetService.getCampaignLaneSpeed({ petId = "Buddy", enchantId = "StrongIII", speed = 999 })):toBe(10)
+		expect(PetService.getCampaignLaneSpeed({ petId = "Unknown", enchantId = "AgileIII", speed = 999 })):toBe(0)
+	end)
+end)
+
+
+describe("PetService defensive equip replication", function()
+	it("sends a detached PetEquipped payload instead of the profile table", function()
+		local capturedPayload = nil
+		local equippedEvent = {}
+		function equippedEvent:FireClient(_, payload)
+			capturedPayload = payload
+		end
+		testRemotes = {
+			FindFirstChild = function(_, name)
+				if name == "PetEquipped" then return equippedEvent end
+				return nil
+			end,
+		}
+		local pet = {
+			id = "equip-1", petId = "Buddy", name = "Buddy", rarity = "Common",
+			variant = "Normal", shiny = false, favorite = false, equipped = false,
+			metadata = { server = "private-copy-test" },
+		}
+		profile = {
+			pets = { pet }, equippedPets = {}, discoveredPets = {}, shopPurchases = {},
+		}
+		local success, reason = PetService.equipPet(player, "equip-1")
+		expect(success):toBeTrue()
+		expect(reason):toBeNil()
+		expect(capturedPayload == pet):toBeFalse()
+		expect(capturedPayload.metadata == pet.metadata):toBeFalse()
+		capturedPayload.name = "Forged"
+		capturedPayload.metadata.server = "Forged"
+		expect(pet.name):toBe("Buddy")
+		expect(pet.metadata.server):toBe("private-copy-test")
+		testRemotes = nil
+	end)
+end)
+
+
+
+describe("PetService shared inventory mutation lease", function()
+	it("closes admission through final-save while allowing only the existing owner to settle", function()
+		profile = {
+			pets = {}, equippedPets = {}, discoveredPets = {}, shopPurchases = {},
+		}
+		admissionOpen = true
+		local existing = PetService.beginInventoryMutation(player, "existing-owner")
+		expect(existing ~= nil):toBeTrue()
+		admissionOpen = false
+		expect(PetService.beginInventoryMutation(player, "late-remote")):toBeNil()
+		expect(PetService.isInventoryMutationCurrent(player, existing)):toBeTrue()
+		expect(PetService.endInventoryMutation(player, existing, false)):toBeTrue()
+		expect(PetService.isInventoryMutationIdle(player)):toBeTrue()
+		expect(PetService.beginInventoryMutation(player, "late-after-settle")):toBeNil()
+		admissionOpen = true
+	end)
+
+	it("blocks Delete, Hatch, Equip, and Favorite while an Enchant restore owns the lease", function()
+		local pet = {
+			id = "leased-pet", petId = "Buddy", name = "Buddy", rarity = "Common",
+			variant = "Normal", shiny = false, favorite = false, equipped = false,
+		}
+		profile = {
+			coins = 1000,
+			pets = { pet },
+			equippedPets = {},
+			discoveredPets = {},
+			shopPurchases = {},
+		}
+		local lease = PetService.beginInventoryMutation(player, "EnchantingService.restore")
+		expect(lease ~= nil):toBeTrue()
+		local deleted, deleteError = PetService.deletePet(player, pet.id)
+		expect(deleted):toBeFalse()
+		expect(deleteError):toBe("Pet inventory mutation already in progress")
+		local equipped, equipError = PetService.equipPet(player, pet.id)
+		expect(equipped):toBeFalse()
+		expect(equipError):toBe("Pet inventory mutation already in progress")
+		local favorited, favoriteError = PetService.setPetFavorite(player, pet.id, true)
+		expect(favorited):toBeFalse()
+		expect(favoriteError):toBe("Pet inventory mutation already in progress")
+		local hatched, hatchError = PetService.hatchEgg(player, "BasicEgg", true)
+		expect(hatched):toBeNil()
+		expect(hatchError):toBe("Pet inventory mutation already in progress")
+		expect(#profile.pets):toBe(1)
+		expect(pet.favorite):toBeFalse()
+		expect(pet.equipped):toBeFalse()
+		expect(PetService.endInventoryMutation(player, lease, false)):toBeTrue()
+	end)
+
+	it("allows normal CRUD paths and releases a fresh incarnation after each commit", function()
+		local pet = {
+			id = "normal-pet", petId = "Buddy", name = "Buddy", rarity = "Common",
+			variant = "Normal", shiny = false, favorite = false, equipped = false,
+		}
+		profile = {
+			pets = { pet }, equippedPets = {}, discoveredPets = {}, shopPurchases = {},
+		}
+		expect(PetService.equipPet(player, pet.id)):toBeTrue()
+		expect(PetService.unequipPet(player, pet.id)):toBeTrue()
+		expect(PetService.setPetFavorite(player, pet.id, true)):toBeTrue()
+		expect(PetService.setPetFavorite(player, pet.id, false)):toBeTrue()
+		expect(PetService.deletePets(player, { pet.id })):toBeTrue()
+		expect(#profile.pets):toBe(0)
+		expect(PetService._inventoryMutationLeases[player.UserId]):toBeNil()
 	end)
 end)

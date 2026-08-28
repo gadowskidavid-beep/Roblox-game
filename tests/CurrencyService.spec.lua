@@ -2,8 +2,10 @@
 
 local originalRequire = require
 local updates = {}
+local updateShouldError = false
 local currencyUpdated = {}
 function currencyUpdated:FireClient(_, coins, diamonds)
+	if updateShouldError then error("injected CurrencyUpdated failure") end
 	table.insert(updates, { coins = coins, diamonds = diamonds })
 end
 local remotes = {}
@@ -41,6 +43,7 @@ local function resetState()
 	profile = { coins = 1000, diamonds = 500 }
 	bonuses = {}
 	updates = {}
+	updateShouldError = false
 end
 
 describe("CurrencyService QOF-07 transactions", function()
@@ -141,6 +144,29 @@ describe("CurrencyService composite spend transactions", function()
 		expect(CurrencyService.commitSpendTransaction(transaction)):toBeTrue()
 		expect(updates):toEqual({ { coins = 800, diamonds = 500 } })
 		expect(CurrencyService.commitSpendTransaction(transaction)):toBeFalse()
+		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
+	end)
+
+	it("keeps commit terminal and successful when CurrencyUpdated throws", function()
+		resetState()
+		local transaction = CurrencyService.beginSpendTransaction(player, "diamonds", 100)
+		updateShouldError = true
+		expect(CurrencyService.commitSpendTransaction(transaction)):toBeTrue()
+		expect(profile.diamonds):toBe(400)
+		expect(#updates):toBe(0)
+		expect(CurrencyService.commitSpendTransaction(transaction)):toBeFalse()
+		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
+	end)
+
+	it("retains a pending rollback handle until exact restoration succeeds", function()
+		resetState()
+		local transaction = CurrencyService.beginSpendTransaction(player, "diamonds", 125)
+		expect(profile.diamonds):toBe(375)
+		profile.diamonds = "corrupt"
+		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
+		profile.diamonds = 375
+		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeTrue()
+		expect(profile.diamonds):toBe(500)
 		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
 	end)
 
