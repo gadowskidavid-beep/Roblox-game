@@ -7,6 +7,10 @@
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
 
 local EffectsController = {}
 EffectsController.__index = EffectsController
@@ -19,6 +23,10 @@ local RARITY_COLORS = {
 	Epic = Color3.fromRGB(180, 0, 255),
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
+
+local function rgbToColor(rgb)
+	return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+end
 
 function EffectsController.new()
 	local self = setmetatable({}, EffectsController)
@@ -307,23 +315,14 @@ function EffectsController:completeEggHatch(petData)
 	if not self._initialized then return end
 
 	local rarity = petData and petData.rarity or "Common"
-	local petName = petData and petData.name or "Pet"
-	local variant = petData and petData.variant or "Normal"
+	local presentation = PetVariantPresentation.resolve(petData)
+	local petName = presentation.displayPetName
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
-
-	-- Variant-specific color overrides
-	local variantColor = nil
-	local variantPrefix = nil
-	if variant == "Shiny" then
-		variantColor = Color3.fromRGB(180, 0, 255)  -- purple
-		variantPrefix = "SHINY"
-	elseif variant == "Rainbow" then
-		variantColor = Color3.fromRGB(255, 100, 200) -- rainbow pink
-		variantPrefix = "RAINBOW"
-	end
-
-	-- Use variant color for flash if applicable, otherwise rarity color
-	local flashColor = variantColor or rarityColor
+	local baseColor = presentation.baseVariant == "Normal"
+		and rarityColor
+		or rgbToColor(presentation.accentRGB)
+	local shinyColor = rgbToColor(presentation.shinyRGB)
+	local flashColor = presentation.isShiny and shinyColor or baseColor
 
 	-- If wobble was never started (edge case), start the full UI now
 	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
@@ -396,7 +395,7 @@ function EffectsController:completeEggHatch(petData)
 		petNameLabel.Position = UDim2.fromScale(0, 0.1)
 		petNameLabel.BackgroundTransparency = 1
 		petNameLabel.Text = petName
-		petNameLabel.TextColor3 = variantColor or rarityColor
+		petNameLabel.TextColor3 = baseColor
 		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		petNameLabel.TextStrokeTransparency = 0
 		petNameLabel.Font = Enum.Font.GothamBold
@@ -410,8 +409,8 @@ function EffectsController:completeEggHatch(petData)
 		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
 		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
 		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = variantPrefix or rarity
-		rarityLabel.TextColor3 = variantColor or rarityColor
+		rarityLabel.Text = presentation.variantLabel .. " • " .. rarity
+		rarityLabel.TextColor3 = presentation.isShiny and shinyColor or baseColor
 		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		rarityLabel.TextStrokeTransparency = 0.2
 		rarityLabel.Font = Enum.Font.GothamBold

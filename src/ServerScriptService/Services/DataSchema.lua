@@ -1,14 +1,16 @@
 --[[
 	DataSchema.lua - Versioned player data schema and migration helpers
-	Keeps array fields atomic, repairs cross-field invariants, and removes
-	transient values before persistence.
+	Keeps array fields atomic, repairs cross-field invariants, normalizes future
+	potion state, and removes transient values before persistence.
 ]]
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 5
+DataSchema.VERSION = 6
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -16,6 +18,19 @@ local ARRAY_FIELDS = {
 	campaignProgress = true,
 	equippedPets = true,
 }
+
+local POTION_CATALOG = BalanceConfig.Potions.Catalog
+local POTION_UPGRADES = BalanceConfig.Potions.Upgrades
+local POTION_PERSISTENCE = BalanceConfig.Potions.Persistence
+local TIMED_BUFF_TYPES = {}
+local CHARGE_BUFF_TYPES = {}
+for _, potion in pairs(POTION_CATALOG) do
+	if potion.durationSeconds ~= nil then
+		TIMED_BUFF_TYPES[potion.buffType] = true
+	elseif potion.hatchCharges ~= nil then
+		CHARGE_BUFF_TYPES[potion.buffType] = true
+	end
+end
 
 local function deepCopy(value)
 	if type(value) ~= "table" then
@@ -60,8 +75,10 @@ function DataSchema.getDefaultData()
 		petId = "Buddy",
 		name = "Buddy",
 		rarity = "Common",
-		damage = 1,
+		damage = PetVariantMath.getBaseDamage("Buddy", "Normal", false),
 		variant = "Normal",
+		shiny = false,
+		golden = false,
 		favorite = false,
 		equipped = true,
 	}
@@ -93,6 +110,13 @@ function DataSchema.getDefaultData()
 		shopPurchases = {
 			extraEquipSlots = 0,
 		},
+		potionInventory = {},
+		activeBuffs = {},
+		potionUpgrades = {
+			slots = POTION_UPGRADES.BaseSlots,
+			durationLevel = 0,
+			autoDrink = false,
+		},
 	}
 end
 
@@ -123,12 +147,25 @@ local function normalizePets(data)
 	local petById = {}
 	for _, pet in ipairs(data.pets) do
 		if type(pet) == "table" and type(pet.id) == "string" and pet.id ~= "" and not petById[pet.id] then
-			pet.damage = math.floor(finiteNumber(pet.damage, 0, 0))
-			if pet.golden == true then
-				pet.variant = "Golden"
-			else
-				pet.variant = type(pet.variant) == "string" and pet.variant or "Normal"
+			local legacyVariant = type(pet.variant) == "string" and pet.variant or "Normal"
+			local variant = "Normal"
+			if pet.golden == true or legacyVariant == "Golden" then
+				variant = "Golden"
+			elseif legacyVariant == "Rainbow" then
+				variant = "Rainbow"
 			end
+
+			-- Preserve the V5 exclusive marker and a V6 Boolean mirror. Reading
+			-- both makes V6 -> rolling V5 save -> V6 lossless because V5 servers
+			-- retain unknown fields even when they stamp schemaVersion back to 5.
+			local shiny = legacyVariant == "Shiny" or pet.shiny == true
+
+			pet.variant = variant
+			pet.shiny = shiny
+			-- Keep the current visual/rolling-version compatibility mirror. The
+			-- base variant remains authoritative in V6.
+			pet.golden = variant == "Golden"
+			PetVariantMath.refreshDamageMirror(pet)
 			pet.favorite = pet.favorite == true
 			pet.equipped = pet.equipped == true
 			petById[pet.id] = pet
@@ -168,7 +205,7 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 				value = math.floor(value)
 				if value >= minimum and value <= maximum and not seen[value] then
 					seen[value] = true
-				table.insert(normalized, value)
+					table.insert(normalized, value)
 				end
 			end
 		end
@@ -180,7 +217,88 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 	return normalized
 end
 
-function DataSchema.normalize(data)
+local function normalizeBooleanMap(values, maximumKeyLength)
+	local normalized = {}
+	if type(values) == "table" then
+		for key, value in pairs(values) do
+			if type(key) == "string" and #key > 0 and #key <= maximumKeyLength and value == true then
+				normalized[key] = true
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizePotionInventory(values)
+	local normalized = {}
+	if type(values) == "table" then
+		for potionId, count in pairs(values) do
+			if POTION_CATALOG[potionId] and type(count) == "number" then
+				count = math.clamp(
+					math.floor(finiteNumber(count, 0, 0)),
+					0,
+					POTION_PERSISTENCE.MaxInventoryPerPotion
+				)
+				if count > 0 then
+					normalized[potionId] = count
+				end
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizeActiveBuffs(values, currentTime)
+	local normalized = {}
+	if type(values) ~= "table" then
+		return normalized
+	end
+
+	for buffType, state in pairs(values) do
+		if TIMED_BUFF_TYPES[buffType] and type(state) == "number" then
+			local expiresAt = math.floor(finiteNumber(state, 0, 0))
+			if expiresAt > currentTime then
+				normalized[buffType] = math.min(
+					expiresAt,
+					currentTime + POTION_PERSISTENCE.MaxTimedBuffSeconds
+				)
+			end
+		elseif CHARGE_BUFF_TYPES[buffType] and type(state) == "table" then
+			local charges = math.clamp(
+				math.floor(finiteNumber(state.charges, 0, 0)),
+				0,
+				POTION_UPGRADES.MaxShinyCharges
+			)
+			if charges > 0 then
+				normalized[buffType] = { charges = charges }
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizePotionUpgrades(values)
+	if type(values) ~= "table" then
+		values = {}
+	end
+	return {
+		slots = math.clamp(
+			math.floor(finiteNumber(values.slots, POTION_UPGRADES.BaseSlots, POTION_UPGRADES.BaseSlots)),
+			POTION_UPGRADES.BaseSlots,
+			POTION_UPGRADES.MaxSlots
+		),
+		durationLevel = math.clamp(
+			math.floor(finiteNumber(values.durationLevel, 0, 0)),
+			0,
+			#POTION_UPGRADES.Duration
+		),
+		autoDrink = values.autoDrink == true,
+	}
+end
+
+function DataSchema.normalize(data, currentTime)
+	currentTime = math.floor(finiteNumber(currentTime, os.time(), 0))
+
 	data.coins = math.floor(finiteNumber(data.coins, 0, 0))
 	data.diamonds = math.floor(finiteNumber(data.diamonds, 0, 0))
 	data.xp = math.floor(finiteNumber(data.xp, 0, 0))
@@ -196,17 +314,9 @@ function DataSchema.normalize(data)
 		data.questStats[statName] = math.floor(finiteNumber(data.questStats[statName], defaultValue, 0))
 	end
 	if type(data.upgrades) ~= "table" then data.upgrades = {} end
-	local normalizedTreePurchases = {}
-	if type(data.upgradeTreePurchases) == "table" then
-		for upgradeId, isPurchased in pairs(data.upgradeTreePurchases) do
-			if type(upgradeId) == "string" and #upgradeId > 0 and #upgradeId <= 64 and isPurchased == true then
-				normalizedTreePurchases[upgradeId] = true
-			end
-		end
-	end
-	data.upgradeTreePurchases = normalizedTreePurchases
+	data.upgradeTreePurchases = normalizeBooleanMap(data.upgradeTreePurchases, 64)
 	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
-	if type(data.discoveredPets) ~= "table" then data.discoveredPets = {} end
+	data.discoveredPets = normalizeBooleanMap(data.discoveredPets, 128)
 	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
 	if type(data.shopPurchases) ~= "table" then data.shopPurchases = {} end
 	data.shopPurchases.extraEquipSlots = math.clamp(
@@ -215,26 +325,28 @@ function DataSchema.normalize(data)
 		Config.MaxExtraEquipSlots or 5
 	)
 
+	data.potionInventory = normalizePotionInventory(data.potionInventory)
+	data.activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
+	data.potionUpgrades = normalizePotionUpgrades(data.potionUpgrades)
+
 	data.schemaVersion = DataSchema.VERSION
 	data.xpNeeded = nil
 	return data
 end
 
-function DataSchema.migrate(rawData)
+function DataSchema.migrate(rawData, currentTime)
 	if type(rawData) ~= "table" then
 		return DataSchema.getDefaultData()
 	end
 
 	local data = deepCopy(rawData)
 	mergeDefaults(data, DataSchema.getDefaultData())
-	return DataSchema.normalize(data)
+	return DataSchema.normalize(data, currentTime)
 end
 
-function DataSchema.cloneForPersistence(data)
+function DataSchema.cloneForPersistence(data, currentTime)
 	local snapshot = deepCopy(data)
-	snapshot.xpNeeded = nil
-	snapshot.schemaVersion = DataSchema.VERSION
-	return snapshot
+	return DataSchema.normalize(snapshot, currentTime)
 end
 
 function DataSchema.deepCopy(value)

@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000070">
+	<Item class="ServerScriptService" referent="RBX00000072">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX0000006F">
+			<Item class="Script" referent="RBX00000071">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -1552,25 +1552,27 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX0000006E">
+			<Item class="Folder" referent="RBX00000070">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000062">
+				<Item class="ModuleScript" referent="RBX00000064">
 					<Properties>
 						<string name="Name">DataSchema</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
 	DataSchema.lua - Versioned player data schema and migration helpers
-	Keeps array fields atomic, repairs cross-field invariants, and removes
-	transient values before persistence.
+	Keeps array fields atomic, repairs cross-field invariants, normalizes future
+	potion state, and removes transient values before persistence.
 ]]
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 5
+DataSchema.VERSION = 6
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -1578,6 +1580,19 @@ local ARRAY_FIELDS = {
 	campaignProgress = true,
 	equippedPets = true,
 }
+
+local POTION_CATALOG = BalanceConfig.Potions.Catalog
+local POTION_UPGRADES = BalanceConfig.Potions.Upgrades
+local POTION_PERSISTENCE = BalanceConfig.Potions.Persistence
+local TIMED_BUFF_TYPES = {}
+local CHARGE_BUFF_TYPES = {}
+for _, potion in pairs(POTION_CATALOG) do
+	if potion.durationSeconds ~= nil then
+		TIMED_BUFF_TYPES[potion.buffType] = true
+	elseif potion.hatchCharges ~= nil then
+		CHARGE_BUFF_TYPES[potion.buffType] = true
+	end
+end
 
 local function deepCopy(value)
 	if type(value) ~= "table" then
@@ -1622,8 +1637,10 @@ function DataSchema.getDefaultData()
 		petId = "Buddy",
 		name = "Buddy",
 		rarity = "Common",
-		damage = 1,
+		damage = PetVariantMath.getBaseDamage("Buddy", "Normal", false),
 		variant = "Normal",
+		shiny = false,
+		golden = false,
 		favorite = false,
 		equipped = true,
 	}
@@ -1655,6 +1672,13 @@ function DataSchema.getDefaultData()
 		shopPurchases = {
 			extraEquipSlots = 0,
 		},
+		potionInventory = {},
+		activeBuffs = {},
+		potionUpgrades = {
+			slots = POTION_UPGRADES.BaseSlots,
+			durationLevel = 0,
+			autoDrink = false,
+		},
 	}
 end
 
@@ -1685,12 +1709,25 @@ local function normalizePets(data)
 	local petById = {}
 	for _, pet in ipairs(data.pets) do
 		if type(pet) == "table" and type(pet.id) == "string" and pet.id ~= "" and not petById[pet.id] then
-			pet.damage = math.floor(finiteNumber(pet.damage, 0, 0))
-			if pet.golden == true then
-				pet.variant = "Golden"
-			else
-				pet.variant = type(pet.variant) == "string" and pet.variant or "Normal"
+			local legacyVariant = type(pet.variant) == "string" and pet.variant or "Normal"
+			local variant = "Normal"
+			if pet.golden == true or legacyVariant == "Golden" then
+				variant = "Golden"
+			elseif legacyVariant == "Rainbow" then
+				variant = "Rainbow"
 			end
+
+			-- Preserve the V5 exclusive marker and a V6 Boolean mirror. Reading
+			-- both makes V6 -> rolling V5 save -> V6 lossless because V5 servers
+			-- retain unknown fields even when they stamp schemaVersion back to 5.
+			local shiny = legacyVariant == "Shiny" or pet.shiny == true
+
+			pet.variant = variant
+			pet.shiny = shiny
+			-- Keep the current visual/rolling-version compatibility mirror. The
+			-- base variant remains authoritative in V6.
+			pet.golden = variant == "Golden"
+			PetVariantMath.refreshDamageMirror(pet)
 			pet.favorite = pet.favorite == true
 			pet.equipped = pet.equipped == true
 			petById[pet.id] = pet
@@ -1730,7 +1767,7 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 				value = math.floor(value)
 				if value >= minimum and value <= maximum and not seen[value] then
 					seen[value] = true
-				table.insert(normalized, value)
+					table.insert(normalized, value)
 				end
 			end
 		end
@@ -1742,7 +1779,88 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 	return normalized
 end
 
-function DataSchema.normalize(data)
+local function normalizeBooleanMap(values, maximumKeyLength)
+	local normalized = {}
+	if type(values) == "table" then
+		for key, value in pairs(values) do
+			if type(key) == "string" and #key > 0 and #key <= maximumKeyLength and value == true then
+				normalized[key] = true
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizePotionInventory(values)
+	local normalized = {}
+	if type(values) == "table" then
+		for potionId, count in pairs(values) do
+			if POTION_CATALOG[potionId] and type(count) == "number" then
+				count = math.clamp(
+					math.floor(finiteNumber(count, 0, 0)),
+					0,
+					POTION_PERSISTENCE.MaxInventoryPerPotion
+				)
+				if count > 0 then
+					normalized[potionId] = count
+				end
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizeActiveBuffs(values, currentTime)
+	local normalized = {}
+	if type(values) ~= "table" then
+		return normalized
+	end
+
+	for buffType, state in pairs(values) do
+		if TIMED_BUFF_TYPES[buffType] and type(state) == "number" then
+			local expiresAt = math.floor(finiteNumber(state, 0, 0))
+			if expiresAt > currentTime then
+				normalized[buffType] = math.min(
+					expiresAt,
+					currentTime + POTION_PERSISTENCE.MaxTimedBuffSeconds
+				)
+			end
+		elseif CHARGE_BUFF_TYPES[buffType] and type(state) == "table" then
+			local charges = math.clamp(
+				math.floor(finiteNumber(state.charges, 0, 0)),
+				0,
+				POTION_UPGRADES.MaxShinyCharges
+			)
+			if charges > 0 then
+				normalized[buffType] = { charges = charges }
+			end
+		end
+	end
+	return normalized
+end
+
+local function normalizePotionUpgrades(values)
+	if type(values) ~= "table" then
+		values = {}
+	end
+	return {
+		slots = math.clamp(
+			math.floor(finiteNumber(values.slots, POTION_UPGRADES.BaseSlots, POTION_UPGRADES.BaseSlots)),
+			POTION_UPGRADES.BaseSlots,
+			POTION_UPGRADES.MaxSlots
+		),
+		durationLevel = math.clamp(
+			math.floor(finiteNumber(values.durationLevel, 0, 0)),
+			0,
+			#POTION_UPGRADES.Duration
+		),
+		autoDrink = values.autoDrink == true,
+	}
+end
+
+function DataSchema.normalize(data, currentTime)
+	currentTime = math.floor(finiteNumber(currentTime, os.time(), 0))
+
 	data.coins = math.floor(finiteNumber(data.coins, 0, 0))
 	data.diamonds = math.floor(finiteNumber(data.diamonds, 0, 0))
 	data.xp = math.floor(finiteNumber(data.xp, 0, 0))
@@ -1758,17 +1876,9 @@ function DataSchema.normalize(data)
 		data.questStats[statName] = math.floor(finiteNumber(data.questStats[statName], defaultValue, 0))
 	end
 	if type(data.upgrades) ~= "table" then data.upgrades = {} end
-	local normalizedTreePurchases = {}
-	if type(data.upgradeTreePurchases) == "table" then
-		for upgradeId, isPurchased in pairs(data.upgradeTreePurchases) do
-			if type(upgradeId) == "string" and #upgradeId > 0 and #upgradeId <= 64 and isPurchased == true then
-				normalizedTreePurchases[upgradeId] = true
-			end
-		end
-	end
-	data.upgradeTreePurchases = normalizedTreePurchases
+	data.upgradeTreePurchases = normalizeBooleanMap(data.upgradeTreePurchases, 64)
 	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
-	if type(data.discoveredPets) ~= "table" then data.discoveredPets = {} end
+	data.discoveredPets = normalizeBooleanMap(data.discoveredPets, 128)
 	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
 	if type(data.shopPurchases) ~= "table" then data.shopPurchases = {} end
 	data.shopPurchases.extraEquipSlots = math.clamp(
@@ -1777,26 +1887,28 @@ function DataSchema.normalize(data)
 		Config.MaxExtraEquipSlots or 5
 	)
 
+	data.potionInventory = normalizePotionInventory(data.potionInventory)
+	data.activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
+	data.potionUpgrades = normalizePotionUpgrades(data.potionUpgrades)
+
 	data.schemaVersion = DataSchema.VERSION
 	data.xpNeeded = nil
 	return data
 end
 
-function DataSchema.migrate(rawData)
+function DataSchema.migrate(rawData, currentTime)
 	if type(rawData) ~= "table" then
 		return DataSchema.getDefaultData()
 	end
 
 	local data = deepCopy(rawData)
 	mergeDefaults(data, DataSchema.getDefaultData())
-	return DataSchema.normalize(data)
+	return DataSchema.normalize(data, currentTime)
 end
 
-function DataSchema.cloneForPersistence(data)
+function DataSchema.cloneForPersistence(data, currentTime)
 	local snapshot = deepCopy(data)
-	snapshot.xpNeeded = nil
-	snapshot.schemaVersion = DataSchema.VERSION
-	return snapshot
+	return DataSchema.normalize(snapshot, currentTime)
 end
 
 function DataSchema.deepCopy(value)
@@ -1807,7 +1919,7 @@ return DataSchema
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000063">
+				<Item class="ModuleScript" referent="RBX00000065">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2061,6 +2173,7 @@ function DataService.getClientData(player)
 	end
 
 	return {
+		schemaVersion = data.schemaVersion,
 		coins = data.coins,
 		diamonds = data.diamonds,
 		pets = DataSchema.deepCopy(data.pets),
@@ -2077,6 +2190,9 @@ function DataService.getClientData(player)
 		masteryBuffs = DataSchema.deepCopy(data.masteryBuffs),
 		discoveredPets = DataSchema.deepCopy(data.discoveredPets or {}),
 		shopPurchases = DataSchema.deepCopy(data.shopPurchases or { extraEquipSlots = 0 }),
+		potionInventory = DataSchema.deepCopy(data.potionInventory or {}),
+		activeBuffs = DataSchema.deepCopy(data.activeBuffs or {}),
+		potionUpgrades = DataSchema.deepCopy(data.potionUpgrades or {}),
 	}
 end
 
@@ -2132,7 +2248,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000064">
+				<Item class="ModuleScript" referent="RBX00000066">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2328,7 +2444,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000065">
+				<Item class="ModuleScript" referent="RBX00000067">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2344,6 +2460,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetData = require(game.ReplicatedStorage.Shared.PetData)
+local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local PetService = {}
 
@@ -2491,7 +2608,9 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		return nil, "Invalid pet in pool"
 	end
 
-	-- Roll for Shiny/Rainbow variant
+	-- Roll the active legacy exclusive Shiny/Rainbow outcome. QOF-03 stores
+	-- Shiny independently but intentionally preserves the current probabilities,
+	-- names, and baked damage until QOF-04 activates canonical variant math.
 	local luckyBonus = PetService._upgradeService.getUpgradeBonus(player, "LuckyEggs")
 	local luckyMultiplier = (luckyBonus > 0) and luckyBonus or 1
 	-- BetterLuck mastery bonus also improves variant roll
@@ -2515,16 +2634,17 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		variant = "Shiny"
 	end
 
-	-- Set name and damage based on variant
+	-- Preserve the current exclusive hatch presentation while deriving damage
+	-- canonically from pet identity, base variant, and the independent Shiny flag.
 	local petName = petDef.name
-	local petDamage = petDef.baseDamage
-	if variant == "Shiny" then
+	local baseVariant = variant == "Shiny" and "Normal" or variant
+	local isShiny = variant == "Shiny"
+	if isShiny then
 		petName = "Shiny " .. petDef.name
-		petDamage = petDef.baseDamage * 3
-	elseif variant == "Rainbow" then
+	elseif baseVariant == "Rainbow" then
 		petName = "Rainbow " .. petDef.name
-		petDamage = petDef.baseDamage * 5
 	end
+	local petDamage = PetVariantMath.getBaseDamage(petId, baseVariant, isShiny)
 
 	-- Create unique pet instance
 	local newPet = {
@@ -2533,7 +2653,9 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		name = petName,
 		rarity = petDef.rarity,
 		damage = petDamage,
-		variant = variant,
+		variant = baseVariant,
+		shiny = isShiny,
+		golden = false,
 		favorite = false,
 		equipped = false,
 	}
@@ -2837,15 +2959,14 @@ function PetService.getInventory(player)
 	return data.pets
 end
 
--- Calculate effective pet damage with StrongPets and shop multipliers.
--- Note: variant (Shiny 3x, Rainbow 5x) and golden (2x) multipliers are already
--- baked into pet.damage at creation time (hatchEgg / convertToGoldenPet).
+-- Calculate effective damage from canonical identity and apply active buffs once.
+-- pet.damage is a replicated compatibility mirror and is never combat authority.
 function PetService.getPetDamage(pet, player)
 	if not pet or not player then
 		return 0
 	end
 
-	local baseDamage = pet.damage or 0
+	local baseDamage = PetVariantMath.getPetBaseDamage(pet)
 	local strongBonus = PetService._upgradeService.getUpgradeBonus(player, "StrongPets")
 
 	if strongBonus > 0 then
@@ -2915,6 +3036,10 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 
 		if foundPet.golden then
 			return nil, "Cannot sacrifice a golden pet"
+		end
+
+		if foundPet.shiny == true then
+			return nil, "Shiny pets cannot be sacrificed"
 		end
 
 		local variant = foundPet.variant or "Normal"
@@ -2988,8 +3113,9 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 			petId = requiredPetId,
 			name = "Golden " .. petDef.name,
 			rarity = petDef.rarity,
-			damage = petDef.baseDamage * 2,
+			damage = PetVariantMath.getBaseDamage(requiredPetId, "Golden", false),
 			variant = "Golden",
+			shiny = false,
 			golden = true,
 			favorite = false,
 			equipped = false,
@@ -3028,7 +3154,7 @@ return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000066">
+				<Item class="ModuleScript" referent="RBX00000068">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3124,7 +3250,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000067">
+				<Item class="ModuleScript" referent="RBX00000069">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -5775,7 +5901,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000068">
+				<Item class="ModuleScript" referent="RBX0000006A">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6377,7 +6503,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000069">
+				<Item class="ModuleScript" referent="RBX0000006B">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6630,7 +6756,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006A">
+				<Item class="ModuleScript" referent="RBX0000006C">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6830,7 +6956,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006B">
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6980,7 +7106,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006E">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7237,7 +7363,7 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006D">
+				<Item class="ModuleScript" referent="RBX0000006F">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7366,15 +7492,15 @@ return UpgradeTreeService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX00000079">
+	<Item class="StarterPlayer" referent="RBX0000007B">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000078">
+		<Item class="StarterPlayerScripts" referent="RBX0000007A">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000077">
+				<Item class="LocalScript" referent="RBX00000079">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -7805,7 +7931,30 @@ CurrencyUpdated.OnClientEvent:Connect(function(coins, diamonds)
 end)
 
 PetInventoryUpdated.OnClientEvent:Connect(function(pets)
+	pets = type(pets) == "table" and pets or {}
 	uiController:updatePetInventory(pets)
+
+	-- Inventory snapshots can carry an equipped pet's updated visual identity.
+	-- Refresh only already-equipped entries, preserving authoritative equip order
+	-- and requiring no new remote or replicated world model.
+	local petById = {}
+	for _, petData in ipairs(pets) do
+		if type(petData) == "table" and petData.id then
+			petById[petData.id] = petData
+		end
+	end
+	local equippedChanged = false
+	for index, equippedPet in ipairs(localEquippedPets) do
+		local updatedPet = equippedPet.id and petById[equippedPet.id]
+		if updatedPet and updatedPet ~= equippedPet then
+			localEquippedPets[index] = updatedPet
+			equippedChanged = true
+		end
+	end
+	if equippedChanged then
+		petController:updateEquippedPets(localEquippedPets)
+		uiController:updateEquippedPets(localEquippedPets)
+	end
 end)
 
 PetEquipped.OnClientEvent:Connect(function(petData)
@@ -8191,7 +8340,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000071">
+				<Item class="ModuleScript" referent="RBX00000073">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8224,6 +8373,7 @@ local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local ShopData = require(Shared:WaitForChild("ShopData"))
+local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -8259,13 +8409,6 @@ local RARITY_COLORS = {
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
 
-local VARIANT_COLORS = {
-	Normal = Color3.fromRGB(160, 170, 190),
-	Golden = Color3.fromRGB(255, 200, 0),
-	Shiny = Color3.fromRGB(80, 230, 255),
-	Rainbow = Color3.fromRGB(255, 100, 210),
-}
-
 local PET_SORT_MODES = { "Default", "Rarity", "Variant", "Damage" }
 local PET_VARIANT_FILTERS = { "All", "Normal", "Golden", "Shiny", "Rainbow" }
 local RARITY_RANK = {
@@ -8283,10 +8426,11 @@ local VARIANT_RANK = {
 }
 
 local function resolvePetVariant(petData)
-	if petData.golden == true then return "Golden" end
-	local variant = petData.variant
-	if VARIANT_RANK[variant] then return variant end
-	return "Normal"
+	return PetVariantPresentation.resolve(petData).legacyCategory
+end
+
+local function rgbToColor(rgb)
+	return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
 end
 
 local function getPetDamage(petData)
@@ -9103,12 +9247,14 @@ end
 function UIController:_buildPetDisplayList()
 	local displayPets = {}
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
-		local variant = resolvePetVariant(petData)
+		local presentation = PetVariantPresentation.resolve(petData)
+		local variant = presentation.legacyCategory
 		if self._petVariantFilter == "All" or variant == self._petVariantFilter then
 			table.insert(displayPets, {
 				pet = petData,
 				sourceIndex = sourceIndex,
 				variant = variant,
+				presentation = presentation,
 			})
 		end
 	end
@@ -9236,6 +9382,11 @@ function UIController:_refreshPetGrid()
 	local displayPets = self:_buildPetDisplayList()
 	for displayIndex, entry in ipairs(displayPets) do
 		local petData = entry.pet
+		local presentation = entry.presentation
+		local baseAccent = presentation.baseVariant == "Normal"
+			and (RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common)
+			or rgbToColor(presentation.accentRGB)
+		local shinyAccent = rgbToColor(presentation.shinyRGB)
 		local card = Instance.new("Frame")
 		card.Name = "PetCard_" .. tostring(petData.uniqueId or petData.id or displayIndex)
 		card.BackgroundColor3 = COLORS.DarkBg
@@ -9249,15 +9400,27 @@ function UIController:_refreshPetGrid()
 		local rarityColor = RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common
 		local cardStroke = Instance.new("UIStroke")
 		cardStroke.Thickness = 3
-		cardStroke.Color = rarityColor
+		cardStroke.Color = presentation.isShiny and shinyAccent or baseAccent
 		cardStroke.Parent = card
 
 		local petIcon = Instance.new("Frame")
 		petIcon.Name = "PetIcon"
 		petIcon.Size = UDim2.fromScale(0.45, 0.35)
 		petIcon.Position = UDim2.fromScale(0.275, 0.05)
-		petIcon.BackgroundColor3 = rarityColor
+		petIcon.BackgroundColor3 = baseAccent
 		petIcon.Parent = card
+
+		if presentation.baseVariant == "Rainbow" then
+			local rainbowGradient = Instance.new("UIGradient")
+			rainbowGradient.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 90, 120)),
+				ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255, 225, 80)),
+				ColorSequenceKeypoint.new(0.66, Color3.fromRGB(70, 220, 255)),
+				ColorSequenceKeypoint.new(1, Color3.fromRGB(210, 90, 255)),
+			})
+			rainbowGradient.Rotation = 25
+			rainbowGradient.Parent = petIcon
+		end
 
 		local iconCorner = Instance.new("UICorner")
 		iconCorner.CornerRadius = UDim.new(1, 0)
@@ -9265,19 +9428,43 @@ function UIController:_refreshPetGrid()
 
 		local nameLabel = Instance.new("TextLabel")
 		nameLabel.Name = "PetName"
-		nameLabel.Size = UDim2.fromScale(0.9, 0.15)
-		nameLabel.Position = UDim2.fromScale(0.05, 0.42)
+		nameLabel.Size = UDim2.fromScale(0.9, 0.13)
+		nameLabel.Position = UDim2.fromScale(0.05, 0.4)
 		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = petData.name or "Pet"
+		nameLabel.Text = presentation.displayPetName
 		nameLabel.TextColor3 = COLORS.White
 		nameLabel.Font = Enum.Font.GothamBold
 		nameLabel.TextScaled = true
 		nameLabel.Parent = card
 
+		local variantBadge = Instance.new("TextLabel")
+		variantBadge.Name = "VariantBadge"
+		variantBadge.Size = UDim2.fromScale(0.8, 0.1)
+		variantBadge.Position = UDim2.fromScale(0.1, 0.54)
+		variantBadge.BackgroundColor3 = baseAccent
+		variantBadge.BackgroundTransparency = 0.08
+		variantBadge.BorderSizePixel = 0
+		variantBadge.Text = presentation.variantLabel
+		variantBadge.TextColor3 = COLORS.DarkBg
+		variantBadge.Font = Enum.Font.GothamBold
+		variantBadge.TextScaled = true
+		variantBadge.Parent = card
+
+		local variantCorner = Instance.new("UICorner")
+		variantCorner.CornerRadius = UDim.new(0, 6)
+		variantCorner.Parent = variantBadge
+
+		if presentation.isShiny then
+			local shinyStroke = Instance.new("UIStroke")
+			shinyStroke.Thickness = 2
+			shinyStroke.Color = shinyAccent
+			shinyStroke.Parent = variantBadge
+		end
+
 		local dmgLabel = Instance.new("TextLabel")
 		dmgLabel.Name = "DmgStat"
-		dmgLabel.Size = UDim2.fromScale(0.9, 0.12)
-		dmgLabel.Position = UDim2.fromScale(0.05, 0.58)
+		dmgLabel.Size = UDim2.fromScale(0.9, 0.1)
+		dmgLabel.Position = UDim2.fromScale(0.05, 0.65)
 		dmgLabel.BackgroundTransparency = 1
 		dmgLabel.Text = tostring(petData.damage or petData.baseDamage or 5)
 		dmgLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -9313,7 +9500,7 @@ function UIController:_refreshPetGrid()
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
-			selectBox.Position = UDim2.fromScale(0.1, 0.75)
+			selectBox.Position = UDim2.fromScale(0.1, 0.8)
 			selectBox.BackgroundColor3 = isFavorite and Color3.fromRGB(150, 120, 35)
 				or (isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110))
 			selectBox.Text = isFavorite and "Favorite" or (isSelected and "Selected" or "Select")
@@ -9343,7 +9530,7 @@ function UIController:_refreshPetGrid()
 			local equipBtn = Instance.new("TextButton")
 			equipBtn.Name = "EquipBtn"
 			equipBtn.Size = UDim2.fromScale(0.8, 0.16)
-			equipBtn.Position = UDim2.fromScale(0.1, 0.75)
+			equipBtn.Position = UDim2.fromScale(0.1, 0.8)
 			equipBtn.BackgroundColor3 = isEquipped and COLORS.ButtonRed or COLORS.ButtonGreen
 			equipBtn.Text = isEquipped and "Unequip" or "Equip"
 			equipBtn.TextColor3 = COLORS.White
@@ -9506,8 +9693,12 @@ function UIController:_showGoldenConversionConfirm()
 					self:_showGoldenError("Favorite pets are protected!")
 					return
 				end
-				if pet.golden then
+				if pet.golden == true or pet.variant == "Golden" then
 					self:_showGoldenError("Cannot use golden pets!")
+					return
+				end
+				if pet.shiny == true or pet.variant == "Shiny" then
+					self:_showGoldenError("Shiny pets are protected!")
 					return
 				end
 				local variant = pet.variant or "Normal"
@@ -11502,11 +11693,15 @@ end
 function UIController:enqueueDiscoveryToast(petData)
 	if not self._playerGui or type(petData) ~= "table" then return end
 
-	local variant = petData.variant or (petData.golden and "Golden") or "Normal"
+	local presentation = PetVariantPresentation.resolve(petData)
 	table.insert(self._discoveryToastQueue, {
-		name = petData.name or "Pet",
+		name = presentation.displayPetName,
 		rarity = petData.rarity or "Common",
-		variant = variant,
+		variantLabel = presentation.variantLabel,
+		baseVariant = presentation.baseVariant,
+		isShiny = presentation.isShiny,
+		accentRGB = presentation.accentRGB,
+		shinyRGB = presentation.shinyRGB,
 	})
 	self:_showNextDiscoveryToast()
 end
@@ -11517,6 +11712,10 @@ function UIController:_showNextDiscoveryToast()
 	local petData = table.remove(self._discoveryToastQueue, 1)
 	if not petData then return end
 	self._discoveryToastActive = true
+
+	local rarityColor = RARITY_COLORS[petData.rarity] or RARITY_COLORS.Common
+	local baseAccent = petData.baseVariant == "Normal" and rarityColor or rgbToColor(petData.accentRGB)
+	local shinyAccent = rgbToColor(petData.shinyRGB)
 
 	local toast = Instance.new("ScreenGui")
 	toast.Name = "DiscoveryToast"
@@ -11541,7 +11740,7 @@ function UIController:_showNextDiscoveryToast()
 
 	local cardStroke = Instance.new("UIStroke")
 	cardStroke.Thickness = 3
-	cardStroke.Color = RARITY_COLORS[petData.rarity] or RARITY_COLORS.Common
+	cardStroke.Color = petData.isShiny and shinyAccent or baseAccent
 	cardStroke.Parent = card
 
 	local title = Instance.new("TextLabel")
@@ -11562,20 +11761,19 @@ function UIController:_showNextDiscoveryToast()
 	petName.Position = UDim2.fromScale(0.05, 0.5)
 	petName.BackgroundTransparency = 1
 	petName.Text = petData.name
-	petName.TextColor3 = RARITY_COLORS[petData.rarity] or COLORS.White
+	petName.TextColor3 = baseAccent
 	petName.Font = Enum.Font.GothamBold
 	petName.TextScaled = true
 	petName.TextXAlignment = Enum.TextXAlignment.Left
 	petName.Parent = card
 
-	local variantColor = VARIANT_COLORS[petData.variant] or VARIANT_COLORS.Normal
 	local variantBadge = Instance.new("TextLabel")
 	variantBadge.Name = "VariantBadge"
 	variantBadge.Size = UDim2.fromScale(0.22, 0.42)
 	variantBadge.Position = UDim2.fromScale(0.74, 0.29)
-	variantBadge.BackgroundColor3 = variantColor
+	variantBadge.BackgroundColor3 = baseAccent
 	variantBadge.BorderSizePixel = 0
-	variantBadge.Text = string.upper(petData.variant)
+	variantBadge.Text = string.upper(petData.variantLabel)
 	variantBadge.TextColor3 = COLORS.DarkBg
 	variantBadge.Font = Enum.Font.GothamBold
 	variantBadge.TextScaled = true
@@ -11584,6 +11782,13 @@ function UIController:_showNextDiscoveryToast()
 	local badgeCorner = Instance.new("UICorner")
 	badgeCorner.CornerRadius = UDim.new(0, 9)
 	badgeCorner.Parent = variantBadge
+
+	if petData.isShiny then
+		local badgeStroke = Instance.new("UIStroke")
+		badgeStroke.Thickness = 2
+		badgeStroke.Color = shinyAccent
+		badgeStroke.Parent = variantBadge
+	end
 
 	local badgePadding = Instance.new("UIPadding")
 	badgePadding.PaddingLeft = UDim.new(0, 5)
@@ -11643,8 +11848,8 @@ function UIController:_showHatchToast(petData)
 	labelStroke.Color = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
 	labelStroke.Parent = label
 
-	local petName = petData and petData.name or "Pet"
-	label.Text = "Hatched: " .. petName
+	local presentation = PetVariantPresentation.resolve(petData)
+	label.Text = "Hatched: " .. presentation.displayPetName .. " • " .. presentation.variantLabel
 	label.TextColor3 = COLORS.White
 	label.Font = Enum.Font.GothamBold
 	label.TextScaled = true
@@ -11659,6 +11864,10 @@ end
 
 function UIController:showEggHatch(petData, isNewDiscovery)
 	if not self._playerGui then return end
+	local presentation = PetVariantPresentation.resolve(petData)
+	local rarityColor = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
+	local baseAccent = presentation.baseVariant == "Normal" and rarityColor or rgbToColor(presentation.accentRGB)
+	local shinyAccent = rgbToColor(presentation.shinyRGB)
 
 	-- If not a new discovery, show a brief toast confirming the hatch
 	if not isNewDiscovery then
@@ -11688,10 +11897,9 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	panelCorner.CornerRadius = UDim.new(0, 16)
 	panelCorner.Parent = panel
 
-	local rarityColor = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
 	local panelStroke = Instance.new("UIStroke")
 	panelStroke.Thickness = 4
-	panelStroke.Color = rarityColor
+	panelStroke.Color = presentation.isShiny and shinyAccent or baseAccent
 	panelStroke.Parent = panel
 
 	local newPetText = Instance.new("TextLabel")
@@ -11707,8 +11915,19 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	local petIcon = Instance.new("Frame")
 	petIcon.Size = UDim2.fromScale(0.35, 0.35)
 	petIcon.Position = UDim2.fromScale(0.325, 0.22)
-	petIcon.BackgroundColor3 = rarityColor
+	petIcon.BackgroundColor3 = baseAccent
 	petIcon.Parent = panel
+
+	if presentation.baseVariant == "Rainbow" then
+		local rainbowGradient = Instance.new("UIGradient")
+		rainbowGradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 90, 120)),
+			ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255, 225, 80)),
+			ColorSequenceKeypoint.new(0.66, Color3.fromRGB(70, 220, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(210, 90, 255)),
+		})
+		rainbowGradient.Parent = petIcon
+	end
 
 	local petIconCorner = Instance.new("UICorner")
 	petIconCorner.CornerRadius = UDim.new(1, 0)
@@ -11718,8 +11937,8 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	petName.Size = UDim2.fromScale(0.8, 0.12)
 	petName.Position = UDim2.fromScale(0.1, 0.6)
 	petName.BackgroundTransparency = 1
-	petName.Text = petData and petData.name or "Pet"
-	petName.TextColor3 = rarityColor
+	petName.Text = presentation.displayPetName
+	petName.TextColor3 = baseAccent
 	petName.Font = Enum.Font.GothamBold
 	petName.TextScaled = true
 	petName.Parent = panel
@@ -11728,8 +11947,8 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	rarityText.Size = UDim2.fromScale(0.8, 0.08)
 	rarityText.Position = UDim2.fromScale(0.1, 0.73)
 	rarityText.BackgroundTransparency = 1
-	rarityText.Text = petData and petData.rarity or "Common"
-	rarityText.TextColor3 = rarityColor
+	rarityText.Text = presentation.variantLabel .. " • " .. (petData and petData.rarity or "Common")
+	rarityText.TextColor3 = presentation.isShiny and shinyAccent or baseAccent
 	rarityText.Font = Enum.Font.GothamBold
 	rarityText.TextScaled = true
 	rarityText.Parent = panel
@@ -11948,7 +12167,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000072">
+				<Item class="ModuleScript" referent="RBX00000074">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11971,6 +12190,10 @@ return UIController
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
 
 local PetController = {}
 PetController.__index = PetController
@@ -11983,6 +12206,26 @@ local RARITY_COLORS = {
 	Epic = Color3.fromRGB(180, 0, 255),
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
+
+local RARITY_GLOW_SETTINGS = {
+	Common = { brightness = 0.3, range = 3, color = Color3.fromRGB(255, 255, 255) },
+	Uncommon = { brightness = 0.7, range = 5, color = Color3.fromRGB(0, 220, 50) },
+	Rare = { brightness = 1.2, range = 7, color = Color3.fromRGB(0, 120, 255) },
+	Epic = { brightness = 1.8, range = 9, color = Color3.fromRGB(180, 50, 255) },
+	Legendary = { brightness = 3.0, range = 12, color = Color3.fromRGB(255, 200, 0) },
+}
+
+local function rgbToColor(rgb)
+	return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+end
+
+local function stableHuePhase(value)
+	local hash = 0
+	for index = 1, #value do
+		hash = (hash * 31 + string.byte(value, index)) % 997
+	end
+	return hash / 997
+end
 
 function PetController.new()
 	local self = setmetatable({}, PetController)
@@ -12226,7 +12469,7 @@ end
 -- Returns the ground Y + half the pet body size so the pet sits on the surface.
 -- If no ground is found, falls back to the player's HumanoidRootPart Y.
 --------------------------------------------------------------------------------
-function PetController:_getGroundY(position, fallbackY, extraIgnore)
+function PetController:_getGroundY(position, fallbackY, extraIgnore, bodyHalfHeight)
 	local rayOrigin = Vector3.new(position.X, position.Y + 50, position.Z)
 	local rayDirection = Vector3.new(0, -200, 0)
 
@@ -12262,8 +12505,8 @@ function PetController:_getGroundY(position, fallbackY, extraIgnore)
 
 	local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
 	if result then
-		-- Ground hit: return hit position Y + half pet body radius (1.1 studs for 2.2 body)
-		return result.Position.Y + 1.1
+		-- Ground hit: place the body on the surface using its cached visual size.
+		return result.Position.Y + (bodyHalfHeight or 1.1)
 	end
 
 	-- No ground found: use fallback (player ground level)
@@ -12271,7 +12514,127 @@ function PetController:_getGroundY(position, fallbackY, extraIgnore)
 end
 
 --------------------------------------------------------------------------------
--- Create a procedural pet model: body sphere + shadow + nametag + rarity glow
+-- Apply a canonical variant style to cached model references. Variant changes
+-- are idempotent and keep attack/follow state intact; every effect is model-scoped.
+--------------------------------------------------------------------------------
+function PetController:_applyPetPresentation(visualRefs, petData)
+	local descriptor = PetVariantPresentation.resolve(petData)
+	local rarity = petData.rarity or "Common"
+	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+	local glow = RARITY_GLOW_SETTINGS[rarity] or RARITY_GLOW_SETTINGS.Common
+	local baseAccent = descriptor.baseVariant == "Normal"
+		and rarityColor
+		or rgbToColor(descriptor.accentRGB)
+	local shinyColor = rgbToColor(descriptor.shinyRGB)
+	local body = visualRefs.body
+	local light = visualRefs.light
+
+	body.Size = Vector3.new(2.2, 2.2, 2.2)
+	body.Material = Enum.Material.SmoothPlastic
+	body.Color = rarityColor
+	light.Brightness = glow.brightness
+	light.Range = glow.range
+	light.Color = glow.color
+	visualRefs.bodyHalfHeight = 1.1
+
+	if descriptor.baseVariant == "Golden" then
+		body.Size = Vector3.new(2.6, 2.6, 2.6)
+		body.Material = Enum.Material.Neon
+		body.Color = rgbToColor(descriptor.bodyRGB)
+		light.Brightness = 4
+		light.Range = 14
+		light.Color = baseAccent
+		visualRefs.bodyHalfHeight = 1.3
+	elseif descriptor.baseVariant == "Rainbow" then
+		body.Size = Vector3.new(2.4, 2.4, 2.4)
+		body.Material = Enum.Material.Neon
+		body.Color = rgbToColor(descriptor.bodyRGB)
+		light.Brightness = 3.6
+		light.Range = 14
+		light.Color = baseAccent
+		visualRefs.bodyHalfHeight = 1.2
+	end
+
+	visualRefs.nameLabel.Text = descriptor.displayPetName
+	visualRefs.nameLabel.TextColor3 = baseAccent
+	visualRefs.variantLabel.Text = descriptor.variantLabel .. " • " .. rarity
+	visualRefs.variantLabel.TextColor3 = descriptor.isShiny and shinyColor or baseAccent
+	for _, particle in ipairs(visualRefs.glowParticles) do
+		particle.Color = baseAccent
+	end
+
+	if descriptor.isShiny then
+		if not visualRefs.shinyHighlight or not visualRefs.shinyHighlight.Parent then
+			local highlight = Instance.new("Highlight")
+			highlight.Name = "ShinyHighlight"
+			highlight.Adornee = visualRefs.model
+			highlight.FillColor = shinyColor
+			highlight.FillTransparency = 0.72
+			highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+			highlight.OutlineTransparency = 0.08
+			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.Parent = visualRefs.model
+			visualRefs.shinyHighlight = highlight
+		end
+		if not visualRefs.shinyAttachment or not visualRefs.shinyAttachment.Parent then
+			local attachment = Instance.new("Attachment")
+			attachment.Name = "ShinySparkleAttachment"
+			attachment.Parent = body
+
+			local emitter = Instance.new("ParticleEmitter")
+			emitter.Name = "ShinySparkles"
+			emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+			emitter.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), shinyColor)
+			emitter.LightEmission = 0.8
+			emitter.Rate = 7
+			emitter.Lifetime = NumberRange.new(0.55, 0.9)
+			emitter.Speed = NumberRange.new(0.3, 0.8)
+			emitter.SpreadAngle = Vector2.new(180, 180)
+			emitter.Size = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.18),
+				NumberSequenceKeypoint.new(0.5, 0.3),
+				NumberSequenceKeypoint.new(1, 0),
+			})
+			emitter.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.15),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			emitter.Parent = attachment
+			visualRefs.shinyAttachment = attachment
+			visualRefs.shinyEmitter = emitter
+		end
+		if not visualRefs.shinyLight or not visualRefs.shinyLight.Parent then
+			local shinyLight = Instance.new("PointLight")
+			shinyLight.Name = "ShinyGlow"
+			shinyLight.Color = shinyColor
+			shinyLight.Brightness = 1
+			shinyLight.Range = 7
+			shinyLight.Parent = body
+			visualRefs.shinyLight = shinyLight
+		end
+	else
+		for _, effect in ipairs({
+			visualRefs.shinyHighlight,
+			visualRefs.shinyAttachment,
+			visualRefs.shinyLight,
+		}) do
+			if effect and effect.Parent then effect:Destroy() end
+		end
+		visualRefs.shinyHighlight = nil
+		visualRefs.shinyAttachment = nil
+		visualRefs.shinyEmitter = nil
+		visualRefs.shinyLight = nil
+	end
+
+	visualRefs.descriptor = descriptor
+	visualRefs.visualKey = descriptor.visualKey
+	return descriptor
+end
+
+--------------------------------------------------------------------------------
+-- Create a procedural pet model: body sphere + shadow + nametag + rarity glow.
+-- Returns cached references so the single controller update never scans for
+-- variant effects.
 --------------------------------------------------------------------------------
 function PetController:createPetModel(petData)
 	local rarity = petData.rarity or "Common"
@@ -12281,7 +12644,6 @@ function PetController:createPetModel(petData)
 	local model = Instance.new("Model")
 	model.Name = petName .. "_Model"
 
-	-- Body: sphere (placeholder for future Blender model)
 	local body = Instance.new("Part")
 	body.Name = "Body"
 	body.Shape = Enum.PartType.Ball
@@ -12290,9 +12652,10 @@ function PetController:createPetModel(petData)
 	body.Material = Enum.Material.SmoothPlastic
 	body.Anchored = true
 	body.CanCollide = false
+	body.CanTouch = false
+	body.CanQuery = false
 	body.Parent = model
 
-	-- Shadow: flat dark cylinder beneath the pet (visual ground shadow)
 	local shadow = Instance.new("Part")
 	shadow.Name = "Shadow"
 	shadow.Shape = Enum.PartType.Cylinder
@@ -12302,22 +12665,22 @@ function PetController:createPetModel(petData)
 	shadow.Transparency = 0.6
 	shadow.Anchored = true
 	shadow.CanCollide = false
+	shadow.CanTouch = false
+	shadow.CanQuery = false
 	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, 1.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
 	shadow.Parent = model
 
-	-- Name label above pet (nametag with pet name and rarity)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "NameLabel"
-	billboardGui.Size = UDim2.fromOffset(120, 30)
-	billboardGui.StudsOffset = Vector3.new(0, 1.8, 0)
+	billboardGui.Size = UDim2.fromOffset(160, 42)
+	billboardGui.StudsOffset = Vector3.new(0, 2, 0)
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = body
 	billboardGui.Parent = model
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "NameText"
-	nameLabel.Size = UDim2.fromScale(1, 0.65)
-	nameLabel.Position = UDim2.fromScale(0, 0)
+	nameLabel.Size = UDim2.fromScale(1, 0.6)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = petName
 	nameLabel.TextColor3 = bodyColor
@@ -12327,31 +12690,20 @@ function PetController:createPetModel(petData)
 	nameLabel.TextScaled = true
 	nameLabel.Parent = billboardGui
 
-	-- Rarity subtitle under name
-	local rarityLabel = Instance.new("TextLabel")
-	rarityLabel.Name = "RarityText"
-	rarityLabel.Size = UDim2.fromScale(1, 0.35)
-	rarityLabel.Position = UDim2.fromScale(0, 0.65)
-	rarityLabel.BackgroundTransparency = 1
-	rarityLabel.Text = rarity
-	rarityLabel.TextColor3 = bodyColor
-	rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	rarityLabel.TextStrokeTransparency = 0.5
-	rarityLabel.Font = Enum.Font.Gotham
-	rarityLabel.TextScaled = true
-	rarityLabel.Parent = billboardGui
+	local variantLabel = Instance.new("TextLabel")
+	variantLabel.Name = "VariantText"
+	variantLabel.Size = UDim2.fromScale(1, 0.4)
+	variantLabel.Position = UDim2.fromScale(0, 0.6)
+	variantLabel.BackgroundTransparency = 1
+	variantLabel.Text = rarity
+	variantLabel.TextColor3 = bodyColor
+	variantLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	variantLabel.TextStrokeTransparency = 0.45
+	variantLabel.Font = Enum.Font.Gotham
+	variantLabel.TextScaled = true
+	variantLabel.Parent = billboardGui
 
-	-- Rarity-based glow (PointLight with brightness/range varying by rarity)
-	-- Common=white dim, Uncommon=green, Rare=blue, Epic=purple, Legendary=gold strong
-	local glowSettings = {
-		Common = { brightness = 0.3, range = 3, color = Color3.fromRGB(255, 255, 255) },
-		Uncommon = { brightness = 0.7, range = 5, color = Color3.fromRGB(0, 220, 50) },
-		Rare = { brightness = 1.2, range = 7, color = Color3.fromRGB(0, 120, 255) },
-		Epic = { brightness = 1.8, range = 9, color = Color3.fromRGB(180, 50, 255) },
-		Legendary = { brightness = 3.0, range = 12, color = Color3.fromRGB(255, 200, 0) },
-	}
-
-	local glow = glowSettings[rarity] or glowSettings.Common
+	local glow = RARITY_GLOW_SETTINGS[rarity] or RARITY_GLOW_SETTINGS.Common
 	local light = Instance.new("PointLight")
 	light.Name = "PetGlow"
 	light.Color = glow.color
@@ -12359,8 +12711,7 @@ function PetController:createPetModel(petData)
 	light.Range = glow.range
 	light.Parent = body
 
-	-- Rarity particle ring (orbiting small sphere for Rare+)
-	-- Creates 2-4 tiny orbiting particles for rarer pets
+	local glowParticles = {}
 	if rarity == "Rare" or rarity == "Epic" or rarity == "Legendary" then
 		local numParticles = rarity == "Legendary" and 4 or (rarity == "Epic" and 3 or 2)
 		for i = 1, numParticles do
@@ -12373,23 +12724,27 @@ function PetController:createPetModel(petData)
 			particle.Transparency = 0.3
 			particle.Anchored = true
 			particle.CanCollide = false
+			particle.CanTouch = false
+			particle.CanQuery = false
 			particle.Position = body.Position + Vector3.new(1.5, 0, 0)
 			particle.Parent = model
+			table.insert(glowParticles, particle)
 		end
 	end
 
-	-- Golden pets get extra sparkle effect (larger size, extra glow)
-	if petData.golden then
-		body.Size = Vector3.new(2.6, 2.6, 2.6)
-		body.Material = Enum.Material.Neon
-		body.Color = Color3.fromRGB(255, 215, 0)
-		light.Brightness = 4
-		light.Range = 14
-		light.Color = Color3.fromRGB(255, 200, 0)
-	end
-
 	model.PrimaryPart = body
-	return model
+	local visualRefs = {
+		model = model,
+		body = body,
+		shadow = shadow,
+		light = light,
+		nameLabel = nameLabel,
+		variantLabel = variantLabel,
+		glowParticles = glowParticles,
+		visualPhase = stableHuePhase(tostring(petData.id or petData.uniqueId or petData.petId or petName)),
+	}
+	self:_applyPetPresentation(visualRefs, petData)
+	return model, visualRefs
 end
 
 -- Create a flat client-only marker whose asymmetric ring makes rotation visible.
@@ -12506,7 +12861,7 @@ function PetController:updateEquippedPets(equippedList)
 		if petData.id then
 			local petInfo = self._equippedPets[petData.id]
 			if not petInfo then
-				local model = self:createPetModel(petData)
+				local model, visualRefs = self:createPetModel(petData)
 				local attackMarker, attackMarkerGui = self:_createAttackMarker(model)
 				model.Parent = self._petsFolder
 
@@ -12517,9 +12872,16 @@ function PetController:updateEquippedPets(equippedList)
 					attackMarker = attackMarker,
 					attackMarkerGui = attackMarkerGui,
 					attackMarkerAngle = 0,
+					visualRefs = visualRefs,
+					bodyHalfHeight = visualRefs.bodyHalfHeight,
 				}
 				self._equippedPets[petData.id] = petInfo
 			else
+				local descriptor = PetVariantPresentation.resolve(petData)
+				if petInfo.visualRefs and petInfo.visualRefs.visualKey ~= descriptor.visualKey then
+					self:_applyPetPresentation(petInfo.visualRefs, petData)
+					petInfo.bodyHalfHeight = petInfo.visualRefs.bodyHalfHeight
+				end
 				petInfo.data = petData
 				petInfo.followIndex = i
 			end
@@ -12551,7 +12913,8 @@ function PetController:_updateAttackMarker(uniqueId, petInfo, deltaTime)
 	end
 
 	local bodyPosition = body.Position
-	local groundY = self:_getGroundY(bodyPosition, bodyPosition.Y, targetIgnore) - 1.1
+	local bodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+	local groundY = self:_getGroundY(bodyPosition, bodyPosition.Y, targetIgnore, bodyHalfHeight) - bodyHalfHeight
 	petInfo.attackMarkerAngle = ((petInfo.attackMarkerAngle or 0) + deltaTime * math.rad(110)) % (math.pi * 2)
 	marker.CFrame = CFrame.new(
 		bodyPosition.X,
@@ -12589,22 +12952,22 @@ function PetController:update(deltaTime)
 		self._manualTargetMode = false
 	end
 
-	-- Increment orbit timer for glow particles
+	-- One shared timer drives all bounded orbit and Rainbow presentation work.
 	if not self._orbitTimer then
 		self._orbitTimer = 0
 	end
 	self._orbitTimer = self._orbitTimer + deltaTime
+
+	local totalPets = 0
+	for _ in pairs(self._equippedPets) do
+		totalPets = totalPets + 1
+	end
 
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
 			local index = petInfo.followIndex or 1
 			local row = math.ceil(index / self._petsPerRow)
 			local col = ((index - 1) % self._petsPerRow) + 1
-
-			local totalPets = 0
-			for _ in pairs(self._equippedPets) do
-				totalPets = totalPets + 1
-			end
 			local actualPetsInRow = math.min(self._petsPerRow, totalPets - (row - 1) * self._petsPerRow)
 
 			local lateralOffset = (col - (actualPetsInRow + 1) / 2) * self._followSpread
@@ -12614,12 +12977,11 @@ function PetController:update(deltaTime)
 				+ behindVector * distanceBehind
 				+ rightVector * lateralOffset
 
-			-- Raycast to snap pet to the ground surface
-			local fallbackY = playerPos.Y - 2 + 1.1 -- player feet level + half pet size
-			local groundY = self:_getGroundY(rawTargetPos, fallbackY)
+			local bodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+			local fallbackY = playerPos.Y - 2 + bodyHalfHeight
+			local groundY = self:_getGroundY(rawTargetPos, fallbackY, nil, bodyHalfHeight)
 			local targetPos = Vector3.new(rawTargetPos.X, groundY, rawTargetPos.Z)
 
-			-- Move pet model smoothly toward target
 			local model = petInfo.model
 			if model and model.PrimaryPart and model.PrimaryPart.Parent then
 				local currentPos = model.PrimaryPart.Position
@@ -12635,40 +12997,57 @@ function PetController:update(deltaTime)
 					end
 				end
 
-				-- Position shadow on the ground directly below the pet body
-				local shadowPart = model:FindFirstChild("Shadow")
+				local shadowPart = petInfo.visualRefs and petInfo.visualRefs.shadow or model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = newPos.Y - 1.1 + 0.05
-					local shadowPos = Vector3.new(newPos.X, groundY, newPos.Z)
+					local shadowY = newPos.Y - bodyHalfHeight + 0.05
+					local shadowPos = Vector3.new(newPos.X, shadowY, newPos.Z)
 					shadowPart.CFrame = CFrame.new(shadowPos) * CFrame.Angles(0, 0, math.rad(90))
 				end
 
-				-- Orbit glow particles around the pet body
-				self:_updateGlowParticles(model, newPos, index)
+				self:_updateGlowParticles(petInfo, newPos, index)
 			end
 		end
 
+		self:_updateVariantAnimation(petInfo)
 		self:_updateAttackMarker(uniqueId, petInfo, deltaTime)
 	end
 end
 
--- Animate glow particles orbiting around the pet (for Rare+ pets)
-function PetController:_updateGlowParticles(model, bodyPos, petIndex)
-	local particleIdx = 0
-	for _, part in ipairs(model:GetChildren()) do
-		if part:IsA("BasePart") and part.Name:find("GlowParticle") then
-			particleIdx = particleIdx + 1
+-- Animate cached rarity particles without scanning model children every frame.
+function PetController:_updateGlowParticles(petInfo, bodyPos, petIndex)
+	local visualRefs = petInfo.visualRefs
+	if not visualRefs then return end
+	for particleIdx, part in ipairs(visualRefs.glowParticles) do
+		if part and part.Parent then
 			local angleOffset = (particleIdx / 5) * math.pi * 2
-			local orbitRadius = 1.6
-			local orbitSpeed = 2.5
-			local bobSpeed = 3.0
-
-			local angle = self._orbitTimer * orbitSpeed + angleOffset + petIndex * 1.2
-			local orbitX = math.cos(angle) * orbitRadius
-			local orbitZ = math.sin(angle) * orbitRadius
-			local orbitY = math.sin(self._orbitTimer * bobSpeed + particleIdx) * 0.4
-
+			local angle = self._orbitTimer * 2.5 + angleOffset + petIndex * 1.2
+			local orbitX = math.cos(angle) * 1.6
+			local orbitZ = math.sin(angle) * 1.6
+			local orbitY = math.sin(self._orbitTimer * 3 + particleIdx) * 0.4
 			part.Position = bodyPos + Vector3.new(orbitX, orbitY, orbitZ)
+		end
+	end
+end
+
+-- Rainbow color motion is folded into the existing PetController update loop.
+-- No per-pet connection, descendant scan, allocation, or unbounded particle work.
+function PetController:_updateVariantAnimation(petInfo)
+	local visualRefs = petInfo.visualRefs
+	local descriptor = visualRefs and visualRefs.descriptor
+	if not descriptor or descriptor.baseVariant ~= "Rainbow" then return end
+	if not visualRefs.body.Parent or not visualRefs.light.Parent then return end
+
+	local hue = (self._orbitTimer * 0.11 + visualRefs.visualPhase) % 1
+	local color = Color3.fromHSV(hue, 0.76, 1)
+	visualRefs.body.Color = color
+	visualRefs.light.Color = color
+	visualRefs.nameLabel.TextColor3 = color
+	if not descriptor.isShiny then
+		visualRefs.variantLabel.TextColor3 = color
+	end
+	for _, particle in ipairs(visualRefs.glowParticles) do
+		if particle and particle.Parent then
+			particle.Color = color
 		end
 	end
 end
@@ -12725,23 +13104,29 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Determine target position: on the ground beside the destructible
-	local targetPos
+	-- Keep the target's horizontal station fixed, but derive its Y from the
+	-- current visual body size. An in-place variant change therefore cannot leave
+	-- an attacking pet floating or clipping until the attack ends.
+	local targetRawPos
+	local targetGroundFallback
+	local targetNeedsGroundSnap = false
 	if destructiblePart and typeof(destructiblePart) == "Instance" and destructiblePart:IsA("BasePart") then
-		-- Offset to the side (use a per-pet angle to distribute around the destructible)
 		local petIndex = petInfo.followIndex or 1
-		local angle = (petIndex - 1) * (math.pi * 2 / 6) -- distribute evenly around
-		local offsetX = math.cos(angle) * 2.5
-		local offsetZ = math.sin(angle) * 2.5
-		local rawPos = destructiblePart.Position + Vector3.new(offsetX, 0, offsetZ)
-		-- Raycast to snap pet to the ground beside the destructible
-		local fallbackY = destructiblePart.Position.Y - destructiblePart.Size.Y / 2 + 1.1
-		local groundY = self:_getGroundY(rawPos, fallbackY, destructibleIgnore)
-		targetPos = Vector3.new(rawPos.X, groundY, rawPos.Z)
+		local angle = (petIndex - 1) * (math.pi * 2 / 6)
+		targetRawPos = destructiblePart.Position + Vector3.new(
+			math.cos(angle) * 2.5,
+			0,
+			math.sin(angle) * 2.5
+		)
+		targetGroundFallback = destructiblePart.Position.Y - destructiblePart.Size.Y / 2
+		targetNeedsGroundSnap = true
 	else
 		local character = self._player.Character
-		if character and character:FindFirstChild("HumanoidRootPart") then
-			targetPos = character.HumanoidRootPart.Position + character.HumanoidRootPart.CFrame.LookVector * 5
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+		if rootPart then
+			targetRawPos = rootPart.Position + rootPart.CFrame.LookVector * 5
+			targetGroundFallback = targetRawPos.Y - (petInfo.bodyHalfHeight or 1.1)
+			targetNeedsGroundSnap = true
 		else
 			self._attackingPets[uniqueId] = nil
 			if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
@@ -12750,6 +13135,21 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			return
 		end
 	end
+
+	local function getGroundedTargetPosition()
+		local currentBodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+		if not targetNeedsGroundSnap then return targetRawPos end
+		local fallbackY = targetGroundFallback + currentBodyHalfHeight
+		local groundY = self:_getGroundY(
+			targetRawPos,
+			fallbackY,
+			destructibleIgnore,
+			currentBodyHalfHeight
+		)
+		return Vector3.new(targetRawPos.X, groundY, targetRawPos.Z)
+	end
+
+	local targetPos = getGroundedTargetPosition()
 
 	-- Slow approach using per-frame lerp at speed 1.5 (very slow and natural, walking pace)
 	if model.PrimaryPart and model.PrimaryPart.Parent then
@@ -12799,6 +13199,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 					end
 				end
 
+				targetPos = getGroundedTargetPosition()
 				local currentPos = model.PrimaryPart.Position
 				local dist = (currentPos - targetPos).Magnitude
 				if dist < 0.5 then
@@ -12810,7 +13211,13 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				local alpha = math.min(1, dt * APPROACH_SPEED)
 				local newPos = currentPos:Lerp(targetPos, alpha)
 				-- Snap Y to ground via raycast during approach
-				local approachGroundY = self:_getGroundY(newPos, targetPos.Y, destructibleIgnore)
+				local currentBodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+				local approachGroundY = self:_getGroundY(
+					newPos,
+					targetPos.Y,
+					destructibleIgnore,
+					currentBodyHalfHeight
+				)
 				newPos = Vector3.new(newPos.X, approachGroundY, newPos.Z)
 				local offset = newPos - currentPos
 
@@ -12821,9 +13228,9 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				end
 
 				-- Update shadow
-				local shadowPart = model:FindFirstChild("Shadow")
+				local shadowPart = petInfo.visualRefs and petInfo.visualRefs.shadow or model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = newPos.Y - 1.1 + 0.05
+					local groundY = newPos.Y - currentBodyHalfHeight + 0.05
 					shadowPart.CFrame = CFrame.new(newPos.X, groundY, newPos.Z) * CFrame.Angles(0, 0, math.rad(90))
 				end
 			end
@@ -12873,6 +13280,8 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 
 				-- Gentle bounce (bob up and down)
 				local bounceOffset = math.sin(bounceTime * BOUNCE_SPEED) * BOUNCE_HEIGHT
+				targetPos = getGroundedTargetPosition()
+				local currentBodyHalfHeight = petInfo.bodyHalfHeight or 1.1
 				local desiredPos = targetPos + Vector3.new(0, bounceOffset, 0)
 				local currentPos = model.PrimaryPart.Position
 				local offset = desiredPos - currentPos
@@ -12884,9 +13293,9 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				end
 
 				-- Update shadow
-				local shadowPart = model:FindFirstChild("Shadow")
+				local shadowPart = petInfo.visualRefs and petInfo.visualRefs.shadow or model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = desiredPos.Y - 1.1 + 0.05
+					local groundY = desiredPos.Y - currentBodyHalfHeight + 0.05
 					shadowPart.CFrame = CFrame.new(desiredPos.X, groundY, desiredPos.Z) * CFrame.Angles(0, 0, math.rad(90))
 				end
 			end
@@ -13412,7 +13821,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000073">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -14327,7 +14736,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000074">
+				<Item class="ModuleScript" referent="RBX00000076">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -14340,6 +14749,10 @@ return CampaignController
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
 
 local EffectsController = {}
 EffectsController.__index = EffectsController
@@ -14352,6 +14765,10 @@ local RARITY_COLORS = {
 	Epic = Color3.fromRGB(180, 0, 255),
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
+
+local function rgbToColor(rgb)
+	return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+end
 
 function EffectsController.new()
 	local self = setmetatable({}, EffectsController)
@@ -14640,23 +15057,14 @@ function EffectsController:completeEggHatch(petData)
 	if not self._initialized then return end
 
 	local rarity = petData and petData.rarity or "Common"
-	local petName = petData and petData.name or "Pet"
-	local variant = petData and petData.variant or "Normal"
+	local presentation = PetVariantPresentation.resolve(petData)
+	local petName = presentation.displayPetName
 	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
-
-	-- Variant-specific color overrides
-	local variantColor = nil
-	local variantPrefix = nil
-	if variant == "Shiny" then
-		variantColor = Color3.fromRGB(180, 0, 255)  -- purple
-		variantPrefix = "SHINY"
-	elseif variant == "Rainbow" then
-		variantColor = Color3.fromRGB(255, 100, 200) -- rainbow pink
-		variantPrefix = "RAINBOW"
-	end
-
-	-- Use variant color for flash if applicable, otherwise rarity color
-	local flashColor = variantColor or rarityColor
+	local baseColor = presentation.baseVariant == "Normal"
+		and rarityColor
+		or rgbToColor(presentation.accentRGB)
+	local shinyColor = rgbToColor(presentation.shinyRGB)
+	local flashColor = presentation.isShiny and shinyColor or baseColor
 
 	-- If wobble was never started (edge case), start the full UI now
 	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
@@ -14729,7 +15137,7 @@ function EffectsController:completeEggHatch(petData)
 		petNameLabel.Position = UDim2.fromScale(0, 0.1)
 		petNameLabel.BackgroundTransparency = 1
 		petNameLabel.Text = petName
-		petNameLabel.TextColor3 = variantColor or rarityColor
+		petNameLabel.TextColor3 = baseColor
 		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		petNameLabel.TextStrokeTransparency = 0
 		petNameLabel.Font = Enum.Font.GothamBold
@@ -14743,8 +15151,8 @@ function EffectsController:completeEggHatch(petData)
 		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
 		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
 		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = variantPrefix or rarity
-		rarityLabel.TextColor3 = variantColor or rarityColor
+		rarityLabel.Text = presentation.variantLabel .. " • " .. rarity
+		rarityLabel.TextColor3 = presentation.isShiny and shinyColor or baseColor
 		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		rarityLabel.TextStrokeTransparency = 0.2
 		rarityLabel.Font = Enum.Font.GothamBold
@@ -15509,7 +15917,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15691,7 +16099,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000076">
+				<Item class="ModuleScript" referent="RBX00000078">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -15844,11 +16252,11 @@ return UpgradeTreeController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX00000061">
+	<Item class="ReplicatedStorage" referent="RBX00000063">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX00000038">
+			<Item class="Folder" referent="RBX0000003A">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
@@ -15927,7 +16335,7 @@ local BalanceConfig = {
 
 	-- Approved target model. Activated with the V6 pet migration in QOF-03/QOF-04.
 	Variants = {
-		RuntimeEnabled = false,
+		RuntimeEnabled = true,
 		Base = {
 			Normal = { displayName = "Normal", damageMultiplier = 1 },
 			Golden = { displayName = "Gold", damageMultiplier = 2 },
@@ -16046,6 +16454,10 @@ local BalanceConfig = {
 
 	Potions = {
 		RuntimeEnabled = false,
+		Persistence = {
+			MaxInventoryPerPotion = 999,
+			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
+		},
 		Catalog = {
 			LuckPotion = {
 				cost = { currency = "diamonds", amount = 100 },
@@ -16235,8 +16647,8 @@ local function validateIncreasingCosts(levels, context)
 end
 
 function BalanceConfig.Validate()
+	assert(BalanceConfig.Variants.RuntimeEnabled == true, "Variants must be enabled in QOF-04")
 	local futureSections = {
-		Variants = BalanceConfig.Variants,
 		Hatch = BalanceConfig.Hatch,
 		Machines = BalanceConfig.Machines,
 		CoreUpgrades = BalanceConfig.CoreUpgrades,
@@ -16337,6 +16749,26 @@ function BalanceConfig.Validate()
 	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.PotionSlots, "Potion Slots")
 	validateIncreasingCosts(BalanceConfig.Potions.Upgrades.Duration, "Potion Duration")
 	validateCost(BalanceConfig.Potions.Upgrades.AutoDrink.cost, "Auto-Drink")
+
+	local potionPersistence = BalanceConfig.Potions.Persistence
+	assert(
+		isFiniteNumber(potionPersistence.MaxInventoryPerPotion)
+			and potionPersistence.MaxInventoryPerPotion > 0
+			and potionPersistence.MaxInventoryPerPotion % 1 == 0,
+		"potion inventory cap is invalid"
+	)
+	assert(
+		isFiniteNumber(potionPersistence.MaxTimedBuffSeconds)
+			and potionPersistence.MaxTimedBuffSeconds > 0
+			and potionPersistence.MaxTimedBuffSeconds % 1 == 0,
+		"timed buff persistence cap is invalid"
+	)
+	assert(
+		isFiniteNumber(BalanceConfig.Potions.Upgrades.MaxShinyCharges)
+			and BalanceConfig.Potions.Upgrades.MaxShinyCharges > 0
+			and BalanceConfig.Potions.Upgrades.MaxShinyCharges % 1 == 0,
+		"Shiny charge cap is invalid"
+	)
 
 	for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
 		validateCost(potion.cost, potionId)
@@ -16686,6 +17118,184 @@ return PetData
 				</Item>
 				<Item class="ModuleScript" referent="RBX00000033">
 					<Properties>
+						<string name="Name">PetVariantMath</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	PetVariantMath.lua - Canonical pet variant and damage derivation.
+	Pet identity, base variant, and the independent Shiny flag are authoritative;
+	persisted/client damage values are compatibility mirrors only.
+]]
+
+local BalanceConfig = require(script.Parent.BalanceConfig)
+local PetData = require(script.Parent.PetData)
+
+local PetVariantMath = {}
+
+local function finiteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+function PetVariantMath.normalizeBaseVariant(variant)
+	if type(variant) == "string" and BalanceConfig.Variants.Base[variant] then
+		return variant
+	end
+	return "Normal"
+end
+
+function PetVariantMath.getDamageFromBase(baseDamage, variant, shiny)
+	if not finiteNumber(baseDamage) or baseDamage < 0 then
+		return 0
+	end
+
+	local baseVariant = PetVariantMath.normalizeBaseVariant(variant)
+	local variantMultiplier = BalanceConfig.Variants.Base[baseVariant].damageMultiplier
+	local shinyMultiplier = shiny == true and BalanceConfig.Variants.Shiny.damageMultiplier or 1
+	return baseDamage * variantMultiplier * shinyMultiplier
+end
+
+function PetVariantMath.getBaseDamage(petId, variant, shiny)
+	if type(petId) ~= "string" then
+		return 0
+	end
+	local petDefinition = PetData.Pets[petId]
+	if type(petDefinition) ~= "table" then
+		return 0
+	end
+	return PetVariantMath.getDamageFromBase(petDefinition.baseDamage, variant, shiny)
+end
+
+function PetVariantMath.getPetBaseDamage(pet)
+	if type(pet) ~= "table" then
+		return 0
+	end
+	return PetVariantMath.getBaseDamage(pet.petId, pet.variant, pet.shiny)
+end
+
+function PetVariantMath.refreshDamageMirror(pet)
+	if type(pet) ~= "table" then
+		return 0
+	end
+	local damage = PetVariantMath.getPetBaseDamage(pet)
+	pet.damage = damage
+	return damage
+end
+
+return PetVariantMath
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000034">
+					<Properties>
+						<string name="Name">PetVariantPresentation</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	PetVariantPresentation.lua - Pure presentation resolver for canonical pet variants.
+	It derives labels, stable visual keys, and color tokens only. It never mutates
+	pet data and must not influence persistence, gameplay, damage, or eligibility.
+]]
+
+local PetData = require(script.Parent.PetData)
+
+local PetVariantPresentation = {}
+
+local BASE_STYLES = {
+	Normal = {
+		displayName = "Normal",
+		accentRGB = { 160, 170, 190 },
+		bodyRGB = nil,
+	},
+	Golden = {
+		displayName = "Gold",
+		accentRGB = { 255, 200, 0 },
+		bodyRGB = { 255, 215, 0 },
+	},
+	Rainbow = {
+		displayName = "Rainbow",
+		accentRGB = { 255, 100, 210 },
+		bodyRGB = { 255, 100, 210 },
+	},
+}
+
+local SHINY_RGB = { 175, 245, 255 }
+
+local function safeName(value)
+	if type(value) == "string" and value ~= "" then
+		return value
+	end
+	return nil
+end
+
+function PetVariantPresentation.normalizeBaseVariant(petData)
+	if type(petData) ~= "table" then
+		return "Normal"
+	end
+
+	if petData.variant == "Rainbow" then
+		return "Rainbow"
+	end
+	if petData.variant == "Golden" or petData.golden == true then
+		return "Golden"
+	end
+	return "Normal"
+end
+
+function PetVariantPresentation.isShiny(petData)
+	return type(petData) == "table"
+		and (petData.shiny == true or petData.variant == "Shiny")
+end
+
+function PetVariantPresentation.resolve(petData)
+	petData = type(petData) == "table" and petData or {}
+
+	local baseVariant = PetVariantPresentation.normalizeBaseVariant(petData)
+	local shiny = PetVariantPresentation.isShiny(petData)
+	local style = BASE_STYLES[baseVariant]
+	local variantLabel = style.displayName .. (shiny and " Shiny" or "")
+
+	local definition = type(petData.petId) == "string" and PetData.Pets[petData.petId] or nil
+	local petName = definition and safeName(definition.name)
+		or safeName(petData.name)
+		or safeName(petData.petId)
+		or "Pet"
+
+	local namePrefix = ""
+	if baseVariant == "Golden" then
+		namePrefix = "Gold "
+	elseif baseVariant == "Rainbow" then
+		namePrefix = "Rainbow "
+	end
+	if shiny then
+		namePrefix = namePrefix .. "Shiny "
+	end
+
+	-- Legacy inventory filtering and Pet Index stay four-category compatible
+	-- until their dedicated migration. Labels and visuals remain fully combined.
+	local legacyCategory = shiny and "Shiny" or baseVariant
+
+	return {
+		baseVariant = baseVariant,
+		isShiny = shiny,
+		baseDisplayName = style.displayName,
+		variantLabel = variantLabel,
+		petName = petName,
+		displayPetName = namePrefix .. petName,
+		visualKey = baseVariant .. (shiny and ":Shiny" or ":Standard"),
+		legacyCategory = legacyCategory,
+		accentRGB = { style.accentRGB[1], style.accentRGB[2], style.accentRGB[3] },
+		bodyRGB = style.bodyRGB and { style.bodyRGB[1], style.bodyRGB[2], style.bodyRGB[3] } or nil,
+		shinyRGB = { SHINY_RGB[1], SHINY_RGB[2], SHINY_RGB[3] },
+	}
+end
+
+return PetVariantPresentation
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000035">
+					<Properties>
 						<string name="Name">ZoneData</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
@@ -16899,7 +17509,7 @@ return ZoneData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000034">
+				<Item class="ModuleScript" referent="RBX00000036">
 					<Properties>
 						<string name="Name">CampaignData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17082,7 +17692,7 @@ return CampaignData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000035">
+				<Item class="ModuleScript" referent="RBX00000037">
 					<Properties>
 						<string name="Name">QuestData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17384,7 +17994,7 @@ return QuestData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000036">
+				<Item class="ModuleScript" referent="RBX00000038">
 					<Properties>
 						<string name="Name">MasteryData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17536,7 +18146,7 @@ return MasteryData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000037">
+				<Item class="ModuleScript" referent="RBX00000039">
 					<Properties>
 						<string name="Name">ShopData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17641,11 +18251,11 @@ return ShopData
 					</Properties>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000054">
+			<Item class="Folder" referent="RBX00000056">
 				<Properties>
 					<string name="Name">packages</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000053">
+				<Item class="ModuleScript" referent="RBX00000055">
 					<Properties>
 						<string name="Name">vide</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17661,7 +18271,7 @@ export type Context<T> = vide.Context<T>
 return vide
 ]]></ProtectedString>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX00000039">
+					<Item class="ModuleScript" referent="RBX0000003B">
 						<Properties>
 							<string name="Name">action</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17693,7 +18303,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003A">
+					<Item class="ModuleScript" referent="RBX0000003C">
 						<Properties>
 							<string name="Name">apply</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17862,7 +18472,7 @@ return apply
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003B">
+					<Item class="ModuleScript" referent="RBX0000003D">
 						<Properties>
 							<string name="Name">batch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17892,7 +18502,7 @@ return batch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003C">
+					<Item class="ModuleScript" referent="RBX0000003E">
 						<Properties>
 							<string name="Name">branch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17939,7 +18549,7 @@ return branch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003D">
+					<Item class="ModuleScript" referent="RBX0000003F">
 						<Properties>
 							<string name="Name">changed</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -17964,7 +18574,7 @@ return changed
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003E">
+					<Item class="ModuleScript" referent="RBX00000040">
 						<Properties>
 							<string name="Name">cleanup</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18014,7 +18624,7 @@ return cleanup ::
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003F">
+					<Item class="ModuleScript" referent="RBX00000041">
 						<Properties>
 							<string name="Name">context</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18095,7 +18705,7 @@ return context
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000040">
+					<Item class="ModuleScript" referent="RBX00000042">
 						<Properties>
 							<string name="Name">create</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18212,7 +18822,7 @@ return (create :: any) :: Create
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000041">
+					<Item class="ModuleScript" referent="RBX00000043">
 						<Properties>
 							<string name="Name">defaults</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18332,7 +18942,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000042">
+					<Item class="ModuleScript" referent="RBX00000044">
 						<Properties>
 							<string name="Name">derive</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18357,7 +18967,7 @@ return derive
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000043">
+					<Item class="ModuleScript" referent="RBX00000045">
 						<Properties>
 							<string name="Name">effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18376,7 +18986,7 @@ return effect :: (<T>(callback: (T) -> T, initial_value: T) -> ()) & ((callback:
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000044">
+					<Item class="ModuleScript" referent="RBX00000046">
 						<Properties>
 							<string name="Name">flags</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18395,7 +19005,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000045">
+					<Item class="ModuleScript" referent="RBX00000047">
 						<Properties>
 							<string name="Name">graph</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18723,7 +19333,7 @@ return table.freeze {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000046">
+					<Item class="ModuleScript" referent="RBX00000048">
 						<Properties>
 							<string name="Name">implicit_effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18855,7 +19465,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000047">
+					<Item class="ModuleScript" referent="RBX00000049">
 						<Properties>
 							<string name="Name">indexes</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -18983,7 +19593,7 @@ return indexes
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000048">
+					<Item class="ModuleScript" referent="RBX0000004A">
 						<Properties>
 							<string name="Name">lib</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19110,7 +19720,7 @@ return vide
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000049">
+					<Item class="ModuleScript" referent="RBX0000004B">
 						<Properties>
 							<string name="Name">mount</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19128,7 +19738,7 @@ return mount :: (<T>(component: () -> T, target: Instance) -> () -> ()) & ((comp
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004A">
+					<Item class="ModuleScript" referent="RBX0000004C">
 						<Properties>
 							<string name="Name">read</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19140,7 +19750,7 @@ return read
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004B">
+					<Item class="ModuleScript" referent="RBX0000004D">
 						<Properties>
 							<string name="Name">root</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19182,7 +19792,7 @@ return root :: <T...>(fn: (destroy: () -> ()) -> T...) -> (() -> (), T...)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004C">
+					<Item class="ModuleScript" referent="RBX0000004E">
 						<Properties>
 							<string name="Name">show</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19225,7 +19835,7 @@ return show
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004D">
+					<Item class="ModuleScript" referent="RBX0000004F">
 						<Properties>
 							<string name="Name">source</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19263,7 +19873,7 @@ return source :: (<T>(initial_value: T) -> Source<T>) & (<T>() -> Source<T>)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004E">
+					<Item class="ModuleScript" referent="RBX00000050">
 						<Properties>
 							<string name="Name">spring</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19598,7 +20208,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004F">
+					<Item class="ModuleScript" referent="RBX00000051">
 						<Properties>
 							<string name="Name">switch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19719,7 +20329,7 @@ return switch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000050">
+					<Item class="ModuleScript" referent="RBX00000052">
 						<Properties>
 							<string name="Name">timeout</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19753,7 +20363,7 @@ return function() return timeout, update_timeouts end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000051">
+					<Item class="ModuleScript" referent="RBX00000053">
 						<Properties>
 							<string name="Name">untrack</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19785,7 +20395,7 @@ return untrack :: ( <T>(fn: () -> T) -> T ) & ( (fn: () -> ()) -> () )
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000052">
+					<Item class="ModuleScript" referent="RBX00000054">
 						<Properties>
 							<string name="Name">values</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -19925,11 +20535,11 @@ return values
 					</Item>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000060">
+			<Item class="Folder" referent="RBX00000062">
 				<Properties>
 					<string name="Name">modules</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX0000005F">
+				<Item class="ModuleScript" referent="RBX00000061">
 					<Properties>
 						<string name="Name">formatNumber</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19981,11 +20591,11 @@ return formatNumber
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="Folder" referent="RBX0000005E">
+				<Item class="Folder" referent="RBX00000060">
 					<Properties>
 						<string name="Name">upgradeTree</string>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX00000055">
+					<Item class="ModuleScript" referent="RBX00000057">
 						<Properties>
 							<string name="Name">upgradeState</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -20088,7 +20698,7 @@ end
 return createUpgradeState]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000056">
+					<Item class="ModuleScript" referent="RBX00000058">
 						<Properties>
 							<string name="Name">upgradeTree</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21257,7 +21867,7 @@ return createUpgradeTree
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000057">
+					<Item class="ModuleScript" referent="RBX00000059">
 						<Properties>
 							<string name="Name">upgradeTreeData</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -21974,7 +22584,7 @@ return upgradeTreeData
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000058">
+					<Item class="ModuleScript" referent="RBX0000005A">
 						<Properties>
 							<string name="Name">upgradeTreeSettings</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -22051,29 +22661,29 @@ return upgradeTreeSettings
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="Folder" referent="RBX0000005D">
+					<Item class="Folder" referent="RBX0000005F">
 						<Properties>
 							<string name="Name">sounds</string>
 						</Properties>
-						<Item class="Sound" referent="RBX00000059">
+						<Item class="Sound" referent="RBX0000005B">
 							<Properties>
 								<string name="Name">close</string>
 								<Content name="SoundId"><url>rbxassetid://134438769993456</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005A">
+						<Item class="Sound" referent="RBX0000005C">
 							<Properties>
 								<string name="Name">hover</string>
 								<Content name="SoundId"><url>rbxassetid://86397706758188</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005B">
+						<Item class="Sound" referent="RBX0000005D">
 							<Properties>
 								<string name="Name">open</string>
 								<Content name="SoundId"><url>rbxassetid://72320208051245</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005C">
+						<Item class="Sound" referent="RBX0000005E">
 							<Properties>
 								<string name="Name">upgrade</string>
 								<Content name="SoundId"><url>rbxassetid://72362215248423</url></Content>
@@ -22083,7 +22693,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX0000007A">
+	<Item class="StarterGui" referent="RBX0000007C">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -22118,7 +22728,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX0000007B">
+	<Item class="SoundService" referent="RBX0000007D">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>
