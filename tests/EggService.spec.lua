@@ -1,4 +1,4 @@
--- EggService.spec.lua - Paid QOF-06 single-egg orchestration regressions.
+-- EggService.spec.lua - Paid QOF-07 single-egg transaction regressions.
 
 local originalRequire = require
 local Config = {
@@ -59,6 +59,7 @@ local removedCoins = 0
 local refundedCoins = 0
 local hatchResult = nil
 local hatchError = nil
+local hatchThrows = false
 local questHatches = 0
 
 local dataService = {}
@@ -70,8 +71,10 @@ function currencyService.removeCoins(_, amount)
 	removedCoins = removedCoins + amount
 	return true
 end
-function currencyService.addCoins(_, amount)
+function currencyService.creditRaw(_, currency, amount)
+	expect(currency):toBe("coins")
 	refundedCoins = refundedCoins + amount
+	return true
 end
 local petService = {}
 function petService.canAddPet()
@@ -83,6 +86,9 @@ end
 function petService.hatchEgg(_, eggType, skipCostDeduction)
 	expect(eggType):toBe("BasicEgg")
 	expect(skipCostDeduction):toBeTrue()
+	if hatchThrows then
+		error("constructor exploded")
+	end
 	return hatchResult, hatchError
 end
 local questService = {}
@@ -106,13 +112,14 @@ local function resetState()
 		isNewDiscovery = true,
 	}
 	hatchError = nil
+	hatchThrows = false
 	questHatches = 0
 	startEvents = {}
 	resultEvents = {}
 	EggService._hatchLock[player.UserId] = nil
 end
 
-describe("EggService paid QOF-06 single hatch", function()
+describe("EggService paid QOF-07 single hatch", function()
 	it("charges once, emits the canonical result, advances quests, and releases its lock", function()
 		resetState()
 		local pet, err = EggService.purchaseAndHatch(player, "BasicEgg")
@@ -146,6 +153,20 @@ describe("EggService paid QOF-06 single hatch", function()
 		expect(refundedCoins):toBe(expectedCost)
 		expect(#startEvents):toBe(1)
 		expect(#resultEvents):toBe(0)
+		expect(questHatches):toBe(0)
+		expect(EggService._hatchLock[player.UserId]):toBeNil()
+	end)
+
+	it("refunds exactly and releases its lock after an unexpected constructor error", function()
+		resetState()
+		hatchThrows = true
+		local pet, err = EggService.purchaseAndHatch(player, "BasicEgg")
+		local expectedCost = Config.EggCosts[1].Coins
+
+		expect(pet):toBeNil()
+		expect(err):toBe("Hatch failed safely")
+		expect(removedCoins):toBe(expectedCost)
+		expect(refundedCoins):toBe(expectedCost)
 		expect(questHatches):toBe(0)
 		expect(EggService._hatchLock[player.UserId]):toBeNil()
 	end)

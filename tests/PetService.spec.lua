@@ -1,4 +1,4 @@
--- PetService.spec.lua - QOF-06 server-authoritative hatch and damage tests.
+-- PetService.spec.lua - QOF-07 server-authoritative hatch and damage tests.
 
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
@@ -80,6 +80,8 @@ local questLuckMultiplier = 0
 local masteryLuckMultiplier = 0
 local shopDamageMultiplier = 1
 local shopLuckMultiplier = 1
+local treeEggQualityMultiplier = 1
+local treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
 
 local dataService = {}
 function dataService.getPlayerData()
@@ -106,19 +108,27 @@ function shopService.getShopMultiplier(_, buffType)
 	if buffType == "luck" then return shopLuckMultiplier end
 	return 1
 end
+local upgradeTreeService = {}
+function upgradeTreeService.getEntitlements()
+	return {
+		eggQualityMultiplier = treeEggQualityMultiplier,
+		directVariantMultipliers = treeDirectVariantMultipliers,
+	}
+end
 
 local player = { Name = "Tester", UserId = 1 }
 PetService.init(dataService, currencyService, upgradeService)
 PetService.setMasteryService(masteryService)
 PetService.setShopService(shopService)
+PetService.setUpgradeTreeService(upgradeTreeService)
 
 local function freshProfile()
 	profile = { pets = {}, equippedPets = {}, discoveredPets = {}, shopPurchases = {} }
 end
 
-local function hatchWithRolls(baseVariantRoll, shinyRoll)
+local function hatchWithRolls(baseVariantRoll, shinyRoll, speciesRoll)
 	freshProfile()
-	local rolls = { 0, baseVariantRoll, shinyRoll }
+	local rolls = { speciesRoll or 0, baseVariantRoll, shinyRoll }
 	local rollIndex = 0
 	local originalRandom = math.random
 	math.random = function()
@@ -153,7 +163,7 @@ describe("PetService canonical combat damage", function()
 	end)
 end)
 
-describe("PetService QOF-06 canonical single hatch", function()
+describe("PetService QOF-07 canonical single hatch", function()
 	it("constructs all six canonical outcomes with truthful names and damage", function()
 		questLuckMultiplier = 0
 		masteryLuckMultiplier = 0
@@ -195,6 +205,24 @@ describe("PetService QOF-06 canonical single hatch", function()
 		questLuckMultiplier = 0
 		masteryLuckMultiplier = 0
 		shopLuckMultiplier = 1
+	end)
+
+	it("keeps Egg Quality species-only and direct upgrades variant-specific", function()
+		questLuckMultiplier = 0
+		masteryLuckMultiplier = 0
+		shopLuckMultiplier = 1
+		treeEggQualityMultiplier = 1.6
+		treeDirectVariantMultipliers = { Golden = 2, Rainbow = 2, Shiny = 2 }
+
+		local pet, hatchError = hatchWithRolls(0.0015, 0.00015, 0.66)
+		expect(hatchError):toBeNil()
+		expect(pet.petId):toBe("Whiskers")
+		expect(pet.variant):toBe("Rainbow")
+		expect(pet.shiny):toBeTrue()
+		expect(pet.damage):toBe(60)
+
+		treeEggQualityMultiplier = 1
+		treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
 	end)
 
 	it("keeps legacy discovery categories for combined Shiny outcomes", function()

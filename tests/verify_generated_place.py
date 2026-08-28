@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds the QOF-06 runtime sources."""
+"""Verify that the generated Battle Pets place embeds the QOF-07 runtime sources."""
 
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -11,15 +11,20 @@ EXPECTED_SOURCES = {
     "Config": "src/ReplicatedStorage/Shared/Config.lua",
     "ShopData": "src/ReplicatedStorage/Shared/ShopData.lua",
     "upgradeTreeData": "src/ReplicatedStorage/modules/upgradeTree/upgradeTreeData.lua",
+    "upgradeTreeSettings": "src/ReplicatedStorage/modules/upgradeTree/upgradeTreeSettings.lua",
     "PetHatchMath": "src/ReplicatedStorage/Shared/PetHatchMath.lua",
     "PetVariantMath": "src/ReplicatedStorage/Shared/PetVariantMath.lua",
     "PetVariantPresentation": "src/ReplicatedStorage/Shared/PetVariantPresentation.lua",
     "PetService": "src/ServerScriptService/Services/PetService.lua",
+    "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
+    "EggService": "src/ServerScriptService/Services/EggService.lua",
+    "UpgradeTreeService": "src/ServerScriptService/Services/UpgradeTreeService.lua",
     "DataSchema": "src/ServerScriptService/Services/DataSchema.lua",
     "DataService": "src/ServerScriptService/Services/DataService.lua",
     "UIController": "src/StarterPlayer/StarterPlayerScripts/UIController.lua",
     "EffectsController": "src/StarterPlayer/StarterPlayerScripts/EffectsController.lua",
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
+    "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
 EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 61, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
@@ -71,7 +76,7 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds all QOF-06 sources exactly once")
+    print("PASS: generated place embeds all QOF-07 sources exactly once")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

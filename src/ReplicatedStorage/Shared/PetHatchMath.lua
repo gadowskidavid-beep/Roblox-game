@@ -45,21 +45,31 @@ function PetHatchMath.combineLuckMultipliers(...)
 	return result
 end
 
-function PetHatchMath.getSpeciesMultiplier(luckMultiplier)
+function PetHatchMath.getSpeciesMultiplier(luckMultiplier, eggQualityMultiplier)
 	return math.min(
-		normalizedMultiplier(luckMultiplier),
+		normalizedMultiplier(luckMultiplier) * normalizedMultiplier(eggQualityMultiplier),
 		BalanceConfig.Hatch.LuckCaps.SpeciesMultiplier
 	)
 end
 
-function PetHatchMath.getEffectiveChances(luckMultiplier)
-	local multiplier = normalizedMultiplier(luckMultiplier)
+function PetHatchMath.getEffectiveChances(luckMultiplier, directVariantMultipliers)
+	local generalMultiplier = normalizedMultiplier(luckMultiplier)
+	local direct = type(directVariantMultipliers) == "table" and directVariantMultipliers or {}
 	local base = BalanceConfig.Hatch.BaseChances
 	local caps = BalanceConfig.Hatch.LuckCaps
 	return {
-		Golden = math.min(base.Golden * multiplier, caps.GoldenChance),
-		Rainbow = math.min(base.Rainbow * multiplier, caps.RainbowChance),
-		Shiny = math.min(base.Shiny * multiplier, caps.ShinyChance),
+		Golden = math.min(
+			base.Golden * generalMultiplier * normalizedMultiplier(direct.Golden),
+			caps.GoldenChance
+		),
+		Rainbow = math.min(
+			base.Rainbow * generalMultiplier * normalizedMultiplier(direct.Rainbow),
+			caps.RainbowChance
+		),
+		Shiny = math.min(
+			base.Shiny * generalMultiplier * normalizedMultiplier(direct.Shiny),
+			caps.ShinyChance
+		),
 	}
 end
 
@@ -70,8 +80,8 @@ local function normalizedRoll(value)
 	return value
 end
 
-function PetHatchMath.rollOutcome(baseVariantRoll, shinyRoll, luckMultiplier)
-	local chances = PetHatchMath.getEffectiveChances(luckMultiplier)
+function PetHatchMath.rollOutcome(baseVariantRoll, shinyRoll, luckMultiplier, directVariantMultipliers)
+	local chances = PetHatchMath.getEffectiveChances(luckMultiplier, directVariantMultipliers)
 	local baseRoll = normalizedRoll(baseVariantRoll)
 	local baseVariant = "Normal"
 

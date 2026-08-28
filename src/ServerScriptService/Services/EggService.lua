@@ -36,8 +36,8 @@ function EggService.purchaseAndHatch(player, eggType)
 		return nil, "Already hatching an egg"
 	end
 	EggService._hatchLock[player.UserId] = true
+	local paidCoinCost = 0
 
-	-- Wrap in a function so we can always release the lock
 	local function doHatch()
 		-- Validate egg type exists
 		local eggDef = PetData.Eggs[eggType]
@@ -75,6 +75,7 @@ function EggService.purchaseAndHatch(player, eggType)
 			if not success then
 				return nil, "Not enough coins"
 			end
+			paidCoinCost = eggCost.Coins
 		end
 
 		-- Fire hatch start event to client (triggers animation)
@@ -92,12 +93,14 @@ function EggService.purchaseAndHatch(player, eggType)
 		-- Delegate to PetService for actual hatching (cost already deducted)
 		local newPet, err = EggService._petService.hatchEgg(player, eggType, true)
 		if not newPet then
-			-- Refund the coins if hatching failed for some reason
-			if eggCost and eggCost.Coins then
-				EggService._currencyService.addCoins(player, eggCost.Coins)
+			-- Refund exactly what was deducted without reward multipliers.
+			if paidCoinCost > 0 then
+				EggService._currencyService.creditRaw(player, "coins", paidCoinCost)
+				paidCoinCost = 0
 			end
 			return nil, err
 		end
+		paidCoinCost = 0
 
 		-- Fire hatch result event with the new pet data
 		if remotes then
@@ -118,8 +121,15 @@ function EggService.purchaseAndHatch(player, eggType)
 		return newPet, nil
 	end
 
-	local newPet, err = doHatch()
+	local callSucceeded, newPet, err = pcall(doHatch)
+	if not callSucceeded and paidCoinCost > 0 then
+		EggService._currencyService.creditRaw(player, "coins", paidCoinCost)
+		paidCoinCost = 0
+	end
 	EggService._hatchLock[player.UserId] = nil
+	if not callSucceeded then
+		return nil, "Hatch failed safely"
+	end
 	return newPet, err
 end
 
@@ -209,8 +219,11 @@ function EggService.hatchFree(player, eggType)
 		return newPet, nil
 	end
 
-	local newPet, err = doHatch()
+	local callSucceeded, newPet, err = pcall(doHatch)
 	EggService._hatchLock[player.UserId] = nil
+	if not callSucceeded then
+		return nil, "Hatch failed safely"
+	end
 	return newPet, err
 end
 

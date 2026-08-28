@@ -1,188 +1,178 @@
 --[[
-	CurrencyService.lua - Manages coin and diamond transactions
-	Server-authoritative: validates all transactions and prevents negative balances.
+	CurrencyService.lua - Server-authoritative coin and diamond transactions.
+	QOF-07 centralizes validated spending and bonus-free raw refunds so purchases
+	cannot trust client currency data or accidentally apply reward multipliers.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Config = require(game.ReplicatedStorage.Shared.Config)
-
 local CurrencyService = {}
 
--- Reference to DataService (set during init)
 CurrencyService._dataService = nil
 CurrencyService._upgradeService = nil
+
+local VALID_CURRENCIES = {
+	coins = true,
+	diamonds = true,
+}
+
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function normalizePositiveAmount(amount, requireInteger)
+	if not isFiniteNumber(amount) or amount <= 0 then
+		return nil
+	end
+	if requireInteger and amount % 1 ~= 0 then
+		return nil
+	end
+	local normalized = math.floor(amount)
+	if normalized <= 0 then
+		return nil
+	end
+	return normalized
+end
+
+local function getProfile(player)
+	if not player or not CurrencyService._dataService then
+		return nil
+	end
+	local data = CurrencyService._dataService.getPlayerData(player)
+	if not data
+		or not isFiniteNumber(data.coins)
+		or data.coins < 0
+		or not isFiniteNumber(data.diamonds)
+		or data.diamonds < 0 then
+		return nil
+	end
+	return data
+end
+
+local function fireCurrencyUpdate(player, data)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("CurrencyUpdated")
+	if event then
+		pcall(function()
+			event:FireClient(player, data.coins, data.diamonds)
+		end)
+	end
+end
 
 function CurrencyService.init(dataService, upgradeService)
 	CurrencyService._dataService = dataService
 	CurrencyService._upgradeService = upgradeService
 end
 
--- Apply DropCloner, LuckyDrops, and CoinCollector bonuses to coin amounts
+-- Apply existing quest/mastery reward bonuses only to earned coin grants.
 local function applyBonuses(player, amount)
 	local finalAmount = amount
-
-	-- Apply LuckyDrops multiplier (maps to MoreCoins mastery via UpgradeService)
 	if CurrencyService._upgradeService then
 		local luckyDropsBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "LuckyDrops")
-		if luckyDropsBonus > 0 then
+		if isFiniteNumber(luckyDropsBonus) and luckyDropsBonus > 0 then
 			finalAmount = math.floor(finalAmount * luckyDropsBonus)
 		end
-	end
 
-	-- Apply CoinCollector quest bonus multiplier
-	if CurrencyService._upgradeService then
 		local coinCollectorBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "CoinCollector")
-		if coinCollectorBonus > 0 then
+		if isFiniteNumber(coinCollectorBonus) and coinCollectorBonus > 0 then
 			finalAmount = math.floor(finalAmount * coinCollectorBonus)
 		end
-	end
 
-	-- Apply DropCloner chance to double
-	if CurrencyService._upgradeService then
 		local dropClonerBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "DropCloner")
-		if dropClonerBonus > 0 then
-			if math.random() < dropClonerBonus then
-				finalAmount = finalAmount * 2
-			end
+		if isFiniteNumber(dropClonerBonus) and dropClonerBonus > 0 and math.random() < dropClonerBonus then
+			finalAmount = finalAmount * 2
 		end
 	end
-
-	return finalAmount
+	return normalizePositiveAmount(finalAmount, true)
 end
 
--- Add coins to player (with upgrade bonuses applied)
 function CurrencyService.addCoins(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
+	amount = normalizePositiveAmount(amount, false)
+	local data = getProfile(player)
+	if not amount or not data then
 		return false
 	end
-
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
+	local finalAmount = applyBonuses(player, amount)
+	if not finalAmount then
 		return false
 	end
-
-	local finalAmount = applyBonuses(player, math.floor(amount))
 	data.coins = data.coins + finalAmount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
-	end
-
+	fireCurrencyUpdate(player, data)
 	return true, finalAmount
 end
 
--- Remove coins from player (no bonuses applied to deductions)
-function CurrencyService.removeCoins(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
-		return false
-	end
-
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
-		return false
-	end
-
-	amount = math.floor(amount)
-	if data.coins < amount then
-		return false
-	end
-
-	data.coins = data.coins - amount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
-	end
-
-	return true
-end
-
--- Add diamonds to player
 function CurrencyService.addDiamonds(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
+	amount = normalizePositiveAmount(amount, false)
+	local data = getProfile(player)
+	if not amount or not data then
 		return false
 	end
 
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
-		return false
-	end
-
-	local finalAmount = math.floor(amount)
-
-	-- Apply Diamonds upgrade multiplier
+	local finalAmount = amount
 	if CurrencyService._upgradeService then
 		local diamondBonus = CurrencyService._upgradeService.getUpgradeBonus(player, "Diamonds")
-		if diamondBonus > 0 then
+		if isFiniteNumber(diamondBonus) and diamondBonus > 0 then
 			finalAmount = math.floor(finalAmount * diamondBonus)
 		end
 	end
-
-	data.diamonds = data.diamonds + finalAmount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
+	finalAmount = normalizePositiveAmount(finalAmount, true)
+	if not finalAmount then
+		return false
 	end
 
+	data.diamonds = data.diamonds + finalAmount
+	fireCurrencyUpdate(player, data)
 	return true, finalAmount
 end
 
--- Remove diamonds from player
-function CurrencyService.removeDiamonds(player, amount)
-	if not player or type(amount) ~= "number" or amount <= 0 then
+-- Canonical deduction API. Currency and amount always come from server-owned
+-- configuration; only exact positive integer transactions are accepted.
+function CurrencyService.spend(player, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount or VALID_CURRENCIES[currency] ~= true then
 		return false
 	end
-
-	local data = CurrencyService._dataService.getPlayerData(player)
-	if not data then
+	local data = getProfile(player)
+	if not data or data[currency] < amount then
 		return false
 	end
-
-	amount = math.floor(amount)
-	if data.diamonds < amount then
-		return false
-	end
-
-	data.diamonds = data.diamonds - amount
-
-	-- Fire client update
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotes then
-		local event = remotes:FindFirstChild("CurrencyUpdated")
-		if event then
-			event:FireClient(player, data.coins, data.diamonds)
-		end
-	end
-
+	data[currency] = data[currency] - amount
+	fireCurrencyUpdate(player, data)
 	return true
 end
 
--- Get current balance for player
-function CurrencyService.getBalance(player)
-	if not player then
-		return { coins = 0, diamonds = 0 }
+-- Exact, bonus-free credit for transaction rollback. This must never call the
+-- earned-reward APIs because quest/mastery multipliers would inflate refunds.
+function CurrencyService.creditRaw(player, currency, amount)
+	amount = normalizePositiveAmount(amount, true)
+	if not amount or VALID_CURRENCIES[currency] ~= true then
+		return false
 	end
+	local data = getProfile(player)
+	if not data then
+		return false
+	end
+	data[currency] = data[currency] + amount
+	fireCurrencyUpdate(player, data)
+	return true
+end
 
-	local data = CurrencyService._dataService.getPlayerData(player)
+function CurrencyService.removeCoins(player, amount)
+	return CurrencyService.spend(player, "coins", amount)
+end
+
+function CurrencyService.removeDiamonds(player, amount)
+	return CurrencyService.spend(player, "diamonds", amount)
+end
+
+function CurrencyService.getBalance(player)
+	local data = getProfile(player)
 	if not data then
 		return { coins = 0, diamonds = 0 }
 	end
-
 	return { coins = data.coins, diamonds = data.diamonds }
 end
 

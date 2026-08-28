@@ -22,6 +22,7 @@ PetService._currencyService = nil
 PetService._upgradeService = nil
 PetService._masteryService = nil
 PetService._shopService = nil
+PetService._upgradeTreeService = nil
 
 function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
@@ -39,8 +40,31 @@ function PetService.setShopService(shopService)
 	PetService._shopService = shopService
 end
 
+function PetService.setUpgradeTreeService(upgradeTreeService)
+	PetService._upgradeTreeService = upgradeTreeService
+end
+
+function PetService.getHatchEntitlements(player)
+	local neutral = {
+		eggQualityMultiplier = 1,
+		directVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 },
+	}
+	if not PetService._upgradeTreeService then
+		return neutral
+	end
+	local entitlements = PetService._upgradeTreeService.getEntitlements(player)
+	if type(entitlements) ~= "table" then
+		return neutral
+	end
+	return {
+		eggQualityMultiplier = entitlements.eggQualityMultiplier,
+		directVariantMultipliers = type(entitlements.directVariantMultipliers) == "table"
+			and entitlements.directVariantMultipliers
+			or neutral.directVariantMultipliers,
+	}
+end
+
 -- Resolve every currently active server-side hatch luck source once per egg.
--- QOF-07 tree entitlements are intentionally not consumed here yet.
 function PetService.getHatchLuckMultiplier(player)
 	local questLuck = 1
 	if PetService._upgradeService then
@@ -62,10 +86,13 @@ end
 
 -- Weighted species selection respects the same composed luck while bounding its
 -- influence independently from direct Gold/Rainbow/Shiny chance caps.
-local function weightedRandomPet(petPool, luckMultiplier)
+local function weightedRandomPet(petPool, luckMultiplier, eggQualityMultiplier)
 	local totalWeight = 0
 	local adjustedPool = {}
-	local speciesMultiplier = PetHatchMath.getSpeciesMultiplier(luckMultiplier)
+	local speciesMultiplier = PetHatchMath.getSpeciesMultiplier(
+		luckMultiplier,
+		eggQualityMultiplier
+	)
 
 	for _, entry in ipairs(petPool) do
 		local weight = entry.weight
@@ -171,10 +198,16 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		end
 	end
 
-	-- Select species and canonical direct outcome using one server-derived luck
-	-- multiplier. Base variant is categorical; Shiny is independently composable.
+	-- General Luck affects species and direct outcomes. QOF-07 Tree effects are
+	-- intentionally split: Egg Quality affects species only, while each direct
+	-- variant multiplier affects only its matching capped chance.
 	local luckMultiplier = PetService.getHatchLuckMultiplier(player)
-	local petId = weightedRandomPet(eggDef.petPool, luckMultiplier)
+	local hatchEntitlements = PetService.getHatchEntitlements(player)
+	local petId = weightedRandomPet(
+		eggDef.petPool,
+		luckMultiplier,
+		hatchEntitlements.eggQualityMultiplier
+	)
 	local petDef = petId and PetData.Pets[petId] or nil
 	if not petDef then
 		return nil, "Invalid pet in pool"
@@ -183,7 +216,8 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	local baseVariant, isShiny = PetHatchMath.rollOutcome(
 		math.random(),
 		math.random(),
-		luckMultiplier
+		luckMultiplier,
+		hatchEntitlements.directVariantMultipliers
 	)
 	local presentation = PetVariantPresentation.resolve({
 		petId = petId,
