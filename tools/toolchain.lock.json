@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux-amd64",
+  "python": {
+    "implementation": "CPython",
+    "version": "3.9.25"
+  },
+  "zlib": {
+    "compileVersion": "1.2.11",
+    "runtimeVersion": "1.2.11"
+  },
+  "tools": {
+    "rbxmk": {
+      "version": "0.9.1",
+      "tag": "v0.9.1",
+      "commit": "d1f12d1d18ce773fa378bdc44b894005f7d06833",
+      "releaseUrl": "https://github.com/Anaminus/rbxmk/releases/tag/v0.9.1",
+      "archive": {
+        "name": "rbxmk-v0.9.1-linux-amd64.zip",
+        "url": "https://github.com/Anaminus/rbxmk/releases/download/v0.9.1/rbxmk-v0.9.1-linux-amd64.zip",
+        "size": 8159044,
+        "sha256": "7c8a3d6c53f63e629f00373dc4d91513e472a829d9096fec1f6cd0d4f4fefcc5"
+      },
+      "entries": {
+        "rbxmk": "057c4b3e70c928af73646975d1df11579b0a5ccfa72f274af8c6d135fc9f4d34"
+      },
+      "install": [
+        "rbxmk"
+      ]
+    },
+    "luau": {
+      "version": "0.735",
+      "tag": "0.735",
+      "commit": "367f9d83cc29804a6d5938ec85b6116d34d8743b",
+      "releaseUrl": "https://github.com/luau-lang/luau/releases/tag/0.735",
+      "archive": {
+        "name": "luau-ubuntu.zip",
+        "url": "https://github.com/luau-lang/luau/releases/download/0.735/luau-ubuntu.zip",
+        "size": 7460732,
+        "sha256": "b8ea2c5dfa229840dd6fa5a16be082b9a3468c82b8b270b7f695a23233e7eceb"
+      },
+      "entries": {
+        "luau": "6737e0e1b38936c2cc172a8d9a8fbe68cbe0f261a4a5ecc8c161530cbfe497d7",
+        "luau-analyze": "55f79c3e5d90017ae5ff4eb3ca2c1472b20df23a88889687dab66a05dae1567c",
+        "luau-ast": "391f2bb7cd30658cd9a948007574538445d1351c28c3981832d347deed0cca22",
+        "luau-compile": "7a06efa407a9c6a3ecbe8d84fcc0150ac4161f70e2bbf8806f7db20a4fefd481"
+      },
+      "install": [
+        "luau",
+        "luau-compile"
+      ]
+    },
+    "selene": {
+      "version": "0.31.0",
+      "tag": "0.31.0",
+      "commit": "9d531b8d3755e139b26c534914e252239014bb3d",
+      "releaseUrl": "https://github.com/Kampfkarren/selene/releases/tag/0.31.0",
+      "archive": {
+        "name": "selene-0.31.0-linux.zip",
+        "url": "https://github.com/Kampfkarren/selene/releases/download/0.31.0/selene-0.31.0-linux.zip",
+        "size": 3651372,
+        "sha256": "dac452422747999ec4919bbb8bb52992b66aae533b60022bf005669de8616671"
+      },
+      "entries": {
+        "selene": "30887c8f10ab901fe5883ef655f7b9fe47e628b83c709c3d7548b02e966e67a4"
+      },
+      "install": [
+        "selene"
+      ]
+    }
+  }
+}

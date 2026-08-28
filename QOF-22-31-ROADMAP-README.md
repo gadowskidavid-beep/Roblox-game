@@ -76,12 +76,14 @@ Diese Regeln dürfen nur nach einer ausdrücklichen neuen Entscheidung des Nutze
 - Ein Ei kann sechs Zustände liefern: Normal, Normal Shiny, Golden, Golden Shiny, Rainbow, Rainbow Shiny.
 - RNG, Preise, Luck, Upgrade-Effekte, Varianten und Pet-Erstellung bleiben serverautoritativ.
 - Shiny-Basischance: 0,01 % beziehungsweise 1:10.000, bevor gültige Multiplikatoren und Caps angewandt werden.
-- Feste Batchgrößen sind `x1`, `x2`, `x5`, `x10`.
-- Diese Roadmap **supersediert bewusst** den historischen manuellen QOF-10/QOF-18-Vertrag `x1/x3/MAX`.
-- Die Umstellung verwendet einen neuen versionierten Client-/Serververtrag. Alte Clients und neue Server sowie neue Clients und alte Server müssen kontrolliert fail-closed reagieren; ein alter Fixed-x3-Request darf nicht versehentlich als neuer Tier interpretiert werden.
-- Der manuelle Dialog darf zusätzlich `MAX` anbieten. `MAX` wird im Server-Lock neu berechnet und ist jede positive ganze Zahl bis `min(freigeschaltetes Maximum, bezahlbare Eier, freie Slots, 10)`.
-- Paid Auto-Hatch benutzt nur `x1`, `x2`, `x5` oder `x10`, niemals `MAX`.
+- Feste manuelle und automatische Batchgrößen sind ausschließlich `x1`, `x3`, `x9`; `x2`, `x5`, `x10` und `MAX` entfallen im neuen Vertrag vollständig.
+- Diese am 28. August 2026 ausdrücklich vom Nutzer entschiedene Regel supersediert sowohl den historischen manuellen QOF-10-Vertrag `x1/x3/MAX` als auch QOF-18 Auto-Hatch V1 `x1/x2/x5/x10` und die frühere Fassung dieser Roadmap.
+- Die Umstellung verwendet einen neuen versionierten Client-/Serververtrag. Alte und neue Rolling-Versionen müssen kontrolliert fail-closed reagieren; kein V1-Tier, historischer Fixed-/MAX-Request oder zusätzliches Feld darf als gültiger V2-Intent fehlinterpretiert werden.
+- Paid Auto-Hatch behält mangels gegenteiliger Produktentscheidung vorerst 500 Diamonds, 600 Sekunden Zugang und drei Sekunden Batchintervall; der Kauf im Shop startet keine Session.
+- Genau ein HUD-Icon steuert Auswahl, Start und Stop. Prompt- und Shop-Oberflächen dürfen keinen zweiten Start-/Stop-Einstieg besitzen.
+- Der Server bindet jeden Start frisch an eine kanonische Station, hält Session/RNG/Preis/Inventar autoritativ und beendet vor dem nächsten Batch bei echter Positionsänderung oberhalb der dokumentierten Jitterschwelle.
 - Auto-Hatch verbraucht keine Shiny-Potion-Charges, solange der Nutzer dies nicht ausdrücklich ändert.
+- Vor QOF-28 sind nur noch zwei Produktdetails zu bestätigen: ob der Selector alle freigeschalteten Eier fern auswählbar macht oder ausschließlich die aktuell nahe Station, und wie bestehende x2/x5/x10-Entitlements nach x3/x9 migriert werden.
 
 ### Gold- und Rainbow-Maschinen
 
@@ -149,13 +151,13 @@ Keine Aufgabe wird nur aufgrund eines erfolgreichen Exitcodes als fertig markier
 
 | QOF | Paket | Status | Abhängigkeit | Nächste Aktion | Studio-Gate | Evidenz: Commit / Artefakt-SHA / CI |
 |---|---|---|---|---|---|---|
-| QOF-22 | Baseline und Pflicht-Toolchain | OFFEN | QOF-21 | Bootstrap-Branch und Toolcheck | n/a | – |
+| QOF-22 | Baseline und Pflicht-Toolchain | IN ARBEIT | QOF-21 | Reviewfixes und Abschlusscommit | n/a | Fresh-QOF-21: `9f7c765…`; Lock: `dfcc08b…` |
 | QOF-23 | DataSchema V12 und hostile Save-Normalisierung | OFFEN | QOF-22 | nach Abschluss QOF-22 | separat | – |
 | QOF-24 | Kanonische Schadenspräzision | OFFEN | QOF-23 | nach Abschluss QOF-23 | separat | – |
 | QOF-25 | Zentrale atomare Profil-/Currency-Transaktionen | OFFEN | QOF-23 | nach Abschluss QOF-23 | separat | – |
 | QOF-26 | Potion-Concurrency und Lifecycle | OFFEN | QOF-25 | nach Abschluss QOF-25 | separat | – |
 | QOF-27 | Maschinenreihenfolge und Rollback-Invarianten | OFFEN | QOF-25 | nach Abschluss QOF-25 | separat | – |
-| QOF-28 | Hatch-/Auto-Hatch-Vertrag und Lifecycle | OFFEN | QOF-25, QOF-26 | nach Abschluss der Abhängigkeiten | separat | – |
+| QOF-28 | Auto-Hatch Contract V2, HUD-Toggle und Lifecycle (x1/x3/x9) | BLOCKIERT | QOF-25, QOF-26 + Produktentscheidungen | Station-UX und Entitlement-Migration bestätigen | separat | – |
 | QOF-29 | Pickup-, Leave- und Shutdown-Garantien | OFFEN | QOF-23, QOF-25–28 | nach Abschluss aller Lifecycle-Owner | separat | – |
 | QOF-30 | Release-Pipeline und verpflichtende CI | OFFEN | QOF-22–29 | nach Abschluss aller Code-QOFs | n/a | – |
 | QOF-31 | Studio-Abnahme, Deployment-Handoff und Merge nach main | OFFEN | QOF-22–30 | finale Matrix vorbereiten | final | – |
@@ -383,38 +385,47 @@ Der bisherige Maschinenpfad würfelt vor dem tatsächlichen Entfernen der Eingab
 
 ---
 
-# QOF-28 – Hatch-/Auto-Hatch-Vertrag und Lifecycle
+# QOF-28 – Auto-Hatch Contract V2, HUD-Toggle und Lifecycle
 
 ## Problem
 
-Der historische Multi-Hatch-Vertrag und der finale manuelle Dialog sind inkonsistent. Außerdem hält der Kauf des Paid-Auto-Hatch-Zugangs noch keinen retrybaren Shutdown-Owner.
+QOF-18 ist promptgebunden, verwendet persistierte `1/2/5/10`-Tiers und prüft die Stationsdistanz nur beim Start. Dadurch passt es weder zum gewünschten einzigen HUD-Toggle noch zum ausschließlichen `1/3/9`-Vertrag und zum serverautoritativen Bewegungsabbruch. Außerdem hält der Kauf des Paid-Auto-Hatch-Zugangs noch keinen retrybaren Shutdown-Owner.
 
-## Änderungen
+## Verbindlicher Scope
 
-1. Historischen QOF-10/QOF-18-Manual-Contract ausdrücklich durch einen neuen versionierten Vertrag ersetzen.
-2. Einheitliche feste Batchgrößen `1, 2, 5, 10` in Shared Config, Server, Client und Tests verwenden.
-3. Alte Fixed-x3-Requests und neue Requests über die Contract-Version eindeutig unterscheiden; inkompatible Rolling-Client/Server-Kombinationen reagieren fail-closed und mutieren nichts.
-4. Manueller Hatchdialog zeigt alle aktuell freigeschalteten festen Größen sowie optional `MAX`.
-5. `MAX` wird serverseitig innerhalb des Locks als `min(freigeschaltetes Maximum, bezahlbare Eier, freie Slots, 10)` neu berechnet und kann daher beispielsweise 3 oder 4 sein.
-6. Paid Auto-Hatch akzeptiert ausschließlich feste Größen und niemals `MAX`.
-7. Keine stille Herabstufung eines nicht mehr berechtigten Auto-Hatch-Batches; stattdessen Pause mit eindeutigem Grund.
-8. Hatch verwendet den QOF-25-Profil-/Currency-Owner und den QOF-26-Charge-Lease.
-9. Paid-Auto-Hatch-Kauf erhält Admission-Gate, aktiven Transaction-Record und Shutdown-/Leave-Settlement.
-10. Absolute Ablaufzeit, 500-Diamond-Preis, 600 Sekunden Dauer und 3-Sekunden-Intervall beibehalten.
-11. Rejoin erfordert erneut die Auswahl einer echten Egg-Station.
-12. Kein Catch-up-Backlog; maximal ein Batch gleichzeitig.
+1. QOF-18 Contract V1 und den manuellen QOF-10-Intent durch einen strikt versionierten Contract V2 ersetzen; V1, `Fixed`, `MAX`, rohe Counts, Zusatzkeys und Mischverträge fail-closed ohne Mutation behandeln.
+2. Ausschließlich feste Batchgrößen `1`, `3`, `9` in Shared Config, DataSchema, Upgrade-Entitlements, Server, Client, UI und Tests verwenden. `2/5/10/MAX` werden nicht nur versteckt, sondern aus dem aktiven Request-/Responsevertrag entfernt.
+3. Vor Implementierung die noch offene Migrationsentscheidung dokumentieren: Zuordnung bestehender x2/x5/x10-Freischaltungen zu x3/x9 inklusive Besitzstand und ohne stillen Wertverlust. Ohne Nutzerentscheidung bleibt QOF-28 `BLOCKIERT`.
+4. Genau ein Auto-Hatch-Icon im permanenten HUD erzeugen: AUS neutral, AN grün mit begrenzter Pulse-Animation; Klick AUS öffnet Auswahl, Klick AN stoppt unmittelbar. Alte Prompt-Controls und jeder Shop-Startbutton entfallen.
+5. Selector zeigt nur serverseitig angebotene, freigeschaltete und aktuell bezahlbare Eier. Preis je `1/3/9` kommt aus einem revisionierten Server-Quote und wird vor Start sowie vor jedem Batch neu validiert.
+6. Vor Implementierung die Stations-UX bestätigen: entweder nur die aktuell nahe kanonische Station ist auswählbar oder ein klar definierter sicherer Weltfluss bringt den Spieler zur gewählten Station. Ein frei erfundener Remote-Hatch von beliebiger Position ist verboten.
+7. Startintent bindet eine frische generationgebundene, kurzlebige Stationsauswahl. Jeder Neustart – auch nach Cancel, Bewegung oder derselben Station – erhält eine neue Sessiongeneration; alte Responses/Callbacks dürfen sie nicht übernehmen.
+8. Server speichert die echte `HumanoidRootPart`-Startposition und beendet die Session bei mehr als 2,5 Studs Distanz. Kamera/Zoom zählen nicht. Character-Wechsel, Zone-/Stationswechsel, Teleport, Leave und Shutdown stoppen ebenfalls. Mikro-Jitter bis 2,5 Studs stoppt nicht.
+9. Höchstens ein Batch ist in-flight; kein Catch-up. Vor jedem weiteren Drei-Sekunden-Tick werden Generation, Zugang, Station, Zone, Character, Distanz, Entitlement, Preis, Coins und Storage neu geprüft.
+10. Batchausführung verwendet unverändert den QOF-25-Profil-/Currency-Owner, den QOF-26-Charge-Lease und `prepareHatchBatch → commit`; RNG und Rewards bleiben ausschließlich serverseitig. Auto-Hatch verbraucht weiterhin keine Shiny-Charges.
+11. Bereits committeter Batch bleibt bei Stop/Bewegung erhalten; es startet nur kein weiterer. Erfolgreiche Batches verwenden weiter `EggHatchStart/Result` und die gemeinsame begrenzte Cinematic-FIFO ohne Bestätigungsdialog.
+12. Fehlercodes werden stabil, revisioniert und rate-limited veröffentlicht. Unbekannte interne Fehlermeldungen werden nicht roh angezeigt; die separate vollständige Lokalisierung bleibt Backlog.
+13. Zugangskauf erhält Admission-Gate, aktiven Transaction-Record und Shutdown-/Leave-Settlement. Mangels gegenteiliger Entscheidung bleiben Preis 500 Diamonds, Dauer 600 Sekunden und Batchintervall drei Sekunden unverändert; Kauf ist nur im Shop, Start/Stop nur über das HUD-Icon.
+14. Auto-Hatch-Clientcode als eigenes Featuremodul aus dem `UIController`-Monolithen lösen; keine zusätzlichen Heartbeat-/Prompt-Verbindungen bei erneutem Öffnen.
 
 ## Abnahmekriterien
 
-- Manuell funktionieren x1/x2/x5/x10 und MAX gemäß Entitlement, Coins und Storage.
-- Alte Fixed-x3-, neue Tier- und MAX=3/MAX=4-Requests sind als Rolling-Contract-Fälle getestet.
-- Auto-Hatch funktioniert nur mit x1/x2/x5/x10.
-- Ein Batch ist wirtschaftlich und im Inventar vollständig atomar.
-- Kein transienter Currency-Flicker bei technischen Fehlern.
-- Zugangskauf endet atomar entweder in `(Diamonds unverändert, alter Expiry)` oder `(Diamonds − 500, expiresAt = now + 600)`; Debit ohne Zugang und Zugang ohne Debit sind unmöglich.
-- Hatch endet atomar entweder im vollständigen Vorzustand oder mit exakt `count` neuen Pets, vollem Coin-Debit und dem definierten Chargezustand.
-- Leave und BindToClose während Zugangskauf oder Hatch sind separat getestet.
-- Offline-Zeit reduziert die Restdauer korrekt.
+- Genau ein Icon startet/stoppt; Shop und Egg-Prompt besitzen keinen zweiten Sessioneinstieg.
+- Aktiver Vertrag akzeptiert ausschließlich x1/x3/x9; V1, x2/x5/x10, `MAX`, historische Fixed-x3-Form und Mischpayloads mutieren nichts.
+- Jeder Start verwendet eine neue Generation und Stationsbindung; Cancel/Stop/Bewegung plus Neustart an derselben Station funktioniert.
+- Serverbewegung über 2,5 Studs, Zone-/Stationwechsel, Respawn, Leave und Shutdown stoppen vor dem nächsten Batch; Kamera, Zoom und Jitter bis 2,5 Studs nicht.
+- Ein Batch ist wirtschaftlich und im Inventar vollständig atomar; kein transienter Currency-Flicker und keine Client-RNG-/Rewardautorität.
+- Zugangskauf endet atomar entweder in `(Diamonds unverändert, alter Expiry)` oder `(Diamonds − 500, expiresAt = now + 600)`.
+- Kein Requestspam: ein serverseitiger Scheduler besitzt das Intervall, maximal einen in-flight Batch und revisioniertes Rate-Limit-Feedback.
+- Bereits committete Ergebnisse werden bei Stop nicht zurückgenommen; stale Callbacks können keine neue Session wiederbeleben.
+- Unbekannte Serverfehler erscheinen als generischer spielerfreundlicher Text, nie als `Invalid player`, `No player data` oder interner Fehlerstring.
+- Desktop, Mobile, reale Bewegung/Physik, Latenz, Rejoin und Same-Station-Reopen sind im gebundenen Studio-Build manuell bestätigt.
+
+## Nicht-Ziele
+
+- Kein Skill Tree.
+- Keine allgemeine deutsche Lokalisierung.
+- Kein Inventory-Tab-Neubau; dieser folgt in der separaten QOF-32+-Roadmap.
 
 ---
 
@@ -686,7 +697,7 @@ Diese Punkte wurden vor QOF-22 bereits bestätigt und müssen durch die Roadmap 
 - Shop/Potion besitzen keine vollständigen Shutdown-Owner.
 - Maschinen würfeln vor dem Entfernen der Inputs.
 - Auto-Hatch-Zugangskauf besitzt keinen retrybaren Shutdown-Transaction-Record.
-- Historischer manueller Hatchvertrag `x1/x3/MAX` wird bewusst durch einen neuen versionierten `x1/x2/x5/x10/MAX`-Vertrag ersetzt.
+- Historische Hatchverträge `x1/x3/MAX` (manuell) und `x1/x2/x5/x10` (Auto V1) werden bewusst durch Contract V2 mit ausschließlich `x1/x3/x9` ersetzt; Station-UX und Besitzstandsmigration der alten Tiers sind vor QOF-28 noch zu entscheiden.
 - Pickup-Hard-Crash-Garantie war zu absolut formuliert.
 - QOF-21-Fresh-Build ist nicht verpflichtend in CI; Place-Parität ist noch nicht fest an Hierarchie und Scriptklasse gebunden.
 - Luau-Tests sind in der bisherigen CI optional; Pflicht-Toolchain-Bootstrap fehlt.
