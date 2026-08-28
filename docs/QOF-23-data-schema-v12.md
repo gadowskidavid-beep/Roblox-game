@@ -1,6 +1,6 @@
 # QOF-23 – DataSchema V12 und hostile Save-Normalisierung
 
-Status: **Code-verifiziert – Studio-Test ausstehend**
+Status: **Abgeschlossen – Fortsetzung durch ausdrückliches Nutzer-`Weiter`; Studio-Ergebnis nicht separat gemeldet**
 
 Implementierungscommit: `21fdf0e2dbcc1607d814bb9d6f7d0986abec2d1c`
 
@@ -68,4 +68,4 @@ Die RBXL beginnt mit der exakten binären Roblox-Signatur `<roblox!\x89\xff\r\n\
 
 ## Bekannte Grenze
 
-Der echte DataStore-Rejoin und Roblox-Studio-Playtest können im Linux-Sandbox-Build nicht ausgeführt werden. QOF-23 bleibt deshalb bis zur Nutzerbestätigung **Studio-Test ausstehend**; QOF-24 darf vorher nicht begonnen werden.
+Der echte DataStore-Rejoin und Roblox-Studio-Playtest konnten im Linux-Sandbox-Build nicht ausgeführt werden. Der Nutzer hat anschließend ausdrücklich `Weiter` geschrieben und damit die Fortsetzung zu QOF-24 freigegeben; ein separates positives Studio-Ergebnis wurde nicht gemeldet und wird deshalb nicht behauptet.
