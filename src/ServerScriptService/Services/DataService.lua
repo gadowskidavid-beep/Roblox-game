@@ -259,6 +259,7 @@ function DataService.getClientData(player)
 		unlockedZones = DataSchema.deepCopy(data.unlockedZones),
 		upgrades = DataSchema.deepCopy(data.upgrades),
 		upgradeTreePurchases = DataSchema.deepCopy(data.upgradeTreePurchases or {}),
+		hatchPreferences = DataSchema.deepCopy(data.hatchPreferences or { preferredBatchCount = 1 }),
 		questStats = DataSchema.deepCopy(data.questStats),
 		campaignProgress = DataSchema.deepCopy(data.campaignProgress),
 		masteryPoints = data.masteryPoints,

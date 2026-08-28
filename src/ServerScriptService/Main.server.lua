@@ -97,6 +97,7 @@ end
 -- Create all RemoteFunctions
 local remoteFunctions = {
 	"HatchEgg",
+	"SetHatchBatchSize",
 	"EquipPet",
 	"UnequipPet",
 	"DeletePet",
@@ -152,7 +153,7 @@ PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
-EggService.init(DataService, CurrencyService, PetService)
+EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
 ShopService.setEggService(EggService)
 
@@ -230,18 +231,32 @@ getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	return DataService.getClientData(player)
 end
 
--- HatchEgg (3 second cooldown)
-getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType)
+-- HatchEgg (one authoritative batch per 3 seconds)
+getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, requestedCount)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
 	if not canCall(player, "HatchEgg", 3) then
 		return nil, "Please wait before hatching again"
 	end
-	if type(eggType) ~= "string" then
-		return nil, "Invalid egg type parameter"
+	if type(eggType) ~= "string" or type(requestedCount) ~= "number" then
+		return nil, "Invalid hatch parameters"
 	end
-	return EggService.purchaseAndHatch(player, eggType)
+	return EggService.purchaseAndHatch(player, eggType, requestedCount, {
+		bypassStation = false,
+	})
+end
+
+-- SetHatchBatchSize stores the server-validated persistent preference for Auto-Hatch.
+-- HatchEgg validates the count again for every paid transaction.
+getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player, requestedCount)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	if not canCall(player, "SetHatchBatchSize", 0.15) then
+		return false, "Please wait before changing batch size", EggService.getBatchState(player)
+	end
+	return EggService.setSelectedBatchCount(player, requestedCount)
 end
 
 -- EquipPet (0.5 second cooldown)
@@ -710,6 +725,9 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup rate limits
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
+
+	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
+	EggService.onPlayerRemoving(player)
 
 	-- Cleanup ShopService player state (active buffs)
 	ShopService._activeBuffs[player.UserId] = nil

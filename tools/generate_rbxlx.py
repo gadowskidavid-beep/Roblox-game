@@ -457,7 +457,7 @@ def build_replicated_storage():
     shared_modules = []
     module_names = [
         "BalanceConfig", "Config", "PetData", "PetHatchMath", "PetVariantMath",
-        "PetVariantPresentation", "ZoneData", "CampaignData", "QuestData",
+        "PetVariantPresentation", "HatchCinematicPolicy", "ZoneData", "CampaignData", "QuestData",
         "MasteryData", "ShopData",
     ]
     for mod_name in module_names:

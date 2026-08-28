@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
+local HatchCinematicPolicy = require(Shared:WaitForChild("HatchCinematicPolicy"))
 
 local EffectsController = {}
 EffectsController.__index = EffectsController
@@ -36,6 +37,13 @@ function EffectsController.new()
 	self._initialized = false
 	self._lastHatchPosition = nil
 	self._isHatching = false
+	self._hatchPresentationQueue = {}
+	self._hatchPresentationActive = false
+	self._activeHatchScope = nil
+	self._finalizingHatchScope = nil
+	self._hatchCleanupCallbacks = {}
+	self._seenHatchBatchIds = {}
+	self._seenHatchBatchOrder = {}
 	return self
 end
 
@@ -45,6 +53,9 @@ function EffectsController:init()
 	self._effectsFolder = Instance.new("Folder")
 	self._effectsFolder.Name = "ClientEffects"
 	self._effectsFolder.Parent = workspace
+	self._characterRemovingConnection = self._player.CharacterRemoving:Connect(function()
+		self:cancelEggHatch("character_removed")
+	end)
 	self._initialized = true
 end
 
@@ -155,128 +166,660 @@ function EffectsController:showCurrencyPopup(position, amount, currencyType)
 end
 
 --------------------------------------------------------------------------------
--- Egg Hatch Animation (split into two phases for smoother experience):
---   startEggWobble()      - immediately shows overlay + egg + smooth infinite wobble
---   completeEggHatch(pet) - cancels wobble, does intense shakes, flash, reveal
---   showEggHatchAnimation - legacy fallback that calls both in sequence
---
--- Pure ScreenGui animation - no 3D Parts, no camera changes.
+-- QOF-09 Egg Hatch Presentation
+-- EffectsController owns the lossless FIFO and renders one complete batch in one
+-- responsive ScreenGui. UIController remains the only result-grid owner.
 --------------------------------------------------------------------------------
 
--- Helper: create the egg overlay UI elements and return references table
-function EffectsController:_createEggUI()
-	-- Create full-screen overlay ScreenGui (unique name to avoid collision with UIController)
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "EffectsController_EggHatchAnim"
-	screenGui.IgnoreGuiInset = true
-	screenGui.DisplayOrder = 50
-	screenGui.ResetOnSpawn = false
-	screenGui.Parent = self._playerGui
+-- QOF-09 constants. Sound IDs are intentionally blank until product-owned
+-- assets are configured; blank cues never create Sound instances.
+local HATCH_START_TIMEOUT = 2.25
+local HATCH_SEEN_CACHE_LIMIT = 128
+local HATCH_PARTICLE_LIMIT = 24
+local HATCH_SOUND_IDS = { Pop = "", RareAccent = "", Hero = "" }
+local UPGRADE_TREE_GUI_NAME = "UpgradeTreeGui"
 
-	-- Semi-transparent dark background overlay
-	local overlay = Instance.new("Frame")
-	overlay.Name = "DarkOverlay"
-	overlay.Size = UDim2.fromScale(1, 1)
-	overlay.Position = UDim2.fromScale(0, 0)
-	overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-	overlay.BackgroundTransparency = 0.5
-	overlay.BorderSizePixel = 0
-	overlay.Parent = screenGui
+local function shallowCopy(source)
+	local copy = {}
+	for key, value in pairs(source) do copy[key] = value end
+	return copy
+end
 
-	-- Container frame to hold the egg (centered)
-	local eggContainer = Instance.new("Frame")
-	eggContainer.Name = "EggContainer"
-	eggContainer.Size = UDim2.fromOffset(120, 160)
-	eggContainer.Position = UDim2.fromScale(0.5, 0.5)
-	eggContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-	eggContainer.BackgroundTransparency = 1
-	eggContainer.Parent = overlay
+local function safeDisconnect(connection)
+	if connection then pcall(function() connection:Disconnect() end) end
+end
 
-	-- Main egg shape: oval Frame with large UICorner (cream/white)
-	local eggFrame = Instance.new("Frame")
-	eggFrame.Name = "EggShape"
-	eggFrame.Size = UDim2.fromScale(1, 1)
-	eggFrame.Position = UDim2.fromScale(0, 0)
-	eggFrame.BackgroundColor3 = Color3.fromRGB(255, 248, 220)
-	eggFrame.BorderSizePixel = 0
-	eggFrame.Parent = eggContainer
+local function safeCancel(tween)
+	if tween then pcall(function() tween:Cancel() end) end
+end
 
-	local eggCorner = Instance.new("UICorner")
-	eggCorner.CornerRadius = UDim.new(0.5, 0)
-	eggCorner.Parent = eggFrame
+local function findVisibleUpgradeTreeOverlay(playerGui)
+	for _, child in ipairs(playerGui:GetChildren()) do
+		if child.Name == UPGRADE_TREE_GUI_NAME and child:IsA("ScreenGui") then
+			for _, directChild in ipairs(child:GetChildren()) do
+				if directChild:IsA("GuiObject") and directChild.Visible then
+					return directChild
+				end
+			end
+		end
+	end
+	return nil
+end
 
-	-- Egg outline stroke for definition
-	local eggStroke = Instance.new("UIStroke")
-	eggStroke.Thickness = 3
-	eggStroke.Color = Color3.fromRGB(210, 190, 140)
-	eggStroke.Parent = eggFrame
+local function releaseHeroFovOwnership(scope)
+	if scope.heroFovOwnershipReleased then return end
+	scope.heroFovOwnershipReleased = true
+	scope.heroFovOwned = false
+	safeCancel(scope.heroFovTween)
+	scope.heroFovTween = nil
+end
 
-	-- Inner gradient to give the egg a 3D shading feel
-	local eggGradient = Instance.new("UIGradient")
-	eggGradient.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-		ColorSequenceKeypoint.new(0.4, Color3.fromRGB(255, 248, 220)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(225, 210, 170)),
-	})
-	eggGradient.Rotation = 180
-	eggGradient.Parent = eggFrame
+local function observeUpgradeTreeFovConflict(scope, playerGui)
+	local observedGuis = {}
+	local observedOverlays = {}
 
-	-- Speckle texture: 8 small darker spots on the egg using nested Frames
-	local specklePositions = {
-		{0.25, 0.3}, {0.6, 0.2}, {0.4, 0.55}, {0.7, 0.5},
-		{0.3, 0.7}, {0.55, 0.75}, {0.2, 0.5}, {0.75, 0.35},
-	}
-	for _, pos in ipairs(specklePositions) do
-		local speckle = Instance.new("Frame")
-		speckle.Name = "Speckle"
-		speckle.Size = UDim2.fromOffset(6 + math.random(0, 4), 6 + math.random(0, 4))
-		speckle.Position = UDim2.fromScale(pos[1], pos[2])
-		speckle.AnchorPoint = Vector2.new(0.5, 0.5)
-		speckle.BackgroundColor3 = Color3.fromRGB(200, 175, 120)
-		speckle.BackgroundTransparency = 0.4
-		speckle.BorderSizePixel = 0
-		speckle.Parent = eggFrame
-
-		local speckleCorner = Instance.new("UICorner")
-		speckleCorner.CornerRadius = UDim.new(1, 0)
-		speckleCorner.Parent = speckle
+	local function observeOverlay(overlay)
+		if not overlay:IsA("GuiObject") or observedOverlays[overlay] then return end
+		observedOverlays[overlay] = true
+		if overlay.Visible then releaseHeroFovOwnership(scope) end
+		table.insert(scope.connections, overlay:GetPropertyChangedSignal("Visible"):Connect(function()
+			if overlay.Visible then releaseHeroFovOwnership(scope) end
+		end))
 	end
 
-	-- Highlight shine on upper-left of the egg
-	local shine = Instance.new("Frame")
-	shine.Name = "Shine"
-	shine.Size = UDim2.fromOffset(20, 30)
-	shine.Position = UDim2.fromScale(0.25, 0.18)
-	shine.AnchorPoint = Vector2.new(0.5, 0.5)
-	shine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	shine.BackgroundTransparency = 0.5
-	shine.BorderSizePixel = 0
-	shine.Rotation = -15
-	shine.Parent = eggFrame
+	local function observeGui(gui)
+		if gui.Name ~= UPGRADE_TREE_GUI_NAME or not gui:IsA("ScreenGui") or observedGuis[gui] then return end
+		observedGuis[gui] = true
+		for _, child in ipairs(gui:GetChildren()) do observeOverlay(child) end
+		table.insert(scope.connections, gui.ChildAdded:Connect(observeOverlay))
+	end
 
-	local shineCorner = Instance.new("UICorner")
-	shineCorner.CornerRadius = UDim.new(0.5, 0)
-	shineCorner.Parent = shine
+	table.insert(scope.connections, playerGui.ChildAdded:Connect(observeGui))
+	for _, child in ipairs(playerGui:GetChildren()) do observeGui(child) end
+end
 
-	-- White flash frame (used during break - starts invisible)
-	local whiteFlash = Instance.new("Frame")
-	whiteFlash.Name = "WhiteFlash"
-	whiteFlash.Size = UDim2.fromScale(1, 1)
-	whiteFlash.Position = UDim2.fromScale(0, 0)
-	whiteFlash.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	whiteFlash.BackgroundTransparency = 1
-	whiteFlash.BorderSizePixel = 0
-	whiteFlash.ZIndex = 5
-	whiteFlash.Parent = screenGui
+local function scopeWait(controller, scope, duration)
+	if duration > 0 then task.wait(duration) end
+	return controller._activeHatchScope == scope and not scope.finished
+end
 
+local function getBatchId(payload)
+	local batchId = type(payload) == "table" and payload.batchId or nil
+	return type(batchId) == "string" and batchId ~= "" and batchId or nil
+end
+
+local function normalizeHatchPayload(payload)
+	if type(payload) ~= "table" then return nil end
+	local sourcePets = type(payload.pets) == "table" and payload.pets or { payload }
+	local pets = {}
+	for _, petData in ipairs(sourcePets) do
+		if type(petData) == "table" then
+			table.insert(pets, petData)
+			if #pets == HatchCinematicPolicy.MAX_PETS then break end
+		end
+	end
+	if #pets == 0 then return nil end
+	local normalized = shallowCopy(payload)
+	normalized.batchId = getBatchId(payload)
+	normalized.count = #pets
+	normalized.pets = pets
+	return normalized
+end
+
+local function trackTween(scope, tween)
+	table.insert(scope.tweens, tween)
+	tween:Play()
+	return tween
+end
+
+local function addCorner(parent, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = parent
+end
+
+function EffectsController:_playHatchSound(scope, cue)
+	local soundId = HATCH_SOUND_IDS[cue]
+	if type(soundId) ~= "string" or soundId == "" then return end
+	local sound = Instance.new("Sound")
+	sound.Name = "QOF09_" .. cue
+	sound.SoundId = soundId
+	sound.Volume = 0.65
+	sound.Parent = scope.screenGui
+	table.insert(scope.sounds, sound)
+	sound:Play()
+end
+
+function EffectsController:_layoutHatchCards(scope)
+	local size = scope.overlay.AbsoluteSize
+	local count = #scope.cards
+	if size.X <= 0 or size.Y <= 0 or count == 0 then return end
+	local narrow = size.X < 700 or size.Y > size.X
+	local columns = count == 1 and 1 or (narrow and math.min(2, count) or math.min(5, count))
+	local rows = math.ceil(count / columns)
+	local gap = narrow and (rows >= 4 and 5 or 8) or 12
+	local horizontalPadding = narrow and 12 or 24
+	local topReserve = narrow and 66 or 74
+	local bottomReserve = narrow and 72 or 80
+	local availableWidth = math.max(1, math.min(size.X - horizontalPadding * 2, 980))
+	local availableHeight = math.max(1, math.min(size.Y - topReserve - bottomReserve, 620))
+	local cardWidth = math.floor((availableWidth - gap * (columns - 1)) / columns)
+	local cardHeight = math.floor((availableHeight - gap * (rows - 1)) / rows)
+	cardWidth = math.max(1, math.min(cardWidth, count == 1 and 260 or 184))
+	cardHeight = math.max(1, math.min(cardHeight, count == 1 and 300 or 210))
+	local gridWidth = columns * cardWidth + (columns - 1) * gap
+	local gridHeight = rows * cardHeight + (rows - 1) * gap
+	scope.stage.Size = UDim2.fromOffset(gridWidth, gridHeight)
+	scope.stage.Position = UDim2.new(0.5, 0, 0, topReserve + availableHeight * 0.5)
+
+	for index, card in ipairs(scope.cards) do
+		local row = math.floor((index - 1) / columns)
+		local column = (index - 1) % columns
+		local rowCount = math.min(columns, count - row * columns)
+		local rowWidth = rowCount * cardWidth + (rowCount - 1) * gap
+		card.frame.Size = UDim2.fromOffset(cardWidth, cardHeight)
+		card.frame.Position = UDim2.fromOffset(
+			(gridWidth - rowWidth) * 0.5 + column * (cardWidth + gap),
+			row * (cardHeight + gap)
+		)
+	end
+end
+
+function EffectsController:_createHatchCard(scope, index)
+	local frame = Instance.new("Frame")
+	frame.Name = "Egg_" .. tostring(index)
+	frame.BackgroundColor3 = Color3.fromRGB(26, 29, 44)
+	frame.BackgroundTransparency = 0.08
+	frame.BorderSizePixel = 0
+	frame.ClipsDescendants = true
+	frame.Parent = scope.stage
+	addCorner(frame, 16)
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "AccentStroke"
+	stroke.Color = Color3.fromRGB(120, 130, 160)
+	stroke.Thickness = 2
+	stroke.Transparency = 0.25
+	stroke.Parent = frame
+	local scale = Instance.new("UIScale")
+	scale.Parent = frame
+
+	local egg = Instance.new("Frame")
+	egg.Name = "EggShell"
+	egg.Size = UDim2.fromScale(0.38, 0.58)
+	egg.Position = UDim2.fromScale(0.5, 0.48)
+	egg.AnchorPoint = Vector2.new(0.5, 0.5)
+	egg.BackgroundColor3 = Color3.fromRGB(255, 248, 220)
+	egg.BorderSizePixel = 0
+	egg.Parent = frame
+	addCorner(egg, 999)
+	local eggStroke = Instance.new("UIStroke")
+	eggStroke.Color = Color3.fromRGB(210, 190, 140)
+	eggStroke.Thickness = 2
+	eggStroke.Parent = egg
+
+	local result = Instance.new("Frame")
+	result.Name = "Result"
+	result.Size = UDim2.fromScale(1, 1)
+	result.BackgroundTransparency = 1
+	result.Visible = false
+	result.Parent = frame
+	local accent = Instance.new("Frame")
+	accent.Name = "VariantAccent"
+	accent.Size = UDim2.new(1, 0, 0, 7)
+	accent.BackgroundColor3 = Color3.fromRGB(160, 170, 190)
+	accent.BorderSizePixel = 0
+	accent.Parent = result
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "PetName"
+	nameLabel.Size = UDim2.new(1, -12, 0.46, 0)
+	nameLabel.Position = UDim2.new(0, 6, 0.14, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	nameLabel.TextStrokeTransparency = 0.35
+	nameLabel.TextScaled = true
+	nameLabel.TextWrapped = true
+	nameLabel.Parent = result
+	local rarityLabel = Instance.new("TextLabel")
+	rarityLabel.Name = "Rarity"
+	rarityLabel.Size = UDim2.new(1, -12, 0.22, 0)
+	rarityLabel.Position = UDim2.new(0, 6, 0.61, 0)
+	rarityLabel.BackgroundTransparency = 1
+	rarityLabel.Font = Enum.Font.GothamBold
+	rarityLabel.TextScaled = true
+	rarityLabel.Parent = result
+	local variantLabel = Instance.new("TextLabel")
+	variantLabel.Name = "Variant"
+	variantLabel.Size = UDim2.new(1, -12, 0.16, 0)
+	variantLabel.Position = UDim2.new(0, 6, 0.82, 0)
+	variantLabel.BackgroundTransparency = 1
+	variantLabel.Font = Enum.Font.GothamMedium
+	variantLabel.TextScaled = true
+	variantLabel.Parent = result
+
+	trackTween(scope, TweenService:Create(
+		egg,
+		TweenInfo.new(0.22, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ Rotation = index % 2 == 0 and -10 or 10 }
+	))
 	return {
-		screenGui = screenGui,
-		overlay = overlay,
-		eggContainer = eggContainer,
-		eggFrame = eggFrame,
-		eggStroke = eggStroke,
-		whiteFlash = whiteFlash,
+		frame = frame, stroke = stroke, scale = scale, egg = egg, result = result,
+		accent = accent, nameLabel = nameLabel, rarityLabel = rarityLabel,
+		variantLabel = variantLabel,
 	}
+end
+
+function EffectsController:_createHatchScope(payload, waitingForResult, scope)
+	local count = math.clamp(math.floor(tonumber(payload.count) or 1), 1, HatchCinematicPolicy.MAX_PETS)
+	scope = scope or {}
+	scope.batchId = getBatchId(payload)
+	scope.waitingForResult = waitingForResult
+	scope.finished = false
+	scope.cards = {}
+	scope.tweens = {}
+	scope.connections = {}
+	scope.sounds = {}
+	scope.animatedGradients = {}
+	scope.lightStrips = {}
+	scope.particleCount = 0
+	local screenGui = Instance.new("ScreenGui")
+	scope.screenGui = screenGui
+	screenGui.Name = "EffectsController_QOF09Hatch"
+	screenGui.DisplayOrder = 50
+	screenGui.IgnoreGuiInset = false
+	screenGui.ResetOnSpawn = false
+	pcall(function() screenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets end)
+	screenGui.Parent = self._playerGui
+	local overlay = Instance.new("Frame")
+	overlay.Name = "HatchOverlay"
+	overlay.Size = UDim2.fromScale(1, 1)
+	overlay.BackgroundColor3 = Color3.fromRGB(5, 7, 15)
+	overlay.BackgroundTransparency = 0.18
+	overlay.BorderSizePixel = 0
+	overlay.Parent = screenGui
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(0.8, 0, 0, 42)
+	title.Position = UDim2.new(0.1, 0, 0.045, 0)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.Text = waitingForResult and "HATCHING..." or "HATCH RESULTS"
+	title.TextColor3 = Color3.fromRGB(255, 245, 210)
+	title.TextScaled = true
+	title.Parent = overlay
+	local stage = Instance.new("Frame")
+	stage.Name = "BatchStage"
+	stage.Position = UDim2.fromScale(0.5, 0.49)
+	stage.AnchorPoint = Vector2.new(0.5, 0.5)
+	stage.BackgroundTransparency = 1
+	stage.Parent = overlay
+	local skipButton = Instance.new("TextButton")
+	skipButton.Name = "Skip"
+	skipButton.Size = UDim2.fromOffset(132, 52)
+	skipButton.Position = UDim2.new(1, -20, 1, -20)
+	skipButton.AnchorPoint = Vector2.new(1, 1)
+	skipButton.BackgroundColor3 = Color3.fromRGB(35, 40, 60)
+	skipButton.Font = Enum.Font.GothamBold
+	skipButton.Text = waitingForResult and "WAITING" or "SKIP"
+	skipButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	skipButton.TextSize = 20
+	skipButton.Active = not waitingForResult
+	skipButton.AutoButtonColor = not waitingForResult
+	skipButton.Parent = overlay
+	addCorner(skipButton, 12)
+	local skipStroke = Instance.new("UIStroke")
+	skipStroke.Color = Color3.fromRGB(190, 200, 230)
+	skipStroke.Thickness = 2
+	skipStroke.Parent = skipButton
+
+	scope.overlay = overlay
+	scope.title = title
+	scope.stage = stage
+	scope.skipButton = skipButton
+	for index = 1, count do table.insert(scope.cards, self:_createHatchCard(scope, index)) end
+	self:_layoutHatchCards(scope)
+	-- Exactly one AbsoluteSize reflow connection belongs to this scope.
+	table.insert(scope.connections, overlay:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		if self._activeHatchScope == scope and not scope.finished then self:_layoutHatchCards(scope) end
+	end))
+	table.insert(scope.connections, skipButton.Activated:Connect(function() self:skipEggHatch() end))
+	table.insert(scope.connections, screenGui.Destroying:Connect(function()
+		if not scope.destroying then self:_finalizeHatchScope(scope, "gui_destroyed") end
+	end))
+	return scope
+end
+
+function EffectsController:_addHatchParticle(scope, parent, color)
+	if scope.particleCount >= HATCH_PARTICLE_LIMIT then return end
+	scope.particleCount += 1
+	local particle = Instance.new("TextLabel")
+	particle.Name = "VariantStar"
+	particle.Size = UDim2.fromOffset(18, 18)
+	particle.Position = UDim2.fromScale(0.15 + math.random() * 0.7, 0.2 + math.random() * 0.6)
+	particle.AnchorPoint = Vector2.new(0.5, 0.5)
+	particle.BackgroundTransparency = 1
+	particle.Font = Enum.Font.GothamBold
+	particle.Text = "*"
+	particle.TextColor3 = color
+	particle.TextScaled = true
+	particle.ZIndex = 8
+	particle.Parent = parent
+	trackTween(scope, TweenService:Create(particle,
+		TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Position = particle.Position - UDim2.fromOffset(0, 22),
+			TextTransparency = 1,
+			Rotation = math.random(-45, 45),
+		}))
+end
+
+function EffectsController:_configureVariantCard(scope, card, petData, entry)
+	local presentation = PetVariantPresentation.resolve(petData)
+	local rarity = petData.rarity or "Common"
+	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+	local accentColor = presentation.baseVariant == "Normal" and rarityColor or rgbToColor(presentation.accentRGB)
+	if presentation.isShiny then accentColor = rgbToColor(presentation.shinyRGB) end
+	card.nameLabel.Text = presentation.displayPetName
+	card.rarityLabel.Text = rarity
+	card.rarityLabel.TextColor3 = rarityColor
+	card.variantLabel.Text = presentation.variantLabel
+	card.variantLabel.TextColor3 = accentColor
+	card.accent.BackgroundColor3 = accentColor
+	card.stroke.Color = accentColor
+
+	if presentation.baseVariant == "Golden" then
+		card.stroke.Thickness = 4
+		card.stroke.Transparency = 0
+		for _ = 1, 3 do self:_addHatchParticle(scope, card.frame, Color3.fromRGB(255, 220, 70)) end
+	end
+	if presentation.baseVariant == "Rainbow" then
+		local gradient = Instance.new("UIGradient")
+		gradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 80, 110)),
+			ColorSequenceKeypoint.new(0.33, Color3.fromRGB(90, 230, 255)),
+			ColorSequenceKeypoint.new(0.66, Color3.fromRGB(150, 100, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 220, 70)),
+		})
+		gradient.Parent = card.accent
+		table.insert(scope.animatedGradients, gradient)
+	end
+	if presentation.isShiny then
+		for _ = 1, 3 do self:_addHatchParticle(scope, card.frame, Color3.fromRGB(190, 250, 255)) end
+		local strip = Instance.new("Frame")
+		strip.Name = "ShinyLightStrip"
+		strip.Size = UDim2.new(0, 18, 1.4, 0)
+		strip.Position = UDim2.new(0, -24, -0.2, 0)
+		strip.Rotation = 16
+		strip.BackgroundColor3 = Color3.fromRGB(235, 255, 255)
+		strip.BackgroundTransparency = 0.32
+		strip.BorderSizePixel = 0
+		strip.ZIndex = 7
+		strip.Parent = card.result
+		table.insert(scope.lightStrips, strip)
+	end
+	if entry.classification ~= "Normal" and not entry.isHero then
+		trackTween(scope, TweenService:Create(card.stroke,
+			TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 1, true),
+			{ Thickness = math.max(card.stroke.Thickness, 4), Transparency = 0 }))
+	end
+end
+
+function EffectsController:_startVariantAnimation(scope)
+	if #scope.animatedGradients == 0 and #scope.lightStrips == 0 then return end
+	local startedAt = os.clock()
+	table.insert(scope.connections, RunService.RenderStepped:Connect(function()
+		if self._activeHatchScope ~= scope or scope.finished then return end
+		local elapsed = os.clock() - startedAt
+		for _, gradient in ipairs(scope.animatedGradients) do
+			if gradient.Parent then gradient.Rotation = (elapsed * 150) % 360 end
+		end
+		for _, strip in ipairs(scope.lightStrips) do
+			if strip.Parent then strip.Position = UDim2.new((elapsed * 1.8) % 1.4 - 0.2, -10, -0.2, 0) end
+		end
+	end))
+end
+
+function EffectsController:_finalizeHatchScope(scope, reason)
+	if not scope or scope.finished then return end
+	scope.finished = true
+
+	-- The presentation gate remains held through the result callback. This makes
+	-- GUI/FOV teardown, result-grid presentation, discovery queueing, and FIFO
+	-- advancement one serialized exactly-once operation.
+	self._hatchPresentationActive = true
+	self._finalizingHatchScope = scope
+	if scope.heroFovOwned and findVisibleUpgradeTreeOverlay(self._playerGui) then
+		releaseHeroFovOwnership(scope)
+	end
+	for _, tween in ipairs(scope.tweens) do safeCancel(tween) end
+	for _, connection in ipairs(scope.connections) do safeDisconnect(connection) end
+	for _, sound in ipairs(scope.sounds) do
+		pcall(function() sound:Stop() sound:Destroy() end)
+	end
+	if scope.heroFovOwned and scope.camera and scope.cameraFieldOfView then
+		pcall(function() scope.camera.FieldOfView = scope.cameraFieldOfView end)
+		scope.heroFovOwned = false
+	end
+	scope.destroying = true
+	if scope.screenGui and scope.screenGui.Parent then pcall(function() scope.screenGui:Destroy() end) end
+	if self._activeHatchScope == scope then self._activeHatchScope = nil end
+	self._lastHatchPosition = nil
+	local onPresented = scope.onPresented
+	scope.onPresented = nil
+	task.defer(function()
+		if type(onPresented) == "function" then
+			local callbackSucceeded, callbackError = xpcall(function() onPresented(reason) end, debug.traceback)
+			if not callbackSucceeded then
+				warn("[EffectsController] Hatch callback recovered from an error:\n" .. tostring(callbackError))
+			end
+		end
+
+		-- cleanup() may add callbacks while an active/finalizing scope is being
+		-- torn down. Drain them in FIFO order under the same presentation gate.
+		while #self._hatchCleanupCallbacks > 0 do
+			local pending = table.remove(self._hatchCleanupCallbacks, 1)
+			local callbackSucceeded, callbackError = xpcall(function()
+				pending.onPresented(pending.reason)
+			end, debug.traceback)
+			if not callbackSucceeded then
+				warn("[EffectsController] Queued hatch cleanup callback failed:\n" .. tostring(callbackError))
+			end
+		end
+
+		-- A stale task from an older scope may arrive after cancellation. It must
+		-- never release the gate owned by a newer finalizer.
+		if self._finalizingHatchScope ~= scope then return end
+		self._finalizingHatchScope = nil
+		self._hatchPresentationActive = false
+		self._isHatching = false
+		self:_processHatchPresentationQueue()
+	end)
+end
+
+function EffectsController:_runHatchPresentation(scope, item)
+	task.spawn(function()
+		local succeeded, failure = xpcall(function()
+			local pets = item.payload.pets
+			local plan = HatchCinematicPolicy.buildPlan(pets)
+			if plan.count == 0 then return end
+			scope.title.Text = plan.hasRare and "RARE HATCH!" or "HATCH RESULTS"
+			scope.waitingForResult = false
+			for _, tween in ipairs(scope.tweens) do safeCancel(tween) end
+			scope.tweens = {}
+			for _, card in ipairs(scope.cards) do card.egg.Rotation = 0 end
+
+			if not scopeWait(self, scope, HatchCinematicPolicy.TIMINGS.IntroDuration) then return end
+			local popStartedAt = os.clock()
+			for index, entry in ipairs(plan.entries) do
+				local remainingDelay = entry.delay - (os.clock() - popStartedAt)
+				if remainingDelay > 0 and not scopeWait(self, scope, remainingDelay) then return end
+				if self._activeHatchScope ~= scope or scope.finished then return end
+				local card = scope.cards[index]
+				card.egg.Visible = false
+				card.result.Visible = true
+				card.scale.Scale = 0.35
+				self:_configureVariantCard(scope, card, pets[index], entry)
+				trackTween(scope, TweenService:Create(card.scale,
+					TweenInfo.new(HatchCinematicPolicy.TIMINGS.PopDuration, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+					{ Scale = plan.hasRare and entry.isHero and 1.08 or 1 }))
+				self:_playHatchSound(scope, "Pop")
+				if entry.classification ~= "Normal" and not entry.isHero then self:_playHatchSound(scope, "RareAccent") end
+			end
+			self:_startVariantAnimation(scope)
+			if not scopeWait(self, scope, HatchCinematicPolicy.TIMINGS.PopDuration) then return end
+
+			local holdDuration = plan.hasRare and HatchCinematicPolicy.TIMINGS.HeroHoldDuration
+				or HatchCinematicPolicy.TIMINGS.StandardHoldDuration
+			if plan.hasRare then
+				self:_playHatchSound(scope, "Hero")
+				for index, card in ipairs(scope.cards) do
+					if index ~= plan.heroIndex then
+						card.frame.BackgroundTransparency = 0.55
+						card.nameLabel.TextTransparency = 0.42
+						card.rarityLabel.TextTransparency = 0.42
+						card.variantLabel.TextTransparency = 0.42
+					end
+				end
+				observeUpgradeTreeFovConflict(scope, self._playerGui)
+				if not scope.heroFovOwnershipReleased and not findVisibleUpgradeTreeOverlay(self._playerGui) then
+					local camera = workspace.CurrentCamera
+					if camera then
+						scope.camera = camera
+						scope.cameraFieldOfView = camera.FieldOfView
+						scope.heroFovOwned = true
+						local heroFovTween = TweenService:Create(camera,
+							TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+							{ FieldOfView = math.max(35, scope.cameraFieldOfView - 7) })
+						scope.heroFovTween = heroFovTween
+						trackTween(scope, heroFovTween)
+					end
+				end
+			end
+			if not scopeWait(self, scope, math.min(holdDuration, HatchCinematicPolicy.TIMINGS.HeroHoldDuration)) then return end
+			if scope.heroFovOwned and scope.camera and scope.cameraFieldOfView then
+				local restoreFovTween = TweenService:Create(scope.camera,
+					TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ FieldOfView = scope.cameraFieldOfView })
+				scope.heroFovTween = restoreFovTween
+				trackTween(scope, restoreFovTween)
+			end
+			trackTween(scope, TweenService:Create(scope.overlay,
+				TweenInfo.new(HatchCinematicPolicy.TIMINGS.OutroDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+				{ BackgroundTransparency = 1 }))
+			if not scopeWait(self, scope, HatchCinematicPolicy.TIMINGS.OutroDuration) then return end
+		end, debug.traceback)
+		if not succeeded then warn("[EffectsController] Hatch cinematic recovered from an error:\n" .. tostring(failure)) end
+		self:_finalizeHatchScope(scope, succeeded and "completed" or "error")
+	end)
+end
+
+function EffectsController:_processHatchPresentationQueue()
+	local activeScope = self._activeHatchScope
+	if activeScope and not activeScope.finished then
+		if not activeScope.waitingForResult or #self._hatchPresentationQueue == 0 then return end
+		local nextItem = self._hatchPresentationQueue[1]
+		local idsMatch = activeScope.batchId == nil or nextItem.batchId == nil or activeScope.batchId == nextItem.batchId
+		if not idsMatch or #activeScope.cards ~= #nextItem.payload.pets then
+			self:_finalizeHatchScope(activeScope, "start_replaced")
+			return
+		end
+		table.remove(self._hatchPresentationQueue, 1)
+		activeScope.item = nextItem
+		activeScope.onPresented = nextItem.onPresented
+		activeScope.waitingForResult = false
+		activeScope.skipButton.Active = true
+		activeScope.skipButton.AutoButtonColor = true
+		activeScope.skipButton.Text = "SKIP"
+		self._hatchPresentationActive = true
+		self:_runHatchPresentation(activeScope, nextItem)
+		return
+	end
+	if self._hatchPresentationActive or #self._hatchPresentationQueue == 0 then return end
+	local item = table.remove(self._hatchPresentationQueue, 1)
+	self._hatchPresentationActive = true
+	local partialScope = {}
+	local created, scopeOrError = xpcall(function()
+		return self:_createHatchScope(item.payload, false, partialScope)
+	end, debug.traceback)
+	if not created then
+		warn("[EffectsController] Hatch surface recovered from an error:\n" .. tostring(scopeOrError))
+		partialScope.onPresented = item.onPresented
+		self:_finalizeHatchScope(partialScope, "error")
+		return
+	end
+	local scope = scopeOrError
+	scope.item = item
+	scope.onPresented = item.onPresented
+	self._activeHatchScope = scope
+	self._isHatching = true
+	self:_runHatchPresentation(scope, item)
+end
+
+function EffectsController:handleHatchStart(payload)
+	if not self._initialized then return false end
+	local eggType = type(payload) == "table" and payload.eggType or payload
+	if type(eggType) ~= "string" or eggType == "" then return false end
+	if self._activeHatchScope or self._hatchPresentationActive or #self._hatchPresentationQueue > 0 then return true end
+	local startPayload = type(payload) == "table" and shallowCopy(payload) or { eggType = eggType, count = 1 }
+	startPayload.count = math.clamp(math.floor(tonumber(startPayload.count) or 1), 1, HatchCinematicPolicy.MAX_PETS)
+	local partialScope = {}
+	local created, scopeOrError = xpcall(function()
+		return self:_createHatchScope(startPayload, true, partialScope)
+	end, debug.traceback)
+	if not created then
+		warn("[EffectsController] Hatch start feedback recovered from an error:\n" .. tostring(scopeOrError))
+		self:_finalizeHatchScope(partialScope, "create_error")
+		return false
+	end
+	local scope = scopeOrError
+	self._activeHatchScope = scope
+	self._isHatching = true
+	task.delay(HATCH_START_TIMEOUT, function()
+		if self._activeHatchScope == scope and scope.waitingForResult and not scope.finished then
+			self:_finalizeHatchScope(scope, "start_timeout")
+		end
+	end)
+	return true
+end
+
+function EffectsController:handleInvalidHatchResult(payload)
+	local scope = self._activeHatchScope
+	if not scope or scope.finished or not scope.waitingForResult then return false end
+	local resultBatchId = getBatchId(payload)
+	if scope.batchId and resultBatchId and scope.batchId ~= resultBatchId then return false end
+	self:_finalizeHatchScope(scope, "invalid_result")
+	return true
+end
+
+function EffectsController:enqueueHatchBatch(payload, onPresented)
+	local normalized = normalizeHatchPayload(payload)
+	if not normalized then
+		self:handleInvalidHatchResult(payload)
+		return false
+	end
+	if not self._initialized then
+		if type(onPresented) == "function" then
+			table.insert(self._hatchCleanupCallbacks, { onPresented = onPresented, reason = "not_initialized" })
+			if not self._finalizingHatchScope then
+				self:_finalizeHatchScope({ finished = false, tweens = {}, connections = {}, sounds = {} }, "not_initialized")
+			end
+		end
+		return false
+	end
+	local batchId = normalized.batchId
+	if batchId and self._seenHatchBatchIds[batchId] then return false end
+	if batchId then
+		self._seenHatchBatchIds[batchId] = true
+		table.insert(self._seenHatchBatchOrder, batchId)
+		if #self._seenHatchBatchOrder > HATCH_SEEN_CACHE_LIMIT then
+			self._seenHatchBatchIds[table.remove(self._seenHatchBatchOrder, 1)] = nil
+		end
+	end
+	table.insert(self._hatchPresentationQueue, { batchId = batchId, payload = normalized, onPresented = onPresented })
+	self:_processHatchPresentationQueue()
+	return true
 end
 
 --------------------------------------------------------------------------------
@@ -284,188 +827,47 @@ end
 -- Called immediately when EggHatchStart fires so the player sees feedback right away.
 --------------------------------------------------------------------------------
 function EffectsController:startEggWobble()
-	if not self._initialized then return end
+	return self:handleHatchStart({ eggType = "Legacy", count = 1 })
+end
 
-	-- Reentrancy guard: prevent stacking overlays from rapid successive hatch events
-	if self._isHatching then return end
-	self._isHatching = true
+function EffectsController:skipEggHatch()
+	local scope = self._activeHatchScope
+	if not scope or scope.finished or scope.waitingForResult then return false end
+	self:_finalizeHatchScope(scope, "skipped")
+	return true
+end
 
-	-- Create UI elements
-	local ui = self:_createEggUI()
-	self._hatchScreenGui = ui.screenGui
-	self._hatchOverlay = ui.overlay
-	self._hatchEggContainer = ui.eggContainer
-	self._hatchEggFrame = ui.eggFrame
-	self._hatchEggStroke = ui.eggStroke
-	self._hatchWhiteFlash = ui.whiteFlash
-
-	-- Start smooth infinite wobble tween (Sine in-out, reverses, repeats forever)
-	local wobbleInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
-	local wobbleTween = TweenService:Create(ui.eggContainer, wobbleInfo, { Rotation = 12 })
-	wobbleTween:Play()
-	self._hatchWobbleTween = wobbleTween
+function EffectsController:cancelEggHatch(reason)
+	local scope = self._activeHatchScope
+	if not scope or scope.finished then return false end
+	self:_finalizeHatchScope(scope, reason or "cancelled")
+	return true
 end
 
 --------------------------------------------------------------------------------
--- completeEggHatch(petData): cancels the infinite wobble, plays intense shakes,
--- flashes to rarity color, white screen flash, then reveals pet name + rarity
--- with a bounce animation. Auto-dismisses after 2 seconds.
---------------------------------------------------------------------------------
-function EffectsController:completeEggHatch(petData)
-	if not self._initialized then return end
-
-	local rarity = petData and petData.rarity or "Common"
-	local presentation = PetVariantPresentation.resolve(petData)
-	local petName = presentation.displayPetName
-	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
-	local baseColor = presentation.baseVariant == "Normal"
-		and rarityColor
-		or rgbToColor(presentation.accentRGB)
-	local shinyColor = rgbToColor(presentation.shinyRGB)
-	local flashColor = presentation.isShiny and shinyColor or baseColor
-
-	-- If wobble was never started (edge case), start the full UI now
-	if not self._hatchScreenGui or not self._hatchScreenGui.Parent then
-		self._isHatching = false
-		self:startEggWobble()
+-- Legacy complete API accepts one pet, a pet array, or a complete batch DTO and
+-- delegates to the same FIFO. No parallel single-egg reveal engine remains.
+function EffectsController:completeEggHatch(petData, batchCount, onComplete)
+	local payload
+	if type(petData) == "table" and type(petData.pets) == "table" then
+		payload = petData
+	elseif type(petData) == "table" and #petData > 0 then
+		payload = { pets = petData, count = #petData }
+	else
+		payload = {
+			pets = { petData },
+			count = math.max(1, math.floor(tonumber(batchCount) or 1)),
+		}
 	end
-
-	local screenGui = self._hatchScreenGui
-	local overlay = self._hatchOverlay
-	local eggContainer = self._hatchEggContainer
-	local eggFrame = self._hatchEggFrame
-	local eggStroke = self._hatchEggStroke
-	local whiteFlash = self._hatchWhiteFlash
-
-	-- Cancel the infinite wobble tween
-	if self._hatchWobbleTween then
-		self._hatchWobbleTween:Cancel()
-		self._hatchWobbleTween = nil
-	end
-	-- Reset rotation before intense shakes
-	eggContainer.Rotation = 0
-
-	-- Run the completion animation in a coroutine
-	task.spawn(function()
-		-- Phase 1: Quick intense shakes (3 fast shakes with increasing intensity)
-		local shakeAngles = { 8, -14, 18 }
-		for _, angle in ipairs(shakeAngles) do
-			local shakeInfo = TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-			local shakeTween = TweenService:Create(eggContainer, shakeInfo, { Rotation = angle })
-			shakeTween:Play()
-			shakeTween.Completed:Wait()
-		end
-
-		-- Phase 2: Flash egg to rarity/variant color and scale up
-		local crackInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		TweenService:Create(eggFrame, crackInfo, {
-			BackgroundColor3 = flashColor,
-		}):Play()
-		TweenService:Create(eggContainer, crackInfo, {
-			Size = UDim2.fromOffset(150, 200),
-		}):Play()
-		TweenService:Create(eggStroke, crackInfo, {
-			Color = flashColor,
-		}):Play()
-		task.wait(0.2)
-
-		-- Phase 3: Break - full-screen white flash, hide egg
-		eggContainer.Visible = false
-		whiteFlash.BackgroundTransparency = 0
-
-		local flashFadeInfo = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		TweenService:Create(whiteFlash, flashFadeInfo, {
-			BackgroundTransparency = 1,
-		}):Play()
-		task.wait(0.25)
-
-		-- Phase 4: Reveal pet name and rarity with bounce animation
-		local revealContainer = Instance.new("Frame")
-		revealContainer.Name = "RevealContainer"
-		revealContainer.Size = UDim2.fromScale(0.3, 0.15)
-		revealContainer.Position = UDim2.fromScale(0.5, 0.5)
-		revealContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-		revealContainer.BackgroundTransparency = 1
-		revealContainer.ZIndex = 6
-		revealContainer.Parent = screenGui
-
-		local petNameLabel = Instance.new("TextLabel")
-		petNameLabel.Name = "PetNameLabel"
-		petNameLabel.Size = UDim2.fromScale(1, 0.55)
-		petNameLabel.Position = UDim2.fromScale(0, 0.1)
-		petNameLabel.BackgroundTransparency = 1
-		petNameLabel.Text = petName
-		petNameLabel.TextColor3 = baseColor
-		petNameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		petNameLabel.TextStrokeTransparency = 0
-		petNameLabel.Font = Enum.Font.GothamBold
-		petNameLabel.TextScaled = true
-		petNameLabel.TextTransparency = 0
-		petNameLabel.ZIndex = 6
-		petNameLabel.Parent = revealContainer
-
-		local rarityLabel = Instance.new("TextLabel")
-		rarityLabel.Name = "RarityLabel"
-		rarityLabel.Size = UDim2.fromScale(0.6, 0.3)
-		rarityLabel.Position = UDim2.fromScale(0.2, 0.65)
-		rarityLabel.BackgroundTransparency = 1
-		rarityLabel.Text = presentation.variantLabel .. " • " .. rarity
-		rarityLabel.TextColor3 = presentation.isShiny and shinyColor or baseColor
-		rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-		rarityLabel.TextStrokeTransparency = 0.2
-		rarityLabel.Font = Enum.Font.GothamBold
-		rarityLabel.TextScaled = true
-		rarityLabel.TextTransparency = 0
-		rarityLabel.ZIndex = 6
-		rarityLabel.Parent = revealContainer
-
-		-- Bounce scale-in on reveal
-		local revealBounce = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-		TweenService:Create(revealContainer, revealBounce, {
-			Size = UDim2.fromScale(0.6, 0.3),
-		}):Play()
-		task.wait(0.4)
-
-		-- Phase 5: Auto-dismiss after 2 seconds with fade out
-		task.wait(2)
-
-		local fadeOutInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		TweenService:Create(overlay, fadeOutInfo, {
-			BackgroundTransparency = 1,
-		}):Play()
-		TweenService:Create(petNameLabel, fadeOutInfo, {
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
-		}):Play()
-		TweenService:Create(rarityLabel, fadeOutInfo, {
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
-		}):Play()
-
-		task.wait(0.6)
-
-		-- Cleanup
-		if screenGui and screenGui.Parent then
-			screenGui:Destroy()
-		end
-		self._hatchScreenGui = nil
-		self._hatchOverlay = nil
-		self._hatchEggContainer = nil
-		self._hatchEggFrame = nil
-		self._hatchEggStroke = nil
-		self._hatchWhiteFlash = nil
-		self._hatchWobbleTween = nil
-		self._isHatching = false
-	end)
+	return self:enqueueHatchBatch(payload, onComplete)
 end
 
 --------------------------------------------------------------------------------
 -- showEggHatchAnimation: legacy fallback that calls both phases in sequence.
 -- Retained for API compatibility. eggPosition is unused (screen-space animation).
 --------------------------------------------------------------------------------
-function EffectsController:showEggHatchAnimation(eggPosition, resultPet)
+function EffectsController:showEggHatchAnimation(_eggPosition, resultPet)
 	self:startEggWobble()
-	-- Small delay to let wobble play before completing
 	task.delay(1.0, function()
 		self:completeEggHatch(resultPet)
 	end)
@@ -1050,6 +1452,26 @@ end
 -- Cleanup
 --------------------------------------------------------------------------------
 function EffectsController:cleanup()
+	self._initialized = false
+	local queuedPresentations = self._hatchPresentationQueue
+	self._hatchPresentationQueue = {}
+	for _, item in ipairs(queuedPresentations) do
+		if type(item.onPresented) == "function" then
+			table.insert(self._hatchCleanupCallbacks, {
+				onPresented = item.onPresented,
+				reason = "cleanup",
+			})
+		end
+	end
+
+	local activeScope = self._activeHatchScope
+	if activeScope and not activeScope.finished then
+		self:_finalizeHatchScope(activeScope, "cleanup")
+	elseif not self._finalizingHatchScope and #self._hatchCleanupCallbacks > 0 then
+		self:_finalizeHatchScope({ finished = false, tweens = {}, connections = {}, sounds = {} }, "cleanup")
+	end
+	safeDisconnect(self._characterRemovingConnection)
+	self._characterRemovingConnection = nil
 	for _, gui in pairs(self._progressBars) do
 		gui:Destroy()
 	end

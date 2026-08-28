@@ -234,11 +234,14 @@ function ShopService._processAutoHatch()
 							break
 						end
 					end
-					-- Auto-hatch is automation, not a free-egg faucet: every hatch
-					-- uses the normal server-authoritative coin price and inventory limit.
+					-- Auto-hatch uses the same atomic paid batch path and the player's
+					-- server-validated session selection. It never falls back silently.
 					if targetEgg then
 						task.spawn(function()
-							ShopService._eggService.purchaseAndHatch(player, targetEgg)
+							local batchCount = ShopService._eggService.getSelectedBatchCount(player)
+							ShopService._eggService.purchaseAndHatch(player, targetEgg, batchCount, {
+								bypassStation = true,
+							})
 						end)
 					end
 				end

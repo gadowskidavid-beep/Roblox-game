@@ -10,7 +10,7 @@ local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 6
+DataSchema.VERSION = 7
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -95,6 +95,9 @@ function DataSchema.getDefaultData()
 		campaignBossRewards = {},
 		upgrades = {},
 		upgradeTreePurchases = {},
+		hatchPreferences = {
+			preferredBatchCount = 1,
+		},
 		equippedPets = { "starter_pet_1" },
 		questStats = {
 			destroyDestructibles = 0,
@@ -277,6 +280,27 @@ local function normalizeActiveBuffs(values, currentTime)
 	return normalized
 end
 
+local VALID_HATCH_BATCH_COUNTS = {
+	[1] = true,
+	[2] = true,
+	[5] = true,
+	[10] = true,
+}
+
+local function normalizeHatchPreferences(values)
+	local preferredBatchCount = type(values) == "table" and values.preferredBatchCount or nil
+	if type(preferredBatchCount) ~= "number"
+		or preferredBatchCount ~= preferredBatchCount
+		or preferredBatchCount == math.huge
+		or preferredBatchCount == -math.huge
+		or not VALID_HATCH_BATCH_COUNTS[preferredBatchCount] then
+		preferredBatchCount = 1
+	end
+	return {
+		preferredBatchCount = preferredBatchCount,
+	}
+end
+
 local function normalizePotionUpgrades(values)
 	if type(values) ~= "table" then
 		values = {}
@@ -328,6 +352,7 @@ function DataSchema.normalize(data, currentTime)
 	data.potionInventory = normalizePotionInventory(data.potionInventory)
 	data.activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
 	data.potionUpgrades = normalizePotionUpgrades(data.potionUpgrades)
+	data.hatchPreferences = normalizeHatchPreferences(data.hatchPreferences)
 
 	data.schemaVersion = DataSchema.VERSION
 	data.xpNeeded = nil

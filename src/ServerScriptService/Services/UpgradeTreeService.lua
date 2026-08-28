@@ -1,5 +1,5 @@
 --[[
-	UpgradeTreeService.lua - Server-authoritative QOF-07 tree purchases and effects.
+	UpgradeTreeService.lua - Server-authoritative QOF-07/QOF-08 tree purchases and effects.
 	The client sends only an upgrade ID. Costs, currencies, prerequisites, runtime
 	availability, and effective entitlements are resolved from BalanceConfig.
 ]]
@@ -33,6 +33,12 @@ end
 if BalanceConfig.Hatch.EggQualityRuntimeEnabled then
 	for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
 		registerPurchasable(level, "EggQuality")
+	end
+end
+
+if BalanceConfig.Hatch.MultiOpenRuntimeEnabled then
+	for _, level in ipairs(BalanceConfig.Hatch.MultiOpen) do
+		registerPurchasable(level, "MultiOpen")
 	end
 end
 
@@ -108,8 +114,25 @@ function UpgradeTreeService.resolveEntitlements(purchased)
 		end
 	end
 
-	-- Multi-Open purchases may exist in legacy saves, but QOF-08 owns their
-	-- runtime effect and purchase activation.
+	if BalanceConfig.Hatch.MultiOpenRuntimeEnabled then
+		-- The imported tree is one strict chain: Eggs I -> II -> III -> IV -> V.
+		-- Sparse or forged legacy flags stop at the last fully contiguous stage.
+		local eggQualityComplete = true
+		for _, level in ipairs(BalanceConfig.Hatch.EggQuality) do
+			if purchased[level.id] ~= true then
+				eggQualityComplete = false
+				break
+			end
+		end
+		if eggQualityComplete then
+			entitlements.multiOpenCount = applyHighestContiguousLevel(
+				BalanceConfig.Hatch.MultiOpen,
+				purchased,
+				"eggCount"
+			)
+		end
+	end
+
 	return entitlements
 end
 
