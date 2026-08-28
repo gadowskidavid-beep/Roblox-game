@@ -237,10 +237,35 @@ uiController:init(Remotes, playerData)
 musicController:init()
 upgradeTreeController:init(Remotes, playerData)
 
+-- Hydrate the persisted Auto-Hatch preference only after the current entitlement
+-- limit is known. This is selector state only; hatch presentation stays unchanged.
+local pendingPreferredBatchCount = type(playerData.hatchPreferences) == "table"
+	and playerData.hatchPreferences.preferredBatchCount or 1
 local function applyHatchEntitlementState(serverState)
 	local entitlements = type(serverState) == "table" and serverState.entitlements or nil
-	local maximumCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
-	uiController:setHatchBatchLimit(maximumCount)
+	local allowed = { [1] = true, [2] = true, [5] = true, [10] = true }
+	local entitlementCount = type(entitlements) == "table" and entitlements.multiOpenCount or 1
+	local maximumCount = type(entitlementCount) == "number"
+		and entitlementCount == entitlementCount
+		and allowed[entitlementCount] and entitlementCount or 1
+	if pendingPreferredBatchCount ~= nil then
+		local selectedCount = type(pendingPreferredBatchCount) == "number"
+			and pendingPreferredBatchCount == pendingPreferredBatchCount
+			and allowed[pendingPreferredBatchCount] and pendingPreferredBatchCount or 1
+		if selectedCount > maximumCount then
+			selectedCount = maximumCount
+		end
+		uiController:setHatchBatchState(maximumCount, selectedCount)
+		pendingPreferredBatchCount = nil
+	else
+		local selectedCount = uiController:getSelectedHatchCount()
+		if type(selectedCount) ~= "number" or selectedCount ~= selectedCount or not allowed[selectedCount] then
+			selectedCount = 1
+		elseif selectedCount > maximumCount then
+			selectedCount = maximumCount
+		end
+		uiController:setHatchBatchState(maximumCount, selectedCount)
+	end
 end
 
 local hatchSelectionRequestToken = 0
@@ -615,82 +640,85 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId)
 	end
 end)
 
-local hatchPresentationQueue = {}
-local hatchPresentationActive = false
-
-local function updateHatchPosition()
-	if not player.Character then return end
-	local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-	effectsController._lastHatchPosition = hrp.Position + hrp.CFrame.LookVector * 6
-end
-
-local function processNextHatchPresentation()
-	if hatchPresentationActive or #hatchPresentationQueue == 0 then return end
-	hatchPresentationActive = true
-	local presentation = table.remove(hatchPresentationQueue, 1)
-	local pets = presentation.pets
-	local presentationFinished = false
-
-	local function finishPresentation()
-		if presentationFinished then return end
-		presentationFinished = true
-		effectsController._lastHatchPosition = nil
-		local uiSucceeded, uiError = xpcall(function()
-			uiController:showEggBatch(pets)
-		end, debug.traceback)
-		hatchPresentationActive = false
-		task.defer(processNextHatchPresentation)
-		if not uiSucceeded then
-			warn("[Battle Pets] Hatch results recovered from a UI error:\n" .. tostring(uiError))
+local function normalizeHatchResult(payload)
+	if type(payload) ~= "table" then return nil end
+	local sourcePets = type(payload.pets) == "table" and payload.pets or { payload }
+	local pets = {}
+	for _, petData in ipairs(sourcePets) do
+		if type(petData) == "table" then
+			table.insert(pets, petData)
+			if #pets == 10 then break end
 		end
 	end
+	if #pets == 0 then return nil end
 
-	local revealStarted, revealError = xpcall(function()
-		updateHatchPosition()
-		if not effectsController._isHatching then
-			effectsController:startEggWobble()
-		end
-		effectsController:completeEggHatch(pets[1], #pets, finishPresentation)
-	end, debug.traceback)
-	if not revealStarted then
-		effectsController:cancelEggHatch()
-		finishPresentation()
-		warn("[Battle Pets] Hatch reveal recovered before start:\n" .. tostring(revealError))
-	end
+	-- Preserve the complete authoritative DTO. Only normalize the rolling QOF-07
+	-- shape and clamp the presentation-only list to the supported x10 boundary.
+	local normalized = {}
+	for key, value in pairs(payload) do normalized[key] = value end
+	normalized.pets = pets
+	normalized.count = #pets
+	return normalized
 end
 
 EggHatchStart.OnClientEvent:Connect(function(payload)
-	local eggType = type(payload) == "table" and payload.eggType or payload
-	if type(eggType) ~= "string" then return end
-	updateHatchPosition()
-	-- Start immediate feedback only when no older batch owns the reveal surface.
-	-- Queued results create their own wobble when they reach the front.
-	if not hatchPresentationActive and #hatchPresentationQueue == 0 then
-		effectsController:startEggWobble()
+	local started, startError = xpcall(function()
+		effectsController:handleHatchStart(payload)
+	end, debug.traceback)
+	if not started then
+		warn("[Battle Pets] Hatch start feedback recovered from an error:\n" .. tostring(startError))
 	end
 end)
 
 EggHatchResult.OnClientEvent:Connect(function(payload)
-	local pets = type(payload) == "table" and payload.pets or nil
-	if type(pets) ~= "table" then
-		-- Rolling-server compatibility with the QOF-07 single-pet event contract.
-		pets = type(payload) == "table" and { payload } or {}
+	local resultDto = normalizeHatchResult(payload)
+	if not resultDto then
+		local cleaned, cleanupError = xpcall(function()
+			effectsController:handleInvalidHatchResult(payload)
+		end, debug.traceback)
+		if not cleaned then
+			warn("[Battle Pets] Invalid hatch cleanup recovered from an error:\n" .. tostring(cleanupError))
+		end
+		return
 	end
-	if #pets == 0 then return end
 
+	-- Onboarding follows the committed server result, never presentation timing.
 	completeOnboardingStep("egg")
-	for _, petData in ipairs(pets) do
-		if type(petData) == "table" and petData.isNewDiscovery == true then
-			uiController:enqueueDiscoveryToast(petData)
+	local pets = resultDto.pets
+	local presented = false
+	local function onPresented()
+		if presented then return end
+		presented = true
+		local gridSucceeded, gridError = xpcall(function()
+			uiController:showEggBatch(pets)
+		end, debug.traceback)
+		if not gridSucceeded then
+			warn("[Battle Pets] Hatch result grid recovered from a UI error:\n" .. tostring(gridError))
+		end
+
+		-- DisplayOrder 100 discovery toasts are released only after the DisplayOrder
+		-- 50 cinematic has finalized, so they cannot cover the rare reveal.
+		for _, petData in ipairs(pets) do
+			if petData.isNewDiscovery == true then
+				local toastSucceeded, toastError = xpcall(function()
+					uiController:enqueueDiscoveryToast(petData)
+				end, debug.traceback)
+				if not toastSucceeded then
+					warn("[Battle Pets] Discovery toast recovered from a UI error:\n" .. tostring(toastError))
+				end
+			end
 		end
 	end
 
-	table.insert(hatchPresentationQueue, {
-		batchId = type(payload) == "table" and payload.batchId or nil,
-		pets = pets,
-	})
-	processNextHatchPresentation()
+	local enqueueSucceeded, acceptedOrError = xpcall(function()
+		return effectsController:enqueueHatchBatch(resultDto, onPresented)
+	end, debug.traceback)
+	if not enqueueSucceeded then
+		-- A controller boundary error must not lose the committed result.
+		onPresented()
+		warn("[Battle Pets] Hatch queue recovered from an error:\n" .. tostring(acceptedOrError))
+	end
+	-- acceptedOrError == false is the intentional bounded batchId dedupe path.
 end)
 
 CampaignBattleUpdate.OnClientEvent:Connect(function(battleState)

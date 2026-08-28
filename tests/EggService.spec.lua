@@ -174,6 +174,7 @@ local function resetState()
 		pets = {},
 		capacity = 100,
 		capacityBlocked = false,
+		hatchPreferences = { preferredBatchCount = 1 },
 	}
 	maximumBatchCount = 10
 	spentCoins = 0
@@ -189,7 +190,6 @@ local function resetState()
 	startEvents = {}
 	resultEvents = {}
 	EggService._hatchLock[player.UserId] = nil
-	EggService._selectedBatchCounts[player.UserId] = nil
 	EggService._transactionHook = nil
 end
 
@@ -206,6 +206,7 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(spentCoins):toBe(500)
 		expect(refundedCoins):toBe(0)
 		expect(profile.coins):toBe(9500)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(1)
 		expect(#profile.pets):toBe(5)
 		expect(#startEvents):toBe(1)
 		expect(startEvents[1].count):toBe(5)
@@ -281,11 +282,13 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(spentCoins):toBe(0)
 
 		resetState()
+		profile.hatchPreferences.preferredBatchCount = 2
 		profile.capacity = 4
 		local capacityResult, capacityError = EggService.purchaseAndHatch(player, "BasicEgg", 5, true)
 		expect(capacityResult):toBeNil()
 		expect(capacityError):toBe("Pet inventory needs 5 free slots")
 		expect(spentCoins):toBe(0)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(2)
 
 		resetState()
 		profile.coins = 499
@@ -299,6 +302,7 @@ describe("EggService QOF-08 atomic batches", function()
 	it("rolls back the exact total and every pet after injected transaction faults", function()
 		for _, faultStage in ipairs({ "afterSpend", "afterInventory" }) do
 			resetState()
+			profile.hatchPreferences.preferredBatchCount = 2
 			EggService._transactionHook = function(stage)
 				if stage == faultStage then
 					error("injected " .. stage)
@@ -314,23 +318,82 @@ describe("EggService QOF-08 atomic batches", function()
 			expect(#startEvents):toBe(0)
 			expect(#resultEvents):toBe(0)
 			expect(questHatches):toBe(0)
+			expect(profile.hatchPreferences.preferredBatchCount):toBe(2)
 			expect(EggService._hatchLock[player.UserId]):toBeNil()
 		end
 		EggService._transactionHook = nil
 	end)
 
-	it("preserves a validated selection for paid auto-hatch and cleans up player state", function()
+	it("persists a validated selection and reads it after a simulated rejoin", function()
 		resetState()
 		local selected, selectionError, state = EggService.setSelectedBatchCount(player, 5)
 		expect(selected):toBeTrue()
 		expect(selectionError):toBeNil()
 		expect(state.selectedCount):toBe(5)
 		expect(state.maximumCount):toBe(10)
-		expect(EggService.getSelectedBatchCount(player)):toBe(5)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
 
+		-- A fresh service lifecycle has no session selection to restore. The profile
+		-- remains the authority and therefore reproduces the saved preference.
+		EggService.init(dataService, currencyService, petService, upgradeTreeService)
+		expect(EggService.getSelectedBatchCount(player)):toBe(5)
+	end)
+
+	it("repairs saved preferences after entitlement loss to the highest allowed tier", function()
+		resetState()
+		profile.hatchPreferences.preferredBatchCount = 10
+		maximumBatchCount = 5
+		expect(EggService.getSelectedBatchCount(player)):toBe(5)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+
+		profile.hatchPreferences.preferredBatchCount = 5
+		maximumBatchCount = 2
+		local state = EggService.getBatchState(player)
+		expect(state.selectedCount):toBe(2)
+		expect(state.maximumCount):toBe(2)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(2)
+
+		profile.hatchPreferences.preferredBatchCount = 10
+		maximumBatchCount = 1
+		expect(EggService.getSelectedBatchCount(player)):toBe(1)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(1)
+	end)
+
+	it("repairs invalid saved values to x1 and rejects locked sets without persisting them", function()
+		resetState()
+		profile.hatchPreferences.preferredBatchCount = 3
+		expect(EggService.getSelectedBatchCount(player)):toBe(1)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(1)
+
+		maximumBatchCount = 2
+		local selected, selectionError = EggService.setSelectedBatchCount(player, 5)
+		expect(selected):toBeFalse()
+		expect(selectionError):toBe("Multi-Open upgrade required")
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(1)
+	end)
+
+	it("revalidates entitlement during hatch and repairs stale persisted preference", function()
+		resetState()
+		profile.hatchPreferences.preferredBatchCount = 10
+		maximumBatchCount = 5
+		local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 10, true)
+		expect(result):toBeNil()
+		expect(err):toBe("Multi-Open upgrade required")
+		expect(spentCoins):toBe(0)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+
+		local autoResult, autoError = EggService.purchaseAndHatch(player, "BasicEgg", nil, true)
+		expect(autoError):toBeNil()
+		expect(autoResult.count):toBe(5)
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+	end)
+
+	it("cleans transient hatch locks without deleting the persistent preference", function()
+		resetState()
+		profile.hatchPreferences.preferredBatchCount = 5
 		EggService._hatchLock[player.UserId] = true
 		EggService.onPlayerRemoving(player)
 		expect(EggService._hatchLock[player.UserId]):toBeNil()
-		expect(EggService._selectedBatchCounts[player.UserId]):toBeNil()
+		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
 	end)
 end)
