@@ -17,6 +17,10 @@
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
 
 local PetController = {}
 PetController.__index = PetController
@@ -29,6 +33,26 @@ local RARITY_COLORS = {
 	Epic = Color3.fromRGB(180, 0, 255),
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
+
+local RARITY_GLOW_SETTINGS = {
+	Common = { brightness = 0.3, range = 3, color = Color3.fromRGB(255, 255, 255) },
+	Uncommon = { brightness = 0.7, range = 5, color = Color3.fromRGB(0, 220, 50) },
+	Rare = { brightness = 1.2, range = 7, color = Color3.fromRGB(0, 120, 255) },
+	Epic = { brightness = 1.8, range = 9, color = Color3.fromRGB(180, 50, 255) },
+	Legendary = { brightness = 3.0, range = 12, color = Color3.fromRGB(255, 200, 0) },
+}
+
+local function rgbToColor(rgb)
+	return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+end
+
+local function stableHuePhase(value)
+	local hash = 0
+	for index = 1, #value do
+		hash = (hash * 31 + string.byte(value, index)) % 997
+	end
+	return hash / 997
+end
 
 function PetController.new()
 	local self = setmetatable({}, PetController)
@@ -272,7 +296,7 @@ end
 -- Returns the ground Y + half the pet body size so the pet sits on the surface.
 -- If no ground is found, falls back to the player's HumanoidRootPart Y.
 --------------------------------------------------------------------------------
-function PetController:_getGroundY(position, fallbackY, extraIgnore)
+function PetController:_getGroundY(position, fallbackY, extraIgnore, bodyHalfHeight)
 	local rayOrigin = Vector3.new(position.X, position.Y + 50, position.Z)
 	local rayDirection = Vector3.new(0, -200, 0)
 
@@ -308,8 +332,8 @@ function PetController:_getGroundY(position, fallbackY, extraIgnore)
 
 	local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
 	if result then
-		-- Ground hit: return hit position Y + half pet body radius (1.1 studs for 2.2 body)
-		return result.Position.Y + 1.1
+		-- Ground hit: place the body on the surface using its cached visual size.
+		return result.Position.Y + (bodyHalfHeight or 1.1)
 	end
 
 	-- No ground found: use fallback (player ground level)
@@ -317,7 +341,127 @@ function PetController:_getGroundY(position, fallbackY, extraIgnore)
 end
 
 --------------------------------------------------------------------------------
--- Create a procedural pet model: body sphere + shadow + nametag + rarity glow
+-- Apply a canonical variant style to cached model references. Variant changes
+-- are idempotent and keep attack/follow state intact; every effect is model-scoped.
+--------------------------------------------------------------------------------
+function PetController:_applyPetPresentation(visualRefs, petData)
+	local descriptor = PetVariantPresentation.resolve(petData)
+	local rarity = petData.rarity or "Common"
+	local rarityColor = RARITY_COLORS[rarity] or RARITY_COLORS.Common
+	local glow = RARITY_GLOW_SETTINGS[rarity] or RARITY_GLOW_SETTINGS.Common
+	local baseAccent = descriptor.baseVariant == "Normal"
+		and rarityColor
+		or rgbToColor(descriptor.accentRGB)
+	local shinyColor = rgbToColor(descriptor.shinyRGB)
+	local body = visualRefs.body
+	local light = visualRefs.light
+
+	body.Size = Vector3.new(2.2, 2.2, 2.2)
+	body.Material = Enum.Material.SmoothPlastic
+	body.Color = rarityColor
+	light.Brightness = glow.brightness
+	light.Range = glow.range
+	light.Color = glow.color
+	visualRefs.bodyHalfHeight = 1.1
+
+	if descriptor.baseVariant == "Golden" then
+		body.Size = Vector3.new(2.6, 2.6, 2.6)
+		body.Material = Enum.Material.Neon
+		body.Color = rgbToColor(descriptor.bodyRGB)
+		light.Brightness = 4
+		light.Range = 14
+		light.Color = baseAccent
+		visualRefs.bodyHalfHeight = 1.3
+	elseif descriptor.baseVariant == "Rainbow" then
+		body.Size = Vector3.new(2.4, 2.4, 2.4)
+		body.Material = Enum.Material.Neon
+		body.Color = rgbToColor(descriptor.bodyRGB)
+		light.Brightness = 3.6
+		light.Range = 14
+		light.Color = baseAccent
+		visualRefs.bodyHalfHeight = 1.2
+	end
+
+	visualRefs.nameLabel.Text = descriptor.displayPetName
+	visualRefs.nameLabel.TextColor3 = baseAccent
+	visualRefs.variantLabel.Text = descriptor.variantLabel .. " • " .. rarity
+	visualRefs.variantLabel.TextColor3 = descriptor.isShiny and shinyColor or baseAccent
+	for _, particle in ipairs(visualRefs.glowParticles) do
+		particle.Color = baseAccent
+	end
+
+	if descriptor.isShiny then
+		if not visualRefs.shinyHighlight or not visualRefs.shinyHighlight.Parent then
+			local highlight = Instance.new("Highlight")
+			highlight.Name = "ShinyHighlight"
+			highlight.Adornee = visualRefs.model
+			highlight.FillColor = shinyColor
+			highlight.FillTransparency = 0.72
+			highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+			highlight.OutlineTransparency = 0.08
+			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.Parent = visualRefs.model
+			visualRefs.shinyHighlight = highlight
+		end
+		if not visualRefs.shinyAttachment or not visualRefs.shinyAttachment.Parent then
+			local attachment = Instance.new("Attachment")
+			attachment.Name = "ShinySparkleAttachment"
+			attachment.Parent = body
+
+			local emitter = Instance.new("ParticleEmitter")
+			emitter.Name = "ShinySparkles"
+			emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+			emitter.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), shinyColor)
+			emitter.LightEmission = 0.8
+			emitter.Rate = 7
+			emitter.Lifetime = NumberRange.new(0.55, 0.9)
+			emitter.Speed = NumberRange.new(0.3, 0.8)
+			emitter.SpreadAngle = Vector2.new(180, 180)
+			emitter.Size = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.18),
+				NumberSequenceKeypoint.new(0.5, 0.3),
+				NumberSequenceKeypoint.new(1, 0),
+			})
+			emitter.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.15),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			emitter.Parent = attachment
+			visualRefs.shinyAttachment = attachment
+			visualRefs.shinyEmitter = emitter
+		end
+		if not visualRefs.shinyLight or not visualRefs.shinyLight.Parent then
+			local shinyLight = Instance.new("PointLight")
+			shinyLight.Name = "ShinyGlow"
+			shinyLight.Color = shinyColor
+			shinyLight.Brightness = 1
+			shinyLight.Range = 7
+			shinyLight.Parent = body
+			visualRefs.shinyLight = shinyLight
+		end
+	else
+		for _, effect in ipairs({
+			visualRefs.shinyHighlight,
+			visualRefs.shinyAttachment,
+			visualRefs.shinyLight,
+		}) do
+			if effect and effect.Parent then effect:Destroy() end
+		end
+		visualRefs.shinyHighlight = nil
+		visualRefs.shinyAttachment = nil
+		visualRefs.shinyEmitter = nil
+		visualRefs.shinyLight = nil
+	end
+
+	visualRefs.descriptor = descriptor
+	visualRefs.visualKey = descriptor.visualKey
+	return descriptor
+end
+
+--------------------------------------------------------------------------------
+-- Create a procedural pet model: body sphere + shadow + nametag + rarity glow.
+-- Returns cached references so the single controller update never scans for
+-- variant effects.
 --------------------------------------------------------------------------------
 function PetController:createPetModel(petData)
 	local rarity = petData.rarity or "Common"
@@ -327,7 +471,6 @@ function PetController:createPetModel(petData)
 	local model = Instance.new("Model")
 	model.Name = petName .. "_Model"
 
-	-- Body: sphere (placeholder for future Blender model)
 	local body = Instance.new("Part")
 	body.Name = "Body"
 	body.Shape = Enum.PartType.Ball
@@ -336,9 +479,10 @@ function PetController:createPetModel(petData)
 	body.Material = Enum.Material.SmoothPlastic
 	body.Anchored = true
 	body.CanCollide = false
+	body.CanTouch = false
+	body.CanQuery = false
 	body.Parent = model
 
-	-- Shadow: flat dark cylinder beneath the pet (visual ground shadow)
 	local shadow = Instance.new("Part")
 	shadow.Name = "Shadow"
 	shadow.Shape = Enum.PartType.Cylinder
@@ -348,22 +492,22 @@ function PetController:createPetModel(petData)
 	shadow.Transparency = 0.6
 	shadow.Anchored = true
 	shadow.CanCollide = false
+	shadow.CanTouch = false
+	shadow.CanQuery = false
 	shadow.CFrame = CFrame.new(body.Position - Vector3.new(0, 1.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
 	shadow.Parent = model
 
-	-- Name label above pet (nametag with pet name and rarity)
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Name = "NameLabel"
-	billboardGui.Size = UDim2.fromOffset(120, 30)
-	billboardGui.StudsOffset = Vector3.new(0, 1.8, 0)
+	billboardGui.Size = UDim2.fromOffset(160, 42)
+	billboardGui.StudsOffset = Vector3.new(0, 2, 0)
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Adornee = body
 	billboardGui.Parent = model
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "NameText"
-	nameLabel.Size = UDim2.fromScale(1, 0.65)
-	nameLabel.Position = UDim2.fromScale(0, 0)
+	nameLabel.Size = UDim2.fromScale(1, 0.6)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = petName
 	nameLabel.TextColor3 = bodyColor
@@ -373,31 +517,20 @@ function PetController:createPetModel(petData)
 	nameLabel.TextScaled = true
 	nameLabel.Parent = billboardGui
 
-	-- Rarity subtitle under name
-	local rarityLabel = Instance.new("TextLabel")
-	rarityLabel.Name = "RarityText"
-	rarityLabel.Size = UDim2.fromScale(1, 0.35)
-	rarityLabel.Position = UDim2.fromScale(0, 0.65)
-	rarityLabel.BackgroundTransparency = 1
-	rarityLabel.Text = rarity
-	rarityLabel.TextColor3 = bodyColor
-	rarityLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	rarityLabel.TextStrokeTransparency = 0.5
-	rarityLabel.Font = Enum.Font.Gotham
-	rarityLabel.TextScaled = true
-	rarityLabel.Parent = billboardGui
+	local variantLabel = Instance.new("TextLabel")
+	variantLabel.Name = "VariantText"
+	variantLabel.Size = UDim2.fromScale(1, 0.4)
+	variantLabel.Position = UDim2.fromScale(0, 0.6)
+	variantLabel.BackgroundTransparency = 1
+	variantLabel.Text = rarity
+	variantLabel.TextColor3 = bodyColor
+	variantLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	variantLabel.TextStrokeTransparency = 0.45
+	variantLabel.Font = Enum.Font.Gotham
+	variantLabel.TextScaled = true
+	variantLabel.Parent = billboardGui
 
-	-- Rarity-based glow (PointLight with brightness/range varying by rarity)
-	-- Common=white dim, Uncommon=green, Rare=blue, Epic=purple, Legendary=gold strong
-	local glowSettings = {
-		Common = { brightness = 0.3, range = 3, color = Color3.fromRGB(255, 255, 255) },
-		Uncommon = { brightness = 0.7, range = 5, color = Color3.fromRGB(0, 220, 50) },
-		Rare = { brightness = 1.2, range = 7, color = Color3.fromRGB(0, 120, 255) },
-		Epic = { brightness = 1.8, range = 9, color = Color3.fromRGB(180, 50, 255) },
-		Legendary = { brightness = 3.0, range = 12, color = Color3.fromRGB(255, 200, 0) },
-	}
-
-	local glow = glowSettings[rarity] or glowSettings.Common
+	local glow = RARITY_GLOW_SETTINGS[rarity] or RARITY_GLOW_SETTINGS.Common
 	local light = Instance.new("PointLight")
 	light.Name = "PetGlow"
 	light.Color = glow.color
@@ -405,8 +538,7 @@ function PetController:createPetModel(petData)
 	light.Range = glow.range
 	light.Parent = body
 
-	-- Rarity particle ring (orbiting small sphere for Rare+)
-	-- Creates 2-4 tiny orbiting particles for rarer pets
+	local glowParticles = {}
 	if rarity == "Rare" or rarity == "Epic" or rarity == "Legendary" then
 		local numParticles = rarity == "Legendary" and 4 or (rarity == "Epic" and 3 or 2)
 		for i = 1, numParticles do
@@ -419,23 +551,27 @@ function PetController:createPetModel(petData)
 			particle.Transparency = 0.3
 			particle.Anchored = true
 			particle.CanCollide = false
+			particle.CanTouch = false
+			particle.CanQuery = false
 			particle.Position = body.Position + Vector3.new(1.5, 0, 0)
 			particle.Parent = model
+			table.insert(glowParticles, particle)
 		end
 	end
 
-	-- Golden pets get extra sparkle effect (larger size, extra glow)
-	if petData.golden == true or petData.variant == "Golden" then
-		body.Size = Vector3.new(2.6, 2.6, 2.6)
-		body.Material = Enum.Material.Neon
-		body.Color = Color3.fromRGB(255, 215, 0)
-		light.Brightness = 4
-		light.Range = 14
-		light.Color = Color3.fromRGB(255, 200, 0)
-	end
-
 	model.PrimaryPart = body
-	return model
+	local visualRefs = {
+		model = model,
+		body = body,
+		shadow = shadow,
+		light = light,
+		nameLabel = nameLabel,
+		variantLabel = variantLabel,
+		glowParticles = glowParticles,
+		visualPhase = stableHuePhase(tostring(petData.id or petData.uniqueId or petData.petId or petName)),
+	}
+	self:_applyPetPresentation(visualRefs, petData)
+	return model, visualRefs
 end
 
 -- Create a flat client-only marker whose asymmetric ring makes rotation visible.
@@ -552,7 +688,7 @@ function PetController:updateEquippedPets(equippedList)
 		if petData.id then
 			local petInfo = self._equippedPets[petData.id]
 			if not petInfo then
-				local model = self:createPetModel(petData)
+				local model, visualRefs = self:createPetModel(petData)
 				local attackMarker, attackMarkerGui = self:_createAttackMarker(model)
 				model.Parent = self._petsFolder
 
@@ -563,9 +699,16 @@ function PetController:updateEquippedPets(equippedList)
 					attackMarker = attackMarker,
 					attackMarkerGui = attackMarkerGui,
 					attackMarkerAngle = 0,
+					visualRefs = visualRefs,
+					bodyHalfHeight = visualRefs.bodyHalfHeight,
 				}
 				self._equippedPets[petData.id] = petInfo
 			else
+				local descriptor = PetVariantPresentation.resolve(petData)
+				if petInfo.visualRefs and petInfo.visualRefs.visualKey ~= descriptor.visualKey then
+					self:_applyPetPresentation(petInfo.visualRefs, petData)
+					petInfo.bodyHalfHeight = petInfo.visualRefs.bodyHalfHeight
+				end
 				petInfo.data = petData
 				petInfo.followIndex = i
 			end
@@ -597,7 +740,8 @@ function PetController:_updateAttackMarker(uniqueId, petInfo, deltaTime)
 	end
 
 	local bodyPosition = body.Position
-	local groundY = self:_getGroundY(bodyPosition, bodyPosition.Y, targetIgnore) - 1.1
+	local bodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+	local groundY = self:_getGroundY(bodyPosition, bodyPosition.Y, targetIgnore, bodyHalfHeight) - bodyHalfHeight
 	petInfo.attackMarkerAngle = ((petInfo.attackMarkerAngle or 0) + deltaTime * math.rad(110)) % (math.pi * 2)
 	marker.CFrame = CFrame.new(
 		bodyPosition.X,
@@ -635,22 +779,22 @@ function PetController:update(deltaTime)
 		self._manualTargetMode = false
 	end
 
-	-- Increment orbit timer for glow particles
+	-- One shared timer drives all bounded orbit and Rainbow presentation work.
 	if not self._orbitTimer then
 		self._orbitTimer = 0
 	end
 	self._orbitTimer = self._orbitTimer + deltaTime
+
+	local totalPets = 0
+	for _ in pairs(self._equippedPets) do
+		totalPets = totalPets + 1
+	end
 
 	for uniqueId, petInfo in pairs(self._equippedPets) do
 		if not self._attackingPets[uniqueId] then
 			local index = petInfo.followIndex or 1
 			local row = math.ceil(index / self._petsPerRow)
 			local col = ((index - 1) % self._petsPerRow) + 1
-
-			local totalPets = 0
-			for _ in pairs(self._equippedPets) do
-				totalPets = totalPets + 1
-			end
 			local actualPetsInRow = math.min(self._petsPerRow, totalPets - (row - 1) * self._petsPerRow)
 
 			local lateralOffset = (col - (actualPetsInRow + 1) / 2) * self._followSpread
@@ -660,12 +804,11 @@ function PetController:update(deltaTime)
 				+ behindVector * distanceBehind
 				+ rightVector * lateralOffset
 
-			-- Raycast to snap pet to the ground surface
-			local fallbackY = playerPos.Y - 2 + 1.1 -- player feet level + half pet size
-			local groundY = self:_getGroundY(rawTargetPos, fallbackY)
+			local bodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+			local fallbackY = playerPos.Y - 2 + bodyHalfHeight
+			local groundY = self:_getGroundY(rawTargetPos, fallbackY, nil, bodyHalfHeight)
 			local targetPos = Vector3.new(rawTargetPos.X, groundY, rawTargetPos.Z)
 
-			-- Move pet model smoothly toward target
 			local model = petInfo.model
 			if model and model.PrimaryPart and model.PrimaryPart.Parent then
 				local currentPos = model.PrimaryPart.Position
@@ -681,40 +824,57 @@ function PetController:update(deltaTime)
 					end
 				end
 
-				-- Position shadow on the ground directly below the pet body
-				local shadowPart = model:FindFirstChild("Shadow")
+				local shadowPart = petInfo.visualRefs and petInfo.visualRefs.shadow or model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = newPos.Y - 1.1 + 0.05
-					local shadowPos = Vector3.new(newPos.X, groundY, newPos.Z)
+					local shadowY = newPos.Y - bodyHalfHeight + 0.05
+					local shadowPos = Vector3.new(newPos.X, shadowY, newPos.Z)
 					shadowPart.CFrame = CFrame.new(shadowPos) * CFrame.Angles(0, 0, math.rad(90))
 				end
 
-				-- Orbit glow particles around the pet body
-				self:_updateGlowParticles(model, newPos, index)
+				self:_updateGlowParticles(petInfo, newPos, index)
 			end
 		end
 
+		self:_updateVariantAnimation(petInfo)
 		self:_updateAttackMarker(uniqueId, petInfo, deltaTime)
 	end
 end
 
--- Animate glow particles orbiting around the pet (for Rare+ pets)
-function PetController:_updateGlowParticles(model, bodyPos, petIndex)
-	local particleIdx = 0
-	for _, part in ipairs(model:GetChildren()) do
-		if part:IsA("BasePart") and part.Name:find("GlowParticle") then
-			particleIdx = particleIdx + 1
+-- Animate cached rarity particles without scanning model children every frame.
+function PetController:_updateGlowParticles(petInfo, bodyPos, petIndex)
+	local visualRefs = petInfo.visualRefs
+	if not visualRefs then return end
+	for particleIdx, part in ipairs(visualRefs.glowParticles) do
+		if part and part.Parent then
 			local angleOffset = (particleIdx / 5) * math.pi * 2
-			local orbitRadius = 1.6
-			local orbitSpeed = 2.5
-			local bobSpeed = 3.0
-
-			local angle = self._orbitTimer * orbitSpeed + angleOffset + petIndex * 1.2
-			local orbitX = math.cos(angle) * orbitRadius
-			local orbitZ = math.sin(angle) * orbitRadius
-			local orbitY = math.sin(self._orbitTimer * bobSpeed + particleIdx) * 0.4
-
+			local angle = self._orbitTimer * 2.5 + angleOffset + petIndex * 1.2
+			local orbitX = math.cos(angle) * 1.6
+			local orbitZ = math.sin(angle) * 1.6
+			local orbitY = math.sin(self._orbitTimer * 3 + particleIdx) * 0.4
 			part.Position = bodyPos + Vector3.new(orbitX, orbitY, orbitZ)
+		end
+	end
+end
+
+-- Rainbow color motion is folded into the existing PetController update loop.
+-- No per-pet connection, descendant scan, allocation, or unbounded particle work.
+function PetController:_updateVariantAnimation(petInfo)
+	local visualRefs = petInfo.visualRefs
+	local descriptor = visualRefs and visualRefs.descriptor
+	if not descriptor or descriptor.baseVariant ~= "Rainbow" then return end
+	if not visualRefs.body.Parent or not visualRefs.light.Parent then return end
+
+	local hue = (self._orbitTimer * 0.11 + visualRefs.visualPhase) % 1
+	local color = Color3.fromHSV(hue, 0.76, 1)
+	visualRefs.body.Color = color
+	visualRefs.light.Color = color
+	visualRefs.nameLabel.TextColor3 = color
+	if not descriptor.isShiny then
+		visualRefs.variantLabel.TextColor3 = color
+	end
+	for _, particle in ipairs(visualRefs.glowParticles) do
+		if particle and particle.Parent then
+			particle.Color = color
 		end
 	end
 end
@@ -771,23 +931,29 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 		end
 	end
 
-	-- Determine target position: on the ground beside the destructible
-	local targetPos
+	-- Keep the target's horizontal station fixed, but derive its Y from the
+	-- current visual body size. An in-place variant change therefore cannot leave
+	-- an attacking pet floating or clipping until the attack ends.
+	local targetRawPos
+	local targetGroundFallback
+	local targetNeedsGroundSnap = false
 	if destructiblePart and typeof(destructiblePart) == "Instance" and destructiblePart:IsA("BasePart") then
-		-- Offset to the side (use a per-pet angle to distribute around the destructible)
 		local petIndex = petInfo.followIndex or 1
-		local angle = (petIndex - 1) * (math.pi * 2 / 6) -- distribute evenly around
-		local offsetX = math.cos(angle) * 2.5
-		local offsetZ = math.sin(angle) * 2.5
-		local rawPos = destructiblePart.Position + Vector3.new(offsetX, 0, offsetZ)
-		-- Raycast to snap pet to the ground beside the destructible
-		local fallbackY = destructiblePart.Position.Y - destructiblePart.Size.Y / 2 + 1.1
-		local groundY = self:_getGroundY(rawPos, fallbackY, destructibleIgnore)
-		targetPos = Vector3.new(rawPos.X, groundY, rawPos.Z)
+		local angle = (petIndex - 1) * (math.pi * 2 / 6)
+		targetRawPos = destructiblePart.Position + Vector3.new(
+			math.cos(angle) * 2.5,
+			0,
+			math.sin(angle) * 2.5
+		)
+		targetGroundFallback = destructiblePart.Position.Y - destructiblePart.Size.Y / 2
+		targetNeedsGroundSnap = true
 	else
 		local character = self._player.Character
-		if character and character:FindFirstChild("HumanoidRootPart") then
-			targetPos = character.HumanoidRootPart.Position + character.HumanoidRootPart.CFrame.LookVector * 5
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+		if rootPart then
+			targetRawPos = rootPart.Position + rootPart.CFrame.LookVector * 5
+			targetGroundFallback = targetRawPos.Y - (petInfo.bodyHalfHeight or 1.1)
+			targetNeedsGroundSnap = true
 		else
 			self._attackingPets[uniqueId] = nil
 			if self._assignPetTarget and self:_hasPetTargetRequest(uniqueId) then
@@ -796,6 +962,21 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 			return
 		end
 	end
+
+	local function getGroundedTargetPosition()
+		local currentBodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+		if not targetNeedsGroundSnap then return targetRawPos end
+		local fallbackY = targetGroundFallback + currentBodyHalfHeight
+		local groundY = self:_getGroundY(
+			targetRawPos,
+			fallbackY,
+			destructibleIgnore,
+			currentBodyHalfHeight
+		)
+		return Vector3.new(targetRawPos.X, groundY, targetRawPos.Z)
+	end
+
+	local targetPos = getGroundedTargetPosition()
 
 	-- Slow approach using per-frame lerp at speed 1.5 (very slow and natural, walking pace)
 	if model.PrimaryPart and model.PrimaryPart.Parent then
@@ -845,6 +1026,7 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 					end
 				end
 
+				targetPos = getGroundedTargetPosition()
 				local currentPos = model.PrimaryPart.Position
 				local dist = (currentPos - targetPos).Magnitude
 				if dist < 0.5 then
@@ -856,7 +1038,13 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				local alpha = math.min(1, dt * APPROACH_SPEED)
 				local newPos = currentPos:Lerp(targetPos, alpha)
 				-- Snap Y to ground via raycast during approach
-				local approachGroundY = self:_getGroundY(newPos, targetPos.Y, destructibleIgnore)
+				local currentBodyHalfHeight = petInfo.bodyHalfHeight or 1.1
+				local approachGroundY = self:_getGroundY(
+					newPos,
+					targetPos.Y,
+					destructibleIgnore,
+					currentBodyHalfHeight
+				)
 				newPos = Vector3.new(newPos.X, approachGroundY, newPos.Z)
 				local offset = newPos - currentPos
 
@@ -867,9 +1055,9 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				end
 
 				-- Update shadow
-				local shadowPart = model:FindFirstChild("Shadow")
+				local shadowPart = petInfo.visualRefs and petInfo.visualRefs.shadow or model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = newPos.Y - 1.1 + 0.05
+					local groundY = newPos.Y - currentBodyHalfHeight + 0.05
 					shadowPart.CFrame = CFrame.new(newPos.X, groundY, newPos.Z) * CFrame.Angles(0, 0, math.rad(90))
 				end
 			end
@@ -919,6 +1107,8 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 
 				-- Gentle bounce (bob up and down)
 				local bounceOffset = math.sin(bounceTime * BOUNCE_SPEED) * BOUNCE_HEIGHT
+				targetPos = getGroundedTargetPosition()
+				local currentBodyHalfHeight = petInfo.bodyHalfHeight or 1.1
 				local desiredPos = targetPos + Vector3.new(0, bounceOffset, 0)
 				local currentPos = model.PrimaryPart.Position
 				local offset = desiredPos - currentPos
@@ -930,9 +1120,9 @@ function PetController:sendPetToAttack(uniqueId, destructibleId, destructiblePar
 				end
 
 				-- Update shadow
-				local shadowPart = model:FindFirstChild("Shadow")
+				local shadowPart = petInfo.visualRefs and petInfo.visualRefs.shadow or model:FindFirstChild("Shadow")
 				if shadowPart then
-					local groundY = desiredPos.Y - 1.1 + 0.05
+					local groundY = desiredPos.Y - currentBodyHalfHeight + 0.05
 					shadowPart.CFrame = CFrame.new(desiredPos.X, groundY, desiredPos.Z) * CFrame.Angles(0, 0, math.rad(90))
 				end
 			end

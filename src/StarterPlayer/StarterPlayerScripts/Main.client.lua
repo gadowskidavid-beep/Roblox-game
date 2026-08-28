@@ -424,7 +424,30 @@ CurrencyUpdated.OnClientEvent:Connect(function(coins, diamonds)
 end)
 
 PetInventoryUpdated.OnClientEvent:Connect(function(pets)
+	pets = type(pets) == "table" and pets or {}
 	uiController:updatePetInventory(pets)
+
+	-- Inventory snapshots can carry an equipped pet's updated visual identity.
+	-- Refresh only already-equipped entries, preserving authoritative equip order
+	-- and requiring no new remote or replicated world model.
+	local petById = {}
+	for _, petData in ipairs(pets) do
+		if type(petData) == "table" and petData.id then
+			petById[petData.id] = petData
+		end
+	end
+	local equippedChanged = false
+	for index, equippedPet in ipairs(localEquippedPets) do
+		local updatedPet = equippedPet.id and petById[equippedPet.id]
+		if updatedPet and updatedPet ~= equippedPet then
+			localEquippedPets[index] = updatedPet
+			equippedChanged = true
+		end
+	end
+	if equippedChanged then
+		petController:updateEquippedPets(localEquippedPets)
+		uiController:updateEquippedPets(localEquippedPets)
+	end
 end)
 
 PetEquipped.OnClientEvent:Connect(function(petData)
