@@ -135,6 +135,7 @@ local specFiles = {
 	"tests/ZoneService.spec",
 	"tests/CampaignService.spec",
 	"tests/EggService.spec",
+	"tests/QOF26PotionLifecycle.spec",
 	"tests/AutoHatchService.spec",
 	"tests/ShopService.spec",
 	"tests/PotionService.spec",

@@ -675,8 +675,13 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 			consumeShinyCharges = options.bypassStation ~= true and options.skipCharge ~= true
 		end
 		if consumeShinyCharges == true and EggService._potionService then
-			transaction.shinyChargeTransaction, transaction.shinyBoostCount =
+			local shinyHandle, shinyReserved, shinyError =
 				EggService._potionService.beginShinyChargeTransaction(player, validatedCount)
+			if shinyError ~= nil then
+				return nil, shinyError
+			end
+			transaction.shinyChargeTransaction = shinyHandle
+			transaction.shinyBoostCount = shinyReserved
 		end
 
 		local prepared, prepareError = EggService._petService.prepareHatchBatch(

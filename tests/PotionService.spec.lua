@@ -107,6 +107,23 @@ function currencyService.rollbackSpendTransaction(transaction)
 	return true
 end
 
+local directProfileOwner = nil
+local directOwnerBegins = 0
+local directOwnerBlockedReason = nil
+local profileTransactionService = {}
+function profileTransactionService.begin(ownerPlayer, ownerName)
+	directOwnerBegins = directOwnerBegins + 1
+	if directProfileOwner ~= nil then return nil, "BUSY" end
+	if directOwnerBlockedReason then return nil, directOwnerBlockedReason end
+	directProfileOwner = { player = ownerPlayer, ownerName = ownerName, profile = profile }
+	return directProfileOwner, nil
+end
+function profileTransactionService.commit(owner)
+	if owner ~= directProfileOwner then return false end
+	directProfileOwner = nil
+	return true
+end
+
 local function consumeRequest(potionId)
 	return { contractVersion = 1, action = "consumePotion", potionId = potionId }
 end
@@ -145,12 +162,18 @@ local function resetState()
 	settlerRegistrationFailures = 0
 	spendCommitInspector = nil
 	spendRollbackCalls = 0
+	directProfileOwner = nil
+	directOwnerBegins = 0
+	directOwnerBlockedReason = nil
 	refreshCalls = 0
-	PotionService._mutationLocks = {}
+	PotionService._potionLeases = {}
+	PotionService._leaseGenerations = {}
 	PotionService._stateRevisions = {}
-	PotionService._pendingShinyCharges = setmetatable({}, { __mode = "k" })
+	PotionService._pendingShinyCharges = {}
+	PotionService._activeTransactions = {}
+	PotionService._shuttingDown = false
 	PotionService._transactionHook = nil
-	PotionService.init(dataService, currencyService)
+	PotionService.init(dataService, currencyService, profileTransactionService)
 	PotionService.setMovementRefreshCallback(function() refreshCalls = refreshCalls + 1 end)
 end
 
@@ -234,12 +257,19 @@ describe("PotionService QOF-14 timed sources", function()
 		expect(refreshCalls):toBe(1)
 	end)
 
-	it("caps Shiny charges at 30 without applying Duration", function()
+	it("never consumes a Shiny Potion unless all three charges fit", function()
 		resetState()
 		profile.potionUpgrades.durationLevel = 4
-		profile.potionInventory.ShinyPotion = 1
+		profile.potionInventory.ShinyPotion = 2
 		profile.activeBuffs.shinyChance = { charges = 29 }
+		local success, message = PotionService.consume(player, consumeRequest("ShinyPotion"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Maximum Shiny charges reached (30)")
+		expect(profile.potionInventory.ShinyPotion):toBe(2)
+		expect(profile.activeBuffs.shinyChance):toEqual({ charges = 29 })
+		profile.activeBuffs.shinyChance = { charges = 27 }
 		expect(PotionService.consume(player, consumeRequest("ShinyPotion"))):toBeTrue()
+		expect(profile.potionInventory.ShinyPotion):toBe(1)
 		expect(profile.activeBuffs.shinyChance):toEqual({ charges = 30 })
 		expect(PotionService.getState(player).slots.active):toBe(1)
 	end)
@@ -360,14 +390,18 @@ describe("PotionService QOF-14 upgrades and Auto-Drink", function()
 		spendRollbackFails = false
 		local settler = retained.settler
 		profile.potionInventory.LuckPotion = 1
-		PotionService.notifyInventoryChanged(player)
-		expect(PotionService.getState(player).stateRevision):toBe(1)
+		local blockedState, blockedReason = PotionService.notifyInventoryChanged(player)
+		expect(blockedState):toBeNil()
+		expect(blockedReason):toBe("BUSY")
+		expect(PotionService.getState(player).stateRevision):toBe(0)
 		expect(settler(retainedTransaction)):toBeTrue()
 		expect(settler(retainedTransaction)):toBeTrue()
 		expect(activeSpendTransaction):toBeNil()
 		expect(pending[retainedTransaction]):toBeNil()
 		expect(profile.diamonds):toBe(100000)
 		expect(profile.potionUpgrades.durationLevel):toBe(0)
+		local publishedState = PotionService.notifyInventoryChanged(player)
+		expect(publishedState.stateRevision):toBe(1)
 		expect(PotionService.getState(player).stateRevision):toBe(1)
 	end)
 
