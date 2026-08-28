@@ -1,6 +1,6 @@
 # QOF-27 – Maschinen-Input-Staging vor RNG
 
-Status: **Code-verifiziert – Studio-Test ausstehend**
+Status: **Abgeschlossen – Fortsetzung durch ausdrückliches Nutzer-`Weiter`; Studio-Ergebnis nicht separat gemeldet**
 
 Implementierungscommit: `fecf0ee22a183dd72125d61ab8a08462634f2007`
 
@@ -137,4 +137,8 @@ Bitte nach dem Studio-Test melden:
 5. Bleiben post-PONR Fehler wirtschaftlich terminal, und persistieren nach Rejoin ausschließlich vollständige Endzustände?
 6. Gibt es rote Server-/Clientfehler oder Regressionen bei Machine-UI, Pet-Dex, Enchanting, Hatching, Shop oder Potions?
 
-Status bleibt bis zu dieser Rückmeldung **Code-verifiziert – Studio-Test ausstehend**.
+Ein separates positives Roblox-Studio-Ergebnis wurde nicht gemeldet. Der Nutzer hat nach dem gebundenen QOF-27-Handoff ausdrücklich `weiter` geschrieben und damit den Abschluss durch Fortsetzungsfreigabe autorisiert; dies wird nicht als Studio-Bestätigung dargestellt.
+
+## Abschluss
+
+QOF-27 ist durch das ausdrückliche Nutzer-`weiter` abgeschlossen. QOF-28 wurde dadurch nicht automatisch begonnen, weil dessen Entitlement-Migration und Stations-UX weiterhin eine Produktentscheidung verlangen.
