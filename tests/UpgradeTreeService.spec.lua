@@ -3,8 +3,12 @@
 local originalRequire = require
 local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
 local updateStates = {}
+local updateShouldError = false
 local updateEvent = {}
 function updateEvent:FireClient(_, state)
+	if updateShouldError then
+		error("injected UpgradeTreeUpdated failure")
+	end
 	table.insert(updateStates, state)
 end
 local remotes = {}
@@ -35,23 +39,79 @@ rawset(_G, "require", originalRequire)
 local player = { UserId = 17 }
 local profile = nil
 local spends = {}
-local refunds = {}
+local spendOwners = {}
+local commits = 0
+local rollbacks = {}
+local currencyUpdates = {}
+local pendingSpend = nil
+local registeredSettler = nil
+local lastSettler = nil
+local centralBusy = false
+local commitBehavior = "success"
+local rollbackBehavior = "success"
+local dataLookupOverride = nil
 local dataService = {}
 function dataService.getPlayerData()
+	if dataLookupOverride then
+		return dataLookupOverride()
+	end
 	return profile
 end
 local currencyService = {}
-function currencyService.spend(_, currency, amount)
+function currencyService.beginSpendTransaction(_, currency, amount, ownerName)
 	table.insert(spends, { currency = currency, amount = amount })
-	if profile[currency] < amount then
+	table.insert(spendOwners, ownerName)
+	if centralBusy or pendingSpend or profile[currency] < amount then
+		return nil
+	end
+	local handle = {}
+	pendingSpend = {
+		handle = handle,
+		currency = currency,
+		amount = amount,
+	}
+	return handle
+end
+function currencyService.setSpendSettler(handle, settler)
+	if not pendingSpend or pendingSpend.handle ~= handle then
 		return false
 	end
-	profile[currency] = profile[currency] - amount
+	registeredSettler = function()
+		return settler(handle)
+	end
+	lastSettler = registeredSettler
 	return true
 end
-function currencyService.creditRaw(_, currency, amount)
-	table.insert(refunds, { currency = currency, amount = amount })
-	profile[currency] = profile[currency] + amount
+function currencyService.commitSpendTransaction(handle)
+	commits = commits + 1
+	if commitBehavior == "error" then
+		error("injected commit failure")
+	end
+	if commitBehavior == "false" or not pendingSpend or pendingSpend.handle ~= handle then
+		return false
+	end
+	profile[pendingSpend.currency] = profile[pendingSpend.currency] - pendingSpend.amount
+	table.insert(currencyUpdates, { coins = profile.coins, diamonds = profile.diamonds })
+	pendingSpend = nil
+	registeredSettler = nil
+	return true
+end
+function currencyService.rollbackSpendTransaction(handle)
+	if not pendingSpend or pendingSpend.handle ~= handle then
+		return false
+	end
+	table.insert(rollbacks, {
+		currency = pendingSpend.currency,
+		amount = pendingSpend.amount,
+	})
+	if rollbackBehavior == "error" then
+		error("injected rollback failure")
+	end
+	if rollbackBehavior == "false" then
+		return false
+	end
+	pendingSpend = nil
+	registeredSettler = nil
 	return true
 end
 UpgradeTreeService.init(dataService, currencyService)
@@ -63,8 +123,19 @@ local function resetState()
 		upgradeTreePurchases = {},
 	}
 	spends = {}
-	refunds = {}
+	spendOwners = {}
+	commits = 0
+	rollbacks = {}
+	currencyUpdates = {}
+	pendingSpend = nil
+	registeredSettler = nil
+	lastSettler = nil
+	centralBusy = false
+	commitBehavior = "success"
+	rollbackBehavior = "success"
+	dataLookupOverride = nil
 	updateStates = {}
+	updateShouldError = false
 	UpgradeTreeService._purchaseLocks[player.UserId] = nil
 	UpgradeTreeService._transactionHook = nil
 end
@@ -377,8 +448,37 @@ describe("UpgradeTreeService QOF-07/QOF-08 purchases", function()
 		expect(spends[11]):toEqual({ currency = "diamonds", amount = 5000 })
 	end)
 
-	it("rolls back both mutations after post-debit or post-entitlement faults", function()
-		for _, faultStage in ipairs({ "afterSpend", "afterEntitlement" }) do
+	it("keeps reservations silent and publishes one projected final state at commit", function()
+		resetState()
+		local observedStages = {}
+		UpgradeTreeService._transactionHook = function(stage)
+			table.insert(observedStages, {
+				stage = stage,
+				diamonds = profile.diamonds,
+				currencyUpdates = #currencyUpdates,
+				settlerRegistered = registeredSettler ~= nil,
+			})
+		end
+
+		local success, _, state = UpgradeTreeService.purchase(player, "epicLuck1")
+		expect(success):toBeTrue()
+		expect(observedStages):toEqual({
+			{ stage = "afterSpend", diamonds = 100000, currencyUpdates = 0, settlerRegistered = true },
+			{ stage = "afterEntitlement", diamonds = 100000, currencyUpdates = 0, settlerRegistered = true },
+			{ stage = "afterState", diamonds = 100000, currencyUpdates = 0, settlerRegistered = true },
+		})
+		expect(profile.diamonds):toBe(99500)
+		expect(state.currency.diamonds):toBe(99500)
+		expect(updateStates[1].currency.diamonds):toBe(99500)
+		expect(currencyUpdates):toEqual({ { coins = 100000, diamonds = 99500 } })
+		expect(#updateStates):toBe(1)
+		expect(commits):toBe(1)
+		expect(#rollbacks):toBe(0)
+		expect(spendOwners):toEqual({ "UpgradeTreeService" })
+	end)
+
+	it("rolls back silently and exactly at every precommit fault hook", function()
+		for _, faultStage in ipairs({ "afterSpend", "afterEntitlement", "afterState" }) do
 			resetState()
 			UpgradeTreeService._transactionHook = function(stage)
 				if stage == faultStage then
@@ -390,13 +490,157 @@ describe("UpgradeTreeService QOF-07/QOF-08 purchases", function()
 			expect(message):toBe("Purchase failed safely")
 			expect(profile.diamonds):toBe(100000)
 			expect(profile.upgradeTreePurchases.epicLuck1):toBeNil()
-			expect(refunds):toEqual({ { currency = "diamonds", amount = 500 } })
+			expect(rollbacks):toEqual({ { currency = "diamonds", amount = 500 } })
+			expect(#currencyUpdates):toBe(0)
+			expect(#updateStates):toBe(0)
+			expect(pendingSpend):toBeNil()
 			expect(UpgradeTreeService._purchaseLocks[player.UserId]):toBeNil()
 		end
 		UpgradeTreeService._transactionHook = nil
 	end)
 
-	it("rejects concurrent requests and insufficient balances safely", function()
+	it("restores a preexisting malformed purchases field on failure", function()
+		resetState()
+		profile.upgradeTreePurchases = "legacy-value"
+		UpgradeTreeService._transactionHook = function(stage)
+			if stage == "afterEntitlement" then
+				error("injected afterEntitlement")
+			end
+		end
+		local success, message = UpgradeTreeService.purchase(player, "Eggs I")
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase failed safely")
+		expect(profile.upgradeTreePurchases):toBe("legacy-value")
+		expect(profile.coins):toBe(100000)
+		expect(#currencyUpdates):toBe(0)
+		expect(#updateStates):toBe(0)
+	end)
+
+	it("restores entitlement and reservation when commit fails or throws", function()
+		for _, behavior in ipairs({ "false", "error" }) do
+			resetState()
+			commitBehavior = behavior
+			local success, message = UpgradeTreeService.purchase(player, "epicLuck1")
+			expect(success):toBeFalse()
+			expect(message):toBe("Purchase failed safely")
+			expect(profile.diamonds):toBe(100000)
+			expect(profile.upgradeTreePurchases.epicLuck1):toBeNil()
+			expect(rollbacks):toEqual({ { currency = "diamonds", amount = 500 } })
+			expect(#currencyUpdates):toBe(0)
+			expect(#updateStates):toBe(0)
+			expect(UpgradeTreeService._purchaseLocks[player.UserId]):toBeNil()
+		end
+	end)
+
+	it("retains failed and throwing rollbacks for lifecycle retry", function()
+		for _, behavior in ipairs({ "false", "error" }) do
+			resetState()
+			rollbackBehavior = behavior
+			UpgradeTreeService._transactionHook = function(stage)
+				if stage == "afterEntitlement" then
+					error("injected afterEntitlement")
+				end
+			end
+			local success, message = UpgradeTreeService.purchase(player, "epicLuck1")
+			expect(success):toBeFalse()
+			expect(message):toBe("Purchase rollback failed")
+			expect(profile.diamonds):toBe(100000)
+			expect(profile.upgradeTreePurchases.epicLuck1):toBeNil()
+			expect(type(pendingSpend)):toBe("table")
+			expect(type(lastSettler)):toBe("function")
+			expect(UpgradeTreeService._purchaseLocks[player.UserId] ~= nil):toBeTrue()
+
+			local busySuccess, busyMessage = UpgradeTreeService.purchase(player, "Eggs I")
+			expect(busySuccess):toBeFalse()
+			expect(busyMessage):toBe("Purchase already in progress")
+
+			rollbackBehavior = "success"
+			expect(lastSettler()):toBeTrue()
+			expect(pendingSpend):toBeNil()
+			expect(UpgradeTreeService._purchaseLocks[player.UserId]):toBeNil()
+			expect(lastSettler()):toBeFalse()
+			expect(profile.diamonds):toBe(100000)
+			expect(#currencyUpdates):toBe(0)
+		end
+	end)
+
+	it("retains profile-replacement rollback for lifecycle retry", function()
+		resetState()
+		local originalProfile = profile
+		local replacementProfile = {
+			coins = 7,
+			diamonds = 11,
+			upgradeTreePurchases = {},
+		}
+		local lookups = 0
+		dataLookupOverride = function()
+			lookups = lookups + 1
+			if lookups == 1 then
+				return originalProfile
+			end
+			return replacementProfile
+		end
+		rollbackBehavior = "false"
+
+		local success, message = UpgradeTreeService.purchase(player, "epicLuck1")
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase rollback failed")
+		expect(originalProfile.diamonds):toBe(100000)
+		expect(replacementProfile.diamonds):toBe(11)
+		expect(type(lastSettler)):toBe("function")
+		expect(UpgradeTreeService._purchaseLocks[player.UserId] ~= nil):toBeTrue()
+
+		rollbackBehavior = "success"
+		expect(lastSettler()):toBeTrue()
+		expect(pendingSpend):toBeNil()
+		expect(UpgradeTreeService._purchaseLocks[player.UserId]):toBeNil()
+	end)
+
+	it("never overwrites a replacement purchases table during retained rollback", function()
+		resetState()
+		local ownedPurchases = profile.upgradeTreePurchases
+		local replacementPurchases = { newerUpgrade = true }
+		UpgradeTreeService._transactionHook = function(stage)
+			if stage == "afterEntitlement" then
+				profile.upgradeTreePurchases = replacementPurchases
+				error("injected ownership conflict")
+			end
+		end
+
+		local success, message = UpgradeTreeService.purchase(player, "epicLuck1")
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase rollback failed")
+		expect(profile.upgradeTreePurchases == replacementPurchases):toBeTrue()
+		expect(profile.upgradeTreePurchases.newerUpgrade):toBeTrue()
+		expect(profile.diamonds):toBe(100000)
+		expect(#rollbacks):toBe(0)
+		expect(type(pendingSpend)):toBe("table")
+		expect(UpgradeTreeService._purchaseLocks[player.UserId] ~= nil):toBeTrue()
+
+		profile.upgradeTreePurchases = ownedPurchases
+		expect(lastSettler()):toBeTrue()
+		expect(ownedPurchases.epicLuck1):toBeNil()
+		expect(pendingSpend):toBeNil()
+		expect(UpgradeTreeService._purchaseLocks[player.UserId]):toBeNil()
+	end)
+
+	it("treats postcommit UpgradeTreeUpdated failures as terminal", function()
+		resetState()
+		updateShouldError = true
+		local success, message, state = UpgradeTreeService.purchase(player, "epicLuck1")
+		expect(success):toBeTrue()
+		expect(message):toBe("Purchased epicLuck1")
+		expect(state.currency.diamonds):toBe(99500)
+		expect(profile.diamonds):toBe(99500)
+		expect(profile.upgradeTreePurchases.epicLuck1):toBeTrue()
+		expect(#currencyUpdates):toBe(1)
+		expect(#updateStates):toBe(0)
+		expect(#rollbacks):toBe(0)
+		expect(pendingSpend):toBeNil()
+		expect(UpgradeTreeService._purchaseLocks[player.UserId]):toBeNil()
+	end)
+
+	it("rejects local concurrency, central reservation contention, and insufficient balances safely", function()
 		resetState()
 		UpgradeTreeService._purchaseLocks[player.UserId] = true
 		local lockedSuccess, lockedError = UpgradeTreeService.purchase(player, "Eggs I")
@@ -404,10 +648,23 @@ describe("UpgradeTreeService QOF-07/QOF-08 purchases", function()
 		expect(lockedError):toBe("Purchase already in progress")
 		UpgradeTreeService._purchaseLocks[player.UserId] = nil
 
+		centralBusy = true
+		local busySuccess, busyError = UpgradeTreeService.purchase(player, "epicLuck1")
+		expect(busySuccess):toBeFalse()
+		expect(busyError):toBe("Not enough diamonds")
+		expect(profile.diamonds):toBe(100000)
+		expect(profile.upgradeTreePurchases.epicLuck1):toBeNil()
+		expect(#currencyUpdates):toBe(0)
+		expect(#updateStates):toBe(0)
+		expect(UpgradeTreeService._purchaseLocks[player.UserId]):toBeNil()
+
+		centralBusy = false
 		profile.diamonds = 0
 		local poorSuccess, poorError = UpgradeTreeService.purchase(player, "epicLuck1")
 		expect(poorSuccess):toBeFalse()
 		expect(poorError):toBe("Not enough diamonds")
 		expect(profile.upgradeTreePurchases.epicLuck1):toBeNil()
+		expect(#currencyUpdates):toBe(0)
+		expect(#updateStates):toBe(0)
 	end)
 end)

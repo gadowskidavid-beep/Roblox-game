@@ -259,10 +259,7 @@ function UpgradeTreeService.getEntitlements(player)
 	return UpgradeTreeService.resolveEntitlements(data.upgradeTreePurchases)
 end
 
-function UpgradeTreeService.getState(player)
-	local data = player
-		and UpgradeTreeService._dataService
-		and UpgradeTreeService._dataService.getPlayerData(player)
+local function buildState(data)
 	if not data then
 		return {
 			currency = { coins = 0, diamonds = 0 },
@@ -283,12 +280,19 @@ function UpgradeTreeService.getState(player)
 	}
 end
 
-local function fireUpdate(player)
+function UpgradeTreeService.getState(player)
+	local data = player
+		and UpgradeTreeService._dataService
+		and UpgradeTreeService._dataService.getPlayerData(player)
+	return buildState(data)
+end
+
+local function fireUpdate(player, state)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	local event = remotes and remotes:FindFirstChild("UpgradeTreeUpdated")
 	if event then
 		pcall(function()
-			event:FireClient(player, UpgradeTreeService.getState(player))
+			event:FireClient(player, state)
 		end)
 	end
 end
@@ -297,6 +301,56 @@ local function runTransactionHook(stage, transaction)
 	if type(UpgradeTreeService._transactionHook) == "function" then
 		UpgradeTreeService._transactionHook(stage, transaction)
 	end
+end
+
+local function releasePurchaseLock(transaction)
+	if transaction.lockHeld
+		and UpgradeTreeService._purchaseLocks[transaction.lockKey] == transaction then
+		UpgradeTreeService._purchaseLocks[transaction.lockKey] = nil
+		transaction.lockHeld = false
+	end
+end
+
+-- Restore only values still owned by this transaction. A failed restoration or
+-- currency rollback deliberately retains both the central owner and local lock
+-- so the registered lifecycle settler can retry without overwriting newer data.
+local function restoreTransaction(transaction)
+	if transaction.committed then
+		return true
+	end
+
+	if not transaction.entitlementRestored then
+		if transaction.purchasesInstalled then
+			if transaction.data.upgradeTreePurchases ~= transaction.purchases then
+				return false
+			end
+			transaction.data.upgradeTreePurchases = transaction.previousPurchases
+			transaction.purchasesInstalled = false
+			transaction.entitlementSet = false
+		elseif transaction.entitlementSet then
+			if transaction.data.upgradeTreePurchases ~= transaction.purchases
+				or transaction.purchases[transaction.upgradeId] ~= true then
+				return false
+			end
+			transaction.purchases[transaction.upgradeId] = transaction.previousValue
+			transaction.entitlementSet = false
+		end
+		transaction.entitlementRestored = true
+	end
+
+	if transaction.spendTransaction then
+		local rollbackCallSucceeded, rollbackSucceeded = pcall(
+			UpgradeTreeService._currencyService.rollbackSpendTransaction,
+			transaction.spendTransaction
+		)
+		if not rollbackCallSucceeded or rollbackSucceeded ~= true then
+			return false
+		end
+		transaction.spendTransaction = nil
+	end
+
+	releasePurchaseLock(transaction)
+	return true
 end
 
 local function purchaseUnlocked(player, upgradeId, transaction)
@@ -310,22 +364,23 @@ local function purchaseUnlocked(player, upgradeId, transaction)
 		return false, "No player data", UpgradeTreeService.getState(player)
 	end
 
-	if type(data.upgradeTreePurchases) ~= "table" then
-		data.upgradeTreePurchases = {}
-	end
-	if data.upgradeTreePurchases[upgradeId] == true then
+	local purchases = type(data.upgradeTreePurchases) == "table"
+		and data.upgradeTreePurchases
+		or nil
+	local validationPurchases = purchases or {}
+	if validationPurchases[upgradeId] == true then
 		return false, "Already purchased", UpgradeTreeService.getState(player)
 	end
 
 	-- Grandfathered capacity flags grant their historical effects, but never
 	-- bypass the modern Eggs II gate for any newly purchased branch level.
 	if (definition.effectType == "Storage" or definition.effectType == "PetEquipSlots")
-		and data.upgradeTreePurchases["Eggs II"] ~= true then
+		and validationPurchases["Eggs II"] ~= true then
 		return false, "Missing prerequisite", UpgradeTreeService.getState(player)
 	end
 
 	for _, requiredId in ipairs(definition.requireIds) do
-		if data.upgradeTreePurchases[requiredId] ~= true then
+		if validationPurchases[requiredId] ~= true then
 			return false, "Missing prerequisite", UpgradeTreeService.getState(player)
 		end
 	end
@@ -334,26 +389,81 @@ local function purchaseUnlocked(player, upgradeId, transaction)
 	transaction.data = data
 	transaction.currency = cost.currency
 	transaction.amount = cost.amount
-	transaction.previousValue = data.upgradeTreePurchases[upgradeId]
-	local spent = UpgradeTreeService._currencyService.spend(
+	transaction.purchases = purchases
+	transaction.previousPurchases = data.upgradeTreePurchases
+	transaction.previousValue = validationPurchases[upgradeId]
+	transaction.spendTransaction = UpgradeTreeService._currencyService.beginSpendTransaction(
 		player,
 		cost.currency,
-		cost.amount
+		cost.amount,
+		"UpgradeTreeService"
 	)
-	if not spent then
+	if not transaction.spendTransaction then
 		return false, "Not enough " .. cost.currency, UpgradeTreeService.getState(player)
 	end
-	transaction.spent = true
+
+	local settlerRegistered = UpgradeTreeService._currencyService.setSpendSettler(
+		transaction.spendTransaction,
+		function(currentSpendTransaction)
+			if currentSpendTransaction ~= transaction.spendTransaction then
+				return false
+			end
+			return restoreTransaction(transaction)
+		end
+	)
+	if settlerRegistered ~= true then
+		error("Unable to register purchase settler")
+	end
+	transaction.settlerRegistered = true
+
+	-- Every operation after reservation now has a centrally retained rollback.
+	-- Verify that the profile validated before begin is still the owned profile.
+	if UpgradeTreeService._dataService.getPlayerData(player) ~= data then
+		error("Player profile changed during purchase")
+	end
 	runTransactionHook("afterSpend", transaction)
 
-	-- Both mutations are rollback-tracked until the authoritative state has been
-	-- constructed. Client replication happens only after this commit point.
-	data.upgradeTreePurchases[upgradeId] = true
+	-- Install/modify the entitlement only after the rollback closure is retained
+	-- by the central owner, and reject an unexpected profile-table replacement.
+	if purchases then
+		if data.upgradeTreePurchases ~= purchases
+			or purchases[upgradeId] ~= transaction.previousValue then
+			error("Upgrade purchases changed during purchase")
+		end
+	else
+		if data.upgradeTreePurchases ~= transaction.previousPurchases then
+			error("Upgrade purchases changed during purchase")
+		end
+		purchases = {}
+		data.upgradeTreePurchases = purchases
+		transaction.purchases = purchases
+		transaction.purchasesInstalled = true
+	end
+	purchases[upgradeId] = true
 	transaction.entitlementSet = true
 	runTransactionHook("afterEntitlement", transaction)
-	local state = UpgradeTreeService.getState(player)
+
+	-- Build the complete post-purchase DTO while the debit is still silent. The
+	-- projected balance becomes live exactly once at the following commit PONR.
+	local state = buildState(data)
+	state.currency[cost.currency] = state.currency[cost.currency] - cost.amount
+	transaction.state = state
+	runTransactionHook("afterState", transaction)
+
+	if UpgradeTreeService._currencyService.commitSpendTransaction(
+		transaction.spendTransaction
+	) ~= true then
+		error("Currency commit failed")
+	end
+
+	-- Currency commit is the point of no return. Everything after this point is
+	-- terminal/best-effort and must never enter compensation.
 	transaction.committed = true
-	fireUpdate(player)
+	transaction.spendTransaction = nil
+	transaction.entitlementSet = false
+	transaction.purchasesInstalled = false
+	releasePurchaseLock(transaction)
+	fireUpdate(player, state)
 	return true, "Purchased " .. upgradeId, state
 end
 
@@ -369,39 +479,39 @@ function UpgradeTreeService.purchase(player, upgradeId)
 	if UpgradeTreeService._purchaseLocks[lockKey] then
 		return false, "Purchase already in progress", UpgradeTreeService.getState(player)
 	end
-	UpgradeTreeService._purchaseLocks[lockKey] = true
 
 	local transaction = {
 		player = player,
 		upgradeId = upgradeId,
-		spent = false,
+		lockKey = lockKey,
+		lockHeld = true,
 		entitlementSet = false,
+		entitlementRestored = false,
+		purchasesInstalled = false,
 		committed = false,
 	}
+	UpgradeTreeService._purchaseLocks[lockKey] = transaction
+
 	local callSucceeded, purchaseSucceeded, message, state = pcall(
 		purchaseUnlocked,
 		player,
 		upgradeId,
 		transaction
 	)
-	UpgradeTreeService._purchaseLocks[lockKey] = nil
 
 	if not callSucceeded then
-		if transaction.entitlementSet and transaction.data then
-			transaction.data.upgradeTreePurchases[upgradeId] = transaction.previousValue
+		if transaction.committed then
+			releasePurchaseLock(transaction)
+			return true, "Purchased " .. upgradeId, transaction.state
 		end
-		local rollbackSucceeded = true
-		if transaction.spent then
-			rollbackSucceeded = UpgradeTreeService._currencyService.creditRaw(
-				player,
-				transaction.currency,
-				transaction.amount
-			) == true
-		end
-		if not rollbackSucceeded then
+		if not restoreTransaction(transaction) then
 			return false, "Purchase rollback failed", UpgradeTreeService.getState(player)
 		end
 		return false, "Purchase failed safely", UpgradeTreeService.getState(player)
+	end
+
+	if not purchaseSucceeded then
+		releasePurchaseLock(transaction)
 	end
 	return purchaseSucceeded, message, state
 end

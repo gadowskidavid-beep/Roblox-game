@@ -176,6 +176,66 @@ describe("PetService canonical combat damage", function()
 		expect(PetService.getPetDamage(pet, player)):toBe(1.5)
 	end)
 
+	it("preserves all six canonical Normal, Golden, Rainbow, and Shiny values", function()
+		strongMultiplier = 1
+		shopDamageMultiplier = 1
+		local cases = {
+			{ "Normal", false, 3 },
+			{ "Normal", true, 4.5 },
+			{ "Golden", false, 6 },
+			{ "Golden", true, 9 },
+			{ "Rainbow", false, 15 },
+			{ "Rainbow", true, 22.5 },
+		}
+		for _, case in ipairs(cases) do
+			local pet = { petId = "Splash", variant = case[1], shiny = case[2], damage = 999999 }
+			expect(PetService.getPetDamage(pet, player)):toBe(case[3])
+		end
+	end)
+
+	it("keeps 4.5 fractional damage through Strong I, II, and III", function()
+		strongMultiplier = 1
+		shopDamageMultiplier = 1
+		local cases = {
+			{ "StrongI", 4.5 * 1.10 },
+			{ "StrongII", 4.5 * 1.25 },
+			{ "StrongIII", 4.5 * 1.50 },
+		}
+		for _, case in ipairs(cases) do
+			local pet = {
+				petId = "Splash", variant = "Normal", shiny = true,
+				enchantId = case[1], damage = 999999,
+			}
+			expect(PetService.getPetDamage(pet, player)):toBe(case[2])
+		end
+	end)
+
+	it("composes enchant, quest, and shop factors on one unrounded intermediate", function()
+		strongMultiplier = 1.25
+		shopDamageMultiplier = 1.5
+		local pet = {
+			petId = "Splash", variant = "Normal", shiny = true,
+			enchantId = "StrongI", damage = 999999,
+		}
+		expect(PetService.getPetDamage(pet, player)):toBe(4.5 * 1.10 * 1.25 * 1.5)
+		strongMultiplier = 0
+		shopDamageMultiplier = 1
+	end)
+
+	it("accepts positive reduction factors and keeps one neutral", function()
+		local pet = { petId = "Splash", variant = "Normal", shiny = true }
+		strongMultiplier = 0.5
+		shopDamageMultiplier = 1
+		expect(PetService.getPetDamage(pet, player)):toBe(2.25)
+		strongMultiplier = 1
+		shopDamageMultiplier = 0.5
+		expect(PetService.getPetDamage(pet, player)):toBe(2.25)
+		strongMultiplier = 1
+		shopDamageMultiplier = 1
+		expect(PetService.getPetDamage(pet, player)):toBe(4.5)
+		strongMultiplier = 0
+	end)
+
 	it("applies StrongPets and shop damage once after canonical damage", function()
 		strongMultiplier = 2
 		shopDamageMultiplier = 3
@@ -190,9 +250,9 @@ describe("PetService canonical combat damage", function()
 		expect(PetService.getPetDamage(pet, player)):toBe(0)
 	end)
 
-	it("neutralizes missing, throwing, and malformed damage providers", function()
+	it("neutralizes zero, negative, nonfinite, wrong-type, missing, and throwing factors", function()
 		local pet = { petId = "Buddy", variant = "Normal", shiny = false }
-		for _, malformed in ipairs({ "bad", math.huge, -math.huge, 0 / 0 }) do
+		for _, malformed in ipairs({ 0, -1, "bad", false, math.huge, -math.huge, 0 / 0 }) do
 			strongMultiplier = malformed
 			shopDamageMultiplier = malformed
 			expect(PetService.getPetDamage(pet, player)):toBe(1)
@@ -207,6 +267,15 @@ describe("PetService canonical combat damage", function()
 		expect(PetService.getPetDamage(pet, player)):toBe(1)
 		PetService._upgradeService = upgradeService
 		PetService._shopService = shopService
+		strongMultiplier = 0
+		shopDamageMultiplier = 1
+	end)
+
+	it("fails a nonfinite complete product closed to zero", function()
+		local pet = { petId = "Splash", variant = "Rainbow", shiny = true }
+		strongMultiplier = 1e308
+		shopDamageMultiplier = 1e308
+		expect(PetService.getPetDamage(pet, player)):toBe(0)
 		strongMultiplier = 0
 		shopDamageMultiplier = 1
 	end)
@@ -529,8 +598,8 @@ describe("PetService QOF-19 enchant runtime", function()
 			petId = "Buddy", variant = "Normal", shiny = true, damage = 999999,
 			enchantId = "StrongII", enchantStat = "damage", enchantMultiplier = 999,
 		}
-		-- 1.5 canonical * 1.25 StrongII = 1.875, floor(*2) = 3, floor(*3) = 9.
-		expect(PetService.getPetDamage(pet, player)):toBe(9)
+		-- One unrounded chain: 1.5 canonical * 1.25 StrongII * 2 quest * 3 shop.
+		expect(PetService.getPetDamage(pet, player)):toBe(11.25)
 		strongMultiplier = 0
 		shopDamageMultiplier = 1
 	end)

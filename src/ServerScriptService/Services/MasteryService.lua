@@ -7,8 +7,14 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MasteryData = require(game.ReplicatedStorage.Shared.MasteryData)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 
 local MasteryService = {}
+
+local function finiteNonNegativeInteger(value)
+	return type(value) == "number" and value == value and value ~= math.huge
+		and value ~= -math.huge and value % 1 == 0 and value >= 0
+end
 
 -- References to other services
 MasteryService._dataService = nil
@@ -35,27 +41,35 @@ function MasteryService.purchaseBuff(player, buffId)
 	end
 
 	-- Ensure mastery tables exist
-	if not data.masteryBuffs then
+	if type(data.masteryBuffs) ~= "table" then
 		data.masteryBuffs = {}
 	end
 
-	-- Get current level of this buff
-	local currentLevel = data.masteryBuffs[buffId] or 0
-	local maxLevel = buffDef.maxLevel
+	local currentLevel, levelWasValid = ProgressionMath.resolveMasteryLevel(
+		data.masteryBuffs,
+		buffId
+	)
+	data.masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs)
+	local maxLevel = ProgressionMath.getMasteryMaxLevel(buffId)
+	if not levelWasValid then
+		return false, "Invalid level"
+	end
 
 	-- Validate not max level
 	if currentLevel >= maxLevel then
 		return false, "Already at max level"
 	end
 
-	-- Get cost for next level
+	-- Get cost for next level from the same consistent boundary.
 	local cost = buffDef.pointsPerLevel[currentLevel + 1]
-	if not cost then
+	if not finiteNonNegativeInteger(cost) or cost < 1 then
 		return false, "Invalid level"
 	end
 
-	-- Check if player has enough mastery points
-	local availablePoints = (data.masteryPoints or 0)
+	local availablePoints = data.masteryPoints
+	if not finiteNonNegativeInteger(availablePoints) then
+		return false, "Invalid mastery points"
+	end
 	if availablePoints < cost then
 		return false, "Not enough mastery points (need " .. tostring(cost) .. ", have " .. tostring(availablePoints) .. ")"
 	end
@@ -86,16 +100,7 @@ function MasteryService.getBuffBonus(player, buffId)
 		return 0
 	end
 
-	if not data.masteryBuffs then
-		return 0
-	end
-
-	local currentLevel = data.masteryBuffs[buffId] or 0
-	if currentLevel == 0 then
-		return 0
-	end
-
-	return buffDef.bonusPerLevel[currentLevel]
+	return ProgressionMath.getMasteryBonus(data.masteryBuffs, buffId)
 end
 
 -- Get full mastery state for client display
@@ -106,9 +111,9 @@ function MasteryService.getMasteryState(player)
 	if not data then return {} end
 
 	return {
-		masteryPoints = data.masteryPoints or 0,
-		level = data.level or 1,
-		buffs = data.masteryBuffs or {},
+		masteryPoints = finiteNonNegativeInteger(data.masteryPoints) and data.masteryPoints or 0,
+		level = finiteNonNegativeInteger(data.level) and math.max(data.level, 1) or 1,
+		buffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs),
 	}
 end
 
@@ -119,7 +124,11 @@ function MasteryService.awardMasteryPoint(player)
 	local data = MasteryService._dataService.getPlayerData(player)
 	if not data then return end
 
-	data.masteryPoints = (data.masteryPoints or 0) + 1
+	local masteryPoints = data.masteryPoints
+	if not finiteNonNegativeInteger(masteryPoints) then
+		masteryPoints = 0
+	end
+	data.masteryPoints = masteryPoints + 1
 
 	-- Notify client
 	MasteryService._fireMasteryUpdate(player, data)
@@ -127,14 +136,15 @@ end
 
 -- Fire mastery state update to client
 function MasteryService._fireMasteryUpdate(player, data)
+	data.masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("MasteryUpdated")
 		if event then
 			event:FireClient(player, {
-				masteryPoints = data.masteryPoints or 0,
-				level = data.level or 1,
-				buffs = data.masteryBuffs or {},
+				masteryPoints = finiteNonNegativeInteger(data.masteryPoints) and data.masteryPoints or 0,
+				level = finiteNonNegativeInteger(data.level) and math.max(data.level, 1) or 1,
+				buffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs),
 			})
 		end
 	end

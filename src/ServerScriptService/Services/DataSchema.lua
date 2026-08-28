@@ -6,13 +6,15 @@
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local CampaignData = require(game.ReplicatedStorage.Shared.CampaignData)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
 local PetDex = require(game.ReplicatedStorage.Shared.PetDex)
+local ProgressionMath = require(game.ReplicatedStorage.Shared.ProgressionMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 11
+DataSchema.VERSION = 12
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -151,6 +153,21 @@ local function mergeDefaults(data, defaults)
 	end
 end
 
+local function sortedPositiveIntegerKeys(values)
+	local keys = {}
+	if type(values) ~= "table" then
+		return keys
+	end
+	for key in pairs(values) do
+		if type(key) == "number" and key == key and key ~= math.huge
+			and key ~= -math.huge and key % 1 == 0 and key > 0 then
+			table.insert(keys, key)
+		end
+	end
+	table.sort(keys)
+	return keys
+end
+
 local function normalizePets(data)
 	if type(data.pets) ~= "table" then
 		data.pets = {}
@@ -161,7 +178,8 @@ local function normalizePets(data)
 
 	local normalizedPets = {}
 	local petById = {}
-	for _, pet in ipairs(data.pets) do
+	for _, key in ipairs(sortedPositiveIntegerKeys(data.pets)) do
+		local pet = data.pets[key]
 		if type(pet) == "table" and type(pet.id) == "string" and pet.id ~= "" and not petById[pet.id] then
 			local legacyVariant = type(pet.variant) == "string" and pet.variant or "Normal"
 			local variant = "Normal"
@@ -200,7 +218,8 @@ local function normalizePets(data)
 
 	local equipped = {}
 	local equippedSet = {}
-	for _, petId in ipairs(data.equippedPets) do
+	for _, key in ipairs(sortedPositiveIntegerKeys(data.equippedPets)) do
+		local petId = data.equippedPets[key]
 		if type(petId) == "string" and petById[petId] and not equippedSet[petId] then
 			equippedSet[petId] = true
 			table.insert(equipped, petId)
@@ -224,9 +243,10 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 	local normalized = {}
 	local seen = {}
 	if type(values) == "table" then
-		for _, value in ipairs(values) do
-			if type(value) == "number" then
-				value = math.floor(value)
+		for _, key in ipairs(sortedPositiveIntegerKeys(values)) do
+			local value = values[key]
+			if type(value) == "number" and value == value and value ~= math.huge
+				and value ~= -math.huge and value % 1 == 0 then
 				if value >= minimum and value <= maximum and not seen[value] then
 					seen[value] = true
 					table.insert(normalized, value)
@@ -238,6 +258,21 @@ local function normalizeNumberArray(values, minimum, maximum, requiredValue)
 		table.insert(normalized, requiredValue)
 	end
 	table.sort(normalized)
+	return normalized
+end
+
+local function normalizeCampaignBossRewards(values)
+	local normalized = {}
+	if type(values) ~= "table" then
+		return normalized
+	end
+	for levelNumber, levelDefinition in pairs(CampaignData.Levels) do
+		local rewards = type(levelDefinition) == "table" and levelDefinition.rewards or nil
+		if type(rewards) == "table" and type(rewards.SpecialEgg) == "string"
+			and values[tostring(levelNumber)] == true then
+			normalized[tostring(levelNumber)] = true
+		end
+	end
 	return normalized
 end
 
@@ -466,13 +501,13 @@ function DataSchema.normalize(data, currentTime)
 	for statName, defaultValue in pairs(DataSchema.getDefaultData().questStats) do
 		data.questStats[statName] = math.floor(finiteNumber(data.questStats[statName], defaultValue, 0))
 	end
-	if type(data.upgrades) ~= "table" then data.upgrades = {} end
+	data.upgrades = ProgressionMath.normalizeQuestLevels(data.upgrades)
 	data.upgradeTreePurchases = normalizeBooleanMap(data.upgradeTreePurchases, 64)
-	if type(data.masteryBuffs) ~= "table" then data.masteryBuffs = {} end
+	data.masteryBuffs = ProgressionMath.normalizeMasteryLevels(data.masteryBuffs)
 	-- QOF-20 keeps legacy mirrors for rolling QOF-19 servers, derives the six
 	-- canonical states, and repairs exact states still represented in inventory.
 	data.discoveredPets = PetDex.normalizeDiscovery(data.discoveredPets, data.pets)
-	if type(data.campaignBossRewards) ~= "table" then data.campaignBossRewards = {} end
+	data.campaignBossRewards = normalizeCampaignBossRewards(data.campaignBossRewards)
 	if type(data.shopPurchases) ~= "table" then data.shopPurchases = {} end
 	data.shopPurchases.extraEquipSlots = math.clamp(
 		math.floor(finiteNumber(data.shopPurchases.extraEquipSlots, 0, 0)),

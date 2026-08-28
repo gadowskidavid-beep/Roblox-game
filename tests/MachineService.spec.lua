@@ -99,6 +99,8 @@ local currencyEvents = 0
 local rollbackCalls = 0
 local commitMode = "success"
 local rollbackMode = "success"
+local lastSpendSettler = nil
+local transactionEvents = {}
 local questShouldError = false
 local questCalls = {}
 
@@ -108,7 +110,8 @@ function dataService.getPlayerData()
 end
 
 local currencyService = {}
-function currencyService.beginSpendTransaction(_, currency, amount)
+function currencyService.beginSpendTransaction(_, currency, amount, ownerName)
+	expect(ownerName):toBe("MachineService")
 	if not profile or type(profile[currency]) ~= "number" or profile[currency] < amount then
 		return nil
 	end
@@ -117,17 +120,28 @@ function currencyService.beginSpendTransaction(_, currency, amount)
 		profile = profile,
 		currency = currency,
 		amount = amount,
+		settler = nil,
 	}
-	profile[currency] = profile[currency] - amount
 	return transaction
+end
+function currencyService.setSpendSettler(transaction, settler)
+	local pending = pendingTransactions[transaction]
+	if not pending or type(settler) ~= "function" then return false end
+	pending.settler = settler
+	lastSpendSettler = function()
+		return settler(transaction)
+	end
+	return true
 end
 function currencyService.commitSpendTransaction(transaction)
 	local pending = pendingTransactions[transaction]
 	if not pending then return false end
 	if commitMode == "error" then error("injected currency commit failure") end
-	if commitMode == "false" then return false end
+	if commitMode == "false" or pending.profile[pending.currency] < pending.amount then return false end
+	pending.profile[pending.currency] = pending.profile[pending.currency] - pending.amount
 	pendingTransactions[transaction] = nil
 	currencyEvents = currencyEvents + 1
+	table.insert(transactionEvents, "currencyCommit")
 	return true
 end
 function currencyService.rollbackSpendTransaction(transaction)
@@ -136,8 +150,8 @@ function currencyService.rollbackSpendTransaction(transaction)
 	if rollbackMode == "error" then error("injected currency rollback failure") end
 	if rollbackMode == "false" then return false end
 	pendingTransactions[transaction] = nil
-	pending.profile[pending.currency] = pending.profile[pending.currency] + pending.amount
 	rollbackCalls = rollbackCalls + 1
+	table.insert(transactionEvents, "currencyRollback")
 	return true
 end
 
@@ -608,7 +622,7 @@ describe("MachineService QOF-17 rollback and lock semantics", function()
 			local result, message = attempt("GoldMachine", { "pet-1" })
 			expect(result):toBeNil()
 			expect(message):toBe("Conversion rollback failed")
-			expect(profile.diamonds):toBe(9250)
+			expect(profile.diamonds):toBe(10000)
 			expect(#profile.pets):toBe(1)
 			expect(profile.pets[1].id):toBe("pet-1")
 			expect(currencyEvents):toBe(0)

@@ -240,11 +240,17 @@ function ShopService.getShopState(player)
 end
 
 local function rollbackPendingPurchase(currencyTransaction, rollbackMutation)
-	local mutationRollbackOk = pcall(rollbackMutation)
+	-- Never release the central profile owner until the Shop mutation has been
+	-- restored. A failed undo leaves the registered settler available for the
+	-- coordinator to retry later.
+	local mutationRollbackCallOk, mutationRolledBack = pcall(rollbackMutation)
+	if not mutationRollbackCallOk or mutationRolledBack ~= true then
+		return false
+	end
 	local currencyRollbackCallOk, currencyRolledBack = pcall(function()
 		return ShopService._currencyService.rollbackSpendTransaction(currencyTransaction)
 	end)
-	return mutationRollbackOk and currencyRollbackCallOk and currencyRolledBack == true
+	return currencyRollbackCallOk and currencyRolledBack == true
 end
 
 local function executePurchase(player, context, mutate, rollbackMutation)
@@ -252,7 +258,8 @@ local function executePurchase(player, context, mutate, rollbackMutation)
 		return ShopService._currencyService.beginSpendTransaction(
 			player,
 			context.currency,
-			context.amount
+			context.amount,
+			"ShopService"
 		)
 	end)
 	if not beginCallOk then
@@ -263,13 +270,29 @@ local function executePurchase(player, context, mutate, rollbackMutation)
 	end
 	context.currencyTransaction = currencyTransaction
 
+	local function settlePendingPurchase(currentCurrencyTransaction)
+		return rollbackPendingPurchase(currentCurrencyTransaction, rollbackMutation)
+	end
+	local settlerCallOk, settlerRegistered = pcall(function()
+		return ShopService._currencyService.setSpendSettler(
+			currencyTransaction,
+			settlePendingPurchase
+		)
+	end)
+	if not settlerCallOk or settlerRegistered ~= true then
+		if not settlePendingPurchase(currencyTransaction) then
+			return false, "Purchase rollback failed"
+		end
+		return false, "Purchase failed"
+	end
+
 	local state = nil
 	local transactionOk = pcall(function()
 		invokeTransactionHook("afterSpend", context)
 		mutate()
 		invokeTransactionHook("afterMutation", context)
 		-- Construct the complete authoritative DTO before the commit boundary. If
-		-- this fails, both the profile mutation and silent debit are rolled back.
+		-- this fails, both the profile mutation and reservation are rolled back.
 		state = ShopService.getShopState(player)
 		if ShopService._currencyService.commitSpendTransaction(currencyTransaction) ~= true then
 			error("currency commit failed")
@@ -277,7 +300,7 @@ local function executePurchase(player, context, mutate, rollbackMutation)
 		context.committed = true
 	end)
 	if not transactionOk then
-		if not rollbackPendingPurchase(currencyTransaction, rollbackMutation) then
+		if not settlePendingPurchase(currencyTransaction) then
 			return false, "Purchase rollback failed"
 		end
 		return false, "Purchase failed"
@@ -329,6 +352,7 @@ local function purchasePotion(player, request, data)
 	end, function()
 		-- Preserve absence rather than materializing a zero key on rollback.
 		data.potionInventory[itemId] = oldValue
+		return true
 	end)
 end
 
@@ -375,6 +399,7 @@ local function purchaseExtraEquipSlot(player, data)
 		else
 			data.shopPurchases.extraEquipSlots = oldValue
 		end
+		return true
 	end)
 end
 

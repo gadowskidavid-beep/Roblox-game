@@ -531,34 +531,136 @@ function PotionService.purchaseUpgrade(player, request)
 		if not cost then
 			return false, unavailable
 		end
-		local transaction = PotionService._currencyService.beginSpendTransaction(
+		local spendTransaction = PotionService._currencyService.beginSpendTransaction(
 			player,
 			cost.currency,
-			cost.amount
+			cost.amount,
+			"PotionService.purchaseUpgrade"
 		)
-		if type(transaction) ~= "table" then
+		if type(spendTransaction) ~= "table" then
 			return false, "Not enough " .. tostring(cost.currency)
 		end
+
+		local userId = player.UserId
+		local transaction = {
+			player = player,
+			data = data,
+			upgrades = data.potionUpgrades,
+			field = field,
+			oldValue = oldValue,
+			oldRevision = PotionService._stateRevisions[userId],
+			writtenValue = nil,
+			writtenRevision = nil,
+			dtoBuildStarted = false,
+			spendTransaction = spendTransaction,
+			domainRestored = false,
+			committed = false,
+			rolledBack = false,
+		}
+
+		local function rollbackPurchase(currentSpendTransaction)
+			if transaction.committed or transaction.rolledBack then
+				return true
+		end
+			if currentSpendTransaction ~= transaction.spendTransaction then
+				return false
+			end
+
+			if not transaction.domainRestored then
+				local domainOk, domainRestored = pcall(function()
+					local currentData = getData(transaction.player)
+					if currentData ~= transaction.data
+						or currentData.potionUpgrades ~= transaction.upgrades then
+						return false
+					end
+
+					local currentValue = transaction.upgrades[transaction.field]
+					if currentValue ~= transaction.oldValue then
+						if transaction.writtenValue == nil
+							or currentValue ~= transaction.writtenValue then
+							return false
+						end
+						transaction.upgrades[transaction.field] = transaction.oldValue
+					end
+
+					local currentStoredRevision = PotionService._stateRevisions[userId]
+					if currentStoredRevision ~= transaction.oldRevision then
+						local ownedRevision = transaction.writtenRevision
+						if ownedRevision == nil and transaction.dtoBuildStarted then
+							ownedRevision = (transaction.oldRevision or 0) + 1
+						end
+						if currentStoredRevision ~= ownedRevision then
+							return false
+						end
+						PotionService._stateRevisions[userId] = transaction.oldRevision
+					end
+
+					return transaction.upgrades[transaction.field] == transaction.oldValue
+						and PotionService._stateRevisions[userId] == transaction.oldRevision
+				end)
+				if not domainOk or domainRestored ~= true then
+					return false
+				end
+				-- A later cancellation retry must never reinterpret a newer Potion
+				-- revision as this transaction's write (including an ABA match).
+				transaction.domainRestored = true
+			end
+
+			local currencyOk, currencyCanceled = pcall(
+				PotionService._currencyService.rollbackSpendTransaction,
+				transaction.spendTransaction
+			)
+			if not currencyOk or currencyCanceled ~= true then
+				return false
+			end
+			transaction.spendTransaction = nil
+			transaction.rolledBack = true
+			return true
+		end
+
+		local registerOk, settlerRegistered = pcall(
+			PotionService._currencyService.setSpendSettler,
+			spendTransaction,
+			rollbackPurchase
+		)
+		if not registerOk or settlerRegistered ~= true then
+			if rollbackPurchase(spendTransaction) then
+				return false, "Potion upgrade purchase failed"
+			end
+			-- A transient registration fault plus a transient cancellation fault
+			-- must still leave this exact closure owned for lifecycle retry.
+			local recoveryOk, recoveryRegistered = pcall(
+				PotionService._currencyService.setSpendSettler,
+				spendTransaction,
+				rollbackPurchase
+			)
+			if not recoveryOk or recoveryRegistered ~= true then
+				return false, "Potion upgrade rollback failed"
+			end
+			return false, "Potion upgrade rollback failed"
+		end
+
 		local state = nil
-		local committed = false
 		local context = { action = "purchasePotionUpgrade", upgradeId = request.upgradeId }
 		local ok = pcall(function()
 			invokeHook("afterSpend", context)
 			mutate()
+			transaction.writtenValue = transaction.upgrades[field]
 			invokeHook("afterUpgrade", context)
+			transaction.dtoBuildStarted = true
 			state = PotionService.getState(player)
-			state.stateRevision = bumpRevision(player)
-			if PotionService._currencyService.commitSpendTransaction(transaction) ~= true then
+			transaction.writtenRevision = bumpRevision(player)
+			state.stateRevision = transaction.writtenRevision
+			if PotionService._currencyService.commitSpendTransaction(spendTransaction) ~= true then
 				error("currency commit failed")
 			end
-			committed = true
+			-- Currency commit is the point of no return. The paid upgrade can no
+			-- longer become retryable because of postcommit replication.
+			transaction.spendTransaction = nil
+			transaction.committed = true
 		end)
-		if not ok or not committed then
-			data.potionUpgrades[field] = oldValue
-			local rollbackOk, rolledBack = pcall(function()
-				return PotionService._currencyService.rollbackSpendTransaction(transaction)
-			end)
-			if not rollbackOk or rolledBack ~= true then
+		if not ok or not transaction.committed then
+			if not rollbackPurchase(spendTransaction) then
 				return false, "Potion upgrade rollback failed"
 			end
 			return false, "Potion upgrade purchase failed"

@@ -1,4 +1,4 @@
--- EggService.spec.lua - QOF-08 atomic paid batch transaction regressions.
+-- EggService.spec.lua - QOF-25 retained currency reservation regressions.
 
 local originalRequire = require
 local Config = {
@@ -71,11 +71,19 @@ local player = { Name = "Tester", UserId = 42 }
 local profile = nil
 local maximumBatchCount = 10
 local spentCoins = 0
-local refundedCoins = 0
-local refundFails = false
+local spendBegins = 0
+local spendCommits = 0
+local spendCommitFails = false
+local spendRollbacks = 0
+local spendRollbackFails = false
+local spendSettlers = 0
+local pendingSpends = {}
+local lastSpendTransaction = nil
+local rollbackOrder = {}
 local questHatches = 0
 local inventoryReplications = 0
 local rollbackCount = 0
+local inventoryRollbackFails = false
 local prepareError = nil
 local prepareThrows = false
 local commitError = nil
@@ -84,7 +92,9 @@ local stationNear = true
 local shinyCharges = 0
 local shinyBoostCounts = {}
 local shinyCommits = 0
+local shinyCommitFails = false
 local shinyRollbacks = 0
+local directProfileOwner = nil
 
 local dataService = {}
 function dataService.getPlayerData()
@@ -92,20 +102,51 @@ function dataService.getPlayerData()
 end
 
 local currencyService = {}
-function currencyService.spend(_, currency, amount)
+function currencyService.beginSpendTransaction(_, currency, amount, ownerName)
 	expect(currency):toBe("coins")
+	expect(ownerName):toBe("EggService")
 	if profile.coins < amount then
-		return false
+		return nil
 	end
-	profile.coins = profile.coins - amount
-	spentCoins = spentCoins + amount
+	local transaction = {}
+	pendingSpends[transaction] = {
+		amount = amount,
+		settler = nil,
+	}
+	lastSpendTransaction = transaction
+	spendBegins = spendBegins + 1
+	return transaction
+end
+function currencyService.setSpendSettler(transaction, settler)
+	local pending = pendingSpends[transaction]
+	if not pending or type(settler) ~= "function" then return false end
+	pending.settler = settler
+	spendSettlers = spendSettlers + 1
 	return true
 end
-function currencyService.creditRaw(_, currency, amount)
-	expect(currency):toBe("coins")
-	if refundFails then return false end
-	profile.coins = profile.coins + amount
-	refundedCoins = refundedCoins + amount
+function currencyService.commitSpendTransaction(transaction)
+	local pending = pendingSpends[transaction]
+	if not pending or profile.coins < pending.amount then return false end
+	-- Notifications and all other postcommit effects must wait for this PONR.
+	expect(#startEvents):toBe(0)
+	expect(#resultEvents):toBe(0)
+	expect(inventoryReplications):toBe(0)
+	expect(questHatches):toBe(0)
+	if spendCommitFails then return false end
+	profile.coins = profile.coins - pending.amount
+	spentCoins = spentCoins + pending.amount
+	spendCommits = spendCommits + 1
+	pendingSpends[transaction] = nil
+	table.insert(rollbackOrder, "currencyCommit")
+	return true
+end
+function currencyService.rollbackSpendTransaction(transaction)
+	local pending = pendingSpends[transaction]
+	if not pending then return false end
+	spendRollbacks = spendRollbacks + 1
+	if spendRollbackFails then return false end
+	pendingSpends[transaction] = nil
+	table.insert(rollbackOrder, "currencyRollback")
 	return true
 end
 
@@ -151,6 +192,7 @@ function petService.prepareHatchBatch(_, eggType, count, options)
 		table.insert(pets, {
 			id = "pet-" .. tostring(index),
 			petId = "Buddy",
+			name = "Buddy",
 			variant = index % 2 == 0 and "Golden" or "Normal",
 			shiny = index == count,
 			isNewDiscovery = index == 1,
@@ -175,6 +217,8 @@ end
 function petService.rollbackHatchBatch(prepared, lease)
 	expect(petService.isInventoryMutationCurrent(player, lease)):toBeTrue()
 	rollbackCount = rollbackCount + 1
+	table.insert(rollbackOrder, "inventoryRollback")
+	if inventoryRollbackFails then return false end
 	while #profile.pets > prepared.originalPetCount do
 		table.remove(profile.pets)
 	end
@@ -195,9 +239,29 @@ function upgradeTreeService.getEntitlements()
 	return { multiOpenCount = maximumBatchCount }
 end
 
+local profileTransactionService = {}
+function profileTransactionService.begin(ownerPlayer, ownerName)
+	expect(ownerName):toBe("EggService")
+	if directProfileOwner ~= nil then return nil end
+	directProfileOwner = { player = ownerPlayer, settler = nil }
+	return directProfileOwner
+end
+function profileTransactionService.setSettler(owner, settler)
+	if owner ~= directProfileOwner or type(settler) ~= "function" then return false end
+	owner.settler = settler
+	return true
+end
+function profileTransactionService.commit(owner)
+	if owner ~= directProfileOwner then return false end
+	directProfileOwner = nil
+	return true
+end
+
 local potionService = {}
 local pendingShiny = {}
 function potionService.beginShinyChargeTransaction(_, count)
+	-- QOF-25 must own the profile before consuming the first live Shiny charge.
+	expect(lastSpendTransaction ~= nil or directProfileOwner ~= nil):toBeTrue()
 	local reserved = math.min(shinyCharges, count)
 	if reserved <= 0 then return nil, 0 end
 	local handle = {}
@@ -211,16 +275,23 @@ function potionService.rollbackShinyChargeTransaction(handle)
 	pendingShiny[handle] = nil
 	shinyCharges = pendingState.old
 	shinyRollbacks = shinyRollbacks + 1
+	table.insert(rollbackOrder, "shinyRollback")
 	return true
 end
 function potionService.commitShinyChargeTransaction(handle)
-	if not pendingShiny[handle] then return false end
+	if not pendingShiny[handle] or shinyCommitFails then return false end
 	pendingShiny[handle] = nil
 	shinyCommits = shinyCommits + 1
 	return true
 end
 
-EggService.init(dataService, currencyService, petService, upgradeTreeService)
+EggService.init(
+	dataService,
+	currencyService,
+	petService,
+	upgradeTreeService,
+	profileTransactionService
+)
 EggService.setPotionService(potionService)
 EggService.setQuestService(questService)
 EggService._stationValidator = function()
@@ -232,17 +303,26 @@ local function resetState()
 		coins = 10000,
 		unlockedZones = { 1 },
 		pets = {},
+		campaignBossRewards = {},
 		capacity = 100,
 		capacityBlocked = false,
 		hatchPreferences = { preferredBatchCount = 1 },
 	}
 	maximumBatchCount = 10
 	spentCoins = 0
-	refundedCoins = 0
-	refundFails = false
+	spendBegins = 0
+	spendCommits = 0
+	spendCommitFails = false
+	spendRollbacks = 0
+	spendRollbackFails = false
+	spendSettlers = 0
+	pendingSpends = {}
+	lastSpendTransaction = nil
+	rollbackOrder = {}
 	questHatches = 0
 	inventoryReplications = 0
 	rollbackCount = 0
+	inventoryRollbackFails = false
 	prepareError = nil
 	prepareThrows = false
 	commitError = nil
@@ -251,8 +331,10 @@ local function resetState()
 	shinyCharges = 0
 	shinyBoostCounts = {}
 	shinyCommits = 0
+	shinyCommitFails = false
 	shinyRollbacks = 0
 	pendingShiny = {}
+	directProfileOwner = nil
 	currentInventoryLease = nil
 	inventoryIncarnation = 0
 	startEvents = {}
@@ -266,7 +348,7 @@ local function resetState()
 	end
 end
 
-describe("EggService QOF-08 atomic batches", function()
+describe("EggService QOF-25 reserved atomic batches", function()
 	it("charges one total, commits all pets, emits one DTO, and advances quests by count", function()
 		resetState()
 		local result, err = EggService.purchaseAndHatch(player, "BasicEgg", 5, {
@@ -277,7 +359,11 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(result.count):toBe(5)
 		expect(result.totalCost):toBe(500)
 		expect(spentCoins):toBe(500)
-		expect(refundedCoins):toBe(0)
+		expect(spendBegins):toBe(1)
+		expect(spendSettlers):toBe(1)
+		expect(spendCommits):toBe(1)
+		expect(spendRollbacks):toBe(0)
+		expect(pendingSpends[lastSpendTransaction]):toBeNil()
 		expect(profile.coins):toBe(9500)
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(1)
 		expect(#profile.pets):toBe(5)
@@ -407,6 +493,9 @@ describe("EggService QOF-08 atomic batches", function()
 			profile.hatchPreferences.preferredBatchCount = 2
 			EggService._transactionHook = function(stage)
 				if stage == faultStage then
+					-- Reservation is silent through every reversible stage.
+					expect(profile.coins):toBe(10000)
+					expect(spentCoins):toBe(0)
 					error("injected " .. stage)
 				end
 			end
@@ -414,8 +503,17 @@ describe("EggService QOF-08 atomic batches", function()
 			expect(result):toBeNil()
 			expect(err):toBe("Hatch failed safely")
 			expect(profile.coins):toBe(10000)
-			expect(spentCoins):toBe(1000)
-			expect(refundedCoins):toBe(1000)
+			expect(spentCoins):toBe(0)
+			expect(spendBegins):toBe(1)
+			expect(spendCommits):toBe(0)
+			expect(spendRollbacks):toBe(1)
+			expect(pendingSpends[lastSpendTransaction]):toBeNil()
+			if faultStage == "afterInventory" then
+				expect(rollbackOrder[1]):toBe("inventoryRollback")
+				expect(rollbackOrder[2]):toBe("currencyRollback")
+			else
+				expect(rollbackOrder[1]):toBe("currencyRollback")
+			end
 			expect(#profile.pets):toBe(0)
 			expect(#startEvents):toBe(0)
 			expect(#resultEvents):toBe(0)
@@ -437,7 +535,13 @@ describe("EggService QOF-08 atomic batches", function()
 
 		-- A fresh service lifecycle has no session selection to restore. The profile
 		-- remains the authority and therefore reproduces the saved preference.
-		EggService.init(dataService, currencyService, petService, upgradeTreeService)
+		EggService.init(
+	dataService,
+	currencyService,
+	petService,
+	upgradeTreeService,
+	profileTransactionService
+)
 		expect(EggService.getSelectedBatchCount(player)):toBe(5)
 	end)
 
@@ -605,8 +709,9 @@ describe("EggService QOF-08 atomic batches", function()
 		local failed, failureError = EggService.purchaseFromIntent(player, "BasicEgg", { mode = "Max" })
 		expect(failed):toBeNil()
 		expect(failureError):toBe("Hatch failed safely")
-		expect(spentCoins):toBe(500)
-		expect(refundedCoins):toBe(500)
+		expect(spentCoins):toBe(0)
+		expect(spendCommits):toBe(0)
+		expect(spendRollbacks):toBe(1)
 		expect(profile.coins):toBe(550)
 		expect(#profile.pets):toBe(0)
 	end)
@@ -626,6 +731,38 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(shinyRollbacks):toBe(0)
 	end)
 
+	it("keeps a paid hatch terminal while retrying postcommit Shiny finalization", function()
+		resetState()
+		shinyCharges = 2
+		shinyCommitFails = true
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", {
+			mode = "Fixed",
+			count = 3,
+		})
+		expect(err):toBeNil()
+		expect(result.count):toBe(3)
+		expect(profile.coins):toBe(9700)
+		expect(spendCommits):toBe(1)
+		expect(#profile.pets):toBe(3)
+		expect(shinyCharges):toBe(0)
+		expect(shinyCommits):toBe(0)
+		expect(shinyRollbacks):toBe(0)
+		expect(EggService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+		expect(currentInventoryLease ~= nil):toBeTrue()
+		expect(#resultEvents):toBe(1)
+		expect(inventoryReplications):toBe(1)
+		expect(questHatches):toBe(3)
+
+		shinyCommitFails = false
+		expect(EggService.onPlayerRemoving(player)):toBeTrue()
+		expect(shinyCommits):toBe(1)
+		expect(EggService._activeTransactions[player.UserId]):toBeNil()
+		expect(currentInventoryLease):toBeNil()
+		expect(#resultEvents):toBe(1)
+		expect(inventoryReplications):toBe(1)
+		expect(questHatches):toBe(3)
+	end)
+
 	it("restores exact Shiny charges when a paid manual hatch rolls back", function()
 		resetState()
 		shinyCharges = 4
@@ -642,6 +779,70 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(shinyCharges):toBe(4)
 		expect(shinyCommits):toBe(0)
 		expect(shinyRollbacks):toBe(1)
+		expect(spendCommits):toBe(0)
+		expect(spendRollbacks):toBe(1)
+		expect(rollbackOrder[1]):toBe("inventoryRollback")
+		expect(rollbackOrder[2]):toBe("shinyRollback")
+		expect(rollbackOrder[3]):toBe("currencyRollback")
+	end)
+
+	it("restores pets, Shiny charges, and reservation when currency commit fails", function()
+		resetState()
+		shinyCharges = 2
+		spendCommitFails = true
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", {
+			mode = "Fixed",
+			count = 3,
+		})
+		expect(result):toBeNil()
+		expect(err):toBe("Hatch failed safely")
+		expect(profile.coins):toBe(10000)
+		expect(spentCoins):toBe(0)
+		expect(#profile.pets):toBe(0)
+		expect(shinyCharges):toBe(2)
+		expect(shinyCommits):toBe(0)
+		expect(shinyRollbacks):toBe(1)
+		expect(spendCommits):toBe(0)
+		expect(spendRollbacks):toBe(1)
+		expect(rollbackOrder[1]):toBe("inventoryRollback")
+		expect(rollbackOrder[2]):toBe("shinyRollback")
+		expect(rollbackOrder[3]):toBe("currencyRollback")
+		expect(#startEvents):toBe(0)
+		expect(#resultEvents):toBe(0)
+		expect(inventoryReplications):toBe(0)
+		expect(questHatches):toBe(0)
+	end)
+
+	it("keeps currency reserved until failed inventory and Shiny rollback are complete", function()
+		resetState()
+		shinyCharges = 2
+		inventoryRollbackFails = true
+		EggService._transactionHook = function(stage)
+			if stage == "afterInventory" then error("injected") end
+		end
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", {
+			mode = "Fixed",
+			count = 3,
+		})
+		expect(result):toBeNil()
+		expect(err):toBe("Hatch rollback failed")
+		expect(profile.coins):toBe(10000)
+		expect(#profile.pets):toBe(3)
+		expect(shinyCharges):toBe(2)
+		expect(shinyRollbacks):toBe(1)
+		expect(spendRollbacks):toBe(0)
+		expect(pendingSpends[lastSpendTransaction] ~= nil):toBeTrue()
+		expect(rollbackOrder[1]):toBe("inventoryRollback")
+		expect(rollbackOrder[2]):toBe("shinyRollback")
+
+		inventoryRollbackFails = false
+		expect(EggService.onPlayerRemoving(player)):toBeTrue()
+		expect(#profile.pets):toBe(0)
+		expect(spendRollbacks):toBe(1)
+		expect(rollbackOrder[3]):toBe("inventoryRollback")
+		expect(rollbackOrder[4]):toBe("currencyRollback")
+		expect(pendingSpends[lastSpendTransaction]):toBeNil()
+		expect(profile.coins):toBe(10000)
 	end)
 
 	it("does not consume Shiny charges for bypass or free hatches by default", function()
@@ -673,6 +874,86 @@ describe("EggService QOF-08 atomic batches", function()
 	end)
 end)
 
+describe("EggService QOF-25 atomic campaign reward", function()
+	it("commits the pet and exact claim under one direct owner without ordinary hatch effects", function()
+		resetState()
+		profile.unlockedZones = {}
+		profile.campaignBossRewards["6"] = "poisoned"
+		stationNear = false
+		shinyCharges = 5
+		local sawOwnedClaim = false
+		EggService._transactionHook = function(stage)
+			if stage == "afterCampaignClaim" then
+				sawOwnedClaim = true
+				expect(directProfileOwner ~= nil):toBeTrue()
+				expect(profile.campaignBossRewards["6"]):toBeTrue()
+				expect(#profile.pets):toBe(1)
+			end
+		end
+		local result, rewardError = EggService.claimCampaignBossReward(player, "BasicEgg", 6)
+		expect(rewardError):toBeNil()
+		expect(result):toEqual({ status = "CLAIMED", petName = "Buddy" })
+		expect(sawOwnedClaim):toBeTrue()
+		expect(profile.campaignBossRewards["6"]):toBeTrue()
+		expect(#profile.pets):toBe(1)
+		expect(shinyCharges):toBe(5)
+		expect(spendBegins):toBe(0)
+		expect(inventoryReplications):toBe(1)
+		expect(#startEvents):toBe(0)
+		expect(#resultEvents):toBe(0)
+		expect(questHatches):toBe(0)
+		expect(directProfileOwner):toBeNil()
+	end)
+
+	it("returns exact already-claimed state without creating or owning a pet mutation", function()
+		resetState()
+		profile.campaignBossRewards["6"] = true
+		local result, rewardError = EggService.claimCampaignBossReward(player, "BasicEgg", 6)
+		expect(rewardError):toBeNil()
+		expect(result):toEqual({ status = "ALREADY_CLAIMED" })
+		expect(#profile.pets):toBe(0)
+		expect(inventoryReplications):toBe(0)
+		expect(directProfileOwner):toBeNil()
+	end)
+
+	it("restores the pet and exact hostile claim after a precommit fault", function()
+		resetState()
+		profile.campaignBossRewards["6"] = "poisoned"
+		EggService._transactionHook = function(stage)
+			if stage == "afterCampaignClaim" then error("injected claim fault") end
+		end
+		local result, rewardError = EggService.claimCampaignBossReward(player, "BasicEgg", 6)
+		expect(result):toBeNil()
+		expect(rewardError):toBe("Hatch failed safely")
+		expect(profile.campaignBossRewards["6"]):toBe("poisoned")
+		expect(#profile.pets):toBe(0)
+		expect(directProfileOwner):toBeNil()
+		expect(currentInventoryLease):toBeNil()
+	end)
+
+	it("retains the same owner and lease until campaign pet rollback can retry", function()
+		resetState()
+		profile.campaignBossRewards["6"] = "poisoned"
+		inventoryRollbackFails = true
+		EggService._transactionHook = function(stage)
+			if stage == "afterCampaignClaim" then error("injected retained claim fault") end
+		end
+		local result, rewardError = EggService.claimCampaignBossReward(player, "BasicEgg", 6)
+		expect(result):toBeNil()
+		expect(rewardError):toBe("Hatch rollback failed")
+		expect(profile.campaignBossRewards["6"]):toBe("poisoned")
+		expect(#profile.pets):toBe(1)
+		expect(directProfileOwner ~= nil):toBeTrue()
+		expect(currentInventoryLease ~= nil):toBeTrue()
+		expect(EggService.cleanup(player)):toBeFalse()
+		inventoryRollbackFails = false
+		expect(EggService.cleanup(player)):toBeTrue()
+		expect(#profile.pets):toBe(0)
+		expect(profile.campaignBossRewards["6"]):toBe("poisoned")
+		expect(directProfileOwner):toBeNil()
+		expect(currentInventoryLease):toBeNil()
+	end)
+end)
 
 
 describe("EggService shared inventory lease", function()
@@ -707,9 +988,9 @@ end)
 
 
 describe("EggService retained rollback lifecycle", function()
-	it("retains failed restore handles and releases exactly after a later cleanup retry", function()
+	it("retains the same reservation and central settler until exact cleanup succeeds", function()
 		resetState()
-		refundFails = true
+		spendRollbackFails = true
 		EggService._transactionHook = function(stage)
 			if stage == "afterSpend" then error("injected after spend") end
 		end
@@ -718,14 +999,34 @@ describe("EggService retained rollback lifecycle", function()
 		})
 		expect(result):toBeNil()
 		expect(hatchError):toBe("Hatch rollback failed")
-		expect(profile.coins):toBe(9900)
-		expect(EggService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+		expect(profile.coins):toBe(10000)
+		expect(spentCoins):toBe(0)
+		expect(spendBegins):toBe(1)
+		expect(spendCommits):toBe(0)
+		expect(spendRollbacks):toBe(1)
+		local retainedTransaction = EggService._activeTransactions[player.UserId]
+		expect(retainedTransaction ~= nil):toBeTrue()
+		expect(retainedTransaction.spendTransaction == lastSpendTransaction):toBeTrue()
+		expect(type(pendingSpends[lastSpendTransaction].settler)):toBe("function")
 		expect(currentInventoryLease ~= nil):toBeTrue()
+
+		-- EggService lifecycle cleanup retries the same handle without ever refunding.
 		expect(EggService.onPlayerRemoving(player)):toBeFalse()
-		refundFails = false
+		expect(spendRollbacks):toBe(2)
+		expect(retainedTransaction.spendTransaction == lastSpendTransaction):toBeTrue()
+		expect(profile.coins):toBe(10000)
+
+		-- The centrally retained callback runs rollbackTransaction directly (without
+		-- recursing through settleTransaction), then EggService releases its lease.
+		local centralSettler = pendingSpends[lastSpendTransaction].settler
+		spendRollbackFails = false
+		expect(centralSettler(lastSpendTransaction)):toBeTrue()
+		expect(spendRollbacks):toBe(3)
+		expect(pendingSpends[lastSpendTransaction]):toBeNil()
+		expect(retainedTransaction.spendTransaction):toBeNil()
 		expect(EggService.onPlayerRemoving(player)):toBeTrue()
 		expect(profile.coins):toBe(10000)
-		expect(refundedCoins):toBe(100)
+		expect(spentCoins):toBe(0)
 		expect(EggService._activeTransactions[player.UserId]):toBeNil()
 		expect(currentInventoryLease):toBeNil()
 	end)
