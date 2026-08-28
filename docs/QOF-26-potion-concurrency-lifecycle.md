@@ -1,6 +1,6 @@
 # QOF-26 – Potion-Concurrency und Lifecycle
 
-Status: **Code-verifiziert – Studio-Test ausstehend**
+Status: **Abgeschlossen – Fortsetzung durch ausdrückliches Nutzer-`Weiter`; Studio-Ergebnis nicht separat gemeldet**
 
 Implementierungscommit: `5df4944`
 
@@ -152,3 +152,8 @@ Bitte nach dem Studio-Test melden:
 5. Gibt es rote Server-/Clientfehler oder auffällige UI-/Bewegungsregressionen?
 
 QOF-27 wird erst durch ein erneutes ausdrückliches `Weiter` nach diesem Handoff freigegeben.
+
+
+## Abschluss
+
+Der Nutzer hat nach dem gebundenen QOF-26-Handoff ausdrücklich `Weiter` geschrieben und damit die Fortsetzung zu QOF-27 freigegeben. Ein separates positives Roblox-Studio-Ergebnis wurde nicht gemeldet und wird deshalb nicht behauptet.
