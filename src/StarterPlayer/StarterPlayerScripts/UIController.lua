@@ -16,7 +16,6 @@
 ]]
 
 local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -118,6 +117,18 @@ local function safeSlotBonus(value)
 	return math.floor(numeric)
 end
 
+local function safePotionCount(value, maximum)
+	local numeric = tonumber(value)
+	if not numeric
+		or numeric ~= numeric
+		or numeric == math.huge
+		or numeric == -math.huge
+		or numeric <= 0 then
+		return 0
+	end
+	return math.clamp(math.floor(numeric), 0, maximum)
+end
+
 local function resolveLevelBonus(definition, rawLevel, valuesKey)
 	if type(definition) ~= "table" then return 0 end
 	local level = tonumber(rawLevel)
@@ -209,20 +220,22 @@ function UIController.new()
 	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
 	-- Pet index (collection book) state
 	self._discoveredPets = {}
-	-- Shop state and live countdown UI
-	self._shopBuffs = {}
+	-- QOF-13 shop state. Potion buttons stay fail-closed until the server
+	-- advertises the exact V2 inventory-only contract.
 	self._shopState = {
+		contractVersion = 0,
+		purchaseMode = nil,
+		potionInventory = {},
+		maxPotionInventory = ShopData.MaxPotionInventory or 999,
 		buffs = {},
 		purchases = { extraEquipSlots = 0 },
 		maxExtraEquipSlots = ShopData.Items.ExtraEquipSlot.maxPurchases or 5,
 	}
-	self._shopBuffExpiry = {}
 	self._shopCards = {}
 	self._shopDiamondLabel = nil
 	self._shopFeedbackLabel = nil
 	self._shopFeedbackToken = 0
 	self._shopPurchaseInFlight = nil
-	self._shopTimerConnection = nil
 	self._shopConnections = {}
 	self._screenAnimationTokens = {}
 	self._screenStates = {}
@@ -276,6 +289,15 @@ function UIController:init(remotes, playerData)
 			0,
 			maxExtraEquipSlots
 		)
+		local initialInventory = type(playerData.potionInventory) == "table" and playerData.potionInventory or {}
+		for potionId, item in pairs(ShopData.Items) do
+			if item.itemType == "potion" then
+				local count = safePotionCount(initialInventory[potionId], self._shopState.maxPotionInventory)
+				if count > 0 then
+					self._shopState.potionInventory[potionId] = count
+				end
+			end
+		end
 	end
 
 	-- Create all UI
@@ -1176,7 +1198,7 @@ function UIController:_createNavButtons(parent)
 		end)
 
 		if btnData.screen then
-			btn.MouseButton1Click:Connect(function()
+			btn.Activated:Connect(function()
 				self:toggleScreen(btnData.screen)
 			end)
 		end
@@ -2965,11 +2987,6 @@ local function addShopStroke(instance, color, thickness)
 	return stroke
 end
 
-local function formatShopTime(seconds)
-	seconds = math.max(0, math.ceil(tonumber(seconds) or 0))
-	return string.format("%02d:%02d", math.floor(seconds / 60), seconds % 60)
-end
-
 function UIController:_createShopItemArt(parent, item)
 	local color = shopColor(item.color)
 	local accent = shopColor(item.accentColor)
@@ -3175,7 +3192,7 @@ function UIController:_createShopScreen()
 	subtitle.Size = UDim2.new(0.56, 0, 0, 25)
 	subtitle.Position = UDim2.new(0.22, 0, 0, 67)
 	subtitle.BackgroundTransparency = 1
-	subtitle.Text = "POWER UP YOUR TEAM!"
+	subtitle.Text = "BUY POTIONS • STORED UNTIL DRINKING UNLOCKS"
 	subtitle.TextColor3 = Color3.fromRGB(76, 124, 83)
 	subtitle.Font = Enum.Font.GothamBold
 	subtitle.TextScaled = true
@@ -3299,15 +3316,6 @@ function UIController:_createShopScreen()
 	task.defer(updateGridLayout)
 
 	self:_refreshShopGrid()
-
-	local elapsed = 0
-	self._shopTimerConnection = RunService.Heartbeat:Connect(function(deltaTime)
-		elapsed += deltaTime
-		if elapsed >= 0.25 then
-			elapsed = 0
-			self:_updateShopCardStates()
-		end
-	end)
 end
 
 function UIController:_refreshShopGrid()
@@ -3441,45 +3449,54 @@ function UIController:_updateShopCardStates()
 		self._shopDiamondLabel.Text = tostring(self._diamonds)
 	end
 
-	local now = os.clock()
-	local purchases = self._shopState.purchases or {}
+	local purchases = type(self._shopState.purchases) == "table" and self._shopState.purchases or {}
+	local inventory = type(self._shopState.potionInventory) == "table" and self._shopState.potionInventory or {}
 	local ownedSlots = tonumber(purchases.extraEquipSlots) or 0
 	local maxSlots = tonumber(self._shopState.maxExtraEquipSlots)
 		or ShopData.Items.ExtraEquipSlot.maxPurchases
 		or 5
+	local maxPotionInventory = safePotionCount(
+		self._shopState.maxPotionInventory,
+		ShopData.MaxPotionInventory or 999
+	)
+	if maxPotionInventory == 0 then
+		maxPotionInventory = ShopData.MaxPotionInventory or 999
+	end
+	local contractReady = self._shopState.contractVersion == ShopData.ContractVersion
+		and self._shopState.purchaseMode == ShopData.PurchaseMode
 
 	for itemId, card in pairs(self._shopCards) do
 		local item = ShopData.Items[itemId]
 		if item and card.button and card.button.Parent then
-			local isMaxed = item.permanent and ownedSlots >= maxSlots
+			local isPotion = item.itemType == "potion"
+			local potionCount = isPotion and safePotionCount(inventory[itemId], maxPotionInventory) or 0
+			local isMaxed = isPotion and potionCount >= maxPotionInventory
+				or item.permanent and ownedSlots >= maxSlots
 			local isPurchasing = self._shopPurchaseInFlight ~= nil
 			local isAffordable = self._diamonds >= item.cost
-			local enabled = not isMaxed and not isPurchasing and isAffordable
+			local contractBlocked = isPotion and not contractReady
+			local enabled = not contractBlocked and not isMaxed and not isPurchasing and isAffordable
 
-			if item.permanent then
+			if isPotion then
 				if isMaxed then
-					card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • MAXED"
+					card.status.Text = "OWNED " .. tostring(potionCount) .. "/" .. tostring(maxPotionInventory) .. " • MAXED"
 					card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
 				else
-					card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • PERMANENT"
-					card.status.TextColor3 = Color3.fromRGB(88, 52, 78)
-				end
-			else
-				local expiry = self._shopBuffExpiry[item.buffType]
-				local remaining = expiry and math.max(0, expiry - now) or 0
-				if remaining > 0 then
-					card.status.Text = "ACTIVE • " .. formatShopTime(remaining)
+					card.status.Text = "OWNED " .. tostring(potionCount) .. "/" .. tostring(maxPotionInventory) .. " • STORED"
 					card.status.TextColor3 = Color3.fromRGB(20, 115, 48)
-				else
-					self._shopBuffExpiry[item.buffType] = nil
-					self._shopState.buffs[item.buffType] = nil
-					card.status.Text = item.durationLabel
-					card.status.TextColor3 = Color3.fromRGB(55, 65, 75)
 				end
+			elseif isMaxed then
+				card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • MAXED"
+				card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
+			else
+				card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • PERMANENT"
+				card.status.TextColor3 = Color3.fromRGB(88, 52, 78)
 			end
 
 			if self._shopPurchaseInFlight == itemId then
 				card.button.Text = "PURCHASING..."
+			elseif contractBlocked then
+				card.button.Text = "SYNCING..."
 			elseif isMaxed then
 				card.button.Text = "MAXED"
 			elseif not isAffordable then
@@ -3523,9 +3540,9 @@ end
 
 function UIController:_applyShopState(payload)
 	payload = type(payload) == "table" and payload or {}
-	local isFullState = type(payload.buffs) == "table" or type(payload.purchases) == "table"
-	local buffs = isFullState and (payload.buffs or {}) or payload
-	-- Buff-only legacy payloads must not erase the persisted permanent purchase.
+	local isV2 = payload.contractVersion == ShopData.ContractVersion
+		and payload.purchaseMode == ShopData.PurchaseMode
+
 	local purchases = type(payload.purchases) == "table"
 		and payload.purchases
 		or (type(self._shopState.purchases) == "table" and self._shopState.purchases or {})
@@ -3535,24 +3552,32 @@ function UIController:_applyShopState(payload)
 	end
 	local ownedSlots = math.clamp(safeSlotBonus(purchases.extraEquipSlots), 0, maxSlots)
 
-	local normalizedBuffs = {}
-	local now = os.clock()
-	for _, itemId in ipairs(ShopData.Order) do
-		local item = ShopData.Items[itemId]
-		if item and not item.permanent and item.buffType then
-			local remaining = math.max(0, tonumber(buffs[item.buffType]) or 0)
-			if remaining > 0 then
-				normalizedBuffs[item.buffType] = remaining
-				self._shopBuffExpiry[item.buffType] = now + remaining
-			else
-				self._shopBuffExpiry[item.buffType] = nil
+	local maxPotionInventory = ShopData.MaxPotionInventory or 999
+	if isV2 then
+		local serverMaximum = safePotionCount(payload.maxPotionInventory, maxPotionInventory)
+		if serverMaximum > 0 then
+			maxPotionInventory = serverMaximum
+		end
+	end
+	local potionInventory = {}
+	local sourceInventory = isV2 and payload.potionInventory or self._shopState.potionInventory
+	if type(sourceInventory) == "table" then
+		for potionId, item in pairs(ShopData.Items) do
+			if item.itemType == "potion" then
+				local count = safePotionCount(sourceInventory[potionId], maxPotionInventory)
+				if count > 0 then
+					potionInventory[potionId] = count
+				end
 			end
 		end
 	end
 
-	self._shopBuffs = normalizedBuffs
 	self._shopState = {
-		buffs = normalizedBuffs,
+		contractVersion = isV2 and ShopData.ContractVersion or 0,
+		purchaseMode = isV2 and ShopData.PurchaseMode or nil,
+		potionInventory = potionInventory,
+		maxPotionInventory = maxPotionInventory,
+		buffs = type(payload.buffs) == "table" and payload.buffs or {},
 		purchases = { extraEquipSlots = ownedSlots },
 		maxExtraEquipSlots = maxSlots,
 	}
@@ -3579,11 +3604,24 @@ end
 function UIController:_purchaseShopItem(itemId)
 	local item = ShopData.Items[itemId]
 	if not item or self._shopPurchaseInFlight then return end
+	local isPotion = item.itemType == "potion"
+	if isPotion and (self._shopState.contractVersion ~= ShopData.ContractVersion
+		or self._shopState.purchaseMode ~= ShopData.PurchaseMode) then
+		self:_setShopFeedback("Potion inventory is still syncing.", COLORS.ButtonRed)
+		return
+	end
 	if self._diamonds < item.cost then
 		self:_setShopFeedback("You need more diamonds!", COLORS.ButtonRed)
 		return
 	end
-	if item.permanent then
+	if isPotion then
+		local maximum = tonumber(self._shopState.maxPotionInventory) or ShopData.MaxPotionInventory or 999
+		local owned = safePotionCount(self._shopState.potionInventory[itemId], maximum)
+		if owned >= maximum then
+			self:_setShopFeedback(item.displayName .. " inventory is full!", COLORS.ButtonRed)
+			return
+		end
+	elseif item.permanent then
 		local owned = tonumber(self._shopState.purchases.extraEquipSlots) or 0
 		if owned >= (tonumber(self._shopState.maxExtraEquipSlots) or item.maxPurchases or 5) then
 			self:_setShopFeedback("Extra Equip Slot is already maxed!", COLORS.ButtonRed)
@@ -3597,11 +3635,21 @@ function UIController:_purchaseShopItem(itemId)
 		return
 	end
 
+	local request = itemId
+	if isPotion then
+		request = {
+			contractVersion = ShopData.ContractVersion,
+			action = "purchasePotion",
+			itemId = itemId,
+			quantity = 1,
+		}
+	end
+
 	self._shopPurchaseInFlight = itemId
 	self:_updateShopCardStates()
 	task.spawn(function()
 		local ok, success, err, state = pcall(function()
-			return remote:InvokeServer(itemId)
+			return remote:InvokeServer(request)
 		end)
 		self._shopPurchaseInFlight = nil
 		if not ok then
@@ -3610,12 +3658,15 @@ function UIController:_purchaseShopItem(itemId)
 			if state then
 				self:_applyShopState(state)
 			else
-				-- Stay display-only: fetch the committed value instead of inventing
-				-- an optimistic permanent slot on the client.
+				-- Stay display-only: fetch committed values instead of inventing
+				-- inventory or permanent-slot changes on the client.
 				self:_refreshShopStateFromServer()
 			end
 			self:_refreshCapacityUI()
-			self:_setShopFeedback(item.displayName .. " purchased!", Color3.fromRGB(35, 160, 62))
+			local successMessage = isPotion
+				and (item.displayName .. " stored in your inventory!")
+				or (item.displayName .. " purchased!")
+			self:_setShopFeedback(successMessage, Color3.fromRGB(35, 160, 62))
 		else
 			self:_setShopFeedback(tostring(err or "Purchase failed."), COLORS.ButtonRed)
 		end
@@ -4617,10 +4668,6 @@ function UIController:cleanup()
 	self._hatchPurchaseRefreshButton = nil
 	self._hatchPurchaseOptionButtons = {}
 	self._activeHatchPurchaseEggType = nil
-	if self._shopTimerConnection then
-		self._shopTimerConnection:Disconnect()
-		self._shopTimerConnection = nil
-	end
 	for _, connection in ipairs(self._shopConnections) do
 		connection:Disconnect()
 	end

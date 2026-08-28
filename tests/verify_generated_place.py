@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-12 runtime source."""
+"""Verify that the generated Battle Pets place embeds every QOF-13 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -78,8 +78,45 @@ def main() -> None:
         b"MovementService.bindPlayer(player)",
         b"PickupService.onPlayerRemoving(player)",
         b"DataService.bindToClose(PickupService.settleAllPlayers)",
+        b"request.contractVersion == 2",
+        b"ShopService.onPlayerRemoving(player)",
     ):
-        assert required in main_source, f"missing server lifecycle wiring: {required!r}"
+        assert required in main_source, f"missing server lifecycle or purchase wiring: {required!r}"
+
+    purchase_handler = main_source.split(
+        b'getRemoteFunction("PurchaseShopItem").OnServerInvoke', 1
+    )[1].split(b"-- GetShopBuffs", 1)[0]
+    assert b"isValidShopPurchaseRequest(request)" in purchase_handler
+    assert b"MovementService.refresh" not in purchase_handler, (
+        "inventory-only potion purchases must not refresh movement effects"
+    )
+
+    shop_service_source = (
+        ROOT / "src/ServerScriptService/Services/ShopService.lua"
+    ).read_bytes()
+    for required in (
+        b'local PURCHASE_MODE = "inventoryOnly"',
+        b"_purchaseLocks",
+        b"beginSpendTransaction",
+        b"rollbackSpendTransaction",
+        b"commitSpendTransaction",
+        b"data.potionInventory[itemId] = count + POTION_QUANTITY",
+    ):
+        assert required in shop_service_source, f"missing QOF-13 shop authority: {required!r}"
+
+    shop_data_source = (ROOT / "src/ReplicatedStorage/Shared/ShopData.lua").read_bytes()
+    assert b'"LuckPotion"' in shop_data_source and b'"ShinyPotion"' in shop_data_source
+    assert b"LuckyPotion =" not in shop_data_source and b"PowerPotion =" not in shop_data_source
+
+    ui_source = (
+        ROOT / "src/StarterPlayer/StarterPlayerScripts/UIController.lua"
+    ).read_bytes()
+    for required in (
+        b"contractVersion = ShopData.ContractVersion",
+        b"purchaseMode == ShopData.PurchaseMode",
+        b'card.status.Text = "OWNED "',
+    ):
+        assert required in ui_source, f"missing QOF-13 inventory UI contract: {required!r}"
 
     root = ET.parse(PLACE).getroot()
     scripts: dict[str, list[str]] = {}
@@ -138,7 +175,7 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-12 runtime source exactly once")
+    print("PASS: generated place embeds every QOF-13 runtime source exactly once")
     print("PASS: all 66 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 

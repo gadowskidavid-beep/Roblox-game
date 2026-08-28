@@ -111,3 +111,45 @@ describe("CurrencyService QOF-07 transactions", function()
 		expect(profile):toEqual({ coins = 900, diamonds = 450 })
 	end)
 end)
+
+
+describe("CurrencyService composite spend transactions", function()
+	it("rolls back silently against the captured profile without a second lookup", function()
+		resetState()
+		local capturedProfile = profile
+		local transaction = CurrencyService.beginSpendTransaction(player, "diamonds", 125)
+		expect(type(transaction)):toBe("table")
+		expect(capturedProfile.diamonds):toBe(375)
+		expect(#updates):toBe(0)
+
+		-- Simulate DataService becoming unavailable after the debit. Rollback must
+		-- use the transaction's validated profile rather than reacquiring it.
+		profile = nil
+		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeTrue()
+		expect(capturedProfile.diamonds):toBe(500)
+		expect(#updates):toBe(0)
+		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
+		profile = capturedProfile
+	end)
+
+	it("publishes exactly one final balance only when a pending debit commits", function()
+		resetState()
+		local transaction = CurrencyService.beginSpendTransaction(player, "coins", 200)
+		expect(type(transaction)):toBe("table")
+		expect(profile.coins):toBe(800)
+		expect(#updates):toBe(0)
+		expect(CurrencyService.commitSpendTransaction(transaction)):toBeTrue()
+		expect(updates):toEqual({ { coins = 800, diamonds = 500 } })
+		expect(CurrencyService.commitSpendTransaction(transaction)):toBeFalse()
+		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
+	end)
+
+	it("rejects invalid or unaffordable pending debits without mutation", function()
+		resetState()
+		expect(CurrencyService.beginSpendTransaction(player, "diamonds", 501)):toBeNil()
+		expect(CurrencyService.beginSpendTransaction(player, "gems", 1)):toBeNil()
+		expect(CurrencyService.beginSpendTransaction(player, "diamonds", 1.5)):toBeNil()
+		expect(profile):toEqual({ coins = 1000, diamonds = 500 })
+		expect(#updates):toBe(0)
+	end)
+end)

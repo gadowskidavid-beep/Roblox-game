@@ -66,7 +66,7 @@ function player:IsA(className)
 end
 
 describe("DataService QOF-09 client projection", function()
-	it("projects hatchPreferences as a deep copy without private session state", function()
+	it("projects hatch and potion state as deep copies without private session state", function()
 		local profile = {
 			schemaVersion = 7,
 			coins = 10,
@@ -85,18 +85,27 @@ describe("DataService QOF-09 client projection", function()
 			masteryBuffs = {},
 			discoveredPets = {},
 			shopPurchases = {},
-			potionInventory = {},
-			activeBuffs = {},
-			potionUpgrades = {},
+			potionInventory = { LuckPotion = 4 },
+			activeBuffs = { luck = 1500 },
+			potionUpgrades = { slots = 3, durationLevel = 1, autoDrink = false },
 			_session = { id = "private" },
 		}
 		DataService._cache[player.UserId] = profile
 
 		local projected = DataService.getClientData(player)
 		expect(projected.hatchPreferences):toEqual({ preferredBatchCount = 5 })
+		expect(projected.potionInventory):toEqual({ LuckPotion = 4 })
+		expect(projected.activeBuffs):toEqual({ luck = 1500 })
+		expect(projected.potionUpgrades):toEqual({ slots = 3, durationLevel = 1, autoDrink = false })
 		expect(projected._session):toBeNil()
 		projected.hatchPreferences.preferredBatchCount = 1
+		projected.potionInventory.LuckPotion = 1
+		projected.activeBuffs.luck = 1
+		projected.potionUpgrades.slots = 5
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+		expect(profile.potionInventory.LuckPotion):toBe(4)
+		expect(profile.activeBuffs.luck):toBe(1500)
+		expect(profile.potionUpgrades.slots):toBe(3)
 	end)
 end)
 

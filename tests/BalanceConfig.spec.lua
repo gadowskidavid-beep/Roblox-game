@@ -95,10 +95,27 @@ describe("BalanceConfig validation", function()
 		})
 	end)
 
-	it("defines bounded dormant potion persistence", function()
+	it("defines the active QOF-13 purchase catalog while consumption stays dormant", function()
+		expect(BalanceConfig.Potions.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Potions.ConsumeRuntimeEnabled):toBeFalse()
 		expect(BalanceConfig.Potions.Persistence.MaxInventoryPerPotion):toBe(999)
 		expect(BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds):toBe(2592000)
 		expect(BalanceConfig.Potions.Upgrades.MaxShinyCharges):toBe(30)
+
+		local costs = {}
+		for itemId, potion in pairs(BalanceConfig.Potions.Catalog) do
+			expect(potion.cost.currency):toBe("diamonds")
+			costs[itemId] = potion.cost.amount
+		end
+		expect(costs):toEqual({
+			LuckPotion = 100,
+			MegaLuckPotion = 350,
+			SpeedPotion = 50,
+			CoinPotion = 125,
+			ShinyPotion = 1000,
+		})
+		expect(BalanceConfig.Potions.Catalog.LuckyPotion):toBeNil()
+		expect(BalanceConfig.Potions.Catalog.PowerPotion):toBeNil()
 	end)
 
 	it("binds save-compatible QOF-07 IDs to canonical costs and highest-stage effects", function()
@@ -122,7 +139,7 @@ describe("BalanceConfig validation", function()
 		end
 	end)
 
-	it("activates QOF-12 movement and collection while future systems remain dormant", function()
+	it("activates QOF-13 purchases while consume and unrelated future systems remain dormant", function()
 		expect(BalanceConfig.Variants.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.RuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Hatch.EggQualityRuntimeEnabled):toBeTrue()
@@ -139,7 +156,8 @@ describe("BalanceConfig validation", function()
 		expect(BalanceConfig.CoreUpgrades.MagnetRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.CoreUpgrades.DoubleLuckRuntimeEnabled):toBeTrue()
 		expect(BalanceConfig.Shop.AutoHatchRuntimeEnabled):toBeFalse()
-		expect(BalanceConfig.Potions.RuntimeEnabled):toBeFalse()
+		expect(BalanceConfig.Potions.RuntimeEnabled):toBeTrue()
+		expect(BalanceConfig.Potions.ConsumeRuntimeEnabled):toBeFalse()
 		expect(BalanceConfig.Enchanting.RuntimeEnabled):toBeFalse()
 	end)
 

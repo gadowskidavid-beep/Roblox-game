@@ -59,6 +59,29 @@ local function isValidIdentifier(value)
 	return type(value) == "string" and #value > 0 and #value <= 64
 end
 
+local function isValidShopPurchaseRequest(request)
+	if type(request) == "string" then
+		-- ExtraEquipSlot is the sole legacy purchase contract. AutoHatch is
+		-- admitted only so ShopService can return its specific dormant gate.
+		return request == "ExtraEquipSlot" or request == "AutoHatch"
+	end
+	if type(request) ~= "table" then
+		return false
+	end
+	local fieldCount = 0
+	for key in pairs(request) do
+		if key ~= "contractVersion" and key ~= "action" and key ~= "itemId" and key ~= "quantity" then
+			return false
+		end
+		fieldCount = fieldCount + 1
+	end
+	return fieldCount == 4
+		and request.contractVersion == 2
+		and request.action == "purchasePotion"
+		and isValidIdentifier(request.itemId)
+		and request.quantity == 1
+end
+
 ----------------------------------------------
 -- Create Remotes Folder in ReplicatedStorage
 ----------------------------------------------
@@ -558,23 +581,19 @@ getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	return data.discoveredPets or {}
 end
 
--- PurchaseShopItem (2 second cooldown)
-getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
+-- PurchaseShopItem accepts the exact QOF-13 potion DTO plus the one retained
+-- ExtraEquipSlot string contract. Validate bounded input before consuming quota.
+getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, request)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not isValidShopPurchaseRequest(request) then
+		return false, "Invalid purchase request"
 	end
 	if not canCall(player, "PurchaseShopItem", 2) then
 		return false, "Please wait before purchasing again"
 	end
-	if type(itemId) ~= "string" then
-		return false, "Invalid item ID parameter"
-	end
-	local success, msg, state = ShopService.purchaseItem(player, itemId)
-	-- Refresh every composed source after a timed shop mutation.
-	if success then
-		MovementService.refresh(player)
-	end
-	return success, msg, state
+	return ShopService.purchaseItem(player, request)
 end
 
 -- GetShopBuffs is a legacy remote name; it now returns the full shop state.
@@ -736,8 +755,8 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
-	-- Cleanup ShopService player state (active buffs)
-	ShopService._activeBuffs[player.UserId] = nil
+	-- Cleanup ShopService transient locks and legacy buff compatibility state.
+	ShopService.onPlayerRemoving(player)
 
 	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
 	ZoneService.onPlayerRemoving(player)

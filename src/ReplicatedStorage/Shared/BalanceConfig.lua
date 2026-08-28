@@ -435,7 +435,10 @@ local BalanceConfig = {
 	},
 
 	Potions = {
-		RuntimeEnabled = false,
+		-- QOF-13 activates purchases into persistent inventory only. Consumption,
+		-- buff timers, charges, and potion upgrades remain owned by QOF-14.
+		RuntimeEnabled = true,
+		ConsumeRuntimeEnabled = false,
 		Persistence = {
 			MaxInventoryPerPotion = 999,
 			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
@@ -636,12 +639,16 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
 		Machines = BalanceConfig.Machines,
-		Potions = BalanceConfig.Potions,
 		Enchanting = BalanceConfig.Enchanting,
 	}
 	for name, section in pairs(futureSections) do
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
+	assert(BalanceConfig.Potions.RuntimeEnabled == true, "Potion inventory purchases must be enabled in QOF-13")
+	assert(
+		BalanceConfig.Potions.ConsumeRuntimeEnabled == false,
+		"Potion consumption must remain disabled until QOF-14"
+	)
 	local core = BalanceConfig.CoreUpgrades
 	assert(core.RuntimeEnabled == true, "Core upgrades must be enabled")
 	assert(core.StorageRuntimeEnabled == true, "Storage upgrades must be enabled in QOF-10")
@@ -924,8 +931,25 @@ function BalanceConfig.Validate()
 		"Shiny charge cap is invalid"
 	)
 
+	local expectedPotions = {
+		LuckPotion = 100,
+		MegaLuckPotion = 350,
+		SpeedPotion = 50,
+		CoinPotion = 125,
+		ShinyPotion = 1000,
+	}
+	local potionCount = 0
 	for potionId, potion in pairs(BalanceConfig.Potions.Catalog) do
+		assert(type(potionId) == "string" and #potionId > 0 and #potionId <= 64, "potion ID is invalid")
+		assert(expectedPotions[potionId] ~= nil, "unknown canonical potion ID: " .. potionId)
 		validateCost(potion.cost, potionId)
+		assert(potion.cost.currency == "diamonds", potionId .. " must cost diamonds")
+		assert(
+			potion.cost.amount == expectedPotions[potionId]
+				and potion.cost.amount > 0
+				and potion.cost.amount % 1 == 0,
+			potionId .. " has a non-canonical cost"
+		)
 		assert(isFiniteNumber(potion.multiplier) and potion.multiplier > 0, potionId .. " multiplier is invalid")
 		if potion.durationSeconds ~= nil then
 			assert(isFiniteNumber(potion.durationSeconds) and potion.durationSeconds > 0, potionId .. " duration is invalid")
@@ -933,7 +957,9 @@ function BalanceConfig.Validate()
 		if potion.hatchCharges ~= nil then
 			assert(potion.hatchCharges > 0 and potion.hatchCharges % 1 == 0, potionId .. " charges are invalid")
 		end
+		potionCount = potionCount + 1
 	end
+	assert(potionCount == 5, "potion catalog must contain exactly five canonical items")
 
 	validateCost(BalanceConfig.Enchanting.RollCost, "Enchanting")
 	local enchantWeight = 0

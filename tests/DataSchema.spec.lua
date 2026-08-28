@@ -75,7 +75,7 @@ describe("DataSchema.getDefaultData", function()
 		expect(data.pets[1].shiny):toBeFalse()
 	end)
 
-	it("creates empty future potion state with bounded defaults", function()
+	it("creates empty persistent potion inventory while consume state remains dormant", function()
 		local data = DataSchema.getDefaultData()
 		expect(data.potionInventory):toEqual({})
 		expect(data.activeBuffs):toEqual({})
@@ -388,6 +388,31 @@ describe("V6 potion persistence normalization", function()
 		expect(data.potionInventory):toEqual({})
 		expect(data.activeBuffs):toEqual({})
 		expect(data.potionUpgrades):toEqual({ slots = 2, durationLevel = 0, autoDrink = true })
+	end)
+
+	it("preserves exactly 999 and clamps 1000 independently per potion", function()
+		local atCap = DataSchema.migrate({
+			potionInventory = { LuckPotion = 999, SpeedPotion = 1000 },
+		}, 1000)
+		expect(atCap.potionInventory):toEqual({ LuckPotion = 999, SpeedPotion = 999 })
+	end)
+
+	it("round-trips canonical inventory through migration and persistence at schema V7", function()
+		local migrated = DataSchema.migrate({
+			schemaVersion = 7,
+			potionInventory = {
+				LuckPotion = 7,
+				MegaLuckPotion = 3,
+				LuckyPotion = 9,
+				PowerPotion = 9,
+			},
+		}, 1000)
+		local snapshot = DataSchema.cloneForPersistence(migrated, 1000)
+		local reloaded = DataSchema.migrate(snapshot, 1000)
+		expect(reloaded.schemaVersion):toBe(7)
+		expect(reloaded.potionInventory):toEqual({ LuckPotion = 7, MegaLuckPotion = 3 })
+		snapshot.potionInventory.LuckPotion = 1
+		expect(migrated.potionInventory.LuckPotion):toBe(7)
 	end)
 end)
 
