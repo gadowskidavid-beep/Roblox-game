@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX0000007C">
+	<Item class="ServerScriptService" referent="RBX00000080">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX0000007B">
+			<Item class="Script" referent="RBX0000007F">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -730,6 +730,7 @@ local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
 local MachineService = require(script.Parent.Services.MachineService)
+local EnchantingService = require(script.Parent.Services.EnchantingService)
 local MachineAuthorityBootstrap = require(script.Parent.Services.MachineAuthorityBootstrap)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
@@ -900,6 +901,8 @@ local remoteFunctions = {
 	-- Rolling-client compatibility only. Its handler is permanently fail-closed.
 	"ConvertToGoldenPet",
 	"UseMachine",
+	"GetEnchantingState",
+	"RollPetEnchant",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
@@ -947,6 +950,7 @@ PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
 MachineService.init(DataService, CurrencyService, PetService)
 MachineService.setQuestService(QuestService)
+EnchantingService.init(DataService, CurrencyService, PetService)
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
 EggService.setPotionService(PotionService)
@@ -988,12 +992,26 @@ CampaignService.init(DataService, CurrencyService, PetService)
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Settle transient owners before shutdown snapshots cached profiles. Auto-Hatch
--- cancellation runs before Egg/Data cleanup and never consumes remaining access.
-DataService.bindToClose(function()
-	AutoHatchService.prepareForShutdown()
-	return PickupService.settleAllPlayers()
-end)
+-- Shutdown admission gates are global, but owner settlement and releasing saves
+-- are isolated per cached profile (including departed retained owners).
+DataService.bindToClose({
+	beginShutdown = function()
+		AutoHatchService.prepareForShutdown()
+		EggService.beginShutdown()
+		MachineService.beginShutdown()
+		EnchantingService.beginShutdown()
+		return true
+	end,
+	settlePlayer = function(player)
+		local eggSettled = EggService.cleanup(player)
+		local machinesSettled = MachineService.cleanup(player)
+		local enchantingSettled = EnchantingService.cleanup(player)
+		local pickupsSettled = PickupService.settlePlayer(player)
+		local inventoryIdle = PetService.isInventoryMutationIdle(player)
+		return eggSettled and machinesSettled and enchantingSettled
+			and pickupsSettled and inventoryIdle
+	end,
+})
 
 -- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
 MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
@@ -1320,6 +1338,48 @@ getRemoteFunction("UseMachine").OnServerInvoke = function(player, machineId, act
 	return MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
 end
 
+local function enchantingPetIdForState(request)
+	if type(request) ~= "table" or getmetatable(request) ~= nil then
+		return ""
+	end
+	local petInstanceId = rawget(request, "petInstanceId")
+	return type(petInstanceId) == "string" and petInstanceId or ""
+end
+
+-- QOF-19 GET_STATE admits only the exact Contract V1 request in EnchantingService.
+getRemoteFunction("GetEnchantingState").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then
+		return false, "INVALID_REQUEST", nil
+	end
+	local cooldownAllowed = canCall(player, "GetEnchantingState", 0.15)
+	local burstAllowed = canCallBurst(player, "GetEnchantingState", 12, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return false, "RATE_LIMITED", EnchantingService.getState(
+			player,
+			enchantingPetIdForState(request)
+		)
+	end
+	return EnchantingService.getStateFromRequest(player, request)
+end
+
+-- QOF-19 ROLL is the sole enchanting mutation entry point. Request shape,
+-- optimistic revision, pet ownership, exact debit, RNG, and rollback remain in
+-- EnchantingService; Main owns only player identity and abuse controls.
+getRemoteFunction("RollPetEnchant").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then
+		return false, "INVALID_REQUEST", nil
+	end
+	local cooldownAllowed = canCall(player, "RollPetEnchant", 0.35)
+	local burstAllowed = canCallBurst(player, "RollPetEnchant", 8, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return false, "RATE_LIMITED", EnchantingService.getState(
+			player,
+			enchantingPetIdForState(request)
+		)
+	end
+	return EnchantingService.roll(player, request)
+end
+
 -- StartCampaignLevel (2 second cooldown)
 getRemoteFunction("StartCampaignLevel").OnServerInvoke = function(player, levelNum)
 	if not player or not player:IsA("Player") then
@@ -1619,34 +1679,35 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup QOF-12 movement listeners before the profile is released.
 	MovementService.unbindPlayer(player)
 
-	-- Settle transient owner-only pickups before the profile is saved/released.
-	if not PickupService.onPlayerRemoving(player) then
-		warn("[Battle Pets] Pending pickup settlement did not complete before player data cleanup for " .. player.Name)
-	end
-
-	-- Invalidate QOF-18 target/generation before Egg locks or profile cleanup.
-	-- The absolute paid expiry remains in the cached profile for the final save.
+	-- Invalidate QOF-18 target/generation before any inventory-owner retry.
+	-- The absolute paid expiry remains in the retained cached profile.
 	AutoHatchService.onPlayerRemoving(player)
 
-	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
-	EggService.onPlayerRemoving(player)
-
-	-- Cleanup QOF-16 machine transaction locks.
-	MachineService.cleanup(player)
-
-	-- Cleanup QOF-14 potion locks/reservations before profile persistence.
-	PotionService.onPlayerRemoving(player)
-
-	-- Cleanup ShopService transient locks and legacy buff compatibility state.
-	ShopService.onPlayerRemoving(player)
-
-	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
-	ZoneService.onPlayerRemoving(player)
-
-	-- Cleanup campaign battle if any
-	CampaignService.onPlayerRemoving(player)
-	-- Save and cleanup player data
-	DataService.onPlayerRemoving(player)
+	local postSettlementCleanupDone = false
+	local released = DataService.onPlayerRemoving(player, function()
+		-- Attempt every independent owner on every pass. One unresolved profile
+		-- never prevents another user from settling or saving.
+		local pickupsSettled = PickupService.settlePlayer(player)
+		local eggSettled = EggService.onPlayerRemoving(player)
+		local machineSettled = MachineService.onPlayerRemoving(player)
+		local enchantingSettled = EnchantingService.onPlayerRemoving(player)
+		local inventoryIdle = PetService.isInventoryMutationIdle(player)
+		if not (pickupsSettled and eggSettled and machineSettled
+			and enchantingSettled and inventoryIdle) then
+			return false
+		end
+		if not postSettlementCleanupDone then
+			PotionService.onPlayerRemoving(player)
+			ShopService.onPlayerRemoving(player)
+			ZoneService.onPlayerRemoving(player)
+			CampaignService.onPlayerRemoving(player)
+			postSettlementCleanupDone = true
+		end
+		return true
+	end)
+	if not released then
+		warn("[Battle Pets] Profile settlement queued for retry; cache retained for " .. player.Name)
+	end
 end)
 
 -- Handle players who joined before script loaded
@@ -1754,11 +1815,11 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX0000007A">
+			<Item class="Folder" referent="RBX0000007E">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000068">
+				<Item class="ModuleScript" referent="RBX0000006B">
 					<Properties>
 						<string name="Name">DataSchema</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -1771,10 +1832,11 @@ print("[Battle Pets] Server initialized successfully!")
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
+local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 9
+DataSchema.VERSION = 10
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -1940,6 +2002,14 @@ local function normalizePets(data)
 
 			pet.variant = variant
 			pet.shiny = shiny
+			-- V10 persists only one canonical enchant ID. All derived or legacy
+			-- enchant payloads are untrusted and are removed on every normalize.
+			pet.enchantId = PetEnchantMath.normalizeEnchantId(pet.enchantId)
+			pet.enchant = nil
+			pet.enchantData = nil
+			pet.enchants = nil
+			pet.enchantStat = nil
+			pet.enchantMultiplier = nil
 			-- Keep the current visual/rolling-version compatibility mirror. The
 			-- base variant remains authoritative in V6.
 			pet.golden = variant == "Golden"
@@ -2280,15 +2350,15 @@ return DataSchema
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000069">
+				<Item class="ModuleScript" referent="RBX0000006C">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	DataService.lua - Conflict-safe player data persistence
-	Uses versioned migrations, atomic session locks, retries, autosave heartbeats,
-	and parallel shutdown saves. Studio falls back to memory-only data when API
-	access is unavailable; production never overwrites a profile after load failure.
+	DataService.lua - Conflict-safe player data persistence.
+	Profiles remain bound to the exact Player instance that acquired them. Leave
+	settlement is queued and retried before one releasing save; shutdown retries
+	owners per profile so one unresolved user never suppresses unrelated saves.
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
@@ -2310,7 +2380,16 @@ local SESSION_ID = game.JobId ~= "" and game.JobId or ("studio_" .. HttpService:
 DataService._cache = {}
 DataService._canSave = {}
 DataService._saving = {}
+DataService._profilePlayers = {}
+DataService._pendingProfiles = {}
+DataService._departureWorkers = {}
+DataService._mutationAdmissionClosed = {}
 DataService._useMemoryOnly = false
+DataService._departureRetryAttempts = 20
+DataService._rejoinRetryAttempts = 20
+DataService._shutdownMaxPasses = nil -- test-only seam; production retries to the deadline
+DataService._shutdownTimeout = SHUTDOWN_TIMEOUT
+DataService._clock = os.clock -- deterministic test seam for the shared shutdown deadline
 
 local dataStore = nil
 local dsSuccess, dsResult = pcall(function()
@@ -2337,12 +2416,8 @@ local function newSessionMetadata()
 end
 
 local function isForeignActiveSession(session)
-	if type(session) ~= "table" or type(session.id) ~= "string" then
-		return false
-	end
-	if session.id == SESSION_ID then
-		return false
-	end
+	if type(session) ~= "table" or type(session.id) ~= "string" then return false end
+	if session.id == SESSION_ID then return false end
 	local updatedAt = type(session.updatedAt) == "number" and session.updatedAt or 0
 	return os.time() - updatedAt < SESSION_LOCK_TIMEOUT
 end
@@ -2361,40 +2436,63 @@ local function waitForCurrentSave(userId)
 	return not DataService._saving[userId]
 end
 
+local function clearProfile(userId)
+	DataService._cache[userId] = nil
+	DataService._canSave[userId] = nil
+	DataService._saving[userId] = nil
+	DataService._profilePlayers[userId] = nil
+	DataService._pendingProfiles[userId] = nil
+	DataService._departureWorkers[userId] = nil
+	DataService._mutationAdmissionClosed[userId] = nil
+end
+
 local function useStudioFallback(player)
-	if not RunService:IsStudio() then
-		return nil
-	end
+	if not RunService:IsStudio() then return nil end
 	DataService._useMemoryOnly = true
 	local data = DataSchema.getDefaultData()
 	DataService._cache[player.UserId] = data
 	DataService._canSave[player.UserId] = false
+	DataService._profilePlayers[player.UserId] = player
 	warn("[DataService] Studio API access unavailable; switched to memory-only mode")
 	return data
 end
 
--- Atomically loads and locks a profile. A live lock from another server is never overwritten.
+-- Atomically loads and locks a profile. A retained cache is never transferred to
+-- a different Player instance: its pending old owner gets bounded retries first.
 function DataService.loadPlayerData(player)
-	if not player or not player:IsA("Player") then
-		return nil, "Invalid player"
-	end
-
-	if DataService._cache[player.UserId] then
-		return DataService._cache[player.UserId]
+	if not player or not player:IsA("Player") then return nil, "Invalid player" end
+	local userId = player.UserId
+	local cached = DataService._cache[userId]
+	if cached then
+		local owner = DataService._profilePlayers[userId]
+		if (owner == nil or owner == player) and DataService._pendingProfiles[userId] == nil then
+			DataService._profilePlayers[userId] = player
+			return cached
+		end
+		for _ = 1, DataService._rejoinRetryAttempts do
+			if not DataService._cache[userId] then break end
+			if DataService._pendingProfiles[userId] then
+				DataService.processPendingProfile(userId)
+			end
+			if DataService._cache[userId] then task.wait(0.1) end
+		end
+		if DataService._cache[userId] then
+			return nil, "Your previous session is still settling safely. Please rejoin shortly."
+		end
 	end
 
 	if DataService._useMemoryOnly then
 		local data = DataSchema.getDefaultData()
-		DataService._cache[player.UserId] = data
-		DataService._canSave[player.UserId] = false
+		DataService._cache[userId] = data
+		DataService._canSave[userId] = false
+		DataService._profilePlayers[userId] = player
 		return data
 	end
 
-	local key = profileKey(player.UserId)
+	local key = profileKey(userId)
 	local loadedData = nil
 	local lockConflict = nil
 	local lastError = nil
-
 	for attempt = 1, MAX_RETRIES do
 		local success, result = pcall(function()
 			return dataStore:UpdateAsync(key, function(storedData)
@@ -2403,68 +2501,46 @@ function DataService.loadPlayerData(player)
 					lockConflict = existingSession
 					return nil
 				end
-
 				local migrated = DataSchema.migrate(storedData)
 				migrated._session = newSessionMetadata()
 				return migrated
 			end)
 		end)
-
-		if success and type(result) == "table" and result._session and result._session.id == SESSION_ID then
+		if success and type(result) == "table" and result._session
+			and result._session.id == SESSION_ID then
 			loadedData = result
 			break
 		end
-		if lockConflict then
-			break
-		end
+		if lockConflict then break end
 		lastError = result
-		if attempt < MAX_RETRIES then
-			task.wait(2 ^ attempt)
-		end
+		if attempt < MAX_RETRIES then task.wait(2 ^ attempt) end
 	end
 
 	if loadedData then
-		DataService._cache[player.UserId] = loadedData
-		DataService._canSave[player.UserId] = true
+		DataService._cache[userId] = loadedData
+		DataService._canSave[userId] = true
+		DataService._profilePlayers[userId] = player
 		return loadedData
 	end
-
-	DataService._canSave[player.UserId] = false
+	DataService._canSave[userId] = false
 	if lockConflict then
-		local message = "Your data is still active on another server. Please wait a moment and rejoin."
 		warn("[DataService] Refused concurrent session for " .. player.Name)
-		return nil, message
+		return nil, "Your data is still active on another server. Please wait a moment and rejoin."
 	end
-
 	local fallback = useStudioFallback(player)
-	if fallback then
-		return fallback
-	end
-
+	if fallback then return fallback end
 	warn("[DataService] Failed to load " .. player.Name .. ": " .. tostring(lastError))
 	return nil, "Your data could not be loaded safely. Please rejoin later."
 end
 
 -- Saves only while this server still owns the profile lock.
--- releaseLock is used on leave/shutdown so a new server can load immediately.
 function DataService.savePlayerData(player, releaseLock)
-	if not player or not player:IsA("Player") then
-		return false, "Invalid player"
-	end
-	if DataService._useMemoryOnly then
-		return false, "Memory-only mode"
-	end
-	if not DataService._canSave[player.UserId] then
-		return false, "Profile is not saveable"
-	end
-	if not waitForCurrentSave(player.UserId) then
-		return false, "Save already in progress"
-	end
-
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if DataService._useMemoryOnly then return false, "Memory-only mode" end
+	if not DataService._canSave[player.UserId] then return false, "Profile is not saveable" end
+	if not waitForCurrentSave(player.UserId) then return false, "Save already in progress" end
 	local data = DataService._cache[player.UserId]
-	if not data then
-		return false, "No cached data"
-	end
+	if not data then return false, "No cached data" end
 
 	DataService._saving[player.UserId] = true
 	local key = profileKey(player.UserId)
@@ -2472,7 +2548,6 @@ function DataService.savePlayerData(player, releaseLock)
 	local sessionLost = false
 	local lastError = nil
 	local saved = false
-
 	for attempt = 1, MAX_RETRIES do
 		local success, result = pcall(function()
 			return dataStore:UpdateAsync(key, function(storedData)
@@ -2480,34 +2555,20 @@ function DataService.savePlayerData(player, releaseLock)
 					sessionLost = true
 					return nil
 				end
-
-				if releaseLock then
-					snapshot._session = nil
-				else
-					snapshot._session = newSessionMetadata()
-				end
+				if releaseLock then snapshot._session = nil else snapshot._session = newSessionMetadata() end
 				return snapshot
 			end)
 		end)
-
 		if success and not sessionLost and type(result) == "table" then
 			saved = true
-			if not releaseLock then
-				data._session = DataSchema.deepCopy(snapshot._session)
-			end
+			if not releaseLock then data._session = DataSchema.deepCopy(snapshot._session) end
 			break
 		end
-		if sessionLost then
-			break
-		end
+		if sessionLost then break end
 		lastError = result
-		if attempt < MAX_RETRIES then
-			task.wait(2 ^ attempt)
-		end
+		if attempt < MAX_RETRIES then task.wait(2 ^ attempt) end
 	end
-
 	DataService._saving[player.UserId] = nil
-
 	if sessionLost then
 		DataService._canSave[player.UserId] = false
 		warn("[DataService] Session ownership lost for " .. player.Name .. "; refusing stale save")
@@ -2520,19 +2581,37 @@ function DataService.savePlayerData(player, releaseLock)
 	return true
 end
 
+function DataService.closeMutationAdmission(player)
+	if not player or not player:IsA("Player") then return false end
+	local userId = player.UserId
+	local owner = DataService._profilePlayers[userId]
+	if owner ~= nil and owner ~= player then return false end
+	if DataService._cache[userId] == nil then return false end
+	DataService._profilePlayers[userId] = owner or player
+	DataService._mutationAdmissionClosed[userId] = player
+	return true
+end
+
+function DataService.isMutationAdmissionOpen(player)
+	if not player or not player:IsA("Player") then return false end
+	local userId = player.UserId
+	local owner = DataService._profilePlayers[userId]
+	return DataService._cache[userId] ~= nil
+		and (owner == nil or owner == player)
+		and DataService._mutationAdmissionClosed[userId] == nil
+		and DataService._pendingProfiles[userId] == nil
+end
+
 function DataService.getPlayerData(player)
-	if not player or not player:IsA("Player") then
-		return nil
-	end
+	if not player or not player:IsA("Player") then return nil end
+	local owner = DataService._profilePlayers[player.UserId]
+	if owner ~= nil and owner ~= player then return nil end
 	return DataService._cache[player.UserId]
 end
 
 function DataService.getClientData(player)
 	local data = DataService.getPlayerData(player)
-	if not data then
-		return nil
-	end
-
+	if not data then return nil end
 	return {
 		schemaVersion = data.schemaVersion,
 		coins = data.coins,
@@ -2560,23 +2639,92 @@ function DataService.getClientData(player)
 	}
 end
 
-function DataService.onPlayerRemoving(player)
-	DataService.savePlayerData(player, true)
-	DataService._cache[player.UserId] = nil
-	DataService._canSave[player.UserId] = nil
-	DataService._saving[player.UserId] = nil
+local function attemptPendingRecord(record)
+	if record.completed then return true end
+	if record.settling then return false end
+	record.settling = true
+	if not record.settled then
+		local ok, settled = pcall(record.settle, record.player)
+		if not ok or settled ~= true then
+			record.attempts = record.attempts + 1
+			record.lastError = ok and "Settlement unresolved" or tostring(settled)
+			record.settling = false
+			return false
+		end
+		record.settled = true
+	end
+
+	local saved = true
+	local saveError = nil
+	if not DataService._useMemoryOnly then
+		saved, saveError = DataService.savePlayerData(record.player, true)
+	end
+	if saved then
+		record.completed = true
+		record.settling = false
+		clearProfile(record.userId)
+		return true
+	end
+	record.attempts = record.attempts + 1
+	record.lastError = saveError
+	record.settling = false
+	return false
+end
+
+function DataService.processPendingProfile(userId)
+	local record = DataService._pendingProfiles[userId]
+	if not record then return DataService._cache[userId] == nil end
+	return attemptPendingRecord(record)
+end
+
+local function scheduleDepartureRetries(userId)
+	if DataService._departureWorkers[userId] then return end
+	DataService._departureWorkers[userId] = true
+	task.spawn(function()
+		for _ = 1, DataService._departureRetryAttempts do
+			if not DataService._pendingProfiles[userId] then break end
+			task.wait(0.25)
+			if DataService.processPendingProfile(userId) then break end
+		end
+		DataService._departureWorkers[userId] = nil
+	end)
+end
+
+-- Registers one profile owner. Settlement and the releasing save are retried;
+-- cache/Player identity remain held until both have succeeded exactly once.
+function DataService.onPlayerRemoving(player, settleCallback)
+	if not player or not player:IsA("Player") then return false end
+	local userId = player.UserId
+	if not DataService.closeMutationAdmission(player) then return false end
+	local existing = DataService._pendingProfiles[userId]
+	if existing then
+		if existing.player ~= player then return false end
+		return DataService.processPendingProfile(userId)
+	end
+	DataService._profilePlayers[userId] = DataService._profilePlayers[userId] or player
+	DataService._pendingProfiles[userId] = {
+		userId = userId,
+		player = player,
+		settle = type(settleCallback) == "function" and settleCallback or function() return true end,
+		settled = false,
+		settling = false,
+		completed = false,
+		attempts = 0,
+	}
+	local completed = DataService.processPendingProfile(userId)
+	if not completed then scheduleDepartureRetries(userId) end
+	return completed
 end
 
 function DataService.startAutoSave()
-	if DataService._useMemoryOnly then
-		return
-	end
-
+	if DataService._useMemoryOnly then return end
 	task.spawn(function()
 		while true do
 			task.wait(AUTOSAVE_INTERVAL)
 			for _, player in ipairs(Players:GetPlayers()) do
-				if DataService._cache[player.UserId] and not DataService._saving[player.UserId] then
+				if DataService._cache[player.UserId]
+					and not DataService._pendingProfiles[player.UserId]
+					and not DataService._saving[player.UserId] then
 					task.spawn(DataService.savePlayerData, player, false)
 				end
 			end
@@ -2584,35 +2732,79 @@ function DataService.startAutoSave()
 	end)
 end
 
-function DataService.bindToClose(beforeFinalSave)
-	if DataService._useMemoryOnly then
-		return
-	end
-
+-- lifecycle may be a compatibility function(player), or a table containing
+-- beginShutdown() and settlePlayer(player). Each cached profile (including a
+-- departed retained owner) is retried independently until the shared deadline.
+function DataService.bindToClose(lifecycle)
+	if DataService._useMemoryOnly then return end
 	game:BindToClose(function()
-		-- Transient economy owners must commit into cached profiles before any
-		-- final save snapshots or releases those profiles.
-		if type(beforeFinalSave) == "function" then
-			local prepared, prepareResult = pcall(beforeFinalSave)
-			if not prepared or prepareResult == false then
-				warn("[DataService] Pre-save settlement did not complete for every player")
+		-- Close the central mutation boundary for every profile before any owner is
+		-- observed as settled or any releasing snapshot can be taken.
+		for userId in pairs(DataService._cache) do
+			local profilePlayer = DataService._profilePlayers[userId]
+			if not profilePlayer then
+				for _, candidate in ipairs(Players:GetPlayers()) do
+					if candidate.UserId == userId then profilePlayer = candidate break end
+				end
+			end
+			if profilePlayer then DataService.closeMutationAdmission(profilePlayer) end
+		end
+
+		local beginShutdown = type(lifecycle) == "table" and lifecycle.beginShutdown or nil
+		local settlePlayer = type(lifecycle) == "table" and lifecycle.settlePlayer
+			or (type(lifecycle) == "function" and lifecycle or function() return true end)
+		if type(beginShutdown) == "function" then
+			local ok, result = pcall(beginShutdown)
+			if not ok or result == false then
+				warn("[DataService] Shutdown admission gate could not be confirmed; profiles remain fail-closed")
+				return
 			end
 		end
 
-		local pending = 0
-		for _, player in ipairs(Players:GetPlayers()) do
-			if DataService._cache[player.UserId] then
-				pending = pending + 1
-				task.spawn(function()
-					DataService.savePlayerData(player, true)
-					pending = pending - 1
-				end)
+		for userId in pairs(DataService._cache) do
+			if not DataService._pendingProfiles[userId] then
+				local profilePlayer = DataService._profilePlayers[userId]
+				if not profilePlayer then
+					for _, candidate in ipairs(Players:GetPlayers()) do
+						if candidate.UserId == userId then profilePlayer = candidate break end
+					end
+				end
+				if profilePlayer then
+					DataService._pendingProfiles[userId] = {
+						userId = userId,
+						player = profilePlayer,
+						settle = settlePlayer,
+						settled = false,
+						settling = false,
+						completed = false,
+						attempts = 0,
+					}
+				end
 			end
 		end
 
-		local deadline = os.clock() + SHUTDOWN_TIMEOUT
-		while pending > 0 and os.clock() < deadline do
-			task.wait(0.1)
+		local deadline = DataService._clock() + DataService._shutdownTimeout
+		local pendingWorkers = 0
+		local userIds = {}
+		for userId in pairs(DataService._pendingProfiles) do table.insert(userIds, userId) end
+		for _, userId in ipairs(userIds) do
+			pendingWorkers = pendingWorkers + 1
+			task.spawn(function()
+				local pass = 0
+				while DataService._clock() < deadline
+					and (DataService._shutdownMaxPasses == nil
+						or pass < DataService._shutdownMaxPasses) do
+					pass = pass + 1
+					if DataService.processPendingProfile(userId) then break end
+					task.wait(0.1)
+				end
+				pendingWorkers = pendingWorkers - 1
+			end)
+		end
+		while pendingWorkers > 0 and DataService._clock() < deadline do task.wait(0.05) end
+		for userId, record in pairs(DataService._pendingProfiles) do
+			warn("[DataService] Shutdown left profile " .. tostring(userId)
+				.. " held fail-closed: " .. tostring(record.lastError or "settlement deadline"))
 		end
 	end)
 end
@@ -2621,7 +2813,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006A">
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2839,12 +3031,18 @@ function CurrencyService.rollbackSpendTransaction(transaction)
 	if not pending then
 		return false
 	end
-	pendingSpendTransactions[transaction] = nil
 	local balance = pending.profile[pending.currency]
 	if not isFiniteNumber(balance) or balance < 0 then
 		return false
 	end
-	pending.profile[pending.currency] = balance + pending.amount
+	local restoredBalance = balance + pending.amount
+	if not isFiniteNumber(restoredBalance) or restoredBalance < balance then
+		return false
+	end
+	pending.profile[pending.currency] = restoredBalance
+	-- A failed restore must leave the opaque handle pending so lifecycle code can
+	-- retry it. Consume the handle only after the exact refund is observable.
+	pendingSpendTransactions[transaction] = nil
 	return true
 end
 
@@ -2895,7 +3093,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006B">
+				<Item class="ModuleScript" referent="RBX0000006E">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2914,6 +3112,7 @@ local PetData = require(game.ReplicatedStorage.Shared.PetData)
 local PetHatchMath = require(game.ReplicatedStorage.Shared.PetHatchMath)
 local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 local PetVariantPresentation = require(game.ReplicatedStorage.Shared.PetVariantPresentation)
+local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
 
 local PetService = {}
 
@@ -2924,6 +3123,33 @@ PetService._upgradeService = nil
 PetService._masteryService = nil
 PetService._shopService = nil
 PetService._upgradeTreeService = nil
+
+-- Shared per-player lease used by every economic pet mutation. Opaque table
+-- identity prevents stale cleanup/finally paths from releasing a newer owner.
+PetService._inventoryMutationLeases = {}
+PetService._inventoryMutationIncarnations = {}
+
+local function deepCopy(value)
+	if type(value) ~= "table" then
+		return value
+	end
+	local copy = {}
+	for key, child in pairs(value) do
+		copy[deepCopy(key)] = deepCopy(child)
+	end
+	return copy
+end
+
+local function projectPets(pets)
+	local projected = {}
+	if type(pets) ~= "table" then
+		return projected
+	end
+	for index, pet in ipairs(pets) do
+		projected[index] = deepCopy(pet)
+	end
+	return projected
+end
 
 local function isFiniteNumber(value)
 	return type(value) == "number"
@@ -2949,6 +3175,87 @@ function PetService.init(dataService, currencyService, upgradeService)
 	PetService._dataService = dataService
 	PetService._currencyService = currencyService
 	PetService._upgradeService = upgradeService
+	PetService._inventoryMutationLeases = {}
+	PetService._inventoryMutationIncarnations = {}
+end
+
+function PetService.beginInventoryMutation(player, owner)
+	local userId = player and player.UserId
+	if not isFiniteNumber(userId) or userId % 1 ~= 0 then
+		return nil
+	end
+	if type(PetService._dataService) == "table"
+		and type(PetService._dataService.isMutationAdmissionOpen) == "function"
+		and PetService._dataService.isMutationAdmissionOpen(player) ~= true then
+		return nil
+	end
+	if PetService._inventoryMutationLeases[userId] ~= nil then
+		return nil
+	end
+	local lease = {
+		player = player,
+		owner = owner,
+		incarnation = PetService._inventoryMutationIncarnations[userId] or 0,
+	}
+	PetService._inventoryMutationLeases[userId] = lease
+	return lease
+end
+
+function PetService.isInventoryMutationIdle(player)
+	local userId = player and player.UserId
+	return isFiniteNumber(userId)
+		and userId % 1 == 0
+		and PetService._inventoryMutationLeases[userId] == nil
+end
+
+function PetService.isInventoryMutationCurrent(player, lease)
+	local userId = player and player.UserId
+	return type(lease) == "table"
+		and lease.player == player
+		and PetService._inventoryMutationLeases[userId] == lease
+		and (PetService._inventoryMutationIncarnations[userId] or 0) == lease.incarnation
+end
+
+function PetService.endInventoryMutation(player, lease, mutated)
+	if not PetService.isInventoryMutationCurrent(player, lease) then
+		return false
+	end
+	local userId = player.UserId
+	if mutated == true then
+		PetService._inventoryMutationIncarnations[userId] = lease.incarnation + 1
+	end
+	PetService._inventoryMutationLeases[userId] = nil
+	return true
+end
+
+local function acquireInventoryMutation(player, owner, suppliedLease)
+	if suppliedLease ~= nil then
+		if PetService.isInventoryMutationCurrent(player, suppliedLease) then
+			return suppliedLease, false
+		end
+		return nil, false
+	end
+	local lease = PetService.beginInventoryMutation(player, owner)
+	return lease, lease ~= nil
+end
+
+local function withInventoryMutation(player, owner, callback)
+	local lease = PetService.beginInventoryMutation(player, owner)
+	if not lease then
+		return false, "Pet inventory mutation already in progress"
+	end
+	local ok, result, resultError = xpcall(callback, debug.traceback)
+	local mutated = ok and result == true
+	local released = PetService.endInventoryMutation(player, lease, mutated)
+	if not ok then
+		return false, "Pet inventory mutation failed safely"
+	end
+	if not released then
+		-- Exact identity prevents an old finally from releasing a newer owner. The
+		-- current lease remains held fail-closed if release cannot be proven.
+		return false, "Pet inventory mutation settlement failed"
+	end
+	return result, resultError
 end
 
 -- Set mastery service reference (called after init to avoid circular deps)
@@ -3211,6 +3518,13 @@ function PetService.prepareHatchBatch(player, eggType, count, options)
 	if not isFiniteNumber(shinyBoostCount) or shinyBoostCount < 0 then shinyBoostCount = 0 end
 	shinyBoostCount = math.min(count, math.floor(shinyBoostCount))
 	local discovered = copyBooleanMap(data.discoveredPets)
+	local petsTable = data.pets
+	local originalPets = {}
+	for index, pet in ipairs(petsTable) do
+		originalPets[index] = pet
+	end
+	local discoveryTable = type(data.discoveredPets) == "table" and data.discoveredPets or nil
+	local discoverySnapshot = copyBooleanMap(discoveryTable)
 	local pets = {}
 	local newDiscoveryKeys = {}
 	for index = 1, count do
@@ -3236,21 +3550,52 @@ function PetService.prepareHatchBatch(player, eggType, count, options)
 		eggType = eggType,
 		pets = pets,
 		newDiscoveryKeys = newDiscoveryKeys,
+		petsTable = petsTable,
+		originalPets = originalPets,
+		discoveryTable = discoveryTable,
+		discoverySnapshot = discoverySnapshot,
 		originalPetCount = #data.pets,
 		discoveryTableWasNil = type(data.discoveredPets) ~= "table",
+		discoveryWrites = {},
 		mutationStarted = false,
 		committed = false,
 	}, nil
 end
 
-function PetService.commitHatchBatch(player, prepared)
+local function hatchSnapshotMatches(prepared)
+	local data = prepared.data
+	if PetService._dataService.getPlayerData(prepared.player) ~= data
+		or type(data) ~= "table" or data.pets ~= prepared.petsTable
+		or #data.pets ~= #prepared.originalPets then
+		return false
+	end
+	for index, pet in ipairs(prepared.originalPets) do
+		if data.pets[index] ~= pet then
+			return false
+		end
+	end
+	if data.discoveredPets ~= prepared.discoveryTable then
+		return false
+	end
+	if prepared.discoveryTable then
+		for key, value in pairs(prepared.discoveryTable) do
+			if prepared.discoverySnapshot[key] ~= value then return false end
+		end
+		for key, value in pairs(prepared.discoverySnapshot) do
+			if prepared.discoveryTable[key] ~= value then return false end
+		end
+	end
+	return true
+end
+
+local function commitHatchBatchUnlocked(player, prepared)
 	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed then
 		return false, "Invalid prepared hatch"
 	end
-	local data = PetService._dataService.getPlayerData(player)
-	if data ~= prepared.data or type(data.pets) ~= "table" or #data.pets ~= prepared.originalPetCount then
+	if not hatchSnapshotMatches(prepared) then
 		return false, "Inventory changed during hatch"
 	end
+	local data = prepared.data
 	local hasSpace, capacityError = PetService.canAddPets(player, #prepared.pets)
 	if not hasSpace then
 		return false, capacityError
@@ -3260,7 +3605,12 @@ function PetService.commitHatchBatch(player, prepared)
 	if type(data.discoveredPets) ~= "table" then
 		data.discoveredPets = {}
 	end
+	prepared.discoveryWriteTable = data.discoveredPets
 	for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+		prepared.discoveryWrites[discoveryKey] = {
+			present = rawget(data.discoveredPets, discoveryKey) ~= nil,
+			value = rawget(data.discoveredPets, discoveryKey),
+		}
 		data.discoveredPets[discoveryKey] = true
 	end
 	for _, pet in ipairs(prepared.pets) do
@@ -3270,27 +3620,69 @@ function PetService.commitHatchBatch(player, prepared)
 	return true
 end
 
-function PetService.rollbackHatchBatch(prepared)
+function PetService.commitHatchBatch(player, prepared, suppliedLease)
+	local lease, ownsLease = acquireInventoryMutation(player, "PetService.commitHatchBatch", suppliedLease)
+	if not lease then return false, "Pet inventory mutation already in progress" end
+	local ok, committed, commitError = xpcall(function()
+		return commitHatchBatchUnlocked(player, prepared)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and committed == true)
+	end
+	if not ok then return false, "Hatch commit failed safely" end
+	return committed, commitError
+end
+
+local function rollbackHatchBatchUnlocked(prepared)
 	if type(prepared) ~= "table" or not prepared.mutationStarted or type(prepared.data) ~= "table" then
 		return true
 	end
 	local data = prepared.data
-	if type(data.pets) ~= "table" then
+	if data.pets ~= prepared.petsTable
+		or #data.pets ~= prepared.originalPetCount + #prepared.pets then
 		return false
 	end
-	while #data.pets > prepared.originalPetCount do
+	for index, pet in ipairs(prepared.pets) do
+		if data.pets[prepared.originalPetCount + index] ~= pet then
+			return false
+		end
+	end
+	for _ = 1, #prepared.pets do
 		table.remove(data.pets)
 	end
-	if prepared.discoveryTableWasNil then
-		data.discoveredPets = nil
-	elseif type(data.discoveredPets) == "table" then
-		for discoveryKey in pairs(prepared.newDiscoveryKeys) do
+	if data.discoveredPets ~= prepared.discoveryWriteTable then
+		return false
+	end
+	for discoveryKey, previous in pairs(prepared.discoveryWrites) do
+		if rawget(data.discoveredPets, discoveryKey) ~= true then
+			return false
+		end
+		if previous.present then
+			data.discoveredPets[discoveryKey] = previous.value
+		else
 			data.discoveredPets[discoveryKey] = nil
 		end
+	end
+	if prepared.discoveryTableWasNil and next(data.discoveredPets) == nil then
+		data.discoveredPets = nil
 	end
 	prepared.mutationStarted = false
 	prepared.committed = false
 	return true
+end
+
+function PetService.rollbackHatchBatch(prepared, suppliedLease)
+	local player = type(prepared) == "table" and prepared.player or nil
+	if not player then return false end
+	local lease, ownsLease = acquireInventoryMutation(player, "PetService.rollbackHatchBatch", suppliedLease)
+	if not lease then return false end
+	local ok, restored = xpcall(function()
+		return rollbackHatchBatchUnlocked(prepared)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and restored == true)
+	end
+	return ok and restored == true
 end
 
 function PetService.replicateInventory(player)
@@ -3298,13 +3690,13 @@ function PetService.replicateInventory(player)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	local event = remotes and remotes:FindFirstChild("PetInventoryUpdated")
 	if data and event then
-		event:FireClient(player, data.pets)
+		pcall(event.FireClient, event, player, projectPets(data.pets))
 	end
 end
 
 -- Compatibility single-roll API used by campaign rewards. Paid player hatches
 -- are orchestrated by EggService through the atomic batch methods above.
-function PetService.hatchEgg(player, eggType, skipCostDeduction)
+local function hatchEggUnlocked(player, eggType, skipCostDeduction, inventoryLease)
 	local prepared, prepareError = PetService.prepareHatchBatch(player, eggType, 1)
 	if not prepared then
 		return nil, prepareError
@@ -3325,9 +3717,14 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 		end
 	end
 
-	local callSucceeded, committed, commitError = pcall(PetService.commitHatchBatch, player, prepared)
+	local callSucceeded, committed, commitError = pcall(
+		PetService.commitHatchBatch,
+		player,
+		prepared,
+		inventoryLease
+	)
 	if not callSucceeded or not committed then
-		PetService.rollbackHatchBatch(prepared)
+		PetService.rollbackHatchBatch(prepared, inventoryLease)
 		if paidAmount > 0 then
 			PetService._currencyService.creditRaw(player, "coins", paidAmount)
 		end
@@ -3335,6 +3732,20 @@ function PetService.hatchEgg(player, eggType, skipCostDeduction)
 	end
 	PetService.replicateInventory(player)
 	return prepared.pets[1], nil
+end
+
+function PetService.hatchEgg(player, eggType, skipCostDeduction)
+	local lease = PetService.beginInventoryMutation(player, "PetService.hatchEgg")
+	if not lease then
+		return nil, "Pet inventory mutation already in progress"
+	end
+	local ok, pet, hatchError = xpcall(function()
+		return hatchEggUnlocked(player, eggType, skipCostDeduction, lease)
+	end, debug.traceback)
+	local released = PetService.endInventoryMutation(player, lease, ok and pet ~= nil)
+	if not ok then return nil, "Hatch failed safely" end
+	if not released then return nil, "Hatch settlement failed" end
+	return pet, hatchError
 end
 
 -- Public authoritative equip capacity.
@@ -3380,7 +3791,7 @@ function PetService.getMaxEquipped(player)
 end
 
 -- Equip a pet by instance ID
-function PetService.equipPet(player, petInstanceId)
+local function equipPetUnlocked(player, petInstanceId)
 	print("[PetService] equipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
 
 	if not player or type(petInstanceId) ~= "string" then
@@ -3427,7 +3838,7 @@ function PetService.equipPet(player, petInstanceId)
 				local event = remotes:FindFirstChild("PetEquipped")
 				if event then
 					print("[PetService] equipPet SUCCESS: Firing PetEquipped event for " .. tostring(pet.name))
-					event:FireClient(player, pet)
+					pcall(event.FireClient, event, player, deepCopy(pet))
 				end
 			end
 
@@ -3439,8 +3850,14 @@ function PetService.equipPet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.equipPet(player, petInstanceId)
+	return withInventoryMutation(player, "PetService.equipPet", function()
+		return equipPetUnlocked(player, petInstanceId)
+	end)
+end
+
 -- Unequip a pet by instance ID
-function PetService.unequipPet(player, petInstanceId)
+local function unequipPetUnlocked(player, petInstanceId)
 	print("[PetService] unequipPet called for player=" .. tostring(player.Name) .. " petId=" .. tostring(petInstanceId))
 
 	if not player or type(petInstanceId) ~= "string" then
@@ -3477,7 +3894,7 @@ function PetService.unequipPet(player, petInstanceId)
 				local event = remotes:FindFirstChild("PetUnequipped")
 				if event then
 					print("[PetService] unequipPet SUCCESS: Firing PetUnequipped event for " .. tostring(pet.name))
-					event:FireClient(player, petInstanceId)
+					pcall(event.FireClient, event, player, petInstanceId)
 				end
 			end
 
@@ -3489,17 +3906,23 @@ function PetService.unequipPet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.unequipPet(player, petInstanceId)
+	return withInventoryMutation(player, "PetService.unequipPet", function()
+		return unequipPetUnlocked(player, petInstanceId)
+	end)
+end
+
 local function fireInventoryUpdate(player, pets)
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if not remotes then return end
 	local event = remotes:FindFirstChild("PetInventoryUpdated")
 	if event then
-		event:FireClient(player, pets)
+		pcall(event.FireClient, event, player, projectPets(pets))
 	end
 end
 
 -- Set a pet's favorite state by instance ID.
-function PetService.setPetFavorite(player, petInstanceId, isFavorite)
+local function setPetFavoriteUnlocked(player, petInstanceId, isFavorite)
 	if not player or type(petInstanceId) ~= "string" or type(isFavorite) ~= "boolean" then
 		return false, "Invalid parameters"
 	end
@@ -3520,8 +3943,14 @@ function PetService.setPetFavorite(player, petInstanceId, isFavorite)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.setPetFavorite(player, petInstanceId, isFavorite)
+	return withInventoryMutation(player, "PetService.setPetFavorite", function()
+		return setPetFavoriteUnlocked(player, petInstanceId, isFavorite)
+	end)
+end
+
 -- Delete a single pet by instance ID
-function PetService.deletePet(player, petInstanceId)
+local function deletePetUnlocked(player, petInstanceId)
 	if not player or type(petInstanceId) ~= "string" then
 		return false, "Invalid parameters"
 	end
@@ -3557,8 +3986,14 @@ function PetService.deletePet(player, petInstanceId)
 	return false, "Pet not found in inventory"
 end
 
+function PetService.deletePet(player, petInstanceId)
+	return withInventoryMutation(player, "PetService.deletePet", function()
+		return deletePetUnlocked(player, petInstanceId)
+	end)
+end
+
 -- Delete multiple pets by instance IDs (bulk operation)
-function PetService.deletePets(player, petInstanceIds)
+local function deletePetsUnlocked(player, petInstanceIds)
 	if not player or type(petInstanceIds) ~= "table" then
 		return false, "Invalid parameters"
 	end
@@ -3616,6 +4051,12 @@ function PetService.deletePets(player, petInstanceIds)
 
 	fireInventoryUpdate(player, data.pets)
 	return true, nil
+end
+
+function PetService.deletePets(player, petInstanceIds)
+	return withInventoryMutation(player, "PetService.deletePets", function()
+		return deletePetsUnlocked(player, petInstanceIds)
+	end)
 end
 
 -- Prepare a canonical variant conversion without mutating inventory, discovery,
@@ -3713,6 +4154,8 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 			petId = pet.petId,
 			variant = canonicalVariant,
 			shiny = pet.shiny == true,
+			enchantPresent = rawget(pet, "enchantId") ~= nil,
+			enchantId = rawget(pet, "enchantId"),
 		}
 	end
 
@@ -3739,6 +4182,8 @@ function PetService.prepareVariantConversion(player, petInstanceIds, inputVarian
 		favorite = false,
 		equipped = false,
 	}
+	-- Machine success always creates a fresh, explicitly unenchanted output.
+	outputPet.enchantId = nil
 	local discoveryKey = PetService.getLegacyDiscoveryKey(speciesId, outputVariant, anyShiny)
 	local originalPets = {}
 	for index, pet in ipairs(petsTable) do
@@ -3794,7 +4239,7 @@ local function discoveryMatchesPreparedSnapshot(data, prepared)
 	return true
 end
 
-function PetService.commitVariantConversion(player, prepared, succeeded)
+local function commitVariantConversionUnlocked(player, prepared, succeeded)
 	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed
 		or type(succeeded) ~= "boolean" then
 		return false, "Invalid prepared conversion"
@@ -3823,6 +4268,8 @@ function PetService.commitVariantConversion(player, prepared, succeeded)
 		if pet.id ~= snapshot.id or pet.petId ~= snapshot.petId
 			or PetVariantPresentation.normalizeBaseVariant(pet) ~= snapshot.variant
 			or (pet.shiny == true) ~= snapshot.shiny
+			or (rawget(pet, "enchantId") ~= nil) ~= snapshot.enchantPresent
+			or rawget(pet, "enchantId") ~= snapshot.enchantId
 			or pet.favorite == true or pet.equipped == true or equippedById[pet.id] then
 			return false, "Selected pet changed during conversion"
 		end
@@ -3866,7 +4313,24 @@ function PetService.commitVariantConversion(player, prepared, succeeded)
 	return true
 end
 
-function PetService.rollbackVariantConversion(prepared)
+function PetService.commitVariantConversion(player, prepared, succeeded, suppliedLease)
+	local lease, ownsLease = acquireInventoryMutation(
+		player,
+		"PetService.commitVariantConversion",
+		suppliedLease
+	)
+	if not lease then return false, "Pet inventory mutation already in progress" end
+	local ok, committed, commitError = xpcall(function()
+		return commitVariantConversionUnlocked(player, prepared, succeeded)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and committed == true)
+	end
+	if not ok then return false, "Conversion failed safely" end
+	return committed, commitError
+end
+
+local function rollbackVariantConversionUnlocked(prepared)
 	if type(prepared) ~= "table" or not prepared.mutationStarted
 		or type(prepared.data) ~= "table" or type(prepared.petsTable) ~= "table" then
 		return true
@@ -3909,6 +4373,24 @@ function PetService.rollbackVariantConversion(prepared)
 	return true
 end
 
+function PetService.rollbackVariantConversion(prepared, suppliedLease)
+	local player = type(prepared) == "table" and prepared.player or nil
+	if not player then return false end
+	local lease, ownsLease = acquireInventoryMutation(
+		player,
+		"PetService.rollbackVariantConversion",
+		suppliedLease
+	)
+	if not lease then return false end
+	local ok, restored = xpcall(function()
+		return rollbackVariantConversionUnlocked(prepared)
+	end, debug.traceback)
+	if ownsLease then
+		PetService.endInventoryMutation(player, lease, ok and restored == true)
+	end
+	return ok and restored == true
+end
+
 -- Get player's pet inventory
 function PetService.getInventory(player)
 	if not player then
@@ -3926,24 +4408,81 @@ end
 -- Calculate effective damage from canonical identity and apply active buffs once.
 -- pet.damage is a replicated compatibility mirror and is never combat authority.
 function PetService.getPetDamage(pet, player)
-	if not pet or not player then
+	if type(pet) ~= "table" or not player then
 		return 0
 	end
 
-	local baseDamage = PetVariantMath.getPetBaseDamage(pet)
-	local strongBonus = PetService._upgradeService.getUpgradeBonus(player, "StrongPets")
-
-	if strongBonus > 0 then
-		baseDamage = math.floor(baseDamage * strongBonus)
+	local baseOk, baseDamage = pcall(PetVariantMath.getPetBaseDamage, pet)
+	if not baseOk or not isFiniteNumber(baseDamage) or baseDamage < 0 then
+		return 0
 	end
-	if PetService._shopService then
-		local shopDamageMultiplier = PetService._shopService.getShopMultiplier(player, "damage")
-		if shopDamageMultiplier > 1 then
-			baseDamage = math.floor(baseDamage * shopDamageMultiplier)
+	local enchantOk, enchantMultiplier = pcall(PetEnchantMath.getDamageMultiplier, pet)
+	if not enchantOk or not isFiniteNumber(enchantMultiplier) or enchantMultiplier < 0 then
+		enchantMultiplier = 1
+	end
+	local enchantedDamage = baseDamage * enchantMultiplier
+	if isFiniteNumber(enchantedDamage) and enchantedDamage >= 0 then
+		baseDamage = enchantedDamage
+	end
+
+	local strongBonus = 0
+	if type(PetService._upgradeService) == "table"
+		and type(PetService._upgradeService.getUpgradeBonus) == "function" then
+		local bonusOk, bonus = pcall(
+			PetService._upgradeService.getUpgradeBonus,
+			player,
+			"StrongPets"
+		)
+		if bonusOk and isFiniteNumber(bonus) and bonus > 0 then
+			strongBonus = bonus
+		end
+	end
+	if strongBonus > 0 then
+		local candidate = baseDamage * strongBonus
+		if isFiniteNumber(candidate) and candidate >= 0 then
+			baseDamage = math.floor(candidate)
 		end
 	end
 
-	return baseDamage
+	if type(PetService._shopService) == "table"
+		and type(PetService._shopService.getShopMultiplier) == "function" then
+		local multiplierOk, shopDamageMultiplier = pcall(
+			PetService._shopService.getShopMultiplier,
+			player,
+			"damage"
+		)
+		if multiplierOk and isFiniteNumber(shopDamageMultiplier) and shopDamageMultiplier > 1 then
+			local candidate = baseDamage * shopDamageMultiplier
+			if isFiniteNumber(candidate) and candidate >= 0 then
+				baseDamage = math.floor(candidate)
+			end
+		end
+	end
+
+	return isFiniteNumber(baseDamage) and baseDamage >= 0 and baseDamage or 0
+end
+
+-- Campaign lane movement is snapshotted by CampaignService at deploy. It uses
+-- only canonical PetData base speed and an Agile enchant from the whitelist.
+function PetService.getCampaignLaneSpeed(pet)
+	if type(pet) ~= "table" then
+		return 0
+	end
+	local petId = rawget(pet, "petId")
+	if type(petId) ~= "string" then
+		return 0
+	end
+	local definition = PetData.Pets[petId]
+	local baseSpeed = definition and definition.baseSpeed or nil
+	if not isFiniteNumber(baseSpeed) or baseSpeed < 0 then
+		return 0
+	end
+	local multiplierOk, multiplier = pcall(PetEnchantMath.getCampaignSpeedMultiplier, pet)
+	if not multiplierOk or not isFiniteNumber(multiplier) or multiplier < 0 then
+		return 0
+	end
+	local speed = baseSpeed * multiplier
+	return isFiniteNumber(speed) and speed >= 0 and speed or 0
 end
 
 -- Shared machine chance table. QOF-02 centralizes this without changing the
@@ -3954,7 +4493,7 @@ local GOLDEN_CHANCES = GOLDEN_CONVERSION.SuccessChanceByInput
 -- Convert pets into a golden pet (multi-pet sacrifice with chance)
 -- petInstanceIds: table of 1-7 pet instance IDs (all must be same petId/type)
 -- Returns: { success = bool, goldenPet = pet|nil, chance = number, isNewDiscovery = bool }
-function PetService.convertToGoldenPet(player, petInstanceIds)
+local function convertToGoldenPetUnlocked(player, petInstanceIds)
 	if not player or type(petInstanceIds) ~= "table" then
 		return nil, "Invalid parameters"
 	end
@@ -4114,11 +4653,23 @@ function PetService.convertToGoldenPet(player, petInstanceIds)
 	}, nil
 end
 
+function PetService.convertToGoldenPet(player, petInstanceIds)
+	local lease = PetService.beginInventoryMutation(player, "PetService.convertToGoldenPet")
+	if not lease then return nil, "Pet inventory mutation already in progress" end
+	local ok, result, conversionError = xpcall(function()
+		return convertToGoldenPetUnlocked(player, petInstanceIds)
+	end, debug.traceback)
+	local released = PetService.endInventoryMutation(player, lease, ok and result ~= nil)
+	if not ok then return nil, "Conversion failed safely" end
+	if not released then return nil, "Conversion settlement failed" end
+	return result, conversionError
+end
+
 return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006F">
 					<Properties>
 						<string name="Name">MachineService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4142,6 +4693,8 @@ MachineService._activationValidator = nil
 MachineService._randomSource = math.random
 MachineService._transactionHook = nil
 MachineService._playerLocks = {}
+MachineService._activeTransactions = {}
+MachineService._shuttingDown = false
 
 local function isFiniteNumber(value)
 	return type(value) == "number"
@@ -4242,6 +4795,8 @@ function MachineService.init(dataService, currencyService, petService)
 	MachineService._randomSource = math.random
 	MachineService._transactionHook = nil
 	MachineService._playerLocks = {}
+	MachineService._activeTransactions = {}
+	MachineService._shuttingDown = false
 end
 
 function MachineService.setQuestService(questService)
@@ -4262,22 +4817,37 @@ function MachineService.setTransactionHook(hook)
 	MachineService._transactionHook = type(hook) == "function" and hook or nil
 end
 
-local function rollbackTechnicalFailure(prepared, spendTransaction)
+local function restoreTransaction(transactionState)
+	if transactionState.committed then
+		return true
+	end
 	local petRolledBack = true
 	local currencyRolledBack = true
-	if prepared and prepared.mutationStarted then
-		local callSucceeded, rollbackSucceeded = pcall(
-			MachineService._petService.rollbackVariantConversion,
-			prepared
-		)
-		petRolledBack = callSucceeded and rollbackSucceeded == true
+	local prepared = transactionState.prepared
+	if prepared then
+		if prepared.mutationStarted then
+			local callSucceeded, rollbackSucceeded = pcall(
+				MachineService._petService.rollbackVariantConversion,
+				prepared,
+				transactionState.inventoryLease
+			)
+			petRolledBack = callSucceeded and rollbackSucceeded == true
+			if petRolledBack then
+				transactionState.prepared = nil
+			end
+		else
+			transactionState.prepared = nil
+		end
 	end
-	if spendTransaction then
+	if transactionState.spendTransaction then
 		local callSucceeded, rollbackSucceeded = pcall(
 			MachineService._currencyService.rollbackSpendTransaction,
-			spendTransaction
+			transactionState.spendTransaction
 		)
 		currencyRolledBack = callSucceeded and rollbackSucceeded == true
+		if currencyRolledBack then
+			transactionState.spendTransaction = nil
+		end
 	end
 	return petRolledBack and currencyRolledBack
 end
@@ -4347,12 +4917,11 @@ local function executeTransaction(player, machine, machineType, activationToken,
 	local committed, commitError = MachineService._petService.commitVariantConversion(
 		player,
 		prepared,
-		success
+		success,
+		transactionState.inventoryLease
 	)
 	if not committed then
-		local restored = rollbackTechnicalFailure(prepared, spendTransaction)
-		transactionState.prepared = nil
-		transactionState.spendTransaction = nil
+		local restored = restoreTransaction(transactionState)
 		if not restored then
 			return nil, "Conversion rollback failed"
 		end
@@ -4372,15 +4941,14 @@ local function executeTransaction(player, machine, machineType, activationToken,
 	safeHook("beforeCommit", context)
 
 	if MachineService._currencyService.commitSpendTransaction(spendTransaction) ~= true then
-		local restored = rollbackTechnicalFailure(prepared, spendTransaction)
-		transactionState.prepared = nil
-		transactionState.spendTransaction = nil
+		local restored = restoreTransaction(transactionState)
 		return nil, restored and "Conversion failed safely" or "Conversion rollback failed"
 	end
 	spendTransaction = nil
 	transactionState.spendTransaction = nil
-	transactionState.prepared = nil
 	prepared.transactionCommitted = true
+	transactionState.prepared = nil
+	transactionState.committed = true
 
 	-- Notifications are deliberately post-commit and protected. A transport or
 	-- quest event failure must never turn a completed economic transaction into a
@@ -4394,6 +4962,9 @@ end
 
 function MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
 	if BalanceConfig.Machines.RuntimeEnabled ~= true then
+		return nil, "Machines are not available"
+	end
+	if MachineService._shuttingDown then
 		return nil, "Machines are not available"
 	end
 	if not player or not isFiniteNumber(player.UserId) or player.UserId % 1 ~= 0 then
@@ -4420,34 +4991,103 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	end
 	if not MachineService._dataService
 		or not MachineService._currencyService
-		or not MachineService._petService then
+		or not MachineService._petService
+		or type(MachineService._petService.beginInventoryMutation) ~= "function"
+		or type(MachineService._petService.endInventoryMutation) ~= "function" then
 		return nil, "Machine service unavailable"
 	end
 	if MachineService._playerLocks[player.UserId] then
 		return nil, "Machine conversion already in progress"
 	end
 
+	local inventoryLease = MachineService._petService.beginInventoryMutation(player, "MachineService")
+	if not inventoryLease then
+		return nil, "Pet inventory mutation already in progress"
+	end
 	MachineService._playerLocks[player.UserId] = true
-	local transactionState = {}
+	local transactionState = {
+		player = player,
+		inventoryLease = inventoryLease,
+		executing = true,
+	}
+	MachineService._activeTransactions[player.UserId] = transactionState
 	local ok, result, transactionError = xpcall(function()
 		return executeTransaction(player, machine, machineType, activationToken, ids, transactionState)
 	end, debug.traceback)
-	MachineService._playerLocks[player.UserId] = nil
-
 	if not ok then
-		local restored = rollbackTechnicalFailure(
-			transactionState.prepared,
-			transactionState.spendTransaction
+		local restored = restoreTransaction(transactionState)
+		result = nil
+		transactionError = restored and "Conversion failed safely" or "Conversion rollback failed"
+	end
+	transactionState.executing = false
+
+	local unresolved = transactionState.prepared ~= nil
+		or transactionState.spendTransaction ~= nil
+	if not unresolved then
+		-- Lease release is post-commit bookkeeping. It must never turn an already
+		-- committed currency/pet conversion into a retryable client error. Keep a
+		-- terminal record if release itself fails so lifecycle cleanup can retry it.
+		local releaseOk, released = pcall(
+			MachineService._petService.endInventoryMutation,
+			player,
+			inventoryLease,
+			transactionState.committed == true
 		)
-		return nil, restored and "Conversion failed safely" or "Conversion rollback failed"
+		if releaseOk and released == true then
+			MachineService._activeTransactions[player.UserId] = nil
+			MachineService._playerLocks[player.UserId] = nil
+		end
 	end
 	return result, transactionError
 end
 
 function MachineService.cleanup(player)
-	if player and isFiniteNumber(player.UserId) then
-		MachineService._playerLocks[player.UserId] = nil
+	if not player or not isFiniteNumber(player.UserId) or player.UserId % 1 ~= 0 then
+		return false
 	end
+	local userId = player.UserId
+	local transactionState = MachineService._activeTransactions[userId]
+	if transactionState then
+		if transactionState.executing then
+			return false
+		end
+		if not restoreTransaction(transactionState) then
+			return false
+		end
+		local releaseOk, released = pcall(
+			MachineService._petService.endInventoryMutation,
+			player,
+			transactionState.inventoryLease,
+			transactionState.committed == true
+		)
+		if not releaseOk or released ~= true then
+			return false
+		end
+		MachineService._activeTransactions[userId] = nil
+	elseif MachineService._playerLocks[userId] ~= nil then
+		return false
+	end
+	MachineService._playerLocks[userId] = nil
+	return true
+end
+
+function MachineService.beginShutdown()
+	MachineService._shuttingDown = true
+end
+
+function MachineService.prepareForShutdown()
+	MachineService.beginShutdown()
+	local transactions = {}
+	for _, transactionState in pairs(MachineService._activeTransactions) do
+		table.insert(transactions, transactionState)
+	end
+	local settled = true
+	for _, transactionState in ipairs(transactions) do
+		if transactionState.executing or not MachineService.cleanup(transactionState.player) then
+			settled = false
+		end
+	end
+	return settled
 end
 
 MachineService.onPlayerRemoving = MachineService.cleanup
@@ -4456,7 +5096,574 @@ return MachineService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006D">
+				<Item class="ModuleScript" referent="RBX00000070">
+					<Properties>
+						<string name="Name">EnchantingService</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	EnchantingService.lua - QOF-19 Contract V1 server-authoritative pet enchanting.
+	Owns strict request admission, per-player serialization, exact currency
+	transactions, weighted rolls, optimistic concurrency, rollback, and state DTOs.
+]]
+
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local PetEnchantMath = require(game.ReplicatedStorage.Shared.PetEnchantMath)
+
+local EnchantingService = {}
+
+local CONTRACT_VERSION = 1
+local COST_CURRENCY = BalanceConfig.Enchanting.RollCost.currency
+local COST_AMOUNT = BalanceConfig.Enchanting.RollCost.amount
+local MAX_SLOTS = BalanceConfig.Enchanting.MaxSlotsPerPet
+
+EnchantingService.ReasonCodes = {
+	INVALID_REQUEST = "INVALID_REQUEST",
+	RUNTIME_DISABLED = "RUNTIME_DISABLED",
+	SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE",
+	PROFILE_UNAVAILABLE = "PROFILE_UNAVAILABLE",
+	PET_NOT_FOUND = "PET_NOT_FOUND",
+	INVALID_PET_STATE = "INVALID_PET_STATE",
+	STALE_STATE = "STALE_STATE",
+	INSUFFICIENT_BALANCE = "INSUFFICIENT_BALANCE",
+	BUSY = "BUSY",
+	RATE_LIMITED = "RATE_LIMITED",
+	TECHNICAL_FAILURE = "TECHNICAL_FAILURE",
+	ROLLBACK_FAILED = "ROLLBACK_FAILED",
+}
+
+EnchantingService._dataService = nil
+EnchantingService._currencyService = nil
+EnchantingService._petService = nil
+EnchantingService._randomSource = math.random
+EnchantingService._transactionHook = nil
+EnchantingService._playerLocks = {}
+EnchantingService._activeTransactions = {}
+EnchantingService._revisions = {}
+EnchantingService._petIncarnations = {}
+EnchantingService._shuttingDown = false
+
+local function isFiniteInteger(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+		and value % 1 == 0
+end
+
+local function validPlayer(player)
+	return player ~= nil and isFiniteInteger(player.UserId)
+end
+
+local function validPetInstanceId(value)
+	return type(value) == "string" and value ~= "" and #value <= 128
+end
+
+local function exactRequest(request, action, allowedFields, expectedCount)
+	if type(request) ~= "table" or getmetatable(request) ~= nil then
+		return false
+	end
+	local count = 0
+	for key in pairs(request) do
+		if allowedFields[key] ~= true then
+			return false
+		end
+		count = count + 1
+	end
+	return count == expectedCount
+		and rawget(request, "contractVersion") == CONTRACT_VERSION
+		and rawget(request, "action") == action
+end
+
+local function requestIsGet(request)
+	return exactRequest(request, "GET_STATE", {
+		contractVersion = true,
+		action = true,
+		petInstanceId = true,
+	}, 3) and validPetInstanceId(rawget(request, "petInstanceId"))
+end
+
+local function requestIsRoll(request)
+	if not exactRequest(request, "ROLL", {
+		contractVersion = true,
+		action = true,
+		petInstanceId = true,
+		expectedStateRevision = true,
+		expectedEnchantId = true,
+	}, 5) then
+		return false
+	end
+	local expectedEnchantId = rawget(request, "expectedEnchantId")
+	return validPetInstanceId(rawget(request, "petInstanceId"))
+		and isFiniteInteger(rawget(request, "expectedStateRevision"))
+		and rawget(request, "expectedStateRevision") >= 0
+		and (expectedEnchantId == false
+			or PetEnchantMath.normalizeEnchantId(expectedEnchantId) == expectedEnchantId)
+end
+
+local function dependenciesReady()
+	return type(EnchantingService._dataService) == "table"
+		and type(EnchantingService._dataService.getPlayerData) == "function"
+		and type(EnchantingService._currencyService) == "table"
+		and type(EnchantingService._currencyService.beginSpendTransaction) == "function"
+		and type(EnchantingService._currencyService.commitSpendTransaction) == "function"
+		and type(EnchantingService._currencyService.rollbackSpendTransaction) == "function"
+		and type(EnchantingService._petService) == "table"
+		and type(EnchantingService._petService.replicateInventory) == "function"
+		and type(EnchantingService._petService.beginInventoryMutation) == "function"
+		and type(EnchantingService._petService.isInventoryMutationCurrent) == "function"
+		and type(EnchantingService._petService.endInventoryMutation) == "function"
+end
+
+local function currentRevision(userId, petInstanceId, pet)
+	local byPet = EnchantingService._revisions[userId]
+	local revision = byPet and byPet[petInstanceId] or 0
+	if pet then
+		local incarnations = EnchantingService._petIncarnations[userId]
+		if not incarnations then
+			incarnations = {}
+			EnchantingService._petIncarnations[userId] = incarnations
+		end
+		local previousPet = incarnations[petInstanceId]
+		if previousPet ~= nil and previousPet ~= pet then
+			revision = revision + 1
+			byPet = byPet or {}
+			EnchantingService._revisions[userId] = byPet
+			byPet[petInstanceId] = revision
+		end
+		incarnations[petInstanceId] = pet
+	end
+	return revision
+end
+
+local function bumpRevision(userId, petInstanceId, pet)
+	local byPet = EnchantingService._revisions[userId]
+	if not byPet then
+		byPet = {}
+		EnchantingService._revisions[userId] = byPet
+	end
+	local revision = (byPet[petInstanceId] or 0) + 1
+	byPet[petInstanceId] = revision
+	local incarnations = EnchantingService._petIncarnations[userId]
+	if not incarnations then
+		incarnations = {}
+		EnchantingService._petIncarnations[userId] = incarnations
+	end
+	incarnations[petInstanceId] = pet
+	return revision
+end
+
+local function findPet(data, petInstanceId)
+	if type(data) ~= "table" or type(data.pets) ~= "table" then
+		return nil, nil
+	end
+	for index, pet in ipairs(data.pets) do
+		if type(pet) == "table" and pet.id == petInstanceId then
+			return pet, index
+		end
+	end
+	return nil, nil
+end
+
+local function stateAvailability(player, data, pet, enchantId)
+	local reasons = EnchantingService.ReasonCodes
+	if BalanceConfig.Enchanting.RuntimeEnabled ~= true then
+		return false, reasons.RUNTIME_DISABLED
+	end
+	if EnchantingService._shuttingDown then
+		return false, reasons.SERVICE_UNAVAILABLE
+	end
+	if not dependenciesReady() then
+		return false, reasons.SERVICE_UNAVAILABLE
+	end
+	if not validPlayer(player) or type(data) ~= "table" or type(data.pets) ~= "table" then
+		return false, reasons.PROFILE_UNAVAILABLE
+	end
+	if not pet then
+		return false, reasons.PET_NOT_FOUND
+	end
+	if rawget(pet, "enchantId") ~= nil and not enchantId then
+		return false, reasons.INVALID_PET_STATE
+	end
+	if type(data[COST_CURRENCY]) ~= "number" or data[COST_CURRENCY] < COST_AMOUNT then
+		return false, reasons.INSUFFICIENT_BALANCE
+	end
+	return true, nil
+end
+
+local function buildState(player, petInstanceId)
+	local data = dependenciesReady() and EnchantingService._dataService.getPlayerData(player) or nil
+	local pet = findPet(data, petInstanceId)
+	local enchantId = pet and PetEnchantMath.normalizeEnchantId(rawget(pet, "enchantId")) or nil
+	local available, unavailableReason = stateAvailability(player, data, pet, enchantId)
+	local userId = validPlayer(player) and player.UserId or nil
+	return {
+		contractVersion = CONTRACT_VERSION,
+		stateRevision = userId and currentRevision(userId, petInstanceId, pet) or 0,
+		runtimeEnabled = BalanceConfig.Enchanting.RuntimeEnabled == true
+			and not EnchantingService._shuttingDown
+			and dependenciesReady(),
+		pet = {
+			instanceId = pet and pet.id or petInstanceId,
+			enchantId = enchantId or false,
+		},
+		economy = {
+			currency = COST_CURRENCY,
+			price = COST_AMOUNT,
+		},
+		maxSlotsPerPet = MAX_SLOTS,
+		outcomes = PetEnchantMath.getPublicPool(),
+		availability = {
+			canRoll = available,
+			reason = unavailableReason,
+		},
+		isReroll = enchantId ~= nil,
+	}
+end
+
+local function invokeHook(stage, context)
+	if type(EnchantingService._transactionHook) == "function" then
+		EnchantingService._transactionHook(stage, context)
+	end
+end
+
+local function chooseEnchantId()
+	local roll = EnchantingService._randomSource(1, 100)
+	if not isFiniteInteger(roll) or roll < 1 or roll > 100 then
+		error("Enchanting RNG returned an invalid integer roll")
+	end
+	local cumulative = 0
+	for _, definition in ipairs(PetEnchantMath.getPublicPool()) do
+		cumulative = cumulative + definition.weight
+		if roll <= cumulative then
+			return definition.id
+		end
+	end
+	error("Enchanting pool did not cover the integer roll")
+end
+
+local function petStillMatches(transaction)
+	if not EnchantingService._petService.isInventoryMutationCurrent(
+		transaction.player,
+		transaction.inventoryLease
+	) then
+		return false
+	end
+	local data = EnchantingService._dataService.getPlayerData(transaction.player)
+	if data ~= transaction.data or data.pets ~= transaction.petsTable
+		or data.pets[transaction.petIndex] ~= transaction.pet then
+		return false
+	end
+	if transaction.pet.id ~= transaction.petInstanceId then
+		return false
+	end
+	local present = rawget(transaction.pet, "enchantId") ~= nil
+	return present == transaction.oldEnchantPresent
+		and rawget(transaction.pet, "enchantId") == transaction.oldEnchantId
+		and currentRevision(
+			transaction.userId,
+			transaction.petInstanceId,
+			transaction.pet
+		) == transaction.expectedRevision
+end
+
+local function restoreTransaction(transaction)
+	if transaction.committed then
+		return true
+	end
+	local petRestored = true
+	local currencyRestored = true
+	if transaction.mutationStarted then
+		local ok, restored = pcall(function()
+			local currentData = EnchantingService._dataService.getPlayerData(transaction.player)
+			if currentData ~= transaction.data or currentData.pets ~= transaction.petsTable
+				or currentData.pets[transaction.petIndex] ~= transaction.pet then
+				return false
+			end
+			local currentPresent = rawget(transaction.pet, "enchantId") ~= nil
+			local currentEnchantId = rawget(transaction.pet, "enchantId")
+			if currentPresent == transaction.oldEnchantPresent
+				and currentEnchantId == transaction.oldEnchantId then
+				return true
+			end
+			if currentEnchantId ~= transaction.writtenEnchantId then
+				return false
+			end
+			if transaction.oldEnchantPresent then
+				transaction.pet.enchantId = transaction.oldEnchantId
+			else
+				transaction.pet.enchantId = nil
+			end
+			return (rawget(transaction.pet, "enchantId") ~= nil) == transaction.oldEnchantPresent
+				and rawget(transaction.pet, "enchantId") == transaction.oldEnchantId
+		end)
+		petRestored = ok and restored == true
+		if petRestored then
+			transaction.mutationStarted = false
+		end
+	end
+	if transaction.spendTransaction then
+		local ok, restored = pcall(
+			EnchantingService._currencyService.rollbackSpendTransaction,
+			transaction.spendTransaction
+		)
+		currencyRestored = ok and restored == true
+		if currencyRestored then
+			transaction.spendTransaction = nil
+		end
+	end
+	return petRestored and currencyRestored
+end
+
+local function executeRoll(player, request, transaction)
+	local reasons = EnchantingService.ReasonCodes
+	local data = EnchantingService._dataService.getPlayerData(player)
+	if type(data) ~= "table" or type(data.pets) ~= "table" then
+		return false, reasons.PROFILE_UNAVAILABLE
+	end
+	local pet, petIndex = findPet(data, request.petInstanceId)
+	if not pet then
+		return false, reasons.PET_NOT_FOUND
+	end
+	local oldEnchantId = PetEnchantMath.normalizeEnchantId(rawget(pet, "enchantId"))
+	local oldEnchantPresent = rawget(pet, "enchantId") ~= nil
+	if oldEnchantPresent and not oldEnchantId then
+		return false, reasons.INVALID_PET_STATE
+	end
+	local expectedEnchantId = nil
+	if request.expectedEnchantId ~= false then
+		expectedEnchantId = request.expectedEnchantId
+	end
+	local revision = currentRevision(player.UserId, request.petInstanceId, pet)
+	if request.expectedStateRevision ~= revision
+		or oldEnchantPresent ~= (request.expectedEnchantId ~= false)
+		or oldEnchantId ~= expectedEnchantId then
+		return false, reasons.STALE_STATE
+	end
+
+	transaction.player = player
+	transaction.userId = player.UserId
+	transaction.data = data
+	transaction.petsTable = data.pets
+	transaction.pet = pet
+	transaction.petIndex = petIndex
+	transaction.petInstanceId = request.petInstanceId
+	transaction.oldEnchantPresent = oldEnchantPresent
+	transaction.oldEnchantId = oldEnchantId
+	transaction.expectedRevision = revision
+
+	local spendTransaction = EnchantingService._currencyService.beginSpendTransaction(
+		player,
+		COST_CURRENCY,
+		COST_AMOUNT
+	)
+	if not spendTransaction then
+		return false, reasons.INSUFFICIENT_BALANCE
+	end
+	transaction.spendTransaction = spendTransaction
+	invokeHook("afterSpend", transaction)
+
+	local rolledEnchantId = chooseEnchantId()
+	transaction.rolledEnchantId = rolledEnchantId
+	invokeHook("afterRoll", transaction)
+
+	if not petStillMatches(transaction) then
+		local restored = restoreTransaction(transaction)
+		return false, restored and reasons.STALE_STATE or reasons.ROLLBACK_FAILED
+	end
+
+	transaction.writtenEnchantId = rolledEnchantId
+	transaction.mutationStarted = true
+	pet.enchantId = rolledEnchantId
+	invokeHook("afterMutation", transaction)
+	invokeHook("beforeCommit", transaction)
+
+	local commitOk, committed = pcall(
+		EnchantingService._currencyService.commitSpendTransaction,
+		spendTransaction
+	)
+	if not commitOk or committed ~= true then
+		local restored = restoreTransaction(transaction)
+		return false, restored and reasons.TECHNICAL_FAILURE or reasons.ROLLBACK_FAILED
+	end
+	transaction.spendTransaction = nil
+	transaction.mutationStarted = false
+	transaction.committed = true
+	-- Currency commit is the point of no return. Everything below is best-effort
+	-- bookkeeping/replication and must never turn the paid roll into a retry.
+	pcall(bumpRevision, player.UserId, request.petInstanceId, pet)
+	pcall(EnchantingService._petService.replicateInventory, player)
+	return true, nil
+end
+
+function EnchantingService.init(dataService, currencyService, petService)
+	EnchantingService._dataService = dataService
+	EnchantingService._currencyService = currencyService
+	EnchantingService._petService = petService
+	EnchantingService._randomSource = math.random
+	EnchantingService._transactionHook = nil
+	EnchantingService._playerLocks = {}
+	EnchantingService._activeTransactions = {}
+	EnchantingService._revisions = {}
+	EnchantingService._petIncarnations = {}
+	EnchantingService._shuttingDown = false
+end
+
+function EnchantingService.setRandomSource(randomSource)
+	EnchantingService._randomSource = type(randomSource) == "function" and randomSource or math.random
+end
+
+function EnchantingService.setTransactionHook(hook)
+	EnchantingService._transactionHook = type(hook) == "function" and hook or nil
+end
+
+function EnchantingService.getState(player, petInstanceId)
+	if not validPetInstanceId(petInstanceId) then
+		petInstanceId = ""
+	end
+	return buildState(player, petInstanceId)
+end
+
+function EnchantingService.getStateFromRequest(player, request)
+	local petInstanceId = type(request) == "table" and rawget(request, "petInstanceId") or ""
+	if not validPlayer(player) or not requestIsGet(request) then
+		return false, EnchantingService.ReasonCodes.INVALID_REQUEST, buildState(player, petInstanceId)
+	end
+	return true, nil, buildState(player, request.petInstanceId)
+end
+
+function EnchantingService.roll(player, request)
+	local reasons = EnchantingService.ReasonCodes
+	local petInstanceId = type(request) == "table" and rawget(request, "petInstanceId") or ""
+	if not validPlayer(player) or not requestIsRoll(request) then
+		return false, reasons.INVALID_REQUEST, buildState(player, petInstanceId)
+	end
+	if BalanceConfig.Enchanting.RuntimeEnabled ~= true then
+		return false, reasons.RUNTIME_DISABLED, buildState(player, petInstanceId)
+	end
+	if EnchantingService._shuttingDown then
+		return false, reasons.SERVICE_UNAVAILABLE, buildState(player, petInstanceId)
+	end
+	if not dependenciesReady() then
+		return false, reasons.SERVICE_UNAVAILABLE, buildState(player, petInstanceId)
+	end
+	if EnchantingService._playerLocks[player.UserId] then
+		return false, reasons.BUSY, buildState(player, petInstanceId)
+	end
+
+	local inventoryLease = EnchantingService._petService.beginInventoryMutation(
+		player,
+		"EnchantingService"
+	)
+	if not inventoryLease then
+		return false, reasons.BUSY, buildState(player, petInstanceId)
+	end
+
+	EnchantingService._playerLocks[player.UserId] = true
+	local transaction = {
+		player = player,
+		userId = player.UserId,
+		inventoryLease = inventoryLease,
+		executing = true,
+	}
+	EnchantingService._activeTransactions[player.UserId] = transaction
+	local ok, success, reason = xpcall(function()
+		return executeRoll(player, request, transaction)
+	end, debug.traceback)
+	if not ok then
+		local restored = restoreTransaction(transaction)
+		success = false
+		reason = restored and reasons.TECHNICAL_FAILURE or reasons.ROLLBACK_FAILED
+	end
+	transaction.executing = false
+
+	local unresolved = transaction.mutationStarted == true
+		or transaction.spendTransaction ~= nil
+	if not unresolved then
+		-- Exact lease identity makes stale-finally release impossible. A committed
+		-- roll advances the central in-memory inventory incarnation. Lease cleanup
+		-- itself is post-commit: if it fails, retain a settleable committed record
+		-- while still returning the successful paid result.
+		local releaseOk, released = pcall(
+			EnchantingService._petService.endInventoryMutation,
+			player,
+			inventoryLease,
+			transaction.committed == true
+		)
+		if releaseOk and released == true then
+			EnchantingService._activeTransactions[player.UserId] = nil
+			EnchantingService._playerLocks[player.UserId] = nil
+		end
+	end
+	local stateOk, state = pcall(buildState, player, petInstanceId)
+	if not stateOk then
+		-- State refresh is post-commit presentation. In particular, a successful
+		-- currency commit must remain an unambiguous success even if profile lookup
+		-- or DTO construction fails afterwards.
+		return success, reason, nil
+	end
+	return success, reason, state
+end
+
+function EnchantingService.cleanup(player)
+	if not validPlayer(player) then
+		return false
+	end
+	local userId = player.UserId
+	local transaction = EnchantingService._activeTransactions[userId]
+	if transaction then
+		if transaction.executing then
+			return false
+		end
+		if not restoreTransaction(transaction) then
+			return false
+		end
+		local releaseOk, released = pcall(
+			EnchantingService._petService.endInventoryMutation,
+			player,
+			transaction.inventoryLease,
+			transaction.committed == true
+		)
+		if not releaseOk or released ~= true then
+			return false
+		end
+		EnchantingService._activeTransactions[userId] = nil
+	elseif EnchantingService._playerLocks[userId] ~= nil then
+		-- Never guess that a lock is stale: clearing an ownerless lock can create
+		-- an ABA release while work is still in flight.
+		return false
+	end
+	EnchantingService._playerLocks[userId] = nil
+	EnchantingService._revisions[userId] = nil
+	EnchantingService._petIncarnations[userId] = nil
+	return true
+end
+
+function EnchantingService.beginShutdown()
+	EnchantingService._shuttingDown = true
+end
+
+function EnchantingService.prepareForShutdown()
+	EnchantingService.beginShutdown()
+	local transactions = {}
+	for _, transaction in pairs(EnchantingService._activeTransactions) do
+		table.insert(transactions, transaction)
+	end
+	local settled = true
+	for _, transaction in ipairs(transactions) do
+		if transaction.executing or not EnchantingService.cleanup(transaction.player) then
+			settled = false
+		end
+	end
+	return settled
+end
+
+EnchantingService.onPlayerRemoving = EnchantingService.cleanup
+
+return EnchantingService
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000071">
 					<Properties>
 						<string name="Name">MachineAuthorityBootstrap</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4479,7 +5686,7 @@ return MachineAuthorityBootstrap
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006E">
+				<Item class="ModuleScript" referent="RBX00000072">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4575,7 +5782,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006F">
+				<Item class="ModuleScript" referent="RBX00000073">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7653,7 +8860,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000070">
+				<Item class="ModuleScript" referent="RBX00000074">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7684,6 +8891,13 @@ local LANE_LENGTH = 100
 local PET_START_X = 0
 local ENEMY_START_X = LANE_LENGTH
 local ATTACK_COOLDOWN = 1.0 -- seconds between attacks (normalizes DPS across frame rates)
+
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
 
 function CampaignService.init(dataService, currencyService, petService)
 	CampaignService._dataService = dataService
@@ -7843,42 +9057,68 @@ function CampaignService.deployPet(player, petInstanceId)
 		return false, "Pet not found in inventory"
 	end
 
-	-- Get energy cost from rarity
+	-- Get energy cost from rarity.
 	local deployCost = CampaignData.DeployCosts[petInstance.rarity]
-	if not deployCost then
+	if not isFiniteNumber(deployCost) or deployCost < 0 then
 		return false, "Unknown rarity for deploy cost"
 	end
 
-	-- Validate energy
-	if battle.energy < deployCost then
+	-- Validate energy before potentially fallible stat providers.
+	if not isFiniteNumber(battle.energy) or battle.energy < deployCost then
 		return false, "Not enough energy"
 	end
 
-	-- Check for duplicate pet deployment (prevent deploying same pet twice)
+	-- Check for duplicate pet deployment (prevent deploying same pet twice).
 	for _, deployed in ipairs(battle.deployedPets) do
 		if deployed.id == petInstanceId then
 			return false, "Pet already deployed"
 		end
 	end
 
-	-- Deduct energy
+	-- Resolve and sanitize all derived stats before crossing the energy/inventory
+	-- point of no return. Missing, throwing, or malformed providers are neutral.
+	if type(CampaignService._petService) ~= "table"
+		or type(CampaignService._petService.getPetDamage) ~= "function"
+		or type(CampaignService._petService.getCampaignLaneSpeed) ~= "function" then
+		return false, "Pet stats unavailable"
+	end
+	local damageOk, effectiveDamage = pcall(
+		CampaignService._petService.getPetDamage,
+		petInstance,
+		player
+	)
+	local speedOk, speed = pcall(
+		CampaignService._petService.getCampaignLaneSpeed,
+		petInstance
+	)
+	local hp = damageOk and isFiniteNumber(effectiveDamage) and effectiveDamage >= 0
+		and effectiveDamage * 5
+		or nil
+	if not damageOk or not speedOk
+		or not isFiniteNumber(effectiveDamage) or effectiveDamage < 0
+		or not isFiniteNumber(speed) or speed < 0
+		or not isFiniteNumber(hp) or hp < 0 then
+		return false, "Pet stats unavailable"
+	end
+
+	-- Revalidate commit predicates after providers return in case a future
+	-- implementation yields. No energy is consumed unless the entity can commit.
+	if not isFiniteNumber(battle.energy) or battle.energy < deployCost then
+		return false, "Not enough energy"
+	end
+	for _, deployed in ipairs(battle.deployedPets) do
+		if deployed.id == petInstanceId then
+			return false, "Pet already deployed"
+		end
+	end
+
 	battle.energy = battle.energy - deployCost
-
-	-- Calculate effective damage with upgrades
-	local effectiveDamage = CampaignService._petService.getPetDamage(petInstance, player)
-
-	-- Get pet base speed from PetData
-	local PetData = require(game.ReplicatedStorage.Shared.PetData)
-	local petDef = PetData.Pets[petInstance.petId]
-	local speed = petDef and petDef.baseSpeed or 10
-
-	-- Add pet entity to deployed list
 	table.insert(battle.deployedPets, {
 		id = petInstanceId,
 		name = petInstance.name,
 		rarity = petInstance.rarity,
-		hp = effectiveDamage * 5, -- HP based on damage as simple scaling
-		maxHp = effectiveDamage * 5,
+		hp = hp,
+		maxHp = hp,
 		damage = effectiveDamage,
 		sourcePet = petInstance, -- server-only reference for current centralized damage
 		speed = speed,
@@ -7888,12 +9128,13 @@ function CampaignService.deployPet(player, petInstanceId)
 		attackTimer = 0, -- cooldown timer for attacks
 	})
 
-	-- Fire update event
+	-- Transport is post-commit and best-effort; it cannot make a completed deploy
+	-- retryable or trigger a duplicate energy charge.
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("CampaignBattleUpdate")
 		if event then
-			event:FireClient(player, CampaignService._getBattleSnapshot(battle))
+			pcall(event.FireClient, event, player, CampaignService._getBattleSnapshot(battle))
 		end
 	end
 
@@ -7928,10 +9169,21 @@ end
 -- expire during an active campaign without duplicating PetService's damage logic.
 local function getCurrentPetDamage(userId, deployedPet)
 	local player = Players:GetPlayerByUserId(userId)
-	if player and deployedPet.sourcePet then
-		return CampaignService._petService.getPetDamage(deployedPet.sourcePet, player)
+	if player and deployedPet.sourcePet
+		and type(CampaignService._petService) == "table"
+		and type(CampaignService._petService.getPetDamage) == "function" then
+		local ok, damage = pcall(
+			CampaignService._petService.getPetDamage,
+			deployedPet.sourcePet,
+			player
+		)
+		if ok and isFiniteNumber(damage) and damage >= 0 then
+			return damage
+		end
 	end
-	return deployedPet.damage
+	return isFiniteNumber(deployedPet.damage) and deployedPet.damage >= 0
+		and deployedPet.damage
+		or 0
 end
 
 -- Main update loop (called every Heartbeat)
@@ -8255,7 +9507,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000071">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8280,6 +9532,8 @@ EggService._questService = nil
 EggService._upgradeTreeService = nil
 EggService._potionService = nil
 EggService._hatchLock = {}
+EggService._activeTransactions = {}
+EggService._shuttingDown = false
 EggService._transactionHook = nil
 EggService._stationValidator = nil
 EggService._nextBatchId = 0
@@ -8317,6 +9571,9 @@ function EggService.init(dataService, currencyService, petService, upgradeTreeSe
 	EggService._currencyService = currencyService
 	EggService._petService = petService
 	EggService._upgradeTreeService = upgradeTreeService
+	EggService._hatchLock = {}
+	EggService._activeTransactions = {}
+	EggService._shuttingDown = false
 end
 
 function EggService.setPotionService(potionService)
@@ -8568,13 +9825,18 @@ local function withHatchLock(player, callback)
 	if not player then
 		return nil, "Invalid parameters"
 	end
+	if EggService._shuttingDown then
+		return nil, "Hatching is unavailable"
+	end
 	local lockKey = player.UserId or player
 	if EggService._hatchLock[lockKey] then
 		return nil, "Already hatching eggs"
 	end
 	EggService._hatchLock[lockKey] = true
 	local callSucceeded, result, hatchError = pcall(callback)
-	EggService._hatchLock[lockKey] = nil
+	if EggService._activeTransactions[lockKey] == nil then
+		EggService._hatchLock[lockKey] = nil
+	end
 	if not callSucceeded then
 		return nil, "Hatch failed safely"
 	end
@@ -8633,28 +9895,64 @@ local function makeBatchId(player)
 end
 
 local function rollbackTransaction(transaction)
+	if transaction.committed then return true end
 	local inventoryRestored = true
-	if transaction.prepared and transaction.prepared.mutationStarted then
-		inventoryRestored = EggService._petService.rollbackHatchBatch(transaction.prepared) == true
+	if transaction.prepared then
+		if transaction.prepared.mutationStarted then
+			local ok, restored = pcall(
+				EggService._petService.rollbackHatchBatch,
+				transaction.prepared,
+				transaction.inventoryLease
+			)
+			inventoryRestored = ok and restored == true
+		end
+		if inventoryRestored then
+			transaction.prepared = nil
+		end
 	end
 	local chargesRestored = true
 	if transaction.shinyChargeTransaction then
-		chargesRestored = EggService._potionService
-			and EggService._potionService.rollbackShinyChargeTransaction(
-				transaction.shinyChargeTransaction
-			) == true
-		transaction.shinyChargeTransaction = nil
+		local ok, restored = pcall(
+			EggService._potionService.rollbackShinyChargeTransaction,
+			transaction.shinyChargeTransaction
+		)
+		chargesRestored = ok and restored == true
+		if chargesRestored then
+			transaction.shinyChargeTransaction = nil
+		end
 	end
 	local currencyRestored = true
 	if transaction.spent and transaction.totalCost > 0 then
-		currencyRestored = EggService._currencyService.creditRaw(
+		local ok, restored = pcall(
+			EggService._currencyService.creditRaw,
 			transaction.player,
 			"coins",
 			transaction.totalCost
-		) == true
-		transaction.spent = false
+		)
+		currencyRestored = ok and restored == true
+		if currencyRestored then
+			transaction.spent = false
+		end
 	end
 	return inventoryRestored and chargesRestored and currencyRestored
+end
+
+local function settleTransaction(transaction)
+	if transaction.executing then return false end
+	if not rollbackTransaction(transaction) then return false end
+	local ok, released = pcall(
+		EggService._petService.endInventoryMutation,
+		transaction.player,
+		transaction.inventoryLease,
+		transaction.committed == true
+	)
+	if not ok or released ~= true then return false end
+	local userId = transaction.player.UserId or transaction.player
+	if EggService._activeTransactions[userId] == transaction then
+		EggService._activeTransactions[userId] = nil
+		EggService._hatchLock[userId] = nil
+	end
+	return true
 end
 
 local function notifyCommittedBatch(player, result)
@@ -8712,9 +10010,20 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	if options.bypassStation ~= true and not isNearStation(player, eggType) then
 		return nil, "Move closer to this egg station"
 	end
+	if EggService._shuttingDown then
+		return nil, "Hatching is unavailable"
+	end
 
+	local inventoryLease = EggService._petService.beginInventoryMutation(player, "EggService")
+	if not inventoryLease then
+		return nil, "Pet inventory mutation already in progress"
+	end
+	local userId = player.UserId or player
 	local transaction = {
 		player = player,
+		userId = userId,
+		inventoryLease = inventoryLease,
+		executing = true,
 		eggType = eggType,
 		count = validatedCount,
 		prepared = nil,
@@ -8722,7 +10031,9 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		shinyBoostCount = 0,
 		spent = false,
 		totalCost = 0,
+		committed = false,
 	}
+	EggService._activeTransactions[userId] = transaction
 
 	local function performTransaction()
 		local eggDef = PetData.Eggs[eggType]
@@ -8777,7 +10088,11 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 			runTransactionHook("afterSpend", transaction)
 		end
 
-		local committed, commitError = EggService._petService.commitHatchBatch(player, prepared)
+		local committed, commitError = EggService._petService.commitHatchBatch(
+			player,
+			prepared,
+			transaction.inventoryLease
+		)
 		if not committed then
 			return nil, commitError
 		end
@@ -8797,7 +10112,35 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		rollbackSucceeded = rollbackTransaction(transaction)
 	end
 
-	if not rollbackSucceeded then
+	if callSucceeded and result and transaction.shinyChargeTransaction then
+		local commitOk, committed = pcall(
+			EggService._potionService.commitShinyChargeTransaction,
+			transaction.shinyChargeTransaction
+		)
+		if commitOk and committed == true then
+			transaction.shinyChargeTransaction = nil
+		else
+			result = nil
+			hatchError = "Hatch failed safely"
+			rollbackSucceeded = rollbackTransaction(transaction)
+		end
+	end
+
+	if callSucceeded and result then
+		transaction.committed = true
+		transaction.prepared = nil
+		transaction.spent = false
+	end
+	transaction.executing = false
+	local settled = rollbackSucceeded and settleTransaction(transaction)
+
+	if not rollbackSucceeded or not settled then
+		-- Currency/pet commit is final. A post-commit lease-release failure retains
+		-- the owner for lifecycle retry but never turns a paid hatch into a retry.
+		if transaction.committed and result then
+			notifyCommittedBatch(player, result)
+			return result, nil
+		end
 		return nil, "Hatch rollback failed"
 	end
 	if not callSucceeded then
@@ -8805,16 +10148,6 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	end
 	if not result then
 		return nil, hatchError
-	end
-	if transaction.shinyChargeTransaction then
-		if not EggService._potionService
-			or EggService._potionService.commitShinyChargeTransaction(
-				transaction.shinyChargeTransaction
-			) ~= true then
-			local restored = rollbackTransaction(transaction)
-			return nil, restored and "Hatch failed safely" or "Hatch rollback failed"
-		end
-		transaction.shinyChargeTransaction = nil
 	end
 
 	notifyCommittedBatch(player, result)
@@ -8836,11 +10169,38 @@ function EggService.hatchFree(player, eggType)
 	})
 end
 
-function EggService.onPlayerRemoving(player)
-	if not player then return end
+function EggService.cleanup(player)
+	if not player then return false end
 	local key = player.UserId or player
-	EggService._hatchLock[key] = nil
+	local transaction = EggService._activeTransactions[key]
+	if transaction then
+		return settleTransaction(transaction)
+	end
+	if EggService._hatchLock[key] ~= nil then
+		-- An ownerless hatch lock is never guessed stale.
+		return false
+	end
+	return true
 end
+
+function EggService.beginShutdown()
+	EggService._shuttingDown = true
+end
+
+function EggService.prepareForShutdown()
+	EggService.beginShutdown()
+	local settled = true
+	local transactions = {}
+	for _, transaction in pairs(EggService._activeTransactions) do
+		table.insert(transactions, transaction)
+	end
+	for _, transaction in ipairs(transactions) do
+		if not settleTransaction(transaction) then settled = false end
+	end
+	return settled
+end
+
+EggService.onPlayerRemoving = EggService.cleanup
 
 function EggService.getAvailableEggs(player)
 	if not player then
@@ -8868,7 +10228,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000072">
+				<Item class="ModuleScript" referent="RBX00000076">
 					<Properties>
 						<string name="Name">AutoHatchService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9531,7 +10891,7 @@ return AutoHatchService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000073">
+				<Item class="ModuleScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9731,7 +11091,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000074">
+				<Item class="ModuleScript" referent="RBX00000078">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9881,7 +11241,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000079">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10375,7 +11735,7 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000076">
+				<Item class="ModuleScript" referent="RBX0000007A">
 					<Properties>
 						<string name="Name">PotionService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11142,7 +12502,7 @@ return PotionService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000077">
+				<Item class="ModuleScript" referent="RBX0000007B">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11558,7 +12918,7 @@ return UpgradeTreeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000078">
+				<Item class="ModuleScript" referent="RBX0000007C">
 					<Properties>
 						<string name="Name">MovementService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -11762,7 +13122,7 @@ return MovementService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000079">
+				<Item class="ModuleScript" referent="RBX0000007D">
 					<Properties>
 						<string name="Name">PickupService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -12153,15 +13513,15 @@ return PickupService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX00000085">
+	<Item class="StarterPlayer" referent="RBX00000089">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000084">
+		<Item class="StarterPlayerScripts" referent="RBX00000088">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX00000083">
+				<Item class="LocalScript" referent="RBX00000087">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -12201,6 +13561,12 @@ local MachineClientSession = require(Shared:WaitForChild("MachineClientSession")
 -- deployments where the server has not published the new contract yet.
 local autoHatchSessionModuleObject = Shared:FindFirstChild("AutoHatchClientSession")
 local AutoHatchClientSession = autoHatchSessionModuleObject and require(autoHatchSessionModuleObject) or nil
+-- QOF-19 is also optional during rolling deployment. Never wait for a client
+-- session module that an older server may not have replicated.
+local enchantingSessionModuleObject = Shared:FindFirstChild("EnchantingClientSession")
+local EnchantingClientSession = enchantingSessionModuleObject and require(enchantingSessionModuleObject) or nil
+local enchantingContractModuleObject = Shared:FindFirstChild("EnchantingClientContract")
+local EnchantingClientContract = enchantingContractModuleObject and require(enchantingContractModuleObject) or nil
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -12258,6 +13624,10 @@ local PurchaseAutoHatch = Remotes:FindFirstChild("PurchaseAutoHatch")
 local SetAutoHatchBatch = Remotes:FindFirstChild("SetAutoHatchBatch")
 local StartAutoHatch = Remotes:FindFirstChild("StartAutoHatch")
 local StopAutoHatch = Remotes:FindFirstChild("StopAutoHatch")
+-- Missing QOF-19 remotes make enchanting visibly unavailable without blocking
+-- the rest of client startup.
+local GetEnchantingState = Remotes:FindFirstChild("GetEnchantingState")
+local RollPetEnchant = Remotes:FindFirstChild("RollPetEnchant")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -12798,6 +14168,126 @@ uiController:setAutoHatchCallbacks({
 if AutoHatchStateUpdated then
 	AutoHatchStateUpdated.OnClientEvent:Connect(applyAutoHatchState)
 end
+
+-- QOF-19 enchanting is an optional Contract V1 surface. Main constructs every
+-- request itself; the UI receives only fully validated, current authoritative
+-- state DTOs.
+local ENCHANTING_CONTRACT_VERSION = 1
+local ENCHANTING_REASON_CODES = {
+	INVALID_REQUEST = true,
+	RUNTIME_DISABLED = true,
+	SERVICE_UNAVAILABLE = true,
+	PROFILE_UNAVAILABLE = true,
+	PET_NOT_FOUND = true,
+	INVALID_PET_STATE = true,
+	STALE_STATE = true,
+	INSUFFICIENT_BALANCE = true,
+	BUSY = true,
+	RATE_LIMITED = true,
+	TECHNICAL_FAILURE = true,
+	ROLLBACK_FAILED = true,
+}
+local enchantingSession = EnchantingClientSession and EnchantingClientSession.new() or nil
+
+local function validEnchantingState(state, petInstanceId)
+	return EnchantingClientContract ~= nil
+		and EnchantingClientContract.validateState(state, petInstanceId) == true
+end
+
+local function closeEnchantingSession()
+	if enchantingSession then
+		EnchantingClientSession.close(enchantingSession)
+	end
+	uiController:closePetEnchanting()
+end
+
+local requestEnchantingState
+
+local function finishEnchantingRequest(operation, invoked, success, reason, state)
+	if not operation or not enchantingSession
+		or not EnchantingClientSession.isCurrent(enchantingSession, operation) then
+		return
+	end
+	local validResultTuple = type(success) == "boolean"
+		and ((success == true and reason == nil)
+			or (success == false and ENCHANTING_REASON_CODES[reason] == true))
+	if not invoked or not validResultTuple
+		or not validEnchantingState(state, operation.petInstanceId) then
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not EnchantingClientSession.acceptState(
+		enchantingSession,
+		operation,
+		state,
+		success == true
+	) then
+		-- The stale payload itself never mutates the UI. One fresh GET gets a
+		-- retry opportunity without permitting an attacker to create a loop.
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		if operation.staleRefresh then
+			uiController:showEnchantingUnavailable("UNAVAILABLE")
+		else
+			requestEnchantingState(operation.petInstanceId, true)
+		end
+		return
+	end
+	uiController:applyEnchantingState(state, success == true, reason, operation.action)
+end
+
+requestEnchantingState = function(petInstanceId, staleRefresh)
+	if not enchantingSession
+		or not EnchantingClientSession.selectPet(enchantingSession, petInstanceId) then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not GetEnchantingState or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "GET_STATE")
+	if not operation then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	operation.staleRefresh = staleRefresh == true
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return GetEnchantingState:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "GET_STATE",
+				petInstanceId = operation.petInstanceId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+local function rollPetEnchant()
+	if not enchantingSession or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "ROLL")
+	if not operation then return end
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return RollPetEnchant:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "ROLL",
+				petInstanceId = operation.petInstanceId,
+				expectedStateRevision = operation.expectedStateRevision,
+				expectedEnchantId = operation.expectedEnchantId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+uiController:setEnchantingCallbacks(requestEnchantingState, rollPetEnchant, closeEnchantingSession)
 
 -- QOF-17 Machine sessions are created only by the central runtime prompt router.
 -- Attributes are UX routing data; the server independently validates the private
@@ -13424,6 +14914,7 @@ player.CharacterRemoving:Connect(function()
 	activeEggPrompt = nil
 	activeEggType = nil
 	closeHatchPurchaseDialog()
+	closeEnchantingSession()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end
@@ -13440,7 +14931,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007D">
+				<Item class="ModuleScript" referent="RBX00000081">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -13524,6 +15015,28 @@ local VARIANT_RANK = {
 	Golden = 2,
 	Shiny = 3,
 	Rainbow = 4,
+}
+local ENCHANT_DISPLAY_NAMES = {
+	StrongI = "Strong I",
+	StrongII = "Strong II",
+	StrongIII = "Strong III",
+	AgileI = "Agile I",
+	AgileII = "Agile II",
+	AgileIII = "Agile III",
+}
+local ENCHANT_REASON_TEXT = {
+	RUNTIME_DISABLED = "Enchanting is currently unavailable.",
+	SERVICE_UNAVAILABLE = "Enchanting is currently unavailable.",
+	PROFILE_UNAVAILABLE = "Your pet profile is unavailable.",
+	PET_NOT_FOUND = "This pet is no longer available.",
+	INVALID_PET_STATE = "This pet cannot be enchanted safely.",
+	STALE_STATE = "Pet state changed. Review the refreshed details.",
+	INSUFFICIENT_BALANCE = "Not enough Diamonds.",
+	BUSY = "Another enchanting request is already running.",
+	RATE_LIMITED = "Please wait a moment and try again.",
+	TECHNICAL_FAILURE = "Enchanting failed safely. Please try again.",
+	ROLLBACK_FAILED = "Enchanting is unavailable. Please refresh.",
+	INVALID_REQUEST = "Enchanting request was rejected safely.",
 }
 
 local MACHINE_UI_BY_ID = {
@@ -13722,6 +15235,17 @@ function UIController.new()
 	self._machineResultLabel = nil
 	self._machineConfirmButton = nil
 	self._machineCancelButton = nil
+	self._enchantingCallbacks = {}
+	self._petDetailPetId = nil
+	self._petDetailOverlay = nil
+	self._petDetailNameLabel = nil
+	self._petDetailEnchantLabel = nil
+	self._petDetailCostLabel = nil
+	self._petDetailOutcomesFrame = nil
+	self._petDetailFeedbackLabel = nil
+	self._petDetailActionButton = nil
+	self._petDetailState = nil
+	self._enchantingBusy = false
 	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
@@ -15669,10 +17193,40 @@ function UIController:_refreshPetGrid()
 			end)
 		else
 			local isEquipped = self:_isPetEquipped(petUniqueId)
+			local petId = petUniqueId
+			local detailsBtn = Instance.new("TextButton")
+			detailsBtn.Name = "PetDetailsBtn"
+			detailsBtn.Size = UDim2.fromScale(0.38, 0.14)
+			detailsBtn.Position = UDim2.fromScale(0.08, 0.81)
+			detailsBtn.BackgroundColor3 = Color3.fromRGB(85, 105, 175)
+			detailsBtn.Text = "Details"
+			detailsBtn.TextColor3 = COLORS.White
+			detailsBtn.Font = Enum.Font.GothamBold
+			detailsBtn.TextScaled = true
+			detailsBtn.Active = type(petId) == "string" and petId ~= ""
+			detailsBtn.AutoButtonColor = detailsBtn.Active
+			detailsBtn.Parent = card
+
+			local detailsCorner = Instance.new("UICorner")
+			detailsCorner.CornerRadius = UDim.new(0, 6)
+			detailsCorner.Parent = detailsBtn
+
+			detailsBtn.MouseButton1Click:Connect(function()
+				if not petId then return end
+				self:openPetEnchanting(petId)
+				local onOpen = self._enchantingCallbacks.onOpen
+				if type(onOpen) == "function" then
+					local called = pcall(onOpen, petId)
+					if not called then self:showEnchantingUnavailable("UNAVAILABLE") end
+				else
+					self:showEnchantingUnavailable("UNAVAILABLE")
+				end
+			end)
+
 			local equipBtn = Instance.new("TextButton")
 			equipBtn.Name = "EquipBtn"
-			equipBtn.Size = UDim2.fromScale(0.8, 0.16)
-			equipBtn.Position = UDim2.fromScale(0.1, 0.8)
+			equipBtn.Size = UDim2.fromScale(0.42, 0.14)
+			equipBtn.Position = UDim2.fromScale(0.5, 0.81)
 			equipBtn.BackgroundColor3 = isEquipped and COLORS.ButtonRed or COLORS.ButtonGreen
 			equipBtn.Text = isEquipped and "Unequip" or "Equip"
 			equipBtn.TextColor3 = COLORS.White
@@ -15684,7 +17238,6 @@ function UIController:_refreshPetGrid()
 			equipCorner.CornerRadius = UDim.new(0, 6)
 			equipCorner.Parent = equipBtn
 
-			local petId = petUniqueId
 			equipBtn.MouseButton1Click:Connect(function()
 				if isEquipped then
 					self:_unequipPet(petId)
@@ -15695,12 +17248,12 @@ function UIController:_refreshPetGrid()
 
 			equipBtn.MouseEnter:Connect(function()
 				TweenService:Create(equipBtn, TweenInfo.new(0.1), {
-					Size = UDim2.fromScale(0.84, 0.17),
+					Size = UDim2.fromScale(0.44, 0.15),
 				}):Play()
 			end)
 			equipBtn.MouseLeave:Connect(function()
 				TweenService:Create(equipBtn, TweenInfo.new(0.1), {
-					Size = UDim2.fromScale(0.8, 0.16),
+					Size = UDim2.fromScale(0.42, 0.14),
 				}):Play()
 			end)
 		end
@@ -15807,6 +17360,340 @@ function UIController:_deleteSelectedPets()
 			end
 		end
 	end
+end
+
+--------------------------------------------------------------------------------
+-- INVENTORY PET DETAIL / ENCHANTING (server-authoritative Contract V1 state)
+--------------------------------------------------------------------------------
+function UIController:_findInventoryPet(petInstanceId)
+	for _, petData in ipairs(self._petInventoryData) do
+		if type(petData) == "table" and (petData.uniqueId or petData.id) == petInstanceId then
+			return petData
+		end
+	end
+	return nil
+end
+
+function UIController:_requestEnchantingClose()
+	if not self._petDetailPetId then return end
+	local onClose = self._enchantingCallbacks.onClose
+	if type(onClose) == "function" then
+		pcall(onClose)
+	end
+	if self._petDetailPetId then
+		self:closePetEnchanting()
+	end
+end
+
+function UIController:setEnchantingCallbacks(onOpen, onRoll, onClose)
+	self._enchantingCallbacks = {
+		onOpen = type(onOpen) == "function" and onOpen or nil,
+		onRoll = type(onRoll) == "function" and onRoll or nil,
+		onClose = type(onClose) == "function" and onClose or nil,
+	}
+end
+
+function UIController:openPetEnchanting(petInstanceId)
+	local petData = self:_findInventoryPet(petInstanceId)
+	if not petData then return false end
+	self:closePetEnchanting()
+	self._petDetailPetId = petInstanceId
+	self._petDetailState = nil
+	self._enchantingBusy = false
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "PetEnchantingDetail"
+	overlay.ResetOnSpawn = false
+	overlay.DisplayOrder = 20
+	overlay.Parent = self._playerGui
+	self._petDetailOverlay = overlay
+
+	local backdrop = Instance.new("Frame")
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	backdrop.BackgroundTransparency = 0.35
+	backdrop.BorderSizePixel = 0
+	backdrop.Parent = overlay
+
+	local panel = Instance.new("Frame")
+	panel.Name = "EnchantingPanel"
+	panel.Size = UDim2.fromScale(0.58, 0.8)
+	panel.Position = UDim2.fromScale(0.21, 0.1)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = backdrop
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 16)
+	panelCorner.Parent = panel
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = Color3.fromRGB(160, 95, 255)
+	panelStroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Name = "PetName"
+	title.Size = UDim2.fromScale(0.72, 0.08)
+	title.Position = UDim2.fromScale(0.14, 0.025)
+	title.BackgroundTransparency = 1
+	title.Text = tostring(petData.name or petData.petId or "Pet") .. " • Enchanting"
+	title.TextColor3 = COLORS.White
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+	self._petDetailNameLabel = title
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(40, 40)
+	closeBtn.Position = UDim2.new(1, -50, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 22
+	closeBtn.Parent = panel
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(1, 0)
+	closeCorner.Parent = closeBtn
+	closeBtn.MouseButton1Click:Connect(function()
+		self:_requestEnchantingClose()
+	end)
+
+	local enchantLabel = Instance.new("TextLabel")
+	enchantLabel.Name = "CurrentEnchant"
+	enchantLabel.Size = UDim2.fromScale(0.84, 0.07)
+	enchantLabel.Position = UDim2.fromScale(0.08, 0.12)
+	enchantLabel.BackgroundColor3 = COLORS.DarkBg
+	enchantLabel.Text = "Current Enchant: Loading…"
+	enchantLabel.TextColor3 = Color3.fromRGB(230, 210, 255)
+	enchantLabel.Font = Enum.Font.GothamBold
+	enchantLabel.TextScaled = true
+	enchantLabel.Parent = panel
+	local enchantCorner = Instance.new("UICorner")
+	enchantCorner.CornerRadius = UDim.new(0, 8)
+	enchantCorner.Parent = enchantLabel
+	self._petDetailEnchantLabel = enchantLabel
+
+	local costLabel = Instance.new("TextLabel")
+	costLabel.Name = "ServerCost"
+	costLabel.Size = UDim2.fromScale(0.84, 0.05)
+	costLabel.Position = UDim2.fromScale(0.08, 0.205)
+	costLabel.BackgroundTransparency = 1
+	costLabel.Text = "Cost: Loading from server…"
+	costLabel.TextColor3 = COLORS.DiamondCyan
+	costLabel.Font = Enum.Font.GothamBold
+	costLabel.TextScaled = true
+	costLabel.Parent = panel
+	self._petDetailCostLabel = costLabel
+
+	local outcomesTitle = Instance.new("TextLabel")
+	outcomesTitle.Size = UDim2.fromScale(0.84, 0.05)
+	outcomesTitle.Position = UDim2.fromScale(0.08, 0.27)
+	outcomesTitle.BackgroundTransparency = 1
+	outcomesTitle.Text = "Possible outcomes (server chances)"
+	outcomesTitle.TextColor3 = COLORS.White
+	outcomesTitle.Font = Enum.Font.GothamBold
+	outcomesTitle.TextScaled = true
+	outcomesTitle.Parent = panel
+
+	local outcomesFrame = Instance.new("Frame")
+	outcomesFrame.Name = "Outcomes"
+	outcomesFrame.Size = UDim2.fromScale(0.84, 0.31)
+	outcomesFrame.Position = UDim2.fromScale(0.08, 0.325)
+	outcomesFrame.BackgroundColor3 = COLORS.DarkBg
+	outcomesFrame.BorderSizePixel = 0
+	outcomesFrame.Parent = panel
+	local outcomesCorner = Instance.new("UICorner")
+	outcomesCorner.CornerRadius = UDim.new(0, 10)
+	outcomesCorner.Parent = outcomesFrame
+	local outcomesLayout = Instance.new("UIListLayout")
+	outcomesLayout.Padding = UDim.new(0.006, 0)
+	outcomesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	outcomesLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	outcomesLayout.Parent = outcomesFrame
+	self._petDetailOutcomesFrame = outcomesFrame
+
+	local warning = Instance.new("TextLabel")
+	warning.Name = "RerollWarning"
+	warning.Size = UDim2.fromScale(0.84, 0.085)
+	warning.Position = UDim2.fromScale(0.08, 0.65)
+	warning.BackgroundTransparency = 1
+	warning.Text = "Reroll replaces this one enchant slot. The old enchant cannot be kept."
+	warning.TextColor3 = Color3.fromRGB(255, 170, 90)
+	warning.Font = Enum.Font.GothamBold
+	warning.TextScaled = true
+	warning.TextWrapped = true
+	warning.Parent = panel
+
+	local feedback = Instance.new("TextLabel")
+	feedback.Name = "Feedback"
+	feedback.Size = UDim2.fromScale(0.84, 0.06)
+	feedback.Position = UDim2.fromScale(0.08, 0.745)
+	feedback.BackgroundTransparency = 1
+	feedback.Text = "Loading authoritative enchanting state…"
+	feedback.TextColor3 = Color3.fromRGB(190, 195, 220)
+	feedback.Font = Enum.Font.Gotham
+	feedback.TextScaled = true
+	feedback.TextWrapped = true
+	feedback.Parent = panel
+	self._petDetailFeedbackLabel = feedback
+
+	local actionBtn = Instance.new("TextButton")
+	actionBtn.Name = "EnchantActionBtn"
+	actionBtn.Size = UDim2.fromScale(0.56, 0.11)
+	actionBtn.Position = UDim2.fromScale(0.22, 0.84)
+	actionBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+	actionBtn.Text = "LOADING…"
+	actionBtn.TextColor3 = COLORS.White
+	actionBtn.Font = Enum.Font.GothamBold
+	actionBtn.TextScaled = true
+	actionBtn.Active = false
+	actionBtn.AutoButtonColor = false
+	actionBtn.Parent = panel
+	local actionCorner = Instance.new("UICorner")
+	actionCorner.CornerRadius = UDim.new(0, 10)
+	actionCorner.Parent = actionBtn
+	self._petDetailActionButton = actionBtn
+
+	actionBtn.MouseButton1Click:Connect(function()
+		if self._enchantingBusy or self._petDetailPetId ~= petInstanceId then return end
+		local onRoll = self._enchantingCallbacks.onRoll
+		if type(onRoll) ~= "function" then
+			self:showEnchantingUnavailable("UNAVAILABLE")
+			return
+		end
+		local called = pcall(onRoll)
+		if not called then self:showEnchantingUnavailable("UNAVAILABLE") end
+	end)
+	return true
+end
+
+function UIController:closePetEnchanting()
+	if self._petDetailOverlay and self._petDetailOverlay.Parent then
+		self._petDetailOverlay:Destroy()
+	end
+	self._petDetailPetId = nil
+	self._petDetailOverlay = nil
+	self._petDetailNameLabel = nil
+	self._petDetailEnchantLabel = nil
+	self._petDetailCostLabel = nil
+	self._petDetailOutcomesFrame = nil
+	self._petDetailFeedbackLabel = nil
+	self._petDetailActionButton = nil
+	self._petDetailState = nil
+	self._enchantingBusy = false
+end
+
+function UIController:setEnchantingBusy(isBusy)
+	if not self._petDetailPetId then return end
+	self._enchantingBusy = isBusy == true
+	local button = self._petDetailActionButton
+	if button and self._enchantingBusy then
+		button.Active = false
+		button.AutoButtonColor = false
+		button.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+		button.Text = "WORKING…"
+	end
+end
+
+function UIController:showEnchantingUnavailable(message)
+	if not self._petDetailPetId then return end
+	self._petDetailState = nil
+	self._enchantingBusy = false
+	if self._petDetailEnchantLabel then
+		self._petDetailEnchantLabel.Text = "Current Enchant: UNAVAILABLE"
+	end
+	if self._petDetailCostLabel then
+		self._petDetailCostLabel.Text = "Cost: UNAVAILABLE"
+	end
+	if self._petDetailFeedbackLabel then
+		self._petDetailFeedbackLabel.Text = tostring(message or "UNAVAILABLE")
+		self._petDetailFeedbackLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+	end
+	if self._petDetailActionButton then
+		self._petDetailActionButton.Text = "UNAVAILABLE"
+		self._petDetailActionButton.Active = false
+		self._petDetailActionButton.AutoButtonColor = false
+		self._petDetailActionButton.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+	end
+end
+
+function UIController:applyEnchantingState(state, actionSucceeded, reason, action)
+	if type(state) ~= "table" or type(state.pet) ~= "table"
+		or state.pet.instanceId ~= self._petDetailPetId then
+		return false
+	end
+	self._petDetailState = state
+	self._enchantingBusy = false
+	local petData = self:_findInventoryPet(self._petDetailPetId)
+	if not petData then
+		self:_requestEnchantingClose()
+		return false
+	end
+	if self._petDetailNameLabel then
+		self._petDetailNameLabel.Text = tostring(petData.name or petData.petId or "Pet") .. " • Enchanting"
+	end
+
+	local enchantId = state.pet.enchantId
+	local enchantName = enchantId == false and "None"
+		or ENCHANT_DISPLAY_NAMES[enchantId] or tostring(enchantId)
+	if self._petDetailEnchantLabel then
+		self._petDetailEnchantLabel.Text = "Current Enchant: " .. enchantName
+	end
+	if self._petDetailCostLabel then
+		self._petDetailCostLabel.Text = "Cost: " .. tostring(state.economy.price) .. " Diamonds"
+	end
+
+	if self._petDetailOutcomesFrame then
+		for _, child in ipairs(self._petDetailOutcomesFrame:GetChildren()) do
+			if child:IsA("TextLabel") then child:Destroy() end
+		end
+		for _, outcome in ipairs(state.outcomes) do
+			local row = Instance.new("TextLabel")
+			row.Name = "Outcome_" .. tostring(outcome.id)
+			row.Size = UDim2.fromScale(0.94, 0.145)
+			row.BackgroundTransparency = 1
+			local statName = outcome.stat == "damage" and "Damage" or "Speed"
+			row.Text = string.format("%s  •  %d%%  •  %s ×%.2f",
+				ENCHANT_DISPLAY_NAMES[outcome.id] or tostring(outcome.id),
+				outcome.weight, statName, outcome.multiplier)
+			row.TextColor3 = outcome.stat == "damage"
+				and Color3.fromRGB(255, 190, 100) or Color3.fromRGB(120, 220, 255)
+			row.Font = Enum.Font.GothamBold
+			row.TextScaled = true
+			row.Parent = self._petDetailOutcomesFrame
+		end
+	end
+
+	local canRoll = state.runtimeEnabled == true and state.availability.canRoll == true
+	if self._petDetailActionButton then
+		self._petDetailActionButton.Text = (state.isReroll and "REROLL" or "ENCHANT")
+			.. " • " .. tostring(state.economy.price) .. " DIAMONDS"
+		self._petDetailActionButton.Active = canRoll
+		self._petDetailActionButton.AutoButtonColor = canRoll
+		self._petDetailActionButton.BackgroundColor3 = canRoll
+			and Color3.fromRGB(160, 85, 235) or Color3.fromRGB(90, 90, 110)
+	end
+	if self._petDetailFeedbackLabel then
+		local feedbackText = "Ready."
+		local feedbackColor = Color3.fromRGB(170, 230, 190)
+		if reason then
+			feedbackText = ENCHANT_REASON_TEXT[reason] or "Enchanting is unavailable."
+			feedbackColor = Color3.fromRGB(255, 130, 110)
+		elseif action == "ROLL" and actionSucceeded then
+			-- A paid success remains the primary result even when the new balance
+			-- makes the next roll unavailable.
+			feedbackText = "Enchant applied: " .. enchantName .. "."
+		elseif state.availability.reason then
+			feedbackText = ENCHANT_REASON_TEXT[state.availability.reason]
+				or "Enchanting is unavailable."
+			feedbackColor = Color3.fromRGB(255, 130, 110)
+		end
+		self._petDetailFeedbackLabel.Text = feedbackText
+		self._petDetailFeedbackLabel.TextColor3 = feedbackColor
+	end
+	return true
 end
 
 --------------------------------------------------------------------------------
@@ -15992,17 +17879,19 @@ function UIController:_createMachineConfirmOverlay(count, chance, petId, selecte
 
 	-- Warning text
 	local warnLabel = Instance.new("TextLabel")
-	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
-	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
+	warnLabel.Size = UDim2.fromScale(0.86, 0.15)
+	warnLabel.Position = UDim2.fromScale(0.07, 0.49)
 	warnLabel.BackgroundTransparency = 1
-	warnLabel.Text = "WARNING: Pets and " .. tostring(definition.cost.amount)
-		.. " Diamonds are consumed even on failure!"
+	warnLabel.Text = "WARNING: Input pets and their enchants are always consumed. "
+		.. "Diamonds are also spent on a normal failure. "
+		.. "A successful output starts with no enchant."
 	if shinyCount > 1 then
 		warnLabel.Text ..= " Shiny does not stack."
 	end
 	warnLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	warnLabel.Font = Enum.Font.GothamBold
 	warnLabel.TextScaled = true
+	warnLabel.TextWrapped = true
 	warnLabel.Parent = panel
 
 	-- Confirm button
@@ -18168,6 +20057,9 @@ function UIController:setMachineCallbacks(onConfirm, onCancel)
 end
 
 function UIController:openMachineSelection(machineId)
+	-- A machine can consume the selected pet, so it always closes and invalidates
+	-- any enchanting detail/request before multi-selection starts.
+	self:_requestEnchantingClose()
 	local machineUi, definition = resolveMachineUi(machineId)
 	if not machineUi or not definition then
 		self:closeMachineSelection()
@@ -18223,6 +20115,19 @@ end
 
 function UIController:updatePetInventory(pets)
 	self._petInventoryData = type(pets) == "table" and pets or {}
+
+	-- The detail owns only a stable pet ID, never a stale table reference. Resolve
+	-- it against every authoritative inventory snapshot or close if deletion or a
+	-- machine consumed that exact pet.
+	if self._petDetailPetId then
+		local detailPet = self:_findInventoryPet(self._petDetailPetId)
+		if not detailPet then
+			self:_requestEnchantingClose()
+		elseif self._petDetailNameLabel then
+			self._petDetailNameLabel.Text = tostring(detailPet.name or detailPet.petId or "Pet")
+				.. " • Enchanting"
+		end
+	end
 
 	-- Drop stale or newly protected selections while preserving valid selections
 	-- across sorting and filtering refreshes.
@@ -18812,6 +20717,11 @@ function UIController:_refreshScreenData(screenName)
 end
 
 function UIController:openScreen(screenName)
+	-- Pet detail is inventory-owned. Any navigation away invalidates its request
+	-- generation before another screen becomes interactive.
+	if screenName ~= "PetInventory" then
+		self:_requestEnchantingClose()
+	end
 	-- Leaving a machine-owned inventory surface revokes the prompt capability and
 	-- its selection before another screen becomes interactive.
 	if screenName ~= "PetInventory" then
@@ -18879,6 +20789,7 @@ end
 
 function UIController:closeScreen(screenName)
 	if screenName == "PetInventory" then
+		self:_requestEnchantingClose()
 		self:_requestMachineCancel()
 	end
 	self:_requestHatchPurchaseCancel()
@@ -18936,6 +20847,7 @@ function UIController:updateXP(level, xp, xpNeeded)
 end
 
 function UIController:cleanup()
+	self:_requestEnchantingClose()
 	self:_requestHatchPurchaseCancel()
 	self:closeHatchPurchaseDialog()
 	for _, connection in ipairs(self._hatchPurchaseConnections) do
@@ -18987,7 +20899,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007E">
+				<Item class="ModuleScript" referent="RBX00000082">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -20641,7 +22553,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007F">
+				<Item class="ModuleScript" referent="RBX00000083">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -21556,7 +23468,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000080">
+				<Item class="ModuleScript" referent="RBX00000084">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -23159,7 +25071,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000081">
+				<Item class="ModuleScript" referent="RBX00000085">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -23341,7 +25253,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000082">
+				<Item class="ModuleScript" referent="RBX00000086">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -23646,11 +25558,11 @@ return UpgradeTreeController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX00000067">
+	<Item class="ReplicatedStorage" referent="RBX0000006A">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX0000003E">
+			<Item class="Folder" referent="RBX00000041">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
@@ -24168,7 +26080,7 @@ local BalanceConfig = {
 	},
 
 	Enchanting = {
-		RuntimeEnabled = false,
+		RuntimeEnabled = true,
 		RollCost = { currency = "diamonds", amount = 500 },
 		MaxSlotsPerPet = 1,
 		Pool = {
@@ -24308,12 +26220,7 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.EggQualityRuntimeEnabled == true, "Egg Quality must be enabled in QOF-07")
 	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == true, "Multi-Open must be enabled in QOF-08")
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
-	local futureSections = {
-		Enchanting = BalanceConfig.Enchanting,
-	}
-	for name, section in pairs(futureSections) do
-		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
-	end
+	assert(BalanceConfig.Enchanting.RuntimeEnabled == true, "Enchanting must be enabled in QOF-19")
 
 	-- QOF-17 exposes the Gold and Rainbow machines. The global gate remains an
 	-- emergency kill switch and each definition has an independent activation gate.
@@ -24673,10 +26580,58 @@ function BalanceConfig.Validate()
 	end
 	assert(potionCount == 5, "potion catalog must contain exactly five canonical items")
 
-	validateCost(BalanceConfig.Enchanting.RollCost, "Enchanting")
+	local enchanting = BalanceConfig.Enchanting
+	local enchantingFieldCount = 0
+	for key in pairs(enchanting) do
+		assert(
+			key == "RuntimeEnabled" or key == "RollCost" or key == "MaxSlotsPerPet" or key == "Pool",
+			"Enchanting has an unknown contract field"
+		)
+		enchantingFieldCount = enchantingFieldCount + 1
+	end
+	assert(enchantingFieldCount == 4, "Enchanting must contain exactly four contract fields")
+	assert(enchanting.RuntimeEnabled == true, "Enchanting runtime gate changed")
+	assert(enchanting.MaxSlotsPerPet == 1, "Enchanting must expose exactly one slot")
+	validateCost(enchanting.RollCost, "Enchanting")
+	local costFieldCount = 0
+	for key in pairs(enchanting.RollCost) do
+		assert(key == "currency" or key == "amount", "Enchanting roll cost has an unknown field")
+		costFieldCount = costFieldCount + 1
+	end
+	assert(costFieldCount == 2, "Enchanting roll cost must contain exactly two fields")
+	assert(
+		enchanting.RollCost.currency == "diamonds" and enchanting.RollCost.amount == 500,
+		"Enchanting roll cost must remain exactly 500 diamonds"
+	)
+	local expectedEnchants = {
+		{ id = "StrongI", weight = 35, stat = "damage", multiplier = 1.10 },
+		{ id = "StrongII", weight = 15, stat = "damage", multiplier = 1.25 },
+		{ id = "StrongIII", weight = 5, stat = "damage", multiplier = 1.50 },
+		{ id = "AgileI", weight = 30, stat = "speed", multiplier = 1.10 },
+		{ id = "AgileII", weight = 12, stat = "speed", multiplier = 1.20 },
+		{ id = "AgileIII", weight = 3, stat = "speed", multiplier = 1.35 },
+	}
+	assert(#enchanting.Pool == #expectedEnchants, "Enchanting pool must contain exactly six outcomes")
+	for key in pairs(enchanting.Pool) do
+		assert(
+			type(key) == "number" and key % 1 == 0 and key >= 1 and key <= #expectedEnchants,
+			"Enchanting pool has an unknown index"
+		)
+	end
 	local enchantWeight = 0
-	for _, enchant in ipairs(BalanceConfig.Enchanting.Pool) do
-		assert(enchant.weight > 0, enchant.id .. " weight must be positive")
+	for index, expected in ipairs(expectedEnchants) do
+		local enchant = enchanting.Pool[index]
+		assert(type(enchant) == "table", "Enchanting outcome is missing at index " .. tostring(index))
+		assert(enchant.id == expected.id, "Enchanting ID changed at index " .. tostring(index))
+		assert(enchant.weight == expected.weight, enchant.id .. " weight changed")
+		assert(enchant.stat == expected.stat, enchant.id .. " stat changed")
+		assert(enchant.multiplier == expected.multiplier, enchant.id .. " multiplier changed")
+		local fieldCount = 0
+		for key in pairs(enchant) do
+			assert(key == "id" or key == "weight" or key == "stat" or key == "multiplier", enchant.id .. " has an unknown field")
+			fieldCount = fieldCount + 1
+		end
+		assert(fieldCount == 4, enchant.id .. " must contain exactly four fields")
 		enchantWeight = enchantWeight + enchant.weight
 	end
 	assert(enchantWeight == 100, "enchant weights must sum to 100")
@@ -25295,6 +27250,89 @@ return PetVariantPresentation
 				</Item>
 				<Item class="ModuleScript" referent="RBX00000036">
 					<Properties>
+						<string name="Name">PetEnchantMath</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	PetEnchantMath.lua - Canonical QOF-19 pet enchant lookup and stat math.
+	BalanceConfig.Enchanting.Pool is the only whitelist and authority. Callers
+	receive defensive copies and must never trust stat/multiplier fields on pets.
+]]
+
+local BalanceConfig = require(script.Parent.BalanceConfig)
+
+local PetEnchantMath = {}
+
+local definitionsById = {}
+local orderedIds = {}
+for index, definition in ipairs(BalanceConfig.Enchanting.Pool) do
+	definitionsById[definition.id] = {
+		id = definition.id,
+		weight = definition.weight,
+		stat = definition.stat,
+		multiplier = definition.multiplier,
+	}
+	orderedIds[index] = definition.id
+end
+
+local function copyDefinition(definition)
+	if not definition then
+		return nil
+	end
+	return {
+		id = definition.id,
+		weight = definition.weight,
+		stat = definition.stat,
+		multiplier = definition.multiplier,
+	}
+end
+
+function PetEnchantMath.normalizeEnchantId(value)
+	if type(value) ~= "string" or value == "" then
+		return nil
+	end
+	local definition = definitionsById[value]
+	return definition and definition.id or nil
+end
+
+function PetEnchantMath.getDefinition(enchantId)
+	local normalized = PetEnchantMath.normalizeEnchantId(enchantId)
+	return copyDefinition(normalized and definitionsById[normalized] or nil)
+end
+
+function PetEnchantMath.getPublicPool()
+	local pool = {}
+	for index, enchantId in ipairs(orderedIds) do
+		pool[index] = copyDefinition(definitionsById[enchantId])
+	end
+	return pool
+end
+
+function PetEnchantMath.getMultiplierForStat(pet, stat)
+	if type(pet) ~= "table" or (stat ~= "damage" and stat ~= "speed") then
+		return 1
+	end
+	local enchantId = PetEnchantMath.normalizeEnchantId(rawget(pet, "enchantId"))
+	local definition = enchantId and definitionsById[enchantId] or nil
+	if not definition or definition.stat ~= stat then
+		return 1
+	end
+	return definition.multiplier
+end
+
+function PetEnchantMath.getDamageMultiplier(pet)
+	return PetEnchantMath.getMultiplierForStat(pet, "damage")
+end
+
+function PetEnchantMath.getCampaignSpeedMultiplier(pet)
+	return PetEnchantMath.getMultiplierForStat(pet, "speed")
+end
+
+return PetEnchantMath
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000037">
+					<Properties>
 						<string name="Name">HatchCinematicPolicy</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
@@ -25433,7 +27471,7 @@ return HatchCinematicPolicy
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000037">
+				<Item class="ModuleScript" referent="RBX00000038">
 					<Properties>
 						<string name="Name">ZoneData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -25648,7 +27686,7 @@ return ZoneData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000038">
+				<Item class="ModuleScript" referent="RBX00000039">
 					<Properties>
 						<string name="Name">CampaignData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -25831,7 +27869,7 @@ return CampaignData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000039">
+				<Item class="ModuleScript" referent="RBX0000003A">
 					<Properties>
 						<string name="Name">QuestData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -26133,7 +28171,7 @@ return QuestData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003A">
+				<Item class="ModuleScript" referent="RBX0000003B">
 					<Properties>
 						<string name="Name">MasteryData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -26285,7 +28323,7 @@ return MasteryData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003B">
+				<Item class="ModuleScript" referent="RBX0000003C">
 					<Properties>
 						<string name="Name">ShopData</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -26406,7 +28444,7 @@ return ShopData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003C">
+				<Item class="ModuleScript" referent="RBX0000003D">
 					<Properties>
 						<string name="Name">MachineClientSession</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -26500,7 +28538,7 @@ return MachineClientSession
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000003D">
+				<Item class="ModuleScript" referent="RBX0000003E">
 					<Properties>
 						<string name="Name">AutoHatchClientSession</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -26596,12 +28634,337 @@ return AutoHatchClientSession
 ]]></ProtectedString>
 					</Properties>
 				</Item>
+				<Item class="ModuleScript" referent="RBX0000003F">
+					<Properties>
+						<string name="Name">EnchantingClientSession</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	EnchantingClientSession.lua - Pure QOF-19 pet/revision request ownership.
+	The server remains authoritative for every state field and mutation. This
+	module only prevents responses from an old pet, generation, or revision from
+	owning the current client UI.
+]]
+
+local EnchantingClientSession = {}
+
+local CONTRACT_VERSION = 1
+local ACTIONS = {
+	GET_STATE = true,
+	ROLL = true,
+}
+local ENCHANT_IDS = {
+	StrongI = true,
+	StrongII = true,
+	StrongIII = true,
+	AgileI = true,
+	AgileII = true,
+	AgileIII = true,
+}
+
+local function validPetInstanceId(value)
+	return type(value) == "string" and value ~= "" and #value <= 128
+end
+
+local function validEnchantId(value)
+	return value == false or ENCHANT_IDS[value] == true
+end
+
+local function validRevision(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+		and value >= 0
+		and value % 1 == 0
+end
+
+local function clearSelection(session)
+	session.petInstanceId = nil
+	session.inFlight = false
+	session.hasState = false
+	session.stateRevision = nil
+	session.enchantId = nil
+end
+
+function EnchantingClientSession.new()
+	return {
+		generation = 0,
+		petInstanceId = nil,
+		inFlight = false,
+		hasState = false,
+		stateRevision = nil,
+		enchantId = nil,
+		revisionsByPet = {},
+	}
+end
+
+function EnchantingClientSession.selectPet(session, petInstanceId)
+	if type(session) ~= "table" then return false end
+	session.generation = (session.generation or 0) + 1
+	clearSelection(session)
+	if not validPetInstanceId(petInstanceId) then
+		return false
+	end
+	session.petInstanceId = petInstanceId
+	return true
+end
+
+function EnchantingClientSession.close(session)
+	if type(session) ~= "table" then return end
+	session.generation = (session.generation or 0) + 1
+	clearSelection(session)
+end
+
+function EnchantingClientSession.beginRequest(session, action)
+	if type(session) ~= "table" or session.inFlight
+		or not validPetInstanceId(session.petInstanceId)
+		or ACTIONS[action] ~= true then
+		return nil
+	end
+	if action == "ROLL" and (session.hasState ~= true
+		or not validRevision(session.stateRevision)
+		or not validEnchantId(session.enchantId)) then
+		return nil
+	end
+
+	session.generation = (session.generation or 0) + 1
+	session.inFlight = true
+	local operation = {
+		generation = session.generation,
+		petInstanceId = session.petInstanceId,
+		action = action,
+	}
+	if action == "ROLL" then
+		operation.expectedStateRevision = session.stateRevision
+		operation.expectedEnchantId = session.enchantId
+	end
+	return operation
+end
+
+function EnchantingClientSession.isCurrent(session, operation)
+	return type(session) == "table" and type(operation) == "table"
+		and session.inFlight == true
+		and session.generation == operation.generation
+		and session.petInstanceId == operation.petInstanceId
+		and ACTIONS[operation.action] == true
+end
+
+function EnchantingClientSession.finishRequest(session, operation)
+	if not EnchantingClientSession.isCurrent(session, operation) then
+		return false
+	end
+	session.inFlight = false
+	return true
+end
+
+function EnchantingClientSession.acceptState(session, operation, state, mutationSucceeded)
+	if not EnchantingClientSession.isCurrent(session, operation)
+		or type(state) ~= "table" or state.contractVersion ~= CONTRACT_VERSION
+		or type(state.pet) ~= "table"
+		or state.pet.instanceId ~= operation.petInstanceId
+		or not validRevision(state.stateRevision) then
+		return false
+	end
+	local enchantId = state.pet.enchantId
+	if not validEnchantId(enchantId) then
+		return false
+	end
+	local knownRevision = type(session.revisionsByPet) == "table"
+		and session.revisionsByPet[operation.petInstanceId] or nil
+	if validRevision(knownRevision) and state.stateRevision < knownRevision then
+		return false
+	end
+	if operation.action == "ROLL" and state.stateRevision < operation.expectedStateRevision then
+		return false
+	end
+	-- A successful paid mutation must advance beyond its optimistic revision.
+	-- Semantic failures may legitimately return the same authoritative state.
+	if operation.action == "ROLL" and mutationSucceeded == true
+		and state.stateRevision <= operation.expectedStateRevision then
+		return false
+	end
+
+	session.revisionsByPet[operation.petInstanceId] = state.stateRevision
+	session.stateRevision = state.stateRevision
+	session.enchantId = enchantId
+	session.hasState = true
+	session.inFlight = false
+	return true
+end
+
+return EnchantingClientSession
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000040">
+					<Properties>
+						<string name="Name">EnchantingClientContract</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	EnchantingClientContract.lua - Pure QOF-19 Contract V1 response validation.
+	Only the exact canonical server DTO is accepted before client session/UI state
+	can change. Every nested object must be a plain table with no extra keys.
+]]
+
+local EnchantingClientContract = {}
+
+local CONTRACT_VERSION = 1
+local REASON_CODES = {
+	INVALID_REQUEST = true,
+	RUNTIME_DISABLED = true,
+	SERVICE_UNAVAILABLE = true,
+	PROFILE_UNAVAILABLE = true,
+	PET_NOT_FOUND = true,
+	INVALID_PET_STATE = true,
+	STALE_STATE = true,
+	INSUFFICIENT_BALANCE = true,
+	BUSY = true,
+	RATE_LIMITED = true,
+	TECHNICAL_FAILURE = true,
+	ROLLBACK_FAILED = true,
+}
+local OUTCOMES = {
+	{ id = "StrongI", weight = 35, stat = "damage", multiplier = 1.10 },
+	{ id = "StrongII", weight = 15, stat = "damage", multiplier = 1.25 },
+	{ id = "StrongIII", weight = 5, stat = "damage", multiplier = 1.50 },
+	{ id = "AgileI", weight = 30, stat = "speed", multiplier = 1.10 },
+	{ id = "AgileII", weight = 12, stat = "speed", multiplier = 1.20 },
+	{ id = "AgileIII", weight = 3, stat = "speed", multiplier = 1.35 },
+}
+local OUTCOME_IDS = {}
+for _, outcome in ipairs(OUTCOMES) do
+	OUTCOME_IDS[outcome.id] = true
+end
+
+local function finiteInteger(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+		and value % 1 == 0
+end
+
+local function exactPlainTable(value, allowedKeys, requiredKeys)
+	if type(value) ~= "table" or getmetatable(value) ~= nil then
+		return false
+	end
+	for key in next, value do
+		if allowedKeys[key] ~= true then
+			return false
+		end
+	end
+	for key in pairs(requiredKeys or allowedKeys) do
+		if rawget(value, key) == nil then
+			return false
+		end
+	end
+	return true
+end
+
+function EnchantingClientContract.isReasonCode(value)
+	return REASON_CODES[value] == true
+end
+
+function EnchantingClientContract.validateState(state, petInstanceId)
+	if not exactPlainTable(state, {
+		contractVersion = true,
+		stateRevision = true,
+		runtimeEnabled = true,
+		pet = true,
+		economy = true,
+		maxSlotsPerPet = true,
+		outcomes = true,
+		availability = true,
+		isReroll = true,
+	}) then
+		return false
+	end
+	if rawget(state, "contractVersion") ~= CONTRACT_VERSION
+		or not finiteInteger(rawget(state, "stateRevision"))
+		or state.stateRevision < 0
+		or type(rawget(state, "runtimeEnabled")) ~= "boolean"
+		or rawget(state, "maxSlotsPerPet") ~= 1
+		or type(rawget(state, "isReroll")) ~= "boolean" then
+		return false
+	end
+
+	local pet = rawget(state, "pet")
+	if not exactPlainTable(pet, { instanceId = true, enchantId = true })
+		or rawget(pet, "instanceId") ~= petInstanceId
+		or not (rawget(pet, "enchantId") == false
+			or OUTCOME_IDS[rawget(pet, "enchantId")] == true)
+		or state.isReroll ~= (pet.enchantId ~= false) then
+		return false
+	end
+
+	local economy = rawget(state, "economy")
+	if not exactPlainTable(economy, { currency = true, price = true })
+		or rawget(economy, "currency") ~= "diamonds"
+		or rawget(economy, "price") ~= 500 then
+		return false
+	end
+
+	local availability = rawget(state, "availability")
+	if not exactPlainTable(
+		availability,
+		{ canRoll = true, reason = true },
+		{ canRoll = true }
+	) or type(rawget(availability, "canRoll")) ~= "boolean" then
+		return false
+	end
+	local reason = rawget(availability, "reason")
+	if reason ~= nil and not EnchantingClientContract.isReasonCode(reason) then
+		return false
+	end
+	if availability.canRoll then
+		if reason ~= nil or state.runtimeEnabled ~= true then
+			return false
+		end
+	elseif reason == nil then
+		return false
+	end
+
+	local outcomes = rawget(state, "outcomes")
+	if type(outcomes) ~= "table" or getmetatable(outcomes) ~= nil then
+		return false
+	end
+	local count = 0
+	for key in next, outcomes do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #OUTCOMES then
+			return false
+		end
+		count = count + 1
+	end
+	if count ~= #OUTCOMES or rawlen(outcomes) ~= #OUTCOMES then
+		return false
+	end
+	for index, expected in ipairs(OUTCOMES) do
+		local outcome = rawget(outcomes, index)
+		if not exactPlainTable(outcome, {
+			id = true,
+			weight = true,
+			stat = true,
+			multiplier = true,
+		}) or rawget(outcome, "id") ~= expected.id
+			or rawget(outcome, "weight") ~= expected.weight
+			or rawget(outcome, "stat") ~= expected.stat
+			or rawget(outcome, "multiplier") ~= expected.multiplier then
+			return false
+		end
+	end
+	return true
+end
+
+return EnchantingClientContract
+]]></ProtectedString>
+					</Properties>
+				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX0000005A">
+			<Item class="Folder" referent="RBX0000005D">
 				<Properties>
 					<string name="Name">packages</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000059">
+				<Item class="ModuleScript" referent="RBX0000005C">
 					<Properties>
 						<string name="Name">vide</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -26617,7 +28980,7 @@ export type Context<T> = vide.Context<T>
 return vide
 ]]></ProtectedString>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX0000003F">
+					<Item class="ModuleScript" referent="RBX00000042">
 						<Properties>
 							<string name="Name">action</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26649,7 +29012,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000040">
+					<Item class="ModuleScript" referent="RBX00000043">
 						<Properties>
 							<string name="Name">apply</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26818,7 +29181,7 @@ return apply
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000041">
+					<Item class="ModuleScript" referent="RBX00000044">
 						<Properties>
 							<string name="Name">batch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26848,7 +29211,7 @@ return batch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000042">
+					<Item class="ModuleScript" referent="RBX00000045">
 						<Properties>
 							<string name="Name">branch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26895,7 +29258,7 @@ return branch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000043">
+					<Item class="ModuleScript" referent="RBX00000046">
 						<Properties>
 							<string name="Name">changed</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26920,7 +29283,7 @@ return changed
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000044">
+					<Item class="ModuleScript" referent="RBX00000047">
 						<Properties>
 							<string name="Name">cleanup</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26970,7 +29333,7 @@ return cleanup ::
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000045">
+					<Item class="ModuleScript" referent="RBX00000048">
 						<Properties>
 							<string name="Name">context</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27051,7 +29414,7 @@ return context
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000046">
+					<Item class="ModuleScript" referent="RBX00000049">
 						<Properties>
 							<string name="Name">create</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27168,7 +29531,7 @@ return (create :: any) :: Create
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000047">
+					<Item class="ModuleScript" referent="RBX0000004A">
 						<Properties>
 							<string name="Name">defaults</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27288,7 +29651,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000048">
+					<Item class="ModuleScript" referent="RBX0000004B">
 						<Properties>
 							<string name="Name">derive</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27313,7 +29676,7 @@ return derive
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000049">
+					<Item class="ModuleScript" referent="RBX0000004C">
 						<Properties>
 							<string name="Name">effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27332,7 +29695,7 @@ return effect :: (<T>(callback: (T) -> T, initial_value: T) -> ()) & ((callback:
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004A">
+					<Item class="ModuleScript" referent="RBX0000004D">
 						<Properties>
 							<string name="Name">flags</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27351,7 +29714,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004B">
+					<Item class="ModuleScript" referent="RBX0000004E">
 						<Properties>
 							<string name="Name">graph</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27679,7 +30042,7 @@ return table.freeze {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004C">
+					<Item class="ModuleScript" referent="RBX0000004F">
 						<Properties>
 							<string name="Name">implicit_effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27811,7 +30174,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004D">
+					<Item class="ModuleScript" referent="RBX00000050">
 						<Properties>
 							<string name="Name">indexes</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -27939,7 +30302,7 @@ return indexes
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004E">
+					<Item class="ModuleScript" referent="RBX00000051">
 						<Properties>
 							<string name="Name">lib</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28066,7 +30429,7 @@ return vide
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004F">
+					<Item class="ModuleScript" referent="RBX00000052">
 						<Properties>
 							<string name="Name">mount</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28084,7 +30447,7 @@ return mount :: (<T>(component: () -> T, target: Instance) -> () -> ()) & ((comp
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000050">
+					<Item class="ModuleScript" referent="RBX00000053">
 						<Properties>
 							<string name="Name">read</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28096,7 +30459,7 @@ return read
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000051">
+					<Item class="ModuleScript" referent="RBX00000054">
 						<Properties>
 							<string name="Name">root</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28138,7 +30501,7 @@ return root :: <T...>(fn: (destroy: () -> ()) -> T...) -> (() -> (), T...)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000052">
+					<Item class="ModuleScript" referent="RBX00000055">
 						<Properties>
 							<string name="Name">show</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28181,7 +30544,7 @@ return show
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000053">
+					<Item class="ModuleScript" referent="RBX00000056">
 						<Properties>
 							<string name="Name">source</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28219,7 +30582,7 @@ return source :: (<T>(initial_value: T) -> Source<T>) & (<T>() -> Source<T>)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000054">
+					<Item class="ModuleScript" referent="RBX00000057">
 						<Properties>
 							<string name="Name">spring</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28554,7 +30917,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000055">
+					<Item class="ModuleScript" referent="RBX00000058">
 						<Properties>
 							<string name="Name">switch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28675,7 +31038,7 @@ return switch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000056">
+					<Item class="ModuleScript" referent="RBX00000059">
 						<Properties>
 							<string name="Name">timeout</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28709,7 +31072,7 @@ return function() return timeout, update_timeouts end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000057">
+					<Item class="ModuleScript" referent="RBX0000005A">
 						<Properties>
 							<string name="Name">untrack</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28741,7 +31104,7 @@ return untrack :: ( <T>(fn: () -> T) -> T ) & ( (fn: () -> ()) -> () )
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000058">
+					<Item class="ModuleScript" referent="RBX0000005B">
 						<Properties>
 							<string name="Name">values</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28881,11 +31244,11 @@ return values
 					</Item>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000066">
+			<Item class="Folder" referent="RBX00000069">
 				<Properties>
 					<string name="Name">modules</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000065">
+				<Item class="ModuleScript" referent="RBX00000068">
 					<Properties>
 						<string name="Name">formatNumber</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -28937,11 +31300,11 @@ return formatNumber
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="Folder" referent="RBX00000064">
+				<Item class="Folder" referent="RBX00000067">
 					<Properties>
 						<string name="Name">upgradeTree</string>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX0000005B">
+					<Item class="ModuleScript" referent="RBX0000005E">
 						<Properties>
 							<string name="Name">upgradeState</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -29044,7 +31407,7 @@ end
 return createUpgradeState]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005C">
+					<Item class="ModuleScript" referent="RBX0000005F">
 						<Properties>
 							<string name="Name">upgradeTree</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -30213,7 +32576,7 @@ return createUpgradeTree
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005D">
+					<Item class="ModuleScript" referent="RBX00000060">
 						<Properties>
 							<string name="Name">upgradeTreeData</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31076,7 +33439,7 @@ return upgradeTreeData
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005E">
+					<Item class="ModuleScript" referent="RBX00000061">
 						<Properties>
 							<string name="Name">upgradeTreeSettings</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -31154,29 +33517,29 @@ return upgradeTreeSettings
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="Folder" referent="RBX00000063">
+					<Item class="Folder" referent="RBX00000066">
 						<Properties>
 							<string name="Name">sounds</string>
 						</Properties>
-						<Item class="Sound" referent="RBX0000005F">
+						<Item class="Sound" referent="RBX00000062">
 							<Properties>
 								<string name="Name">close</string>
 								<Content name="SoundId"><url>rbxassetid://134438769993456</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000060">
+						<Item class="Sound" referent="RBX00000063">
 							<Properties>
 								<string name="Name">hover</string>
 								<Content name="SoundId"><url>rbxassetid://86397706758188</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000061">
+						<Item class="Sound" referent="RBX00000064">
 							<Properties>
 								<string name="Name">open</string>
 								<Content name="SoundId"><url>rbxassetid://72320208051245</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000062">
+						<Item class="Sound" referent="RBX00000065">
 							<Properties>
 								<string name="Name">upgrade</string>
 								<Content name="SoundId"><url>rbxassetid://72362215248423</url></Content>
@@ -31186,7 +33549,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX00000086">
+	<Item class="StarterGui" referent="RBX0000008A">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -31221,7 +33584,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX00000087">
+	<Item class="SoundService" referent="RBX0000008B">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

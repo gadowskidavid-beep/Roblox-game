@@ -30,6 +30,7 @@ local function mockRequire(path)
 	if path == BalanceConfig then return BalanceConfig end
 	if path == PetData then return PetData end
 	if path == SharedMock.PetVariantMath then return SharedMock.PetVariantMath end
+	if path == SharedMock.PetEnchantMath then return SharedMock.PetEnchantMath end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -45,6 +46,8 @@ end
 
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
 SharedMock.PetVariantMath = PetVariantMath
+local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
+SharedMock.PetEnchantMath = PetEnchantMath
 local DataSchema = originalRequire("src/ServerScriptService/Services/DataSchema")
 
 -- Restore require
@@ -300,7 +303,7 @@ describe("V6 pet migration", function()
 			equippedPets = {},
 		}, 1000)
 
-		expect(data.schemaVersion):toBe(9)
+		expect(data.schemaVersion):toBe(10)
 		expect(data.pets[1].variant):toBe("Normal")
 		expect(data.pets[1].shiny):toBeFalse()
 		expect(data.pets[1].damage):toBe(1)
@@ -416,7 +419,7 @@ describe("V6 potion persistence normalization", function()
 		}, 1000)
 		local snapshot = DataSchema.cloneForPersistence(migrated, 1000)
 		local reloaded = DataSchema.migrate(snapshot, 1000)
-		expect(reloaded.schemaVersion):toBe(9)
+		expect(reloaded.schemaVersion):toBe(10)
 		expect(reloaded.potionInventory):toEqual({ LuckPotion = 7, MegaLuckPotion = 3 })
 		snapshot.potionInventory.LuckPotion = 1
 		expect(migrated.potionInventory.LuckPotion):toBe(7)
@@ -535,7 +538,7 @@ end)
 describe("V7 persistent hatch preferences", function()
 	it("migrates V6 profiles without a preference to the x1 default", function()
 		local data = DataSchema.migrate({ schemaVersion = 6, coins = 250 }, 1000)
-		expect(data.schemaVersion):toBe(9)
+		expect(data.schemaVersion):toBe(10)
 		expect(data.hatchPreferences):toEqual({ preferredBatchCount = 1 })
 		expect(data.coins):toBe(250)
 	end)
@@ -660,7 +663,7 @@ describe("V8 structured potion sources and Auto-Drink selection", function()
 		expect(rollingQof13Save.potionBuffSources):toEqual(v8.potionBuffSources)
 
 		local recovered = DataSchema.migrate(rollingQof13Save, 1000)
-		expect(recovered.schemaVersion):toBe(9)
+		expect(recovered.schemaVersion):toBe(10)
 		expect(recovered.activeBuffs):toEqual({
 			luck = { sources = {
 				LuckPotion = { expiresAt = 1600 },
@@ -731,7 +734,7 @@ describe("V9 paid Auto-Hatch absolute expiry", function()
 	it("preserves only a canonical integer expiry in the exact live window", function()
 		for _, expiresAt in ipairs({ 1001, 1300, 1600 }) do
 			local data = DataSchema.migrate({ autoHatchExpiresAt = expiresAt }, 1000)
-			expect(data.schemaVersion):toBe(9)
+			expect(data.schemaVersion):toBe(10)
 			expect(data.autoHatchExpiresAt):toBe(expiresAt)
 		end
 	end)
@@ -753,5 +756,73 @@ describe("V9 paid Auto-Hatch absolute expiry", function()
 		expect(saved.hatchPreferences.preferredBatchCount):toBe(10)
 		expect(DataSchema.migrate(saved, 1499).autoHatchExpiresAt):toBe(1500)
 		expect(DataSchema.migrate(saved, 1500).autoHatchExpiresAt):toBe(0)
+	end)
+end)
+
+
+describe("DataSchema V10 pet enchant persistence", function()
+	it("migrates ordinary V9 pets without inventing an enchant", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 9,
+			pets = {
+				{ id = "plain", petId = "Buddy", variant = "Normal", damage = 999 },
+			},
+			equippedPets = {},
+		}, 1000)
+		expect(data.schemaVersion):toBe(10)
+		expect(data.pets[1].enchantId):toBeNil()
+		expect(data.pets[1].damage):toBe(1)
+	end)
+
+	it("preserves only a valid rolling enchantId and strips forged derived fields", function()
+		local valid = DataSchema.migrate({
+			schemaVersion = 9,
+			pets = {
+				{
+					id = "enchanted", petId = "Buddy", variant = "Golden", damage = 999,
+					enchantId = "StrongII", enchant = "StrongIII",
+					enchantData = { stat = "damage", multiplier = 999 },
+					enchants = { "StrongIII" }, enchantStat = "damage", enchantMultiplier = 999,
+				},
+			},
+			equippedPets = {},
+		}, 1000)
+		local pet = valid.pets[1]
+		expect(pet.enchantId):toBe("StrongII")
+		expect(pet.enchant):toBeNil()
+		expect(pet.enchantData):toBeNil()
+		expect(pet.enchants):toBeNil()
+		expect(pet.enchantStat):toBeNil()
+		expect(pet.enchantMultiplier):toBeNil()
+		-- The compatibility mirror remains canonical base damage, never enchanted damage.
+		expect(pet.damage):toBe(2)
+	end)
+
+	it("removes empty, wrong-type, and unknown enchant IDs", function()
+		local invalidValues = { "", "Unknown", "strongi", 12, true, { id = "StrongI" } }
+		for index, invalid in ipairs(invalidValues) do
+			local data = DataSchema.migrate({
+				pets = { { id = "pet-" .. tostring(index), petId = "Buddy", enchantId = invalid } },
+				equippedPets = {},
+			}, 1000)
+			expect(data.pets[1].enchantId):toBeNil()
+		end
+	end)
+
+	it("is idempotent across normalize, persistence clone, and reload", function()
+		local once = DataSchema.migrate({
+			schemaVersion = 9,
+			pets = {
+				{ id = "one", petId = "Buddy", enchantId = "AgileIII", enchantMultiplier = 50 },
+				{ id = "two", petId = "Dog", enchantId = "forged", enchant = "StrongI" },
+			},
+			equippedPets = {},
+		}, 1000)
+		local twice = DataSchema.migrate(once, 1000)
+		local snapshot = DataSchema.cloneForPersistence(twice, 1000)
+		local reloaded = DataSchema.migrate(snapshot, 1000)
+		expect(twice):toEqual(once)
+		expect(snapshot):toEqual(once)
+		expect(reloaded):toEqual(once)
 	end)
 end)

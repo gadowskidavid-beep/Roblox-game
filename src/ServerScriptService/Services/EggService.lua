@@ -19,6 +19,8 @@ EggService._questService = nil
 EggService._upgradeTreeService = nil
 EggService._potionService = nil
 EggService._hatchLock = {}
+EggService._activeTransactions = {}
+EggService._shuttingDown = false
 EggService._transactionHook = nil
 EggService._stationValidator = nil
 EggService._nextBatchId = 0
@@ -56,6 +58,9 @@ function EggService.init(dataService, currencyService, petService, upgradeTreeSe
 	EggService._currencyService = currencyService
 	EggService._petService = petService
 	EggService._upgradeTreeService = upgradeTreeService
+	EggService._hatchLock = {}
+	EggService._activeTransactions = {}
+	EggService._shuttingDown = false
 end
 
 function EggService.setPotionService(potionService)
@@ -307,13 +312,18 @@ local function withHatchLock(player, callback)
 	if not player then
 		return nil, "Invalid parameters"
 	end
+	if EggService._shuttingDown then
+		return nil, "Hatching is unavailable"
+	end
 	local lockKey = player.UserId or player
 	if EggService._hatchLock[lockKey] then
 		return nil, "Already hatching eggs"
 	end
 	EggService._hatchLock[lockKey] = true
 	local callSucceeded, result, hatchError = pcall(callback)
-	EggService._hatchLock[lockKey] = nil
+	if EggService._activeTransactions[lockKey] == nil then
+		EggService._hatchLock[lockKey] = nil
+	end
 	if not callSucceeded then
 		return nil, "Hatch failed safely"
 	end
@@ -372,28 +382,64 @@ local function makeBatchId(player)
 end
 
 local function rollbackTransaction(transaction)
+	if transaction.committed then return true end
 	local inventoryRestored = true
-	if transaction.prepared and transaction.prepared.mutationStarted then
-		inventoryRestored = EggService._petService.rollbackHatchBatch(transaction.prepared) == true
+	if transaction.prepared then
+		if transaction.prepared.mutationStarted then
+			local ok, restored = pcall(
+				EggService._petService.rollbackHatchBatch,
+				transaction.prepared,
+				transaction.inventoryLease
+			)
+			inventoryRestored = ok and restored == true
+		end
+		if inventoryRestored then
+			transaction.prepared = nil
+		end
 	end
 	local chargesRestored = true
 	if transaction.shinyChargeTransaction then
-		chargesRestored = EggService._potionService
-			and EggService._potionService.rollbackShinyChargeTransaction(
-				transaction.shinyChargeTransaction
-			) == true
-		transaction.shinyChargeTransaction = nil
+		local ok, restored = pcall(
+			EggService._potionService.rollbackShinyChargeTransaction,
+			transaction.shinyChargeTransaction
+		)
+		chargesRestored = ok and restored == true
+		if chargesRestored then
+			transaction.shinyChargeTransaction = nil
+		end
 	end
 	local currencyRestored = true
 	if transaction.spent and transaction.totalCost > 0 then
-		currencyRestored = EggService._currencyService.creditRaw(
+		local ok, restored = pcall(
+			EggService._currencyService.creditRaw,
 			transaction.player,
 			"coins",
 			transaction.totalCost
-		) == true
-		transaction.spent = false
+		)
+		currencyRestored = ok and restored == true
+		if currencyRestored then
+			transaction.spent = false
+		end
 	end
 	return inventoryRestored and chargesRestored and currencyRestored
+end
+
+local function settleTransaction(transaction)
+	if transaction.executing then return false end
+	if not rollbackTransaction(transaction) then return false end
+	local ok, released = pcall(
+		EggService._petService.endInventoryMutation,
+		transaction.player,
+		transaction.inventoryLease,
+		transaction.committed == true
+	)
+	if not ok or released ~= true then return false end
+	local userId = transaction.player.UserId or transaction.player
+	if EggService._activeTransactions[userId] == transaction then
+		EggService._activeTransactions[userId] = nil
+		EggService._hatchLock[userId] = nil
+	end
+	return true
 end
 
 local function notifyCommittedBatch(player, result)
@@ -451,9 +497,20 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	if options.bypassStation ~= true and not isNearStation(player, eggType) then
 		return nil, "Move closer to this egg station"
 	end
+	if EggService._shuttingDown then
+		return nil, "Hatching is unavailable"
+	end
 
+	local inventoryLease = EggService._petService.beginInventoryMutation(player, "EggService")
+	if not inventoryLease then
+		return nil, "Pet inventory mutation already in progress"
+	end
+	local userId = player.UserId or player
 	local transaction = {
 		player = player,
+		userId = userId,
+		inventoryLease = inventoryLease,
+		executing = true,
 		eggType = eggType,
 		count = validatedCount,
 		prepared = nil,
@@ -461,7 +518,9 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		shinyBoostCount = 0,
 		spent = false,
 		totalCost = 0,
+		committed = false,
 	}
+	EggService._activeTransactions[userId] = transaction
 
 	local function performTransaction()
 		local eggDef = PetData.Eggs[eggType]
@@ -516,7 +575,11 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 			runTransactionHook("afterSpend", transaction)
 		end
 
-		local committed, commitError = EggService._petService.commitHatchBatch(player, prepared)
+		local committed, commitError = EggService._petService.commitHatchBatch(
+			player,
+			prepared,
+			transaction.inventoryLease
+		)
 		if not committed then
 			return nil, commitError
 		end
@@ -536,7 +599,35 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		rollbackSucceeded = rollbackTransaction(transaction)
 	end
 
-	if not rollbackSucceeded then
+	if callSucceeded and result and transaction.shinyChargeTransaction then
+		local commitOk, committed = pcall(
+			EggService._potionService.commitShinyChargeTransaction,
+			transaction.shinyChargeTransaction
+		)
+		if commitOk and committed == true then
+			transaction.shinyChargeTransaction = nil
+		else
+			result = nil
+			hatchError = "Hatch failed safely"
+			rollbackSucceeded = rollbackTransaction(transaction)
+		end
+	end
+
+	if callSucceeded and result then
+		transaction.committed = true
+		transaction.prepared = nil
+		transaction.spent = false
+	end
+	transaction.executing = false
+	local settled = rollbackSucceeded and settleTransaction(transaction)
+
+	if not rollbackSucceeded or not settled then
+		-- Currency/pet commit is final. A post-commit lease-release failure retains
+		-- the owner for lifecycle retry but never turns a paid hatch into a retry.
+		if transaction.committed and result then
+			notifyCommittedBatch(player, result)
+			return result, nil
+		end
 		return nil, "Hatch rollback failed"
 	end
 	if not callSucceeded then
@@ -544,16 +635,6 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	end
 	if not result then
 		return nil, hatchError
-	end
-	if transaction.shinyChargeTransaction then
-		if not EggService._potionService
-			or EggService._potionService.commitShinyChargeTransaction(
-				transaction.shinyChargeTransaction
-			) ~= true then
-			local restored = rollbackTransaction(transaction)
-			return nil, restored and "Hatch failed safely" or "Hatch rollback failed"
-		end
-		transaction.shinyChargeTransaction = nil
 	end
 
 	notifyCommittedBatch(player, result)
@@ -575,11 +656,38 @@ function EggService.hatchFree(player, eggType)
 	})
 end
 
-function EggService.onPlayerRemoving(player)
-	if not player then return end
+function EggService.cleanup(player)
+	if not player then return false end
 	local key = player.UserId or player
-	EggService._hatchLock[key] = nil
+	local transaction = EggService._activeTransactions[key]
+	if transaction then
+		return settleTransaction(transaction)
+	end
+	if EggService._hatchLock[key] ~= nil then
+		-- An ownerless hatch lock is never guessed stale.
+		return false
+	end
+	return true
 end
+
+function EggService.beginShutdown()
+	EggService._shuttingDown = true
+end
+
+function EggService.prepareForShutdown()
+	EggService.beginShutdown()
+	local settled = true
+	local transactions = {}
+	for _, transaction in pairs(EggService._activeTransactions) do
+		table.insert(transactions, transaction)
+	end
+	for _, transaction in ipairs(transactions) do
+		if not settleTransaction(transaction) then settled = false end
+	end
+	return settled
+end
+
+EggService.onPlayerRemoving = EggService.cleanup
 
 function EggService.getAvailableEggs(player)
 	if not player then

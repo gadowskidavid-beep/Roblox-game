@@ -33,6 +33,12 @@ local MachineClientSession = require(Shared:WaitForChild("MachineClientSession")
 -- deployments where the server has not published the new contract yet.
 local autoHatchSessionModuleObject = Shared:FindFirstChild("AutoHatchClientSession")
 local AutoHatchClientSession = autoHatchSessionModuleObject and require(autoHatchSessionModuleObject) or nil
+-- QOF-19 is also optional during rolling deployment. Never wait for a client
+-- session module that an older server may not have replicated.
+local enchantingSessionModuleObject = Shared:FindFirstChild("EnchantingClientSession")
+local EnchantingClientSession = enchantingSessionModuleObject and require(enchantingSessionModuleObject) or nil
+local enchantingContractModuleObject = Shared:FindFirstChild("EnchantingClientContract")
+local EnchantingClientContract = enchantingContractModuleObject and require(enchantingContractModuleObject) or nil
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -90,6 +96,10 @@ local PurchaseAutoHatch = Remotes:FindFirstChild("PurchaseAutoHatch")
 local SetAutoHatchBatch = Remotes:FindFirstChild("SetAutoHatchBatch")
 local StartAutoHatch = Remotes:FindFirstChild("StartAutoHatch")
 local StopAutoHatch = Remotes:FindFirstChild("StopAutoHatch")
+-- Missing QOF-19 remotes make enchanting visibly unavailable without blocking
+-- the rest of client startup.
+local GetEnchantingState = Remotes:FindFirstChild("GetEnchantingState")
+local RollPetEnchant = Remotes:FindFirstChild("RollPetEnchant")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -630,6 +640,126 @@ uiController:setAutoHatchCallbacks({
 if AutoHatchStateUpdated then
 	AutoHatchStateUpdated.OnClientEvent:Connect(applyAutoHatchState)
 end
+
+-- QOF-19 enchanting is an optional Contract V1 surface. Main constructs every
+-- request itself; the UI receives only fully validated, current authoritative
+-- state DTOs.
+local ENCHANTING_CONTRACT_VERSION = 1
+local ENCHANTING_REASON_CODES = {
+	INVALID_REQUEST = true,
+	RUNTIME_DISABLED = true,
+	SERVICE_UNAVAILABLE = true,
+	PROFILE_UNAVAILABLE = true,
+	PET_NOT_FOUND = true,
+	INVALID_PET_STATE = true,
+	STALE_STATE = true,
+	INSUFFICIENT_BALANCE = true,
+	BUSY = true,
+	RATE_LIMITED = true,
+	TECHNICAL_FAILURE = true,
+	ROLLBACK_FAILED = true,
+}
+local enchantingSession = EnchantingClientSession and EnchantingClientSession.new() or nil
+
+local function validEnchantingState(state, petInstanceId)
+	return EnchantingClientContract ~= nil
+		and EnchantingClientContract.validateState(state, petInstanceId) == true
+end
+
+local function closeEnchantingSession()
+	if enchantingSession then
+		EnchantingClientSession.close(enchantingSession)
+	end
+	uiController:closePetEnchanting()
+end
+
+local requestEnchantingState
+
+local function finishEnchantingRequest(operation, invoked, success, reason, state)
+	if not operation or not enchantingSession
+		or not EnchantingClientSession.isCurrent(enchantingSession, operation) then
+		return
+	end
+	local validResultTuple = type(success) == "boolean"
+		and ((success == true and reason == nil)
+			or (success == false and ENCHANTING_REASON_CODES[reason] == true))
+	if not invoked or not validResultTuple
+		or not validEnchantingState(state, operation.petInstanceId) then
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not EnchantingClientSession.acceptState(
+		enchantingSession,
+		operation,
+		state,
+		success == true
+	) then
+		-- The stale payload itself never mutates the UI. One fresh GET gets a
+		-- retry opportunity without permitting an attacker to create a loop.
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		if operation.staleRefresh then
+			uiController:showEnchantingUnavailable("UNAVAILABLE")
+		else
+			requestEnchantingState(operation.petInstanceId, true)
+		end
+		return
+	end
+	uiController:applyEnchantingState(state, success == true, reason, operation.action)
+end
+
+requestEnchantingState = function(petInstanceId, staleRefresh)
+	if not enchantingSession
+		or not EnchantingClientSession.selectPet(enchantingSession, petInstanceId) then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not GetEnchantingState or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "GET_STATE")
+	if not operation then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	operation.staleRefresh = staleRefresh == true
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return GetEnchantingState:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "GET_STATE",
+				petInstanceId = operation.petInstanceId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+local function rollPetEnchant()
+	if not enchantingSession or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "ROLL")
+	if not operation then return end
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return RollPetEnchant:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "ROLL",
+				petInstanceId = operation.petInstanceId,
+				expectedStateRevision = operation.expectedStateRevision,
+				expectedEnchantId = operation.expectedEnchantId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+uiController:setEnchantingCallbacks(requestEnchantingState, rollPetEnchant, closeEnchantingSession)
 
 -- QOF-17 Machine sessions are created only by the central runtime prompt router.
 -- Attributes are UX routing data; the server independently validates the private
@@ -1256,6 +1386,7 @@ player.CharacterRemoving:Connect(function()
 	activeEggPrompt = nil
 	activeEggType = nil
 	closeHatchPurchaseDialog()
+	closeEnchantingSession()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end

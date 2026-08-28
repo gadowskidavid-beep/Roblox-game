@@ -26,6 +26,13 @@ local PET_START_X = 0
 local ENEMY_START_X = LANE_LENGTH
 local ATTACK_COOLDOWN = 1.0 -- seconds between attacks (normalizes DPS across frame rates)
 
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
 function CampaignService.init(dataService, currencyService, petService)
 	CampaignService._dataService = dataService
 	CampaignService._currencyService = currencyService
@@ -184,42 +191,68 @@ function CampaignService.deployPet(player, petInstanceId)
 		return false, "Pet not found in inventory"
 	end
 
-	-- Get energy cost from rarity
+	-- Get energy cost from rarity.
 	local deployCost = CampaignData.DeployCosts[petInstance.rarity]
-	if not deployCost then
+	if not isFiniteNumber(deployCost) or deployCost < 0 then
 		return false, "Unknown rarity for deploy cost"
 	end
 
-	-- Validate energy
-	if battle.energy < deployCost then
+	-- Validate energy before potentially fallible stat providers.
+	if not isFiniteNumber(battle.energy) or battle.energy < deployCost then
 		return false, "Not enough energy"
 	end
 
-	-- Check for duplicate pet deployment (prevent deploying same pet twice)
+	-- Check for duplicate pet deployment (prevent deploying same pet twice).
 	for _, deployed in ipairs(battle.deployedPets) do
 		if deployed.id == petInstanceId then
 			return false, "Pet already deployed"
 		end
 	end
 
-	-- Deduct energy
+	-- Resolve and sanitize all derived stats before crossing the energy/inventory
+	-- point of no return. Missing, throwing, or malformed providers are neutral.
+	if type(CampaignService._petService) ~= "table"
+		or type(CampaignService._petService.getPetDamage) ~= "function"
+		or type(CampaignService._petService.getCampaignLaneSpeed) ~= "function" then
+		return false, "Pet stats unavailable"
+	end
+	local damageOk, effectiveDamage = pcall(
+		CampaignService._petService.getPetDamage,
+		petInstance,
+		player
+	)
+	local speedOk, speed = pcall(
+		CampaignService._petService.getCampaignLaneSpeed,
+		petInstance
+	)
+	local hp = damageOk and isFiniteNumber(effectiveDamage) and effectiveDamage >= 0
+		and effectiveDamage * 5
+		or nil
+	if not damageOk or not speedOk
+		or not isFiniteNumber(effectiveDamage) or effectiveDamage < 0
+		or not isFiniteNumber(speed) or speed < 0
+		or not isFiniteNumber(hp) or hp < 0 then
+		return false, "Pet stats unavailable"
+	end
+
+	-- Revalidate commit predicates after providers return in case a future
+	-- implementation yields. No energy is consumed unless the entity can commit.
+	if not isFiniteNumber(battle.energy) or battle.energy < deployCost then
+		return false, "Not enough energy"
+	end
+	for _, deployed in ipairs(battle.deployedPets) do
+		if deployed.id == petInstanceId then
+			return false, "Pet already deployed"
+		end
+	end
+
 	battle.energy = battle.energy - deployCost
-
-	-- Calculate effective damage with upgrades
-	local effectiveDamage = CampaignService._petService.getPetDamage(petInstance, player)
-
-	-- Get pet base speed from PetData
-	local PetData = require(game.ReplicatedStorage.Shared.PetData)
-	local petDef = PetData.Pets[petInstance.petId]
-	local speed = petDef and petDef.baseSpeed or 10
-
-	-- Add pet entity to deployed list
 	table.insert(battle.deployedPets, {
 		id = petInstanceId,
 		name = petInstance.name,
 		rarity = petInstance.rarity,
-		hp = effectiveDamage * 5, -- HP based on damage as simple scaling
-		maxHp = effectiveDamage * 5,
+		hp = hp,
+		maxHp = hp,
 		damage = effectiveDamage,
 		sourcePet = petInstance, -- server-only reference for current centralized damage
 		speed = speed,
@@ -229,12 +262,13 @@ function CampaignService.deployPet(player, petInstanceId)
 		attackTimer = 0, -- cooldown timer for attacks
 	})
 
-	-- Fire update event
+	-- Transport is post-commit and best-effort; it cannot make a completed deploy
+	-- retryable or trigger a duplicate energy charge.
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
 	if remotes then
 		local event = remotes:FindFirstChild("CampaignBattleUpdate")
 		if event then
-			event:FireClient(player, CampaignService._getBattleSnapshot(battle))
+			pcall(event.FireClient, event, player, CampaignService._getBattleSnapshot(battle))
 		end
 	end
 
@@ -269,10 +303,21 @@ end
 -- expire during an active campaign without duplicating PetService's damage logic.
 local function getCurrentPetDamage(userId, deployedPet)
 	local player = Players:GetPlayerByUserId(userId)
-	if player and deployedPet.sourcePet then
-		return CampaignService._petService.getPetDamage(deployedPet.sourcePet, player)
+	if player and deployedPet.sourcePet
+		and type(CampaignService._petService) == "table"
+		and type(CampaignService._petService.getPetDamage) == "function" then
+		local ok, damage = pcall(
+			CampaignService._petService.getPetDamage,
+			deployedPet.sourcePet,
+			player
+		)
+		if ok and isFiniteNumber(damage) and damage >= 0 then
+			return damage
+		end
 	end
-	return deployedPet.damage
+	return isFiniteNumber(deployedPet.damage) and deployedPet.damage >= 0
+		and deployedPet.damage
+		or 0
 end
 
 -- Main update loop (called every Heartbeat)

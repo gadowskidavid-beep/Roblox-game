@@ -13,6 +13,7 @@ local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
 local MachineService = require(script.Parent.Services.MachineService)
+local EnchantingService = require(script.Parent.Services.EnchantingService)
 local MachineAuthorityBootstrap = require(script.Parent.Services.MachineAuthorityBootstrap)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
@@ -183,6 +184,8 @@ local remoteFunctions = {
 	-- Rolling-client compatibility only. Its handler is permanently fail-closed.
 	"ConvertToGoldenPet",
 	"UseMachine",
+	"GetEnchantingState",
+	"RollPetEnchant",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
@@ -230,6 +233,7 @@ PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
 MachineService.init(DataService, CurrencyService, PetService)
 MachineService.setQuestService(QuestService)
+EnchantingService.init(DataService, CurrencyService, PetService)
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
 EggService.setPotionService(PotionService)
@@ -271,12 +275,26 @@ CampaignService.init(DataService, CurrencyService, PetService)
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Settle transient owners before shutdown snapshots cached profiles. Auto-Hatch
--- cancellation runs before Egg/Data cleanup and never consumes remaining access.
-DataService.bindToClose(function()
-	AutoHatchService.prepareForShutdown()
-	return PickupService.settleAllPlayers()
-end)
+-- Shutdown admission gates are global, but owner settlement and releasing saves
+-- are isolated per cached profile (including departed retained owners).
+DataService.bindToClose({
+	beginShutdown = function()
+		AutoHatchService.prepareForShutdown()
+		EggService.beginShutdown()
+		MachineService.beginShutdown()
+		EnchantingService.beginShutdown()
+		return true
+	end,
+	settlePlayer = function(player)
+		local eggSettled = EggService.cleanup(player)
+		local machinesSettled = MachineService.cleanup(player)
+		local enchantingSettled = EnchantingService.cleanup(player)
+		local pickupsSettled = PickupService.settlePlayer(player)
+		local inventoryIdle = PetService.isInventoryMutationIdle(player)
+		return eggSettled and machinesSettled and enchantingSettled
+			and pickupsSettled and inventoryIdle
+	end,
+})
 
 -- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
 MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
@@ -603,6 +621,48 @@ getRemoteFunction("UseMachine").OnServerInvoke = function(player, machineId, act
 	return MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
 end
 
+local function enchantingPetIdForState(request)
+	if type(request) ~= "table" or getmetatable(request) ~= nil then
+		return ""
+	end
+	local petInstanceId = rawget(request, "petInstanceId")
+	return type(petInstanceId) == "string" and petInstanceId or ""
+end
+
+-- QOF-19 GET_STATE admits only the exact Contract V1 request in EnchantingService.
+getRemoteFunction("GetEnchantingState").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then
+		return false, "INVALID_REQUEST", nil
+	end
+	local cooldownAllowed = canCall(player, "GetEnchantingState", 0.15)
+	local burstAllowed = canCallBurst(player, "GetEnchantingState", 12, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return false, "RATE_LIMITED", EnchantingService.getState(
+			player,
+			enchantingPetIdForState(request)
+		)
+	end
+	return EnchantingService.getStateFromRequest(player, request)
+end
+
+-- QOF-19 ROLL is the sole enchanting mutation entry point. Request shape,
+-- optimistic revision, pet ownership, exact debit, RNG, and rollback remain in
+-- EnchantingService; Main owns only player identity and abuse controls.
+getRemoteFunction("RollPetEnchant").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then
+		return false, "INVALID_REQUEST", nil
+	end
+	local cooldownAllowed = canCall(player, "RollPetEnchant", 0.35)
+	local burstAllowed = canCallBurst(player, "RollPetEnchant", 8, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return false, "RATE_LIMITED", EnchantingService.getState(
+			player,
+			enchantingPetIdForState(request)
+		)
+	end
+	return EnchantingService.roll(player, request)
+end
+
 -- StartCampaignLevel (2 second cooldown)
 getRemoteFunction("StartCampaignLevel").OnServerInvoke = function(player, levelNum)
 	if not player or not player:IsA("Player") then
@@ -902,34 +962,35 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup QOF-12 movement listeners before the profile is released.
 	MovementService.unbindPlayer(player)
 
-	-- Settle transient owner-only pickups before the profile is saved/released.
-	if not PickupService.onPlayerRemoving(player) then
-		warn("[Battle Pets] Pending pickup settlement did not complete before player data cleanup for " .. player.Name)
-	end
-
-	-- Invalidate QOF-18 target/generation before Egg locks or profile cleanup.
-	-- The absolute paid expiry remains in the cached profile for the final save.
+	-- Invalidate QOF-18 target/generation before any inventory-owner retry.
+	-- The absolute paid expiry remains in the retained cached profile.
 	AutoHatchService.onPlayerRemoving(player)
 
-	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
-	EggService.onPlayerRemoving(player)
-
-	-- Cleanup QOF-16 machine transaction locks.
-	MachineService.cleanup(player)
-
-	-- Cleanup QOF-14 potion locks/reservations before profile persistence.
-	PotionService.onPlayerRemoving(player)
-
-	-- Cleanup ShopService transient locks and legacy buff compatibility state.
-	ShopService.onPlayerRemoving(player)
-
-	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
-	ZoneService.onPlayerRemoving(player)
-
-	-- Cleanup campaign battle if any
-	CampaignService.onPlayerRemoving(player)
-	-- Save and cleanup player data
-	DataService.onPlayerRemoving(player)
+	local postSettlementCleanupDone = false
+	local released = DataService.onPlayerRemoving(player, function()
+		-- Attempt every independent owner on every pass. One unresolved profile
+		-- never prevents another user from settling or saving.
+		local pickupsSettled = PickupService.settlePlayer(player)
+		local eggSettled = EggService.onPlayerRemoving(player)
+		local machineSettled = MachineService.onPlayerRemoving(player)
+		local enchantingSettled = EnchantingService.onPlayerRemoving(player)
+		local inventoryIdle = PetService.isInventoryMutationIdle(player)
+		if not (pickupsSettled and eggSettled and machineSettled
+			and enchantingSettled and inventoryIdle) then
+			return false
+		end
+		if not postSettlementCleanupDone then
+			PotionService.onPlayerRemoving(player)
+			ShopService.onPlayerRemoving(player)
+			ZoneService.onPlayerRemoving(player)
+			CampaignService.onPlayerRemoving(player)
+			postSettlementCleanupDone = true
+		end
+		return true
+	end)
+	if not released then
+		warn("[Battle Pets] Profile settlement queued for retry; cache retained for " .. player.Name)
+	end
 end)
 
 -- Handle players who joined before script loaded

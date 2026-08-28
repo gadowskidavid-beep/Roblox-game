@@ -79,6 +79,28 @@ local VARIANT_RANK = {
 	Shiny = 3,
 	Rainbow = 4,
 }
+local ENCHANT_DISPLAY_NAMES = {
+	StrongI = "Strong I",
+	StrongII = "Strong II",
+	StrongIII = "Strong III",
+	AgileI = "Agile I",
+	AgileII = "Agile II",
+	AgileIII = "Agile III",
+}
+local ENCHANT_REASON_TEXT = {
+	RUNTIME_DISABLED = "Enchanting is currently unavailable.",
+	SERVICE_UNAVAILABLE = "Enchanting is currently unavailable.",
+	PROFILE_UNAVAILABLE = "Your pet profile is unavailable.",
+	PET_NOT_FOUND = "This pet is no longer available.",
+	INVALID_PET_STATE = "This pet cannot be enchanted safely.",
+	STALE_STATE = "Pet state changed. Review the refreshed details.",
+	INSUFFICIENT_BALANCE = "Not enough Diamonds.",
+	BUSY = "Another enchanting request is already running.",
+	RATE_LIMITED = "Please wait a moment and try again.",
+	TECHNICAL_FAILURE = "Enchanting failed safely. Please try again.",
+	ROLLBACK_FAILED = "Enchanting is unavailable. Please refresh.",
+	INVALID_REQUEST = "Enchanting request was rejected safely.",
+}
 
 local MACHINE_UI_BY_ID = {
 	GoldMachine = {
@@ -276,6 +298,17 @@ function UIController.new()
 	self._machineResultLabel = nil
 	self._machineConfirmButton = nil
 	self._machineCancelButton = nil
+	self._enchantingCallbacks = {}
+	self._petDetailPetId = nil
+	self._petDetailOverlay = nil
+	self._petDetailNameLabel = nil
+	self._petDetailEnchantLabel = nil
+	self._petDetailCostLabel = nil
+	self._petDetailOutcomesFrame = nil
+	self._petDetailFeedbackLabel = nil
+	self._petDetailActionButton = nil
+	self._petDetailState = nil
+	self._enchantingBusy = false
 	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
@@ -2223,10 +2256,40 @@ function UIController:_refreshPetGrid()
 			end)
 		else
 			local isEquipped = self:_isPetEquipped(petUniqueId)
+			local petId = petUniqueId
+			local detailsBtn = Instance.new("TextButton")
+			detailsBtn.Name = "PetDetailsBtn"
+			detailsBtn.Size = UDim2.fromScale(0.38, 0.14)
+			detailsBtn.Position = UDim2.fromScale(0.08, 0.81)
+			detailsBtn.BackgroundColor3 = Color3.fromRGB(85, 105, 175)
+			detailsBtn.Text = "Details"
+			detailsBtn.TextColor3 = COLORS.White
+			detailsBtn.Font = Enum.Font.GothamBold
+			detailsBtn.TextScaled = true
+			detailsBtn.Active = type(petId) == "string" and petId ~= ""
+			detailsBtn.AutoButtonColor = detailsBtn.Active
+			detailsBtn.Parent = card
+
+			local detailsCorner = Instance.new("UICorner")
+			detailsCorner.CornerRadius = UDim.new(0, 6)
+			detailsCorner.Parent = detailsBtn
+
+			detailsBtn.MouseButton1Click:Connect(function()
+				if not petId then return end
+				self:openPetEnchanting(petId)
+				local onOpen = self._enchantingCallbacks.onOpen
+				if type(onOpen) == "function" then
+					local called = pcall(onOpen, petId)
+					if not called then self:showEnchantingUnavailable("UNAVAILABLE") end
+				else
+					self:showEnchantingUnavailable("UNAVAILABLE")
+				end
+			end)
+
 			local equipBtn = Instance.new("TextButton")
 			equipBtn.Name = "EquipBtn"
-			equipBtn.Size = UDim2.fromScale(0.8, 0.16)
-			equipBtn.Position = UDim2.fromScale(0.1, 0.8)
+			equipBtn.Size = UDim2.fromScale(0.42, 0.14)
+			equipBtn.Position = UDim2.fromScale(0.5, 0.81)
 			equipBtn.BackgroundColor3 = isEquipped and COLORS.ButtonRed or COLORS.ButtonGreen
 			equipBtn.Text = isEquipped and "Unequip" or "Equip"
 			equipBtn.TextColor3 = COLORS.White
@@ -2238,7 +2301,6 @@ function UIController:_refreshPetGrid()
 			equipCorner.CornerRadius = UDim.new(0, 6)
 			equipCorner.Parent = equipBtn
 
-			local petId = petUniqueId
 			equipBtn.MouseButton1Click:Connect(function()
 				if isEquipped then
 					self:_unequipPet(petId)
@@ -2249,12 +2311,12 @@ function UIController:_refreshPetGrid()
 
 			equipBtn.MouseEnter:Connect(function()
 				TweenService:Create(equipBtn, TweenInfo.new(0.1), {
-					Size = UDim2.fromScale(0.84, 0.17),
+					Size = UDim2.fromScale(0.44, 0.15),
 				}):Play()
 			end)
 			equipBtn.MouseLeave:Connect(function()
 				TweenService:Create(equipBtn, TweenInfo.new(0.1), {
-					Size = UDim2.fromScale(0.8, 0.16),
+					Size = UDim2.fromScale(0.42, 0.14),
 				}):Play()
 			end)
 		end
@@ -2361,6 +2423,340 @@ function UIController:_deleteSelectedPets()
 			end
 		end
 	end
+end
+
+--------------------------------------------------------------------------------
+-- INVENTORY PET DETAIL / ENCHANTING (server-authoritative Contract V1 state)
+--------------------------------------------------------------------------------
+function UIController:_findInventoryPet(petInstanceId)
+	for _, petData in ipairs(self._petInventoryData) do
+		if type(petData) == "table" and (petData.uniqueId or petData.id) == petInstanceId then
+			return petData
+		end
+	end
+	return nil
+end
+
+function UIController:_requestEnchantingClose()
+	if not self._petDetailPetId then return end
+	local onClose = self._enchantingCallbacks.onClose
+	if type(onClose) == "function" then
+		pcall(onClose)
+	end
+	if self._petDetailPetId then
+		self:closePetEnchanting()
+	end
+end
+
+function UIController:setEnchantingCallbacks(onOpen, onRoll, onClose)
+	self._enchantingCallbacks = {
+		onOpen = type(onOpen) == "function" and onOpen or nil,
+		onRoll = type(onRoll) == "function" and onRoll or nil,
+		onClose = type(onClose) == "function" and onClose or nil,
+	}
+end
+
+function UIController:openPetEnchanting(petInstanceId)
+	local petData = self:_findInventoryPet(petInstanceId)
+	if not petData then return false end
+	self:closePetEnchanting()
+	self._petDetailPetId = petInstanceId
+	self._petDetailState = nil
+	self._enchantingBusy = false
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "PetEnchantingDetail"
+	overlay.ResetOnSpawn = false
+	overlay.DisplayOrder = 20
+	overlay.Parent = self._playerGui
+	self._petDetailOverlay = overlay
+
+	local backdrop = Instance.new("Frame")
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	backdrop.BackgroundTransparency = 0.35
+	backdrop.BorderSizePixel = 0
+	backdrop.Parent = overlay
+
+	local panel = Instance.new("Frame")
+	panel.Name = "EnchantingPanel"
+	panel.Size = UDim2.fromScale(0.58, 0.8)
+	panel.Position = UDim2.fromScale(0.21, 0.1)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = backdrop
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 16)
+	panelCorner.Parent = panel
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = Color3.fromRGB(160, 95, 255)
+	panelStroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Name = "PetName"
+	title.Size = UDim2.fromScale(0.72, 0.08)
+	title.Position = UDim2.fromScale(0.14, 0.025)
+	title.BackgroundTransparency = 1
+	title.Text = tostring(petData.name or petData.petId or "Pet") .. " • Enchanting"
+	title.TextColor3 = COLORS.White
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+	self._petDetailNameLabel = title
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(40, 40)
+	closeBtn.Position = UDim2.new(1, -50, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 22
+	closeBtn.Parent = panel
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(1, 0)
+	closeCorner.Parent = closeBtn
+	closeBtn.MouseButton1Click:Connect(function()
+		self:_requestEnchantingClose()
+	end)
+
+	local enchantLabel = Instance.new("TextLabel")
+	enchantLabel.Name = "CurrentEnchant"
+	enchantLabel.Size = UDim2.fromScale(0.84, 0.07)
+	enchantLabel.Position = UDim2.fromScale(0.08, 0.12)
+	enchantLabel.BackgroundColor3 = COLORS.DarkBg
+	enchantLabel.Text = "Current Enchant: Loading…"
+	enchantLabel.TextColor3 = Color3.fromRGB(230, 210, 255)
+	enchantLabel.Font = Enum.Font.GothamBold
+	enchantLabel.TextScaled = true
+	enchantLabel.Parent = panel
+	local enchantCorner = Instance.new("UICorner")
+	enchantCorner.CornerRadius = UDim.new(0, 8)
+	enchantCorner.Parent = enchantLabel
+	self._petDetailEnchantLabel = enchantLabel
+
+	local costLabel = Instance.new("TextLabel")
+	costLabel.Name = "ServerCost"
+	costLabel.Size = UDim2.fromScale(0.84, 0.05)
+	costLabel.Position = UDim2.fromScale(0.08, 0.205)
+	costLabel.BackgroundTransparency = 1
+	costLabel.Text = "Cost: Loading from server…"
+	costLabel.TextColor3 = COLORS.DiamondCyan
+	costLabel.Font = Enum.Font.GothamBold
+	costLabel.TextScaled = true
+	costLabel.Parent = panel
+	self._petDetailCostLabel = costLabel
+
+	local outcomesTitle = Instance.new("TextLabel")
+	outcomesTitle.Size = UDim2.fromScale(0.84, 0.05)
+	outcomesTitle.Position = UDim2.fromScale(0.08, 0.27)
+	outcomesTitle.BackgroundTransparency = 1
+	outcomesTitle.Text = "Possible outcomes (server chances)"
+	outcomesTitle.TextColor3 = COLORS.White
+	outcomesTitle.Font = Enum.Font.GothamBold
+	outcomesTitle.TextScaled = true
+	outcomesTitle.Parent = panel
+
+	local outcomesFrame = Instance.new("Frame")
+	outcomesFrame.Name = "Outcomes"
+	outcomesFrame.Size = UDim2.fromScale(0.84, 0.31)
+	outcomesFrame.Position = UDim2.fromScale(0.08, 0.325)
+	outcomesFrame.BackgroundColor3 = COLORS.DarkBg
+	outcomesFrame.BorderSizePixel = 0
+	outcomesFrame.Parent = panel
+	local outcomesCorner = Instance.new("UICorner")
+	outcomesCorner.CornerRadius = UDim.new(0, 10)
+	outcomesCorner.Parent = outcomesFrame
+	local outcomesLayout = Instance.new("UIListLayout")
+	outcomesLayout.Padding = UDim.new(0.006, 0)
+	outcomesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	outcomesLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	outcomesLayout.Parent = outcomesFrame
+	self._petDetailOutcomesFrame = outcomesFrame
+
+	local warning = Instance.new("TextLabel")
+	warning.Name = "RerollWarning"
+	warning.Size = UDim2.fromScale(0.84, 0.085)
+	warning.Position = UDim2.fromScale(0.08, 0.65)
+	warning.BackgroundTransparency = 1
+	warning.Text = "Reroll replaces this one enchant slot. The old enchant cannot be kept."
+	warning.TextColor3 = Color3.fromRGB(255, 170, 90)
+	warning.Font = Enum.Font.GothamBold
+	warning.TextScaled = true
+	warning.TextWrapped = true
+	warning.Parent = panel
+
+	local feedback = Instance.new("TextLabel")
+	feedback.Name = "Feedback"
+	feedback.Size = UDim2.fromScale(0.84, 0.06)
+	feedback.Position = UDim2.fromScale(0.08, 0.745)
+	feedback.BackgroundTransparency = 1
+	feedback.Text = "Loading authoritative enchanting state…"
+	feedback.TextColor3 = Color3.fromRGB(190, 195, 220)
+	feedback.Font = Enum.Font.Gotham
+	feedback.TextScaled = true
+	feedback.TextWrapped = true
+	feedback.Parent = panel
+	self._petDetailFeedbackLabel = feedback
+
+	local actionBtn = Instance.new("TextButton")
+	actionBtn.Name = "EnchantActionBtn"
+	actionBtn.Size = UDim2.fromScale(0.56, 0.11)
+	actionBtn.Position = UDim2.fromScale(0.22, 0.84)
+	actionBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+	actionBtn.Text = "LOADING…"
+	actionBtn.TextColor3 = COLORS.White
+	actionBtn.Font = Enum.Font.GothamBold
+	actionBtn.TextScaled = true
+	actionBtn.Active = false
+	actionBtn.AutoButtonColor = false
+	actionBtn.Parent = panel
+	local actionCorner = Instance.new("UICorner")
+	actionCorner.CornerRadius = UDim.new(0, 10)
+	actionCorner.Parent = actionBtn
+	self._petDetailActionButton = actionBtn
+
+	actionBtn.MouseButton1Click:Connect(function()
+		if self._enchantingBusy or self._petDetailPetId ~= petInstanceId then return end
+		local onRoll = self._enchantingCallbacks.onRoll
+		if type(onRoll) ~= "function" then
+			self:showEnchantingUnavailable("UNAVAILABLE")
+			return
+		end
+		local called = pcall(onRoll)
+		if not called then self:showEnchantingUnavailable("UNAVAILABLE") end
+	end)
+	return true
+end
+
+function UIController:closePetEnchanting()
+	if self._petDetailOverlay and self._petDetailOverlay.Parent then
+		self._petDetailOverlay:Destroy()
+	end
+	self._petDetailPetId = nil
+	self._petDetailOverlay = nil
+	self._petDetailNameLabel = nil
+	self._petDetailEnchantLabel = nil
+	self._petDetailCostLabel = nil
+	self._petDetailOutcomesFrame = nil
+	self._petDetailFeedbackLabel = nil
+	self._petDetailActionButton = nil
+	self._petDetailState = nil
+	self._enchantingBusy = false
+end
+
+function UIController:setEnchantingBusy(isBusy)
+	if not self._petDetailPetId then return end
+	self._enchantingBusy = isBusy == true
+	local button = self._petDetailActionButton
+	if button and self._enchantingBusy then
+		button.Active = false
+		button.AutoButtonColor = false
+		button.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+		button.Text = "WORKING…"
+	end
+end
+
+function UIController:showEnchantingUnavailable(message)
+	if not self._petDetailPetId then return end
+	self._petDetailState = nil
+	self._enchantingBusy = false
+	if self._petDetailEnchantLabel then
+		self._petDetailEnchantLabel.Text = "Current Enchant: UNAVAILABLE"
+	end
+	if self._petDetailCostLabel then
+		self._petDetailCostLabel.Text = "Cost: UNAVAILABLE"
+	end
+	if self._petDetailFeedbackLabel then
+		self._petDetailFeedbackLabel.Text = tostring(message or "UNAVAILABLE")
+		self._petDetailFeedbackLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+	end
+	if self._petDetailActionButton then
+		self._petDetailActionButton.Text = "UNAVAILABLE"
+		self._petDetailActionButton.Active = false
+		self._petDetailActionButton.AutoButtonColor = false
+		self._petDetailActionButton.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+	end
+end
+
+function UIController:applyEnchantingState(state, actionSucceeded, reason, action)
+	if type(state) ~= "table" or type(state.pet) ~= "table"
+		or state.pet.instanceId ~= self._petDetailPetId then
+		return false
+	end
+	self._petDetailState = state
+	self._enchantingBusy = false
+	local petData = self:_findInventoryPet(self._petDetailPetId)
+	if not petData then
+		self:_requestEnchantingClose()
+		return false
+	end
+	if self._petDetailNameLabel then
+		self._petDetailNameLabel.Text = tostring(petData.name or petData.petId or "Pet") .. " • Enchanting"
+	end
+
+	local enchantId = state.pet.enchantId
+	local enchantName = enchantId == false and "None"
+		or ENCHANT_DISPLAY_NAMES[enchantId] or tostring(enchantId)
+	if self._petDetailEnchantLabel then
+		self._petDetailEnchantLabel.Text = "Current Enchant: " .. enchantName
+	end
+	if self._petDetailCostLabel then
+		self._petDetailCostLabel.Text = "Cost: " .. tostring(state.economy.price) .. " Diamonds"
+	end
+
+	if self._petDetailOutcomesFrame then
+		for _, child in ipairs(self._petDetailOutcomesFrame:GetChildren()) do
+			if child:IsA("TextLabel") then child:Destroy() end
+		end
+		for _, outcome in ipairs(state.outcomes) do
+			local row = Instance.new("TextLabel")
+			row.Name = "Outcome_" .. tostring(outcome.id)
+			row.Size = UDim2.fromScale(0.94, 0.145)
+			row.BackgroundTransparency = 1
+			local statName = outcome.stat == "damage" and "Damage" or "Speed"
+			row.Text = string.format("%s  •  %d%%  •  %s ×%.2f",
+				ENCHANT_DISPLAY_NAMES[outcome.id] or tostring(outcome.id),
+				outcome.weight, statName, outcome.multiplier)
+			row.TextColor3 = outcome.stat == "damage"
+				and Color3.fromRGB(255, 190, 100) or Color3.fromRGB(120, 220, 255)
+			row.Font = Enum.Font.GothamBold
+			row.TextScaled = true
+			row.Parent = self._petDetailOutcomesFrame
+		end
+	end
+
+	local canRoll = state.runtimeEnabled == true and state.availability.canRoll == true
+	if self._petDetailActionButton then
+		self._petDetailActionButton.Text = (state.isReroll and "REROLL" or "ENCHANT")
+			.. " • " .. tostring(state.economy.price) .. " DIAMONDS"
+		self._petDetailActionButton.Active = canRoll
+		self._petDetailActionButton.AutoButtonColor = canRoll
+		self._petDetailActionButton.BackgroundColor3 = canRoll
+			and Color3.fromRGB(160, 85, 235) or Color3.fromRGB(90, 90, 110)
+	end
+	if self._petDetailFeedbackLabel then
+		local feedbackText = "Ready."
+		local feedbackColor = Color3.fromRGB(170, 230, 190)
+		if reason then
+			feedbackText = ENCHANT_REASON_TEXT[reason] or "Enchanting is unavailable."
+			feedbackColor = Color3.fromRGB(255, 130, 110)
+		elseif action == "ROLL" and actionSucceeded then
+			-- A paid success remains the primary result even when the new balance
+			-- makes the next roll unavailable.
+			feedbackText = "Enchant applied: " .. enchantName .. "."
+		elseif state.availability.reason then
+			feedbackText = ENCHANT_REASON_TEXT[state.availability.reason]
+				or "Enchanting is unavailable."
+			feedbackColor = Color3.fromRGB(255, 130, 110)
+		end
+		self._petDetailFeedbackLabel.Text = feedbackText
+		self._petDetailFeedbackLabel.TextColor3 = feedbackColor
+	end
+	return true
 end
 
 --------------------------------------------------------------------------------
@@ -2546,17 +2942,19 @@ function UIController:_createMachineConfirmOverlay(count, chance, petId, selecte
 
 	-- Warning text
 	local warnLabel = Instance.new("TextLabel")
-	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
-	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
+	warnLabel.Size = UDim2.fromScale(0.86, 0.15)
+	warnLabel.Position = UDim2.fromScale(0.07, 0.49)
 	warnLabel.BackgroundTransparency = 1
-	warnLabel.Text = "WARNING: Pets and " .. tostring(definition.cost.amount)
-		.. " Diamonds are consumed even on failure!"
+	warnLabel.Text = "WARNING: Input pets and their enchants are always consumed. "
+		.. "Diamonds are also spent on a normal failure. "
+		.. "A successful output starts with no enchant."
 	if shinyCount > 1 then
 		warnLabel.Text ..= " Shiny does not stack."
 	end
 	warnLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	warnLabel.Font = Enum.Font.GothamBold
 	warnLabel.TextScaled = true
+	warnLabel.TextWrapped = true
 	warnLabel.Parent = panel
 
 	-- Confirm button
@@ -4722,6 +5120,9 @@ function UIController:setMachineCallbacks(onConfirm, onCancel)
 end
 
 function UIController:openMachineSelection(machineId)
+	-- A machine can consume the selected pet, so it always closes and invalidates
+	-- any enchanting detail/request before multi-selection starts.
+	self:_requestEnchantingClose()
 	local machineUi, definition = resolveMachineUi(machineId)
 	if not machineUi or not definition then
 		self:closeMachineSelection()
@@ -4777,6 +5178,19 @@ end
 
 function UIController:updatePetInventory(pets)
 	self._petInventoryData = type(pets) == "table" and pets or {}
+
+	-- The detail owns only a stable pet ID, never a stale table reference. Resolve
+	-- it against every authoritative inventory snapshot or close if deletion or a
+	-- machine consumed that exact pet.
+	if self._petDetailPetId then
+		local detailPet = self:_findInventoryPet(self._petDetailPetId)
+		if not detailPet then
+			self:_requestEnchantingClose()
+		elseif self._petDetailNameLabel then
+			self._petDetailNameLabel.Text = tostring(detailPet.name or detailPet.petId or "Pet")
+				.. " • Enchanting"
+		end
+	end
 
 	-- Drop stale or newly protected selections while preserving valid selections
 	-- across sorting and filtering refreshes.
@@ -5366,6 +5780,11 @@ function UIController:_refreshScreenData(screenName)
 end
 
 function UIController:openScreen(screenName)
+	-- Pet detail is inventory-owned. Any navigation away invalidates its request
+	-- generation before another screen becomes interactive.
+	if screenName ~= "PetInventory" then
+		self:_requestEnchantingClose()
+	end
 	-- Leaving a machine-owned inventory surface revokes the prompt capability and
 	-- its selection before another screen becomes interactive.
 	if screenName ~= "PetInventory" then
@@ -5433,6 +5852,7 @@ end
 
 function UIController:closeScreen(screenName)
 	if screenName == "PetInventory" then
+		self:_requestEnchantingClose()
 		self:_requestMachineCancel()
 	end
 	self:_requestHatchPurchaseCancel()
@@ -5490,6 +5910,7 @@ function UIController:updateXP(level, xp, xpNeeded)
 end
 
 function UIController:cleanup()
+	self:_requestEnchantingClose()
 	self:_requestHatchPurchaseCancel()
 	self:closeHatchPurchaseDialog()
 	for _, connection in ipairs(self._hatchPurchaseConnections) do

@@ -72,6 +72,7 @@ local profile = nil
 local maximumBatchCount = 10
 local spentCoins = 0
 local refundedCoins = 0
+local refundFails = false
 local questHatches = 0
 local inventoryReplications = 0
 local rollbackCount = 0
@@ -102,12 +103,35 @@ function currencyService.spend(_, currency, amount)
 end
 function currencyService.creditRaw(_, currency, amount)
 	expect(currency):toBe("coins")
+	if refundFails then return false end
 	profile.coins = profile.coins + amount
 	refundedCoins = refundedCoins + amount
 	return true
 end
 
 local petService = {}
+local currentInventoryLease = nil
+local inventoryIncarnation = 0
+function petService.beginInventoryMutation(ownerPlayer, owner)
+	if currentInventoryLease ~= nil then return nil end
+	currentInventoryLease = {
+		player = ownerPlayer,
+		owner = owner,
+		incarnation = inventoryIncarnation,
+	}
+	return currentInventoryLease
+end
+function petService.isInventoryMutationCurrent(ownerPlayer, lease)
+	return currentInventoryLease == lease
+		and lease.player == ownerPlayer
+		and lease.incarnation == inventoryIncarnation
+end
+function petService.endInventoryMutation(ownerPlayer, lease, mutated)
+	if not petService.isInventoryMutationCurrent(ownerPlayer, lease) then return false end
+	if mutated == true then inventoryIncarnation = inventoryIncarnation + 1 end
+	currentInventoryLease = nil
+	return true
+end
 function petService.getMaxInventory()
 	return profile.capacity
 end
@@ -138,7 +162,8 @@ function petService.prepareHatchBatch(_, eggType, count, options)
 		mutationStarted = false,
 	}, nil
 end
-function petService.commitHatchBatch(_, prepared)
+function petService.commitHatchBatch(_, prepared, lease)
+	expect(petService.isInventoryMutationCurrent(player, lease)):toBeTrue()
 	if commitThrows then error("commit exploded") end
 	if commitError then return false, commitError end
 	prepared.mutationStarted = true
@@ -147,7 +172,8 @@ function petService.commitHatchBatch(_, prepared)
 	end
 	return true
 end
-function petService.rollbackHatchBatch(prepared)
+function petService.rollbackHatchBatch(prepared, lease)
+	expect(petService.isInventoryMutationCurrent(player, lease)):toBeTrue()
 	rollbackCount = rollbackCount + 1
 	while #profile.pets > prepared.originalPetCount do
 		table.remove(profile.pets)
@@ -213,6 +239,7 @@ local function resetState()
 	maximumBatchCount = 10
 	spentCoins = 0
 	refundedCoins = 0
+	refundFails = false
 	questHatches = 0
 	inventoryReplications = 0
 	rollbackCount = 0
@@ -226,9 +253,13 @@ local function resetState()
 	shinyCommits = 0
 	shinyRollbacks = 0
 	pendingShiny = {}
+	currentInventoryLease = nil
+	inventoryIncarnation = 0
 	startEvents = {}
 	resultEvents = {}
 	EggService._hatchLock[player.UserId] = nil
+	EggService._activeTransactions[player.UserId] = nil
+	EggService._shuttingDown = false
 	EggService._transactionHook = nil
 	EggService._stationValidator = function()
 		return stationNear
@@ -632,12 +663,70 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(shinyCommits):toBe(0)
 	end)
 
-	it("cleans transient hatch locks without deleting the persistent preference", function()
+	it("never clears an ownerless hatch lock during lifecycle cleanup", function()
 		resetState()
 		profile.hatchPreferences.preferredBatchCount = 5
 		EggService._hatchLock[player.UserId] = true
-		EggService.onPlayerRemoving(player)
-		expect(EggService._hatchLock[player.UserId]):toBeNil()
+		expect(EggService.onPlayerRemoving(player)):toBeFalse()
+		expect(EggService._hatchLock[player.UserId]):toBeTrue()
 		expect(profile.hatchPreferences.preferredBatchCount):toBe(5)
+	end)
+end)
+
+
+
+describe("EggService shared inventory lease", function()
+	it("holds one lease for the whole batch and rejects a held Enchant restore lease", function()
+		resetState()
+		local foreignLease = petService.beginInventoryMutation(player, "EnchantingService.restore")
+		local result, hatchError = EggService.purchaseAndHatch(player, "BasicEgg", 1, {
+			bypassStation = true,
+		})
+		expect(result):toBeNil()
+		expect(hatchError):toBe("Pet inventory mutation already in progress")
+		expect(spentCoins):toBe(0)
+		expect(#profile.pets):toBe(0)
+		expect(petService.endInventoryMutation(player, foreignLease, false)):toBeTrue()
+
+		local sawLease = false
+		EggService._transactionHook = function(stage, transaction)
+			if stage == "afterPrepare" then
+				sawLease = petService.isInventoryMutationCurrent(player, transaction.inventoryLease)
+			end
+		end
+		local committed, commitError = EggService.purchaseAndHatch(player, "BasicEgg", 1, {
+			bypassStation = true,
+		})
+		expect(commitError):toBeNil()
+		expect(committed.count):toBe(1)
+		expect(sawLease):toBeTrue()
+		expect(currentInventoryLease):toBeNil()
+	end)
+end)
+
+
+
+describe("EggService retained rollback lifecycle", function()
+	it("retains failed restore handles and releases exactly after a later cleanup retry", function()
+		resetState()
+		refundFails = true
+		EggService._transactionHook = function(stage)
+			if stage == "afterSpend" then error("injected after spend") end
+		end
+		local result, hatchError = EggService.purchaseAndHatch(player, "BasicEgg", 1, {
+			bypassStation = true,
+		})
+		expect(result):toBeNil()
+		expect(hatchError):toBe("Hatch rollback failed")
+		expect(profile.coins):toBe(9900)
+		expect(EggService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+		expect(currentInventoryLease ~= nil):toBeTrue()
+		expect(EggService.onPlayerRemoving(player)):toBeFalse()
+		refundFails = false
+		expect(EggService.onPlayerRemoving(player)):toBeTrue()
+		expect(profile.coins):toBe(10000)
+		expect(refundedCoins):toBe(100)
+		expect(EggService._activeTransactions[player.UserId]):toBeNil()
+		expect(currentInventoryLease):toBeNil()
 	end)
 end)
