@@ -15,6 +15,11 @@ Open `BATTLE_PETS.rbxlx` in Roblox Studio to play or edit the game directly.
 - Each pet has a rarity: Common, Uncommon, Rare, Epic, or Legendary
 - Unlock new zones by spending coins at zone gates
 - Upgrade your pets, speed, luck, and more through the upgrade system
+- Buy and drink persistent potions with timed Luck, Speed, Coin, and Shiny-charge effects
+- Use the live Gold Machine in Zone 3 (Normal → Golden, 750 Diamonds) and Rainbow Machine in Zone 6 (Golden → Rainbow, 2,500 Diamonds)
+- Buy QOF-18 Auto-Hatch Access for exactly 500 Diamonds: 10 minutes of station-bound x1/x2/x5/x10 paid egg batches every 3 seconds
+- Enchant any inventory pet through its Details panel for exactly 500 Diamonds per roll/reroll: one slot with Strong I-III damage or Agile I-III campaign-speed outcomes
+- Complete a 96-card Pet Dex covering Normal/Gold/Rainbow × standard/Shiny for all 16 species
 
 ### Side Mode: Campaign (Battle Cats-style)
 - Accessible through a portal in the main world
@@ -37,7 +42,7 @@ Open `BATTLE_PETS.rbxlx` in Roblox Studio to play or edit the game directly.
 
 ## Pets
 
-16 pets distributed across 8 zone eggs with progressive rarity. Each pet can appear in Normal, Golden (Shiny), or Rainbow variant forms. Shiny and Rainbow variants have boosted stats and unique visual effects.
+16 pets distributed across 8 zone eggs with progressive rarity. Every species has six independent Dex states: Normal, Normal Shiny, Gold, Gold Shiny, Rainbow, and Rainbow Shiny. DataSchema V11 persists these canonical discoveries plus rolling compatibility mirrors and at most one canonical, whitelist-only `enchantId`: Strong multiplies canonical damage, while Agile snapshots canonical campaign lane speed at deployment.
 
 ## Source Tree Structure
 
@@ -51,14 +56,18 @@ src/
   ServerScriptService/
     Main.server.lua               -- Server entry point (boots all services)
     Services/
-      DataService.lua             -- Save/load with DataStore + session locking
+      DataService.lua             -- Session locking plus per-profile leave/shutdown settlement retries and isolated release
       DataSchema.lua              -- Versioned player data schema and migrations
-      PetService.lua              -- Pet hatching, equipping, inventory
-      EggService.lua              -- Egg station logic and hatching
-      ShopService.lua             -- In-game shop purchases
+      PetService.lua              -- All pet mutations behind the shared lease; Strong/Agile stats and canonical conversions
+      MachineService.lua          -- Atomic shared-lease Gold/Rainbow payment, consumption, roll, rollback, settlement
+      EnchantingService.lua       -- Strict V1 pet-enchant state, roll/reroll, revision, transaction, rollback authority
+      EggService.lua              -- Lease-held paid/free batch transactions with retained rollback lifecycle
+      AutoHatchService.lua        -- Paid expiry, station sessions, scheduler, DTO/revision authority
+      ShopService.lua             -- Inventory-only shop purchases; legacy Auto-Hatch loop hard-disabled
+      PotionService.lua           -- Potion consumption, effects, upgrades, Auto-Drink
       CampaignService.lua         -- Campaign level logic
       CurrencyService.lua         -- Coins and diamonds management
-      ZoneService.lua             -- Zone unlocking and destructibles
+      ZoneService.lua             -- Zone/destructible spawning plus private machine and egg-station registries
       QuestService.lua            -- Quest tracking and rewards
       MasteryService.lua          -- Mastery point buffs
       UpgradeService.lua          -- Player upgrades (delegates to QuestService)
@@ -80,13 +89,31 @@ src/
       CampaignData.lua            -- Campaign levels and enemies
       QuestData.lua               -- Quest definitions and rewards
       MasteryData.lua             -- Mastery tree definitions
+      AutoHatchClientSession.lua  -- Pure prompt generation and state-revision ownership
+      PetEnchantMath.lua          -- Canonical six-ID enchant whitelist and Strong/Agile math
+      PetDex.lua                  -- Pure six-state keys, migration, validation, and client projection
+      EnchantingClientSession.lua -- Pet/generation/revision-bound request ownership
+      EnchantingClientContract.lua -- Pure exact canonical V1 response validation
 
 tests/
   run_tests.lua                   -- Minimal test runner (describe/it/expect)
-  DataSchema.spec.lua             -- Unit tests for DataSchema module
+  DataSchema.spec.lua             -- Schema V11, Pet Dex migration, and whitelist-only enchant persistence
+  PetDex.spec.lua                -- Six-state keys, conservative migration, backfill, and hostile boundaries
+  PetDexClient.spec.lua          -- Combined UI, live update, stale refresh, and defensive remote contracts
+  PotionService.spec.lua          -- Potion consumption/effect transaction tests
+  AutoHatchService.spec.lua       -- Paid purchase/session/scheduler/expiry tests
+  AutoHatchClient.spec.lua        -- Rolling discovery and stale-response tests
+  PetEnchantMath.spec.lua         -- Canonical pool, defensive copy, Strong/Agile semantics
+  EnchantingService.spec.lua      -- Contract, transaction, rollback, settlement and shared-lease tests
+  EnchantingClient.spec.lua       -- Optional discovery, exact requests, revisions and inventory UX
+  CampaignService.spec.lua        -- Agile deploy snapshot and fallible stat-provider boundaries
 
 tools/
-  generate_rbxlx.py               -- Generates BATTLE_PETS.rbxlx from src/ tree
+  generate_rbxlx.py               -- Deterministically generates BATTLE_PETS.rbxlx from automatic runtime inventory
+  runtime_inventory.py            -- Fail-closed complete src/ runtime discovery
+  build_release.py                -- Reproducible RBXL/RBXLX/ZIP/SHA256 release orchestrator
+  convert_place.rbxmk.lua         -- Pinned bidirectional rbxmk place conversion
+  rbxmk.lock.json                 -- Canonical rbxmk version/platform/executable hash
   fix_hierarchy.py                -- Hierarchy repair utility
 ```
 
@@ -99,11 +126,15 @@ The game uses a server-authoritative architecture where all state mutations happ
 | Service | Responsibility |
 |---------|---------------|
 | **DataService** | Loads/saves player data via DataStore with session locking and auto-save |
-| **DataSchema** | Defines the canonical player data shape, handles migrations and normalization |
-| **PetService** | Manages pet inventory, equipping, deletion, and multi-select operations |
-| **EggService** | Handles egg hatching with rarity rolls and variant chances |
-| **ShopService** | Processes in-game purchases (extra equip slots, etc.) |
-| **ZoneService** | Spawns all 8 zones, gates, egg stations, and destructibles |
+| **DataSchema** | Defines Schema V11; migrates the six-state Pet Dex and persists only a canonical whitelisted `enchantId` |
+| **PetService** | Owns pet inventory, opaque per-player mutation leases/incarnations, canonical Strong/Agile stats, and conversion preparation/rollback |
+| **MachineService** | Owns active Gold/Rainbow admission, shared-lease payment/consumption/roll/rollback/settlement; successful outputs start unenchanted |
+| **EnchantingService** | Owns strict Contract V1 GET/ROLL DTOs, exact 500-Diamond transactions, optimistic revisions, rollback, retryable settlement, and shutdown gating |
+| **EggService** | Owns atomic paid manual and automatic egg-batch economy, capacity, rollback, events, and quests |
+| **AutoHatchService** | Owns QOF-18 paid absolute expiry, strict Contract V1 DTOs, station sessions, revisions, cancellation, and the non-overlapping 3-second scheduler |
+| **ShopService** | Retains purchase ownership; potion purchases only add inventory |
+| **PotionService** | Owns timed potion sources, Shiny charges, upgrades, Auto-Drink, and effect state |
+| **ZoneService** | Spawns all zones plus private-authority machine and concrete Egg-station registries, gates, and destructibles |
 | **CampaignService** | Runs campaign battles, energy system, and boss encounters |
 | **CurrencyService** | Awards and deducts coins/diamonds with validation |
 | **QuestService** | Tracks quest progress and distributes rewards |
@@ -137,7 +168,16 @@ Without Rojo, you can directly edit the `BATTLE_PETS.rbxlx` file in Roblox Studi
 python3 tools/generate_rbxlx.py
 ```
 
-This reads the entire `src/` tree and produces `BATTLE_PETS.rbxlx` with procedurally generated geometry for all 8 zones.
+The generator performs a deterministic, fail-closed inventory of every supported runtime surface under `src/`, embeds each source exactly once, and produces `BATTLE_PETS.rbxlx` with procedurally generated geometry for all 8 zones. Unknown runtime layouts, symlinks, invalid UTF-8, CRLF, or unsafe CDATA terminate the build instead of silently omitting code.
+
+Create and verify the complete reproducible QOF-21 release with the pinned rbxmk 0.9.1 binary:
+
+```bash
+python3 tools/build_release.py --qof 21 --rbxmk /path/to/rbxmk
+python3 tests/verify_release_artifacts.py --qof 21 --fresh-build --rbxmk /path/to/rbxmk
+```
+
+Use `python3 tools/build_release.py --qof 21 --rbxmk /path/to/rbxmk --check` for a non-mutating drift check. See [`docs/QOF-21-reproducible-release.md`](docs/QOF-21-reproducible-release.md) for the lock, deterministic ZIP, provenance, and roundtrip contracts.
 
 ## Testing & CI
 
@@ -150,6 +190,20 @@ luau tests/run_tests.lua
 ```
 
 The runner provides `describe`, `it`, and `expect` helpers and prints results to stdout. It exits with code 1 on any failure.
+
+Verify a freshly generated place against every runtime source with:
+
+```bash
+python3 tests/verify_generated_place.py
+```
+
+QOF-20 coverage adds the six canonical Pet Dex states for all 16 species, Schema V11 conservative Legacy migration and exact inventory backfill, canonical-plus-Legacy transactional writes, canonical-only new-discovery semantics, separate Gold-Shiny/Rainbow-Shiny handling, defensive remote copies, 96-card client rendering, confirmed Hatch/Machine live updates that invalidate older snapshots, and stale/failed refresh protection. QOF-21 independently inventories every runtime source, verifies byte-exact Place parity and the complete roundtrip semantic tree, requires a byte-stable binary reserialization, pins rbxmk, reproduces XML/RBXL/ZIP twice, transactionally publishes with rollback, and independently validates exact SHA-256 provenance. The generated place must contain exactly **75 ModuleScripts + 1 Script + 1 LocalScript = 77 runtime sources**, each byte-identical and present exactly once. See [`docs/QOF-20-six-state-pet-dex.md`](docs/QOF-20-six-state-pet-dex.md) and [`docs/QOF-21-reproducible-release.md`](docs/QOF-21-reproducible-release.md).
+
+QOF-19 regression coverage remains in place for the active six-result Enchanting balance, whitelist-only canonical `enchantId`, strict V1 GET/ROLL DTOs, exact `false` no-enchant sentinel, paid same-result rerolls, revision advancement, shared Machine/Enchant inventory leases, rollback and settlement boundaries, inventory-detail failure handling, Strong/Agile semantics, and Machine enchant-consumption warnings. See [`docs/QOF-19-pet-enchanting.md`](docs/QOF-19-pet-enchanting.md).
+
+QOF-18 coverage remains in place for Schema V9 absolute-expiry/offline boundaries, exact 500-Diamond atomic access purchases, strict V1 DTO/revision/deep-copy contracts, private Egg-station clone/token/property authority, x1/x2/x5/x10 no-fallback entitlements, first-tick/no-overlap/no-backlog scheduling, stop/leave/expiry generations, stable pause/resume reasons, rolling optional remote discovery, station UI generations, and no Shiny-charge consumption. See [`docs/QOF-18-paid-auto-hatch.md`](docs/QOF-18-paid-auto-hatch.md).
+
+QOF-17's machine coverage remains in place for both station registries, exact machine economics and chances, business-failure consumption, technical rollback, Shiny propagation, Gold-only quest progress, client generations, and generic prompt routing.
 
 ### Linting
 
@@ -177,3 +231,4 @@ The `.github/workflows/luau-check.yml` workflow runs on every push and PR to `ma
 - 8 themed zones with progressive difficulty
 - 16 unique pets across all rarity tiers
 - Shiny and Rainbow variant system with configurable drop rates
+- QOF-19 inventory-native enchanting needs no world station and adds no second Machine remote; `UseMachine` remains the sole Machine mutation endpoint

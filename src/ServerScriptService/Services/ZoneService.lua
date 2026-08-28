@@ -5,9 +5,12 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ZoneData = require(game.ReplicatedStorage.Shared.ZoneData)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+local PetData = require(game.ReplicatedStorage.Shared.PetData)
 
 local ZoneService = {}
 
@@ -17,6 +20,7 @@ ZoneService._currencyService = nil
 ZoneService._petService = nil
 ZoneService._questService = nil
 ZoneService._shopService = nil
+ZoneService._pickupService = nil
 
 -- Active destructibles tracked by unique ID
 ZoneService._destructibles = {}
@@ -50,11 +54,398 @@ local DESTRUCTIBLES_PER_ZONE = 20
 -- Minimum distance between spawned destructibles (studs) - prevents overlap between all types
 local MIN_SPAWN_DISTANCE = 15
 
+-- QOF-17 machine authority. This registry is intentionally module-private: a
+-- replicated name, attribute, token, or cloned station can never replace the
+-- exact server-created references retained here.
+local MACHINE_MAX_DISTANCE = 12
+local MACHINE_PRESENTATION = {
+	Gold = {
+		objectText = "Gold Machine",
+		anchorSize = Vector3.new(12, 6, 8),
+		anchorColor = Color3.fromRGB(255, 194, 32),
+		anchorMaterial = Enum.Material.Metal,
+		anchorCanCollide = true,
+	},
+	Rainbow = {
+		objectText = "Rainbow Machine",
+		anchorSize = Vector3.new(12, 6, 8),
+		anchorColor = Color3.fromRGB(170, 80, 255),
+		anchorMaterial = Enum.Material.Neon,
+		anchorCanCollide = true,
+	},
+}
+local machineRegistry = {}
+local profileHasUnlockedZone
+
+-- QOF-18 egg authority mirrors the machine registry but binds every auto-hatch
+-- session to one exact server-created station. IDs are stable presentation keys;
+-- GUIDs are per-server capabilities and exact Instance references remain private.
+local EGG_MAX_DISTANCE = 10
+local eggStationRegistry = {}
+
+local function eggRegistryContainsToken(identityToken)
+	for _, record in pairs(eggStationRegistry) do
+		if record.identityToken == identityToken then
+			return true
+		end
+	end
+	return false
+end
+
+local function hasConflictingEggStationIdentity(record)
+	if not record.stationsFolder or not record.stationsFolder:IsA("Folder") then
+		return true
+	end
+	for _, candidate in ipairs(record.stationsFolder:GetDescendants()) do
+		if candidate:IsA("BasePart") and candidate ~= record.egg then
+			if candidate:GetAttribute("EggStationId") == record.stationId
+				or candidate:GetAttribute("EggStationIdentityToken") == record.identityToken then
+				return true
+			end
+		elseif candidate:IsA("ProximityPrompt")
+			and candidate ~= record.prompt
+			and candidate:IsDescendantOf(record.egg) then
+			return true
+		end
+	end
+	return false
+end
+
+local function validateEggRecordIntegrity(record)
+	if not record or hasConflictingEggStationIdentity(record) then
+		return false, "STATION_INVALID"
+	end
+	local folder = record.stationsFolder
+	local pedestal = record.pedestal
+	local egg = record.egg
+	local prompt = record.prompt
+	if folder.Parent ~= record.workspace
+		or record.workspace:FindFirstChild("EggStations") ~= folder
+		or pedestal.Parent ~= folder
+		or pedestal.Name ~= record.pedestalName
+		or pedestal.Shape ~= record.pedestalShape
+		or pedestal.Anchored ~= record.pedestalAnchored
+		or pedestal.CanCollide ~= record.pedestalCanCollide
+		or pedestal.Size ~= record.pedestalSize
+		or pedestal.CFrame ~= record.pedestalCFrame
+		or pedestal.Color ~= record.pedestalColor
+		or pedestal.Material ~= record.pedestalMaterial
+		or egg.Parent ~= folder
+		or egg.Name ~= "EggModel"
+		or egg.Shape ~= record.eggShape
+		or egg.Anchored ~= record.eggAnchored
+		or egg.CanCollide ~= record.eggCanCollide
+		or egg.Size ~= record.eggSize
+		or egg.CFrame ~= record.eggCFrame
+		or egg.Color ~= record.eggColor
+		or egg.Material ~= record.eggMaterial
+		or egg:GetAttribute("EggStationId") ~= record.stationId
+		or egg:GetAttribute("EggStationIdentityToken") ~= record.identityToken
+		or egg:GetAttribute("EggType") ~= record.eggType
+		or egg:GetAttribute("EggZoneId") ~= record.zoneId then
+		return false, "STATION_INVALID"
+	end
+	if not record.eggTypeTag or record.eggTypeTag.Parent ~= egg
+		or record.eggTypeTag.Name ~= "EggType" or record.eggTypeTag.Value ~= record.eggType
+		or not record.zoneTag or record.zoneTag.Parent ~= egg
+		or record.zoneTag.Name ~= "StationZone" or record.zoneTag.Value ~= record.zoneId
+		or not record.promptEggTag or record.promptEggTag.Parent ~= egg
+		or record.promptEggTag.Name ~= "PromptEggType" or record.promptEggTag.Value ~= record.eggType then
+		return false, "STATION_INVALID"
+	end
+	if not prompt or not prompt:IsA("ProximityPrompt")
+		or prompt.Parent ~= egg or prompt.Name ~= "HatchPrompt"
+		or prompt.Enabled ~= true or prompt.ActionText ~= "Hatch"
+		or prompt.ObjectText ~= record.promptObjectText
+		or prompt.KeyboardKeyCode ~= Enum.KeyCode.E
+		or prompt.HoldDuration ~= 0
+		or prompt.MaxActivationDistance ~= EGG_MAX_DISTANCE
+		or prompt.RequiresLineOfSight ~= false then
+		return false, "STATION_INVALID"
+	end
+	if not record.interactZone or record.interactZone.Parent ~= folder
+		or record.interactZone.Name ~= record.interactZoneName
+		or record.interactZone.Shape ~= record.interactZoneShape
+		or record.interactZone.Anchored ~= record.interactZoneAnchored
+		or record.interactZone.CanCollide ~= record.interactZoneCanCollide
+		or record.interactZone.Transparency ~= record.interactZoneTransparency
+		or record.interactZone.Size ~= record.interactZoneSize
+		or record.interactZone.CFrame ~= record.interactZoneCFrame
+		or record.interactZone.Color ~= record.interactZoneColor
+		or record.interactZone.Material ~= record.interactZoneMaterial
+		or not record.interactTag or record.interactTag.Parent ~= record.interactZone
+		or record.interactTag.Value ~= record.eggType then
+		return false, "STATION_INVALID"
+	end
+	return true
+end
+
+local function validateEggSelection(player, stationId, identityToken, expectedEggType, expectedZone, requireProximity)
+	if type(stationId) ~= "string" or #stationId < 1 or #stationId > 64
+		or type(identityToken) ~= "string" or #identityToken < 1 or #identityToken > 128 then
+		return nil, "STATION_INVALID"
+	end
+	local record = eggStationRegistry[stationId]
+	if not record or record.stationId ~= stationId or record.identityToken ~= identityToken then
+		return nil, "STATION_INVALID"
+	end
+	if expectedEggType ~= nil and expectedEggType ~= record.eggType then
+		return nil, "STATION_INVALID"
+	end
+	if expectedZone ~= nil and expectedZone ~= record.zoneId then
+		return nil, "STATION_INVALID"
+	end
+	if not player or not player:IsA("Player") then
+		return nil, "INVALID_PLAYER"
+	end
+	local integrityOk, integrityError = validateEggRecordIntegrity(record)
+	if not integrityOk then
+		return nil, integrityError
+	end
+	local data = ZoneService._dataService and ZoneService._dataService.getPlayerData(player)
+	if not profileHasUnlockedZone(data, record.zoneId) then
+		return nil, "ZONE_LOCKED"
+	end
+	if requireProximity == true then
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if not character or not root or not root:IsA("BasePart") or not root:IsDescendantOf(character) then
+			return nil, "CHARACTER_UNAVAILABLE"
+		end
+		local distance = (root.Position - record.egg.Position).Magnitude
+		if distance ~= distance or distance > EGG_MAX_DISTANCE then
+			return nil, "TOO_FAR"
+		end
+	end
+	return {
+		stationId = record.stationId,
+		eggType = record.eggType,
+		zone = record.zoneId,
+	}, nil
+end
+
+local function buildEggAuthority()
+	return {
+		validateManual = function(player, eggType)
+			for stationId, record in pairs(eggStationRegistry) do
+				if record.eggType == eggType then
+					local station = validateEggSelection(
+						player, stationId, record.identityToken, eggType, record.zoneId, true
+					)
+					return station ~= nil
+				end
+			end
+			return false
+		end,
+		validateSelection = function(player, stationId, identityToken, expectedEggType, expectedZone, requireProximity)
+			return validateEggSelection(
+				player, stationId, identityToken, expectedEggType, expectedZone, requireProximity == true
+			)
+		end,
+	}
+end
+
+profileHasUnlockedZone = function(data, zoneId)
+	if type(data) ~= "table" or type(data.unlockedZones) ~= "table" then
+		return false
+	end
+	for _, unlockedZoneId in ipairs(data.unlockedZones) do
+		if unlockedZoneId == zoneId then
+			return true
+		end
+	end
+	return false
+end
+
+local function registryContainsToken(identityToken)
+	for _, record in pairs(machineRegistry) do
+		if record.identityToken == identityToken then
+			return true
+		end
+	end
+	return false
+end
+
+local function spawnMachineStation(zonesFolder, machineType)
+	local definition = BalanceConfig.Machines[machineType]
+	local presentation = MACHINE_PRESENTATION[machineType]
+	if BalanceConfig.Machines.RuntimeEnabled ~= true
+		or type(definition) ~= "table"
+		or definition.RuntimeEnabled ~= true
+		or type(presentation) ~= "table" then
+		error(tostring(machineType) .. " machine runtime configuration is unavailable")
+	end
+	if machineRegistry[definition.id] then
+		error("Duplicate machine registry ID: " .. tostring(definition.id))
+	end
+
+	local zoneFolder = zonesFolder:FindFirstChild("Zone_" .. tostring(definition.zoneId))
+	if not zoneFolder
+		or zoneFolder.Name ~= "Zone_" .. tostring(definition.zoneId)
+		or zoneFolder.Parent ~= zonesFolder then
+		error(tostring(machineType) .. " machine zone was not generated")
+	end
+	if zoneFolder:FindFirstChild(definition.id) then
+		error(tostring(machineType) .. " machine station already exists")
+	end
+
+	local identityToken = HttpService:GenerateGUID(false)
+	if type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128
+		or registryContainsToken(identityToken) then
+		error(tostring(machineType) .. " machine identity generation failed")
+	end
+
+	local model = Instance.new("Model")
+	model.Name = definition.id
+	model:SetAttribute("MachineId", definition.id)
+	model:SetAttribute("MachineZoneId", definition.zoneId)
+	model:SetAttribute("MachineIdentityToken", identityToken)
+
+	local anchor = Instance.new("Part")
+	anchor.Name = "Anchor"
+	anchor.Shape = Enum.PartType.Block
+	anchor.Anchored = true
+	anchor.CanCollide = presentation.anchorCanCollide
+	anchor.Size = presentation.anchorSize
+	anchor.CFrame = CFrame.new((definition.zoneId - 1) * ZONE_SPACING, 3, -55)
+	anchor.Color = presentation.anchorColor
+	anchor.Material = presentation.anchorMaterial
+	anchor.Parent = model
+	model.PrimaryPart = anchor
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "UseMachinePrompt"
+	prompt.ActionText = "Use Machine"
+	prompt.ObjectText = presentation.objectText
+	prompt.Enabled = true
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = MACHINE_MAX_DISTANCE
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = anchor
+
+	model.Parent = zoneFolder
+	machineRegistry[definition.id] = {
+		model = model,
+		anchor = anchor,
+		prompt = prompt,
+		zoneFolder = zoneFolder,
+		zonesFolder = zonesFolder,
+		machineId = definition.id,
+		zoneId = definition.zoneId,
+		identityToken = identityToken,
+		anchorShape = Enum.PartType.Block,
+		anchorSize = presentation.anchorSize,
+		anchorCFrame = anchor.CFrame,
+		anchorColor = presentation.anchorColor,
+		anchorMaterial = presentation.anchorMaterial,
+		anchorCanCollide = presentation.anchorCanCollide,
+		promptActionText = "Use Machine",
+		promptObjectText = presentation.objectText,
+		maxActivationDistance = MACHINE_MAX_DISTANCE,
+	}
+end
+
+local function hasConflictingStationIdentity(record)
+	if not record.zonesFolder or not record.zonesFolder:IsA("Folder") then
+		return true
+	end
+	for _, candidate in ipairs(record.zonesFolder:GetDescendants()) do
+		if candidate:IsA("Model") and candidate ~= record.model then
+			if candidate.Name == record.machineId
+				or candidate:GetAttribute("MachineId") == record.machineId
+				or candidate:GetAttribute("MachineIdentityToken") == record.identityToken then
+				return true
+			end
+		elseif candidate:IsA("ProximityPrompt")
+			and candidate ~= record.prompt
+			and candidate:IsDescendantOf(record.model) then
+			return true
+		end
+	end
+	return false
+end
+
+local function validateMachineActivation(player, machineId, activationToken)
+	local record = machineRegistry[machineId]
+	if not record or record.machineId ~= machineId then
+		return false, "Machine activation denied"
+	end
+	if type(activationToken) ~= "string" or activationToken ~= record.identityToken then
+		return false, "Machine activation denied"
+	end
+	if not player or not player:IsA("Player") then
+		return false, "Machine activation denied"
+	end
+
+	local model = record.model
+	local anchor = record.anchor
+	local prompt = record.prompt
+	if hasConflictingStationIdentity(record) then
+		return false, "Machine station integrity check failed"
+	end
+	if not record.zonesFolder or not record.zoneFolder
+		or record.zoneFolder.Name ~= "Zone_" .. tostring(record.zoneId)
+		or record.zoneFolder.Parent ~= record.zonesFolder
+		or record.zonesFolder:FindFirstChild(record.zoneFolder.Name) ~= record.zoneFolder
+		or not model or not model:IsA("Model")
+		or model.Name ~= record.machineId
+		or model.Parent ~= record.zoneFolder
+		or not model:IsDescendantOf(record.zonesFolder)
+		or model.PrimaryPart ~= anchor
+		or model:GetAttribute("MachineId") ~= record.machineId
+		or model:GetAttribute("MachineZoneId") ~= record.zoneId
+		or model:GetAttribute("MachineIdentityToken") ~= record.identityToken then
+		return false, "Machine station integrity check failed"
+	end
+	if not anchor or not anchor:IsA("BasePart")
+		or anchor.Name ~= "Anchor"
+		or anchor.Parent ~= model
+		or not anchor:IsDescendantOf(model)
+		or anchor.Shape ~= record.anchorShape
+		or anchor.Anchored ~= true
+		or anchor.CanCollide ~= record.anchorCanCollide
+		or anchor.Size ~= record.anchorSize
+		or anchor.CFrame ~= record.anchorCFrame
+		or anchor.Color ~= record.anchorColor
+		or anchor.Material ~= record.anchorMaterial then
+		return false, "Machine station integrity check failed"
+	end
+	if not prompt or not prompt:IsA("ProximityPrompt")
+		or prompt.Name ~= "UseMachinePrompt"
+		or prompt.Parent ~= anchor
+		or not prompt:IsDescendantOf(model)
+		or prompt.Enabled ~= true
+		or prompt.HoldDuration ~= 0
+		or prompt.RequiresLineOfSight ~= false
+		or prompt.MaxActivationDistance ~= record.maxActivationDistance
+		or prompt.ActionText ~= record.promptActionText
+		or prompt.ObjectText ~= record.promptObjectText then
+		return false, "Machine prompt integrity check failed"
+	end
+
+	local data = ZoneService._dataService and ZoneService._dataService.getPlayerData(player)
+	if not profileHasUnlockedZone(data, record.zoneId) then
+		return false, "Machine zone is locked"
+	end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not root or not root:IsA("BasePart") or not root:IsDescendantOf(character) then
+		return false, "Character is unavailable"
+	end
+	local distance = (root.Position - anchor.Position).Magnitude
+	if distance ~= distance or distance > record.maxActivationDistance then
+		return false, "Too far from machine"
+	end
+	return true
+end
+
 function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._dataService = dataService
 	ZoneService._currencyService = currencyService
 	ZoneService._petService = petService
 	ZoneService._questService = nil -- set later via setQuestService
+	machineRegistry = {}
+	eggStationRegistry = {}
 
 	-- Create zones folder in workspace
 	local workspace = game:GetService("Workspace")
@@ -85,6 +476,13 @@ function ZoneService.init(dataService, currencyService, petService)
 
 	-- Spawn invisible barriers at zone edges to prevent falling off
 	ZoneService._spawnBarriers()
+
+	-- Publish the validator only after every world-generation step completed.
+	-- Main wires this returned closure atomically; any init failure leaves
+	-- MachineService without world authority.
+	spawnMachineStation(zonesFolder, "Gold")
+	spawnMachineStation(zonesFolder, "Rainbow")
+	return validateMachineActivation, buildEggAuthority()
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -982,6 +1380,9 @@ function ZoneService._spawnEggStations()
 		stationsFolder = Instance.new("Folder")
 		stationsFolder.Name = "EggStations"
 		stationsFolder.Parent = workspace
+	elseif not stationsFolder:IsA("Folder") or stationsFolder.Parent ~= workspace
+		or #stationsFolder:GetChildren() > 0 then
+		error("Egg station authority requires one empty canonical folder")
 	end
 
 	-- Egg station definitions per zone (type maps to PetData.Eggs keys)
@@ -997,6 +1398,15 @@ function ZoneService._spawnEggStations()
 	}
 
 	for zoneId, stationDef in pairs(stationDefs) do
+		local stationId = "EggStation-" .. tostring(zoneId) .. "-" .. stationDef.eggType
+		if #stationId > 64 or eggStationRegistry[stationId] then
+			error("Duplicate or invalid egg station ID: " .. stationId)
+		end
+		local identityToken = HttpService:GenerateGUID(false)
+		if type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128
+			or eggRegistryContainsToken(identityToken) then
+			error("Egg station identity generation failed")
+		end
 		-- Position the egg station at a prominent spot near the zone entrance
 		local zoneCenter = (zoneId - 1) * ZONE_SPACING
 		local stationPos = Vector3.new(zoneCenter - 40, 0, -70)
@@ -1017,6 +1427,10 @@ function ZoneService._spawnEggStations()
 		-- Egg on top (ball)
 		local egg = Instance.new("Part")
 		egg.Name = "EggModel"
+		egg:SetAttribute("EggStationId", stationId)
+		egg:SetAttribute("EggStationIdentityToken", identityToken)
+		egg:SetAttribute("EggType", stationDef.eggType)
+		egg:SetAttribute("EggZoneId", zoneId)
 		egg.Shape = Enum.PartType.Ball
 		egg.Size = Vector3.new(4, 5, 4)
 		egg.Position = stationPos + Vector3.new(0, 5, 0)
@@ -1083,7 +1497,6 @@ function ZoneService._spawnEggStations()
 		costLabel.Parent = billboard
 
 		-- BillboardGui showing which pets are in this egg with their % chance
-		local PetData = require(game.ReplicatedStorage.Shared.PetData)
 		local eggDef = PetData.Eggs[stationDef.eggType]
 		if eggDef and eggDef.petPool then
 			-- Calculate total weight for percentage
@@ -1179,6 +1592,7 @@ function ZoneService._spawnEggStations()
 		proximityPrompt.ActionText = "Hatch"
 		proximityPrompt.ObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)"
 		proximityPrompt.KeyboardKeyCode = Enum.KeyCode.E
+		proximityPrompt.Enabled = true
 		proximityPrompt.HoldDuration = 0
 		proximityPrompt.MaxActivationDistance = 10
 		proximityPrompt.RequiresLineOfSight = false
@@ -1189,6 +1603,48 @@ function ZoneService._spawnEggStations()
 		promptEggTag.Name = "PromptEggType"
 		promptEggTag.Value = stationDef.eggType
 		promptEggTag.Parent = egg
+
+		eggStationRegistry[stationId] = {
+			workspace = workspace,
+			stationsFolder = stationsFolder,
+			stationId = stationId,
+			identityToken = identityToken,
+			eggType = stationDef.eggType,
+			zoneId = zoneId,
+			pedestal = pedestal,
+			pedestalName = pedestal.Name,
+			pedestalShape = pedestal.Shape,
+			pedestalAnchored = pedestal.Anchored,
+			pedestalCanCollide = pedestal.CanCollide,
+			pedestalSize = pedestal.Size,
+			pedestalCFrame = pedestal.CFrame,
+			pedestalColor = pedestal.Color,
+			pedestalMaterial = pedestal.Material,
+			egg = egg,
+			eggShape = egg.Shape,
+			eggAnchored = egg.Anchored,
+			eggCanCollide = egg.CanCollide,
+			eggSize = egg.Size,
+			eggCFrame = egg.CFrame,
+			eggColor = egg.Color,
+			eggMaterial = egg.Material,
+			eggTypeTag = eggTypeTag,
+			zoneTag = zoneTag,
+			promptEggTag = promptEggTag,
+			prompt = proximityPrompt,
+			promptObjectText = stationDef.name .. " (" .. tostring(stationDef.cost) .. " Coins)",
+			interactZone = interactZone,
+			interactZoneName = interactZone.Name,
+			interactZoneShape = interactZone.Shape,
+			interactZoneAnchored = interactZone.Anchored,
+			interactZoneCanCollide = interactZone.CanCollide,
+			interactZoneTransparency = interactZone.Transparency,
+			interactZoneSize = interactZone.Size,
+			interactZoneCFrame = interactZone.CFrame,
+			interactZoneColor = interactZone.Color,
+			interactZoneMaterial = interactZone.Material,
+			interactTag = interactTag,
+		}
 	end
 end
 
@@ -1814,6 +2270,29 @@ local function fireCollectCurrency(player, position, amount, currencyType)
 	end
 end
 
+local function queueResolvedCurrency(player, currency, amount, position)
+	if not amount or amount <= 0 then
+		return false
+	end
+	if ZoneService._pickupService then
+		local created = ZoneService._pickupService.createPickup(player, currency, amount, position)
+		if created then
+			return true
+		end
+	end
+
+	-- Fail-safe for world/pickup initialization errors: preserve the exact
+	-- snapshotted reward without reapplying bonuses or losing player currency.
+	local credited = ZoneService._currencyService.creditResolvedReward(player, currency, amount)
+	if credited then
+		fireCollectCurrency(player, position, amount, currency == "coins" and "Coins" or "Diamonds")
+		if currency == "coins" and ZoneService._questService then
+			ZoneService._questService.incrementStat(player, "earnCoins", amount)
+		end
+	end
+	return credited
+end
+
 -- Split rewards by actual damage contribution instead of giving everything to the
 -- last hitter. Disconnected contributors are excluded and their share is reallocated.
 function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedDrops)
@@ -1842,28 +2321,24 @@ function ZoneService._rewardContributors(destructible, fallbackPlayer, resolvedD
 		local playerRewards = { Coins = 0, Diamonds = 0 }
 		local coinShare = coinAllocations[entry.userId] or 0
 		if coinShare > 0 then
-			-- Coin Potion applies only to newly earned breakable rewards for this contributor.
+			-- Resolve every earned multiplier and random DropCloner roll once at
+			-- destruction. The pickup later performs only an exact one-shot credit.
 			local coinMultiplier = 1
 			if ZoneService._shopService then
 				coinMultiplier = ZoneService._shopService.getShopMultiplier(player, "coins")
 			end
 			local earnedCoins = math.floor(coinShare * coinMultiplier)
-			local success, actualCoins = ZoneService._currencyService.addCoins(player, earnedCoins)
-			if success then
-				playerRewards.Coins = actualCoins or earnedCoins
-				fireCollectCurrency(player, destructible.position, playerRewards.Coins, "Coins")
-				if ZoneService._questService then
-					ZoneService._questService.incrementStat(player, "earnCoins", playerRewards.Coins)
-				end
+			local actualCoins = ZoneService._currencyService.resolveCoinReward(player, earnedCoins)
+			if actualCoins and queueResolvedCurrency(player, "coins", actualCoins, destructible.position) then
+				playerRewards.Coins = actualCoins
 			end
 		end
 
 		local diamondShare = diamondAllocations[entry.userId] or 0
 		if diamondShare > 0 then
-			local success, actualDiamonds = ZoneService._currencyService.addDiamonds(player, diamondShare)
-			if success then
-				playerRewards.Diamonds = actualDiamonds or diamondShare
-				fireCollectCurrency(player, destructible.position, playerRewards.Diamonds, "Diamonds")
+			local actualDiamonds = ZoneService._currencyService.resolveDiamondReward(player, diamondShare)
+			if actualDiamonds and queueResolvedCurrency(player, "diamonds", actualDiamonds, destructible.position) then
+				playerRewards.Diamonds = actualDiamonds
 			end
 		end
 
@@ -1920,6 +2395,57 @@ function ZoneService._clearDestroyedTargetState(destructibleId)
 	for _, windows in pairs(ZoneService._critWindows) do
 		windows[destructibleId] = nil
 	end
+end
+
+local function resolveDrops(drops)
+	local resolved = {}
+	for currencyType, dropValue in pairs(drops) do
+		if type(dropValue) == "table" and dropValue.min and dropValue.max then
+			resolved[currencyType] = math.random(dropValue.min, dropValue.max)
+		else
+			resolved[currencyType] = dropValue
+		end
+	end
+	return resolved
+end
+
+-- One destruction finalizer owns reward snapshotting, pickup creation, cleanup,
+-- replication, and respawn for both pet and Crit-QTE damage paths.
+function ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, fallbackPlayer)
+	destructible.hp = 0
+	local rewardsByUserId = ZoneService._rewardContributors(
+		destructible,
+		fallbackPlayer,
+		resolveDrops(destructible.drops)
+	)
+	ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
+	ZoneService._clearDestroyedTargetState(destructibleId)
+
+	if destructible.model and destructible.model.Parent then
+		destructible.model:Destroy()
+	elseif destructible.part and destructible.part.Parent then
+		destructible.part:Destroy()
+	end
+
+	local zoneId = destructible.zoneId
+	local dtype = destructible.dtype
+	local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
+	ZoneService._destructibles[destructibleId] = nil
+	task.delay(10, function()
+		local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
+		if zoneFolder then
+			local origin = getZoneOrigin(zoneId)
+			local existingPositions = {}
+			for _, active in pairs(ZoneService._destructibles) do
+				if active.position then
+					table.insert(existingPositions, active.position)
+				end
+			end
+			local newPosition = getRandomPositionInZone(origin, existingPositions)
+			ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
+		end
+	end)
+	return rewardsByUserId
 end
 
 -- Attack a destructible (called when a player's pets attack)
@@ -2001,59 +2527,8 @@ function ZoneService.attackDestructible(player, destructibleId)
 	local appliedDamage = recordContribution(destructible, player, totalDamage)
 	destructible.hp = destructible.hp - appliedDamage
 
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
 	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops: support both fixed numbers and {min, max} tables for randomization
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model (or part) from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Schedule respawn after 10 seconds
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		-- Remove from tracking
-		ZoneService._destructibles[destructibleId] = nil
-
-		-- Respawn after delay at a new random position within the zone
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				-- Gather positions of ALL existing destructibles (all zones) to prevent overlap
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
+		ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, player)
 	else
 		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
@@ -2178,61 +2653,8 @@ function ZoneService.critAttackDestructible(player, destructibleId)
 	local appliedDamage = recordContribution(destructible, player, critDamage)
 	destructible.hp = destructible.hp - appliedDamage
 
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-
 	if destructible.hp <= 0 then
-		-- Destructible destroyed
-		destructible.hp = 0
-
-		-- Resolve drops
-		local resolvedDrops = {}
-		for currencyType, dropValue in pairs(destructible.drops) do
-			if type(dropValue) == "table" and dropValue.min and dropValue.max then
-				resolvedDrops[currencyType] = math.random(dropValue.min, dropValue.max)
-			else
-				resolvedDrops[currencyType] = dropValue
-			end
-		end
-
-		-- Split currency, XP, and quest credit by contribution.
-		local rewardsByUserId = ZoneService._rewardContributors(destructible, player, resolvedDrops)
-
-		ZoneService._fireDestroyedNearby(destructibleId, destructible, rewardsByUserId)
-		ZoneService._clearDestroyedTargetState(destructibleId)
-
-		-- Remove model from workspace
-		if destructible.model and destructible.model.Parent then
-			destructible.model:Destroy()
-		elseif destructible.part and destructible.part.Parent then
-			destructible.part:Destroy()
-		end
-
-		-- Clean up crit window for this destructible
-		if playerCritWindows then
-			playerCritWindows[destructibleId] = nil
-		end
-
-		-- Schedule respawn
-		local zoneId = destructible.zoneId
-		local dtype = destructible.dtype
-		local dDef = ZoneData.Zones[zoneId].destructibles[dtype]
-
-		ZoneService._destructibles[destructibleId] = nil
-
-		task.delay(10, function()
-			local zoneFolder = ZoneService._zonesFolder:FindFirstChild("Zone_" .. tostring(zoneId))
-			if zoneFolder then
-				local origin = getZoneOrigin(zoneId)
-				local existingPositions = {}
-				for _, d in pairs(ZoneService._destructibles) do
-					if d.position then
-						table.insert(existingPositions, d.position)
-					end
-				end
-				local newPosition = getRandomPositionInZone(origin, existingPositions)
-				ZoneService._spawnSingleDestructible(zoneId, dtype, dDef, newPosition, zoneFolder, true)
-			end
-		end)
+		ZoneService._finalizeDestroyedDestructible(destructibleId, destructible, player)
 	else
 		ZoneService._fireDamageNearby(destructibleId, destructible, appliedDamage)
 	end
@@ -2300,6 +2722,11 @@ end
 -- Set shop service reference for contributor-specific breakable rewards.
 function ZoneService.setShopService(shopService)
 	ZoneService._shopService = shopService
+end
+
+-- Set transient server-owned pickup service for breakable currency rewards.
+function ZoneService.setPickupService(pickupService)
+	ZoneService._pickupService = pickupService
 end
 
 --------------------------------------------------------------------------------

@@ -1,97 +1,114 @@
 --[[
-	ShopData.lua - Shared presentation metadata for the current potion shop.
-	Balance comes from BalanceConfig.Legacy.Shop until the persistent potion
-	inventory is activated in QOF-13/QOF-14.
+	ShopData.lua - Shared presentation metadata for the potion shop.
+	Potion purchase prices remain canonical in BalanceConfig; QOF-14 consumption
+	uses an independent authoritative state contract.
 ]]
 
 local BalanceConfig = require(script.Parent.BalanceConfig)
 
-local ShopData = {}
+local ShopData = {
+	ContractVersion = 2,
+	PotionContractVersion = 1,
+	AutoHatchContractVersion = BalanceConfig.Shop.AutoHatch.ContractVersion,
+	PurchaseMode = "inventoryOnly",
+	MaxPotionInventory = BalanceConfig.Potions.Persistence.MaxInventoryPerPotion,
+}
 
 ShopData.Order = {
-	"LuckyPotion",
+	"LuckPotion",
+	"MegaLuckPotion",
 	"SpeedPotion",
-	"PowerPotion",
 	"CoinPotion",
+	"ShinyPotion",
 	"AutoHatch",
 	"ExtraEquipSlot",
 }
 
-local function legacyItem(itemId, presentation)
-	local balance = BalanceConfig.Legacy.Shop[itemId]
-	assert(balance, "Missing legacy shop balance for " .. itemId)
+local function potionItem(itemId, presentation)
+	local balance = BalanceConfig.Potions.Catalog[itemId]
+	assert(balance, "Missing canonical potion balance for " .. itemId)
 
-	local item = {}
+	local item = {
+		itemType = "potion",
+		permanent = false,
+		currency = balance.cost.currency,
+		cost = balance.cost.amount,
+		buffType = balance.buffType,
+		multiplier = balance.multiplier,
+		durationSeconds = balance.durationSeconds,
+		hatchCharges = balance.hatchCharges,
+	}
 	for key, value in pairs(presentation) do
-		item[key] = value
-	end
-	for key, value in pairs(balance) do
 		item[key] = value
 	end
 	return item
 end
 
+local extraSlotBalance = BalanceConfig.Legacy.Shop.ExtraEquipSlot
+
 ShopData.Items = {
-	LuckyPotion = legacyItem("LuckyPotion", {
-		displayName = "Lucky Potion",
-		description = "2x egg and pet variant luck for 5 minutes",
-		buffType = "luck",
-		permanent = false,
+	LuckPotion = potionItem("LuckPotion", {
+		displayName = "Luck Potion",
+		description = "Adds a 2x Luck Potion to your persistent inventory.",
 		artType = "potion",
 		color = { 70, 210, 105 },
 		accentColor = { 185, 255, 155 },
-		durationLabel = "5 min",
 	}),
-	SpeedPotion = legacyItem("SpeedPotion", {
+	MegaLuckPotion = potionItem("MegaLuckPotion", {
+		displayName = "Mega Luck Potion",
+		description = "Adds a powerful 5x Luck Potion to your persistent inventory.",
+		artType = "potion",
+		color = { 126, 84, 235 },
+		accentColor = { 216, 190, 255 },
+	}),
+	SpeedPotion = potionItem("SpeedPotion", {
 		displayName = "Speed Potion",
-		description = "2x player walk speed for 5 minutes",
-		buffType = "speed",
-		permanent = false,
+		description = "Adds a 2x Walk Speed Potion to your persistent inventory.",
 		artType = "potion",
 		color = { 40, 210, 225 },
 		accentColor = { 165, 250, 255 },
-		durationLabel = "5 min",
 	}),
-	PowerPotion = legacyItem("PowerPotion", {
-		displayName = "Power Potion",
-		description = "2x pet damage for 5 minutes",
-		buffType = "damage",
-		permanent = false,
-		artType = "potion",
-		color = { 235, 70, 40 },
-		accentColor = { 255, 155, 55 },
-		durationLabel = "5 min",
-	}),
-	CoinPotion = legacyItem("CoinPotion", {
+	CoinPotion = potionItem("CoinPotion", {
 		displayName = "Coin Potion",
-		description = "2x breakable coin rewards for 5 minutes",
-		buffType = "coins",
-		permanent = false,
+		description = "Adds a 2x Coin Potion to your persistent inventory.",
 		artType = "potion",
 		color = { 245, 185, 35 },
 		accentColor = { 255, 235, 125 },
-		durationLabel = "5 min",
 	}),
-	AutoHatch = legacyItem("AutoHatch", {
-		displayName = "Auto-Hatch",
-		description = "Automatically buys and hatches normal eggs for 10 minutes",
-		buffType = "autoHatch",
+	ShinyPotion = potionItem("ShinyPotion", {
+		displayName = "Shiny Potion",
+		description = "Adds a potion with 3 future 10x Shiny-chance charges.",
+		artType = "potion",
+		color = { 245, 92, 191 },
+		accentColor = { 255, 202, 239 },
+	}),
+	AutoHatch = {
+		itemType = "autoHatch",
+		displayName = "Auto-Hatch Access",
+		description = "10 minutes of paid, station-bound automatic egg batches.",
 		permanent = false,
-		artType = "egg",
-		color = { 245, 125, 35 },
-		accentColor = { 255, 205, 105 },
-		durationLabel = "10 min",
-	}),
-	ExtraEquipSlot = legacyItem("ExtraEquipSlot", {
+		artType = "pawPlus",
+		color = { 68, 145, 220 },
+		accentColor = { 190, 225, 255 },
+		durationLabel = "10 minutes",
+		cost = BalanceConfig.Shop.AutoHatch.cost.amount,
+		currency = BalanceConfig.Shop.AutoHatch.cost.currency,
+		durationSeconds = BalanceConfig.Shop.AutoHatch.durationSeconds,
+	},
+	ExtraEquipSlot = {
+		itemType = "permanent",
 		displayName = "Extra Equip Slot",
-		description = "Permanently equip 1 more pet (maximum 5)",
+		description = "Permanently equip 1 more pet (maximum 5).",
 		buffType = "equipSlot",
 		permanent = true,
 		artType = "pawPlus",
 		color = { 235, 90, 170 },
 		accentColor = { 255, 180, 220 },
 		durationLabel = "Permanent",
-	}),
+		cost = extraSlotBalance.cost,
+		currency = extraSlotBalance.currency,
+		maxPurchases = extraSlotBalance.maxPurchases,
+	},
 }
 
 return ShopData

@@ -12,13 +12,21 @@ local DataService = require(script.Parent.Services.DataService)
 local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
+local MachineService = require(script.Parent.Services.MachineService)
+local EnchantingService = require(script.Parent.Services.EnchantingService)
+local MachineAuthorityBootstrap = require(script.Parent.Services.MachineAuthorityBootstrap)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
+local AutoHatchService = require(script.Parent.Services.AutoHatchService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local PotionService = require(script.Parent.Services.PotionService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
+local MovementService = require(script.Parent.Services.MovementService)
+local PickupService = require(script.Parent.Services.PickupService)
+local BalanceConfig = require(ReplicatedStorage.Shared.BalanceConfig)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -56,6 +64,57 @@ local function isValidIdentifier(value)
 	return type(value) == "string" and #value > 0 and #value <= 64
 end
 
+local function isValidMachinePetIdList(petInstanceIds)
+	if type(petInstanceIds) ~= "table" or getmetatable(petInstanceIds) ~= nil then
+		return false
+	end
+	local count = 0
+	for key in next, petInstanceIds do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+			return false
+		end
+		count = count + 1
+		if count > BalanceConfig.Machines.MaxInputs then
+			return false
+		end
+	end
+	if count < BalanceConfig.Machines.MinInputs
+		or count > BalanceConfig.Machines.MaxInputs
+		or rawlen(petInstanceIds) ~= count then
+		return false
+	end
+	for index = 1, count do
+		local petId = rawget(petInstanceIds, index)
+		if type(petId) ~= "string" or petId == "" or #petId > 128 then
+			return false
+		end
+	end
+	return true
+end
+
+local function isValidShopPurchaseRequest(request)
+	if type(request) == "string" then
+		-- ExtraEquipSlot is the sole legacy purchase contract. AutoHatch is
+		-- admitted only so ShopService can return its specific dormant gate.
+		return request == "ExtraEquipSlot" or request == "AutoHatch"
+	end
+	if type(request) ~= "table" then
+		return false
+	end
+	local fieldCount = 0
+	for key in pairs(request) do
+		if key ~= "contractVersion" and key ~= "action" and key ~= "itemId" and key ~= "quantity" then
+			return false
+		end
+		fieldCount = fieldCount + 1
+	end
+	return fieldCount == 4
+		and request.contractVersion == 2
+		and request.action == "purchasePotion"
+		and isValidIdentifier(request.itemId)
+		and request.quantity == 1
+end
+
 ----------------------------------------------
 -- Create Remotes Folder in ReplicatedStorage
 ----------------------------------------------
@@ -85,6 +144,8 @@ local remoteEvents = {
 	"QuestProgressUpdated",
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
+	"PotionStateUpdated",
+	"AutoHatchStateUpdated",
 	"UpgradeTreeUpdated",
 }
 
@@ -97,6 +158,13 @@ end
 -- Create all RemoteFunctions
 local remoteFunctions = {
 	"HatchEgg",
+	"GetHatchPurchaseOptions",
+	"SetHatchBatchSize",
+	"PurchaseAutoHatch",
+	"GetAutoHatchState",
+	"SetAutoHatchBatch",
+	"StartAutoHatch",
+	"StopAutoHatch",
 	"EquipPet",
 	"UnequipPet",
 	"DeletePet",
@@ -113,11 +181,19 @@ local remoteFunctions = {
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
+	-- Rolling-client compatibility only. Its handler is permanently fail-closed.
 	"ConvertToGoldenPet",
+	"UseMachine",
+	"GetEnchantingState",
+	"RollPetEnchant",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
 	"GetShopBuffs",
+	"GetPotionState",
+	"ConsumePotion",
+	"PurchasePotionUpgrade",
+	"SetAutoDrinkSelection",
 	"PurchaseTreeUpgrade",
 	"GetUpgradeTreeState",
 }
@@ -142,7 +218,10 @@ CurrencyService._upgradeService = UpgradeService
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
+PotionService.init(DataService, CurrencyService)
+ShopService.setPotionService(PotionService)
 UpgradeTreeService.init(DataService, CurrencyService)
+PickupService.init(DataService, CurrencyService, QuestService, MasteryService, UpgradeTreeService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
@@ -151,60 +230,77 @@ UpgradeService.setMasteryService(MasteryService)
 PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
-EggService.init(DataService, CurrencyService, PetService)
+PetService.setUpgradeTreeService(UpgradeTreeService)
+MachineService.init(DataService, CurrencyService, PetService)
+MachineService.setQuestService(QuestService)
+EnchantingService.init(DataService, CurrencyService, PetService)
+EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
+EggService.setPotionService(PotionService)
 ShopService.setEggService(EggService)
 
 -- World generation should not prevent remotes, player data, and the GUI from
 -- starting if a future world builder fails. The current failure is still logged
 -- with a traceback so it is visible in the Roblox Studio server output.
-local zoneInitSucceeded, zoneInitError = xpcall(function()
-	ZoneService.init(DataService, CurrencyService, PetService)
+local zoneInitSucceeded, activationValidatorOrError, eggStationAuthority = xpcall(function()
+	return ZoneService.init(DataService, CurrencyService, PetService)
 end, debug.traceback)
 if not zoneInitSucceeded then
-	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(zoneInitError))
+	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(activationValidatorOrError))
+elseif not MachineAuthorityBootstrap.install(
+	MachineService,
+	zoneInitSucceeded,
+	activationValidatorOrError
+) then
+	warn("[Battle Pets] ZoneService did not provide machine activation authority")
+end
+if zoneInitSucceeded and type(eggStationAuthority) == "table"
+	and type(eggStationAuthority.validateManual) == "function"
+	and type(eggStationAuthority.validateSelection) == "function" then
+	EggService.setStationAuthority(eggStationAuthority)
+	AutoHatchService.init(DataService, CurrencyService, EggService, eggStationAuthority)
+	if not AutoHatchService.start() then
+		warn("[Battle Pets] AutoHatchService did not start")
+	end
+else
+	warn("[Battle Pets] ZoneService did not provide egg station authority")
 end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
+ZoneService.setPickupService(PickupService)
 
 CampaignService.init(DataService, CurrencyService, PetService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
 
--- Bind to server shutdown to save all player data
-DataService.bindToClose()
+-- Shutdown admission gates are global, but owner settlement and releasing saves
+-- are isolated per cached profile (including departed retained owners).
+DataService.bindToClose({
+	beginShutdown = function()
+		AutoHatchService.prepareForShutdown()
+		EggService.beginShutdown()
+		MachineService.beginShutdown()
+		EnchantingService.beginShutdown()
+		return true
+	end,
+	settlePlayer = function(player)
+		local eggSettled = EggService.cleanup(player)
+		local machinesSettled = MachineService.cleanup(player)
+		local enchantingSettled = EnchantingService.cleanup(player)
+		local pickupsSettled = PickupService.settlePlayer(player)
+		local inventoryIdle = PetService.isInventoryMutationIdle(player)
+		return eggSettled and machinesSettled and enchantingSettled
+			and pickupsSettled and inventoryIdle
+	end,
+})
 
-----------------------------------------------
--- WalkSpeed Buff System
-----------------------------------------------
-
--- Compute and apply walk speed buffs for a player
--- Formula: 16 * sprintingBonus * fasterRunningBonus * shopSpeedMultiplier
-local function applyWalkSpeedBuffs(player)
-	if not player or not player.Character then return end
-	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then return end
-
-	local baseSpeed = 16
-
-	-- Sprinting quest bonus (multiplier from QuestData)
-	local sprintingBonus = QuestService.getUpgradeBonus(player, "Sprinting")
-	local sprintingMultiplier = (sprintingBonus > 0) and sprintingBonus or 1
-
-	-- FasterRunning mastery bonus (multiplier from MasteryData)
-	local fasterRunningBonus = MasteryService.getBuffBonus(player, "FasterRunning")
-	local fasterRunningMultiplier = (fasterRunningBonus > 0) and fasterRunningBonus or 1
-
-	-- Speed Potion shop buff (2x when active, 1 otherwise)
-	local shopSpeedMultiplier = ShopService.getShopMultiplier(player, "speed")
-
-	local finalSpeed = baseSpeed * sprintingMultiplier * fasterRunningMultiplier * shopSpeedMultiplier
-	humanoid.WalkSpeed = finalSpeed
-end
-
-ShopService.setWalkSpeedRefreshCallback(applyWalkSpeedBuffs)
+-- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
+MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
+ShopService.setWalkSpeedRefreshCallback(MovementService.refresh)
+PotionService.setMovementRefreshCallback(MovementService.refresh)
+PotionService.start()
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -229,18 +325,93 @@ getRemoteFunction("GetPlayerData").OnServerInvoke = function(player)
 	return DataService.getClientData(player)
 end
 
--- HatchEgg (3 second cooldown)
-getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType)
+-- GetHatchPurchaseOptions returns a fresh server-authoritative manual quote.
+getRemoteFunction("GetHatchPurchaseOptions").OnServerInvoke = function(player, eggType)
+	if not player or not player:IsA("Player") then
+		return nil, "Invalid player"
+	end
+	if not canCall(player, "GetHatchPurchaseOptions", 0.15)
+		or not canCallBurst(player, "GetHatchPurchaseOptions", 12, 10) then
+		return nil, "Please wait before requesting hatch options again"
+	end
+	if not isValidIdentifier(eggType) then
+		return nil, "Invalid egg type"
+	end
+	return EggService.getHatchPurchaseOptions(player, eggType)
+end
+
+-- HatchEgg confirms only the strict QOF-10 intent DTO. Manual purchases must
+-- pass through the confirmation dialog contract instead of raw numeric counts.
+getRemoteFunction("HatchEgg").OnServerInvoke = function(player, eggType, intent)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
 	if not canCall(player, "HatchEgg", 3) then
 		return nil, "Please wait before hatching again"
 	end
-	if type(eggType) ~= "string" then
-		return nil, "Invalid egg type parameter"
+	if not isValidIdentifier(eggType) then
+		return nil, "Invalid hatch parameters"
 	end
-	return EggService.purchaseAndHatch(player, eggType)
+	if type(intent) == "table" then
+		return EggService.purchaseFromIntent(player, eggType, intent)
+	end
+	return nil, "Invalid hatch parameters"
+end
+
+-- The old preference remote remains discoverable for rolling clients but is
+-- permanently fail-closed. QOF-18 uses strict Contract V1 remotes instead.
+getRemoteFunction("SetHatchBatchSize").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player"
+	end
+	return false, "Legacy Auto-Hatch contract unavailable", EggService.getBatchState(player)
+end
+
+-- QOF-18 strict Contract V1 surface. Every method validates its exact table
+-- shape again inside AutoHatchService and returns a fresh full-state DTO.
+getRemoteFunction("GetAutoHatchState").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "GetAutoHatchState", 0.15)
+		or not canCallBurst(player, "GetAutoHatchState", 12, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.getStateFromRequest(player, request)
+end
+
+getRemoteFunction("PurchaseAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "PurchaseAutoHatch", 1)
+		or not canCallBurst(player, "PurchaseAutoHatch", 4, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.purchase(player, request)
+end
+
+getRemoteFunction("SetAutoHatchBatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "SetAutoHatchBatch", 0.15)
+		or not canCallBurst(player, "SetAutoHatchBatch", 10, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.setBatch(player, request)
+end
+
+getRemoteFunction("StartAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "StartAutoHatch", 0.35)
+		or not canCallBurst(player, "StartAutoHatch", 6, 10) then
+		return AutoHatchService.rejectStart(player, request, "RATE_LIMITED")
+	end
+	return AutoHatchService.startSession(player, request)
+end
+
+getRemoteFunction("StopAutoHatch").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "INVALID_PLAYER" end
+	if not canCall(player, "StopAutoHatch", 0.2)
+		or not canCallBurst(player, "StopAutoHatch", 8, 10) then
+		return false, "RATE_LIMITED", AutoHatchService.getState(player)
+	end
+	return AutoHatchService.stopSession(player, request)
 end
 
 -- EquipPet (0.5 second cooldown)
@@ -372,9 +543,9 @@ getRemoteFunction("PurchaseMasteryBuff").OnServerInvoke = function(player, buffI
 		return false, "Invalid buff ID parameter"
 	end
 	local success, msg = MasteryService.purchaseBuff(player, buffId)
-	-- Refresh walkspeed in case FasterRunning was purchased
+	-- Refresh every composed source after a movement mastery purchase.
 	if success then
-		applyWalkSpeedBuffs(player)
+		MovementService.refresh(player)
 	end
 	return success, msg
 end
@@ -391,7 +562,7 @@ end
 -- GetUpgradeTreeState
 getRemoteFunction("GetUpgradeTreeState").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
-		return { currency = { coins = 0 }, purchased = {} }
+		return { currency = { coins = 0, diamonds = 0 }, purchased = {}, available = {}, entitlements = {} }
 	end
 	if not canCall(player, "GetUpgradeTreeState", 0.25) then
 		return nil
@@ -399,7 +570,7 @@ getRemoteFunction("GetUpgradeTreeState").OnServerInvoke = function(player)
 	return UpgradeTreeService.getState(player)
 end
 
--- PurchaseTreeUpgrade (server validates canonical ID, prerequisites, and coin cost)
+-- PurchaseTreeUpgrade (server validates canonical ID, prerequisites, and currency cost)
 getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgradeId)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player", { currency = { coins = 0 }, purchased = {} }
@@ -410,36 +581,86 @@ getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgra
 	if not isValidIdentifier(upgradeId) then
 		return false, "Invalid upgrade ID", UpgradeTreeService.getState(player)
 	end
-	return UpgradeTreeService.purchase(player, upgradeId)
+	local success, message, state = UpgradeTreeService.purchase(player, upgradeId)
+	if success then
+		MovementService.refresh(player)
+	end
+	return success, message, state
 end
 
--- ConvertToGoldenPet (2 second cooldown)
-getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceIds)
+-- Rolling clients may still wait for this historical remote during startup.
+-- Retaining a mutation-free rejection avoids deadlocking their entire client
+-- while guaranteeing that no free conversion path survives QOF-16.
+getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function()
+	return nil, "Legacy conversion unavailable; use the Gold Machine in Zone 3"
+end
+
+-- UseMachine is the sole machine mutation entry point. Main validates only request
+-- identity/shape and abuse limits; all world, pet, currency, RNG, and quest
+-- semantics remain owned by MachineService and its injected ZoneService authority.
+getRemoteFunction("UseMachine").OnServerInvoke = function(player, machineId, activationToken, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
-	if not canCall(player, "ConvertToGoldenPet", 2) then
-		return nil, "Please wait before converting again"
+	-- Account every request from a valid player before traversing caller-owned
+	-- data so malformed traffic cannot bypass either abuse-control bucket.
+	local cooldownAllowed = canCall(player, "UseMachine", 0.25)
+	local burstAllowed = canCallBurst(player, "UseMachine", 8, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return nil, "Please wait before using a machine again"
 	end
-	if type(petInstanceIds) ~= "table" then
-		return nil, "Invalid pet IDs parameter (expected list)"
+	if not isValidIdentifier(machineId) then
+		return nil, "Invalid machine ID"
 	end
-	-- Validate each ID is a string
-	for _, id in ipairs(petInstanceIds) do
-		if type(id) ~= "string" then
-			return nil, "Invalid pet ID in list"
-		end
+	if type(activationToken) ~= "string" or activationToken == "" or #activationToken > 128 then
+		return nil, "Invalid machine activation"
 	end
-	-- Limit to 7 pets max
-	if #petInstanceIds < 1 or #petInstanceIds > 7 then
-		return nil, "Must sacrifice between 1 and 7 pets"
+	if not isValidMachinePetIdList(petInstanceIds) then
+		return nil, "Invalid pet IDs parameter (expected plain dense list)"
 	end
-	local result, err = PetService.convertToGoldenPet(player, petInstanceIds)
-	if result and result.success then
-		-- Track quest progress for golden pet conversion
-		QuestService.incrementStat(player, "goldenPetsConverted", 1)
+	return MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
+end
+
+local function enchantingPetIdForState(request)
+	if type(request) ~= "table" or getmetatable(request) ~= nil then
+		return ""
 	end
-	return result, err
+	local petInstanceId = rawget(request, "petInstanceId")
+	return type(petInstanceId) == "string" and petInstanceId or ""
+end
+
+-- QOF-19 GET_STATE admits only the exact Contract V1 request in EnchantingService.
+getRemoteFunction("GetEnchantingState").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then
+		return false, "INVALID_REQUEST", nil
+	end
+	local cooldownAllowed = canCall(player, "GetEnchantingState", 0.15)
+	local burstAllowed = canCallBurst(player, "GetEnchantingState", 12, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return false, "RATE_LIMITED", EnchantingService.getState(
+			player,
+			enchantingPetIdForState(request)
+		)
+	end
+	return EnchantingService.getStateFromRequest(player, request)
+end
+
+-- QOF-19 ROLL is the sole enchanting mutation entry point. Request shape,
+-- optimistic revision, pet ownership, exact debit, RNG, and rollback remain in
+-- EnchantingService; Main owns only player identity and abuse controls.
+getRemoteFunction("RollPetEnchant").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then
+		return false, "INVALID_REQUEST", nil
+	end
+	local cooldownAllowed = canCall(player, "RollPetEnchant", 0.35)
+	local burstAllowed = canCallBurst(player, "RollPetEnchant", 8, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return false, "RATE_LIMITED", EnchantingService.getState(
+			player,
+			enchantingPetIdForState(request)
+		)
+	end
+	return EnchantingService.roll(player, request)
 end
 
 -- StartCampaignLevel (2 second cooldown)
@@ -525,39 +746,43 @@ getRemoteFunction("AssignPetTarget").OnServerInvoke = function(player, petInstan
 	return ZoneService.assignPetTarget(player, petInstanceId, destructibleId)
 end
 
--- GetDiscoveredPets (returns player's discovered pets table)
+-- GetDiscoveredPets keeps its legacy map shape but never exposes profile identity.
 getRemoteFunction("GetDiscoveredPets").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
-		return {}
+		return nil
 	end
-	if not canCall(player, "GetDiscoveredPets", 0.25) then return {} end
+	-- nil means "no authoritative refresh"; an empty map remains a valid state.
+	if not canCall(player, "GetDiscoveredPets", 0.25) then return nil end
 	local data = DataService.getPlayerData(player)
-	if not data then
-		return {}
+	if not data or type(data.discoveredPets) ~= "table" then
+		return nil
 	end
-	return data.discoveredPets or {}
+	local discovered = {}
+	for key, value in pairs(data.discoveredPets) do
+		if type(key) == "string" and value == true then
+			discovered[key] = true
+		end
+	end
+	return discovered
 end
 
--- PurchaseShopItem (2 second cooldown)
-getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, itemId)
+-- PurchaseShopItem accepts the exact QOF-13 potion DTO plus the one retained
+-- ExtraEquipSlot string contract. Validate bounded input before consuming quota.
+getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, request)
 	if not player or not player:IsA("Player") then
 		return false, "Invalid player"
+	end
+	if not isValidShopPurchaseRequest(request) then
+		return false, "Invalid purchase request"
 	end
 	if not canCall(player, "PurchaseShopItem", 2) then
 		return false, "Please wait before purchasing again"
 	end
-	if type(itemId) ~= "string" then
-		return false, "Invalid item ID parameter"
-	end
-	local success, msg, state = ShopService.purchaseItem(player, itemId)
-	-- Refresh walkspeed in case Speed Potion was purchased
-	if success then
-		applyWalkSpeedBuffs(player)
-	end
-	return success, msg, state
+	return ShopService.purchaseItem(player, request)
 end
 
--- GetShopBuffs is a legacy remote name; it now returns the full shop state.
+-- GetShopBuffs is a legacy remote name; it now returns the purchase state and
+-- a delegated potion-state snapshot for rolling clients.
 getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return nil
@@ -566,6 +791,39 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 		return nil
 	end
 	return ShopService.getShopState(player)
+end
+
+getRemoteFunction("GetPotionState").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then return nil end
+	if not canCall(player, "GetPotionState", 0.2) then return nil end
+	return PotionService.getState(player)
+end
+
+getRemoteFunction("ConsumePotion").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid consume request" end
+	if not canCall(player, "ConsumePotion", 0.2) then
+		return false, "Please wait before drinking again", PotionService.getState(player)
+	end
+	return PotionService.consume(player, request)
+end
+
+getRemoteFunction("PurchasePotionUpgrade").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid upgrade request" end
+	if not canCall(player, "PurchasePotionUpgrade", 0.5) then
+		return false, "Please wait before purchasing again", PotionService.getState(player)
+	end
+	return PotionService.purchaseUpgrade(player, request)
+end
+
+getRemoteFunction("SetAutoDrinkSelection").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid Auto-Drink request" end
+	if not canCall(player, "SetAutoDrinkSelection", 0.15) then
+		return false, "Please wait before changing Auto-Drink", PotionService.getState(player)
+	end
+	return PotionService.setAutoDrinkSelection(player, request)
 end
 
 ----------------------------------------------
@@ -596,13 +854,11 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Apply walkspeed on CharacterAdded (after Humanoid exists)
-	player.CharacterAdded:Connect(function(character)
-		local humanoid = character:WaitForChild("Humanoid", 10)
-		if humanoid then
-			applyWalkSpeedBuffs(player)
-		end
-	end)
+	-- Reconcile persisted absolute potion timers and online-only Auto-Drink before
+	-- binding movement so the first character speed uses authoritative state.
+	PotionService.onPlayerAdded(player)
+	AutoHatchService.onPlayerAdded(player)
+	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
 	local leaderstats = Instance.new("Folder")
@@ -710,16 +966,38 @@ Players.PlayerRemoving:Connect(function(player)
 	rateLimits[player.UserId] = nil
 	burstLimits[player.UserId] = nil
 
-	-- Cleanup ShopService player state (active buffs)
-	ShopService._activeBuffs[player.UserId] = nil
+	-- Cleanup QOF-12 movement listeners before the profile is released.
+	MovementService.unbindPlayer(player)
 
-	-- Cleanup ZoneService player state (attack cooldowns, pet targets)
-	ZoneService.onPlayerRemoving(player)
+	-- Invalidate QOF-18 target/generation before any inventory-owner retry.
+	-- The absolute paid expiry remains in the retained cached profile.
+	AutoHatchService.onPlayerRemoving(player)
 
-	-- Cleanup campaign battle if any
-	CampaignService.onPlayerRemoving(player)
-	-- Save and cleanup player data
-	DataService.onPlayerRemoving(player)
+	local postSettlementCleanupDone = false
+	local released = DataService.onPlayerRemoving(player, function()
+		-- Attempt every independent owner on every pass. One unresolved profile
+		-- never prevents another user from settling or saving.
+		local pickupsSettled = PickupService.settlePlayer(player)
+		local eggSettled = EggService.onPlayerRemoving(player)
+		local machineSettled = MachineService.onPlayerRemoving(player)
+		local enchantingSettled = EnchantingService.onPlayerRemoving(player)
+		local inventoryIdle = PetService.isInventoryMutationIdle(player)
+		if not (pickupsSettled and eggSettled and machineSettled
+			and enchantingSettled and inventoryIdle) then
+			return false
+		end
+		if not postSettlementCleanupDone then
+			PotionService.onPlayerRemoving(player)
+			ShopService.onPlayerRemoving(player)
+			ZoneService.onPlayerRemoving(player)
+			CampaignService.onPlayerRemoving(player)
+			postSettlementCleanupDone = true
+		end
+		return true
+	end)
+	if not released then
+		warn("[Battle Pets] Profile settlement queued for retry; cache retained for " .. player.Name)
+	end
 end)
 
 -- Handle players who joined before script loaded
@@ -731,6 +1009,9 @@ for _, player in ipairs(Players:GetPlayers()) do
 			return
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
+		PotionService.onPlayerAdded(player)
+		AutoHatchService.onPlayerAdded(player)
+		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players
 		local leaderstats = player:FindFirstChild("leaderstats")
@@ -816,17 +1097,6 @@ task.spawn(function()
 					end
 				end
 			end
-		end
-	end
-end)
-
--- Periodic WalkSpeed refresh: every 5 seconds, reapply walkspeed buffs for all players
--- Handles buff expiry (e.g., Speed Potion wearing off)
-task.spawn(function()
-	while true do
-		task.wait(5)
-		for _, player in ipairs(Players:GetPlayers()) do
-			applyWalkSpeedBuffs(player)
 		end
 	end
 end)

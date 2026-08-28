@@ -30,6 +30,8 @@ local function mockRequire(path)
 	if path == BalanceConfig then return BalanceConfig end
 	if path == PetData then return PetData end
 	if path == SharedMock.PetVariantMath then return SharedMock.PetVariantMath end
+	if path == SharedMock.PetEnchantMath then return SharedMock.PetEnchantMath end
+	if path == SharedMock.PetDex then return SharedMock.PetDex end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -45,6 +47,10 @@ end
 
 local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
 SharedMock.PetVariantMath = PetVariantMath
+local PetEnchantMath = originalRequire("src/ReplicatedStorage/Shared/PetEnchantMath")
+SharedMock.PetEnchantMath = PetEnchantMath
+local PetDex = originalRequire("src/ReplicatedStorage/Shared/PetDex")
+SharedMock.PetDex = PetDex
 local DataSchema = originalRequire("src/ServerScriptService/Services/DataSchema")
 
 -- Restore require
@@ -75,11 +81,21 @@ describe("DataSchema.getDefaultData", function()
 		expect(data.pets[1].shiny):toBeFalse()
 	end)
 
-	it("creates empty future potion state with bounded defaults", function()
+	it("creates empty persistent potion inventory and active state", function()
 		local data = DataSchema.getDefaultData()
 		expect(data.potionInventory):toEqual({})
 		expect(data.activeBuffs):toEqual({})
+		expect(data.potionBuffSources):toEqual({})
 		expect(data.potionUpgrades):toEqual({ slots = 2, durationLevel = 0, autoDrink = false })
+	end)
+
+	it("defaults the persistent hatch preference to x1 and paid expiry to inactive", function()
+		local first = DataSchema.getDefaultData()
+		local second = DataSchema.getDefaultData()
+		expect(first.hatchPreferences):toEqual({ preferredBatchCount = 1 })
+		expect(first.autoHatchExpiresAt):toBe(0)
+		first.hatchPreferences.preferredBatchCount = 10
+		expect(second.hatchPreferences.preferredBatchCount):toBe(1)
 	end)
 
 	it("has unlockedZones containing zone 1", function()
@@ -290,7 +306,7 @@ describe("V6 pet migration", function()
 			equippedPets = {},
 		}, 1000)
 
-		expect(data.schemaVersion):toBe(6)
+		expect(data.schemaVersion):toBe(DataSchema.VERSION)
 		expect(data.pets[1].variant):toBe("Normal")
 		expect(data.pets[1].shiny):toBeFalse()
 		expect(data.pets[1].damage):toBe(1)
@@ -361,10 +377,15 @@ describe("V6 potion persistence normalization", function()
 
 		expect(data.potionInventory):toEqual({ LuckPotion = 4, ShinyPotion = 2 })
 		expect(data.activeBuffs):toEqual({
-			luck = 1200,
+			luck = {
+				sources = {
+					LuckPotion = { expiresAt = 1200 },
+				},
+			},
 			shinyChance = { charges = 30 },
 		})
 		expect(data.potionUpgrades):toEqual({ slots = 5, durationLevel = 4, autoDrink = false })
+		expect(data.autoDrinkSelection):toEqual({})
 	end)
 
 	it("restores safe potion upgrade defaults from malformed values", function()
@@ -381,32 +402,70 @@ describe("V6 potion persistence normalization", function()
 		expect(data.activeBuffs):toEqual({})
 		expect(data.potionUpgrades):toEqual({ slots = 2, durationLevel = 0, autoDrink = true })
 	end)
+
+	it("preserves exactly 999 and clamps 1000 independently per potion", function()
+		local atCap = DataSchema.migrate({
+			potionInventory = { LuckPotion = 999, SpeedPotion = 1000 },
+		}, 1000)
+		expect(atCap.potionInventory):toEqual({ LuckPotion = 999, SpeedPotion = 999 })
+	end)
+
+	it("round-trips canonical inventory through migration and persistence at schema V8", function()
+		local migrated = DataSchema.migrate({
+			schemaVersion = 7,
+			potionInventory = {
+				LuckPotion = 7,
+				MegaLuckPotion = 3,
+				LuckyPotion = 9,
+				PowerPotion = 9,
+			},
+		}, 1000)
+		local snapshot = DataSchema.cloneForPersistence(migrated, 1000)
+		local reloaded = DataSchema.migrate(snapshot, 1000)
+		expect(reloaded.schemaVersion):toBe(DataSchema.VERSION)
+		expect(reloaded.potionInventory):toEqual({ LuckPotion = 7, MegaLuckPotion = 3 })
+		snapshot.potionInventory.LuckPotion = 1
+		expect(migrated.potionInventory.LuckPotion):toBe(7)
+	end)
 end)
 
 describe("V6 compatibility guarantees", function()
 	it("preserves discovery and upgrade tree purchases while removing malformed entries", function()
 		local data = DataSchema.migrate({
+			pets = {},
+			equippedPets = {},
 			discoveredPets = {
-				Dog = true,
-				Golden_Dog = true,
-				Shiny_Dog = true,
-				Rainbow_Dog = true,
+				Buddy = true,
+				Golden_Buddy = true,
+				Shiny_Buddy = true,
+				Rainbow_Buddy = true,
 				Ignored = false,
 				[12] = true,
 			},
 			upgradeTreePurchases = {
 				["Eggs I"] = true,
+				["Eggs III"] = true,
+				["Eggs V"] = true,
 				["luck I"] = true,
 				Ignored = false,
 			},
 		}, 1000)
 		expect(data.discoveredPets):toEqual({
-			Dog = true,
-			Golden_Dog = true,
-			Shiny_Dog = true,
-			Rainbow_Dog = true,
+			Buddy = true,
+			Golden_Buddy = true,
+			Shiny_Buddy = true,
+			Rainbow_Buddy = true,
+			["Buddy|Normal"] = true,
+			["Buddy|Golden"] = true,
+			["Buddy|Normal|Shiny"] = true,
+			["Buddy|Rainbow"] = true,
 		})
-		expect(data.upgradeTreePurchases):toEqual({ ["Eggs I"] = true, ["luck I"] = true })
+		expect(data.upgradeTreePurchases):toEqual({
+			["Eggs I"] = true,
+			["Eggs III"] = true,
+			["Eggs V"] = true,
+			["luck I"] = true,
+		})
 	end)
 
 	it("is idempotent for migrated V6 profiles", function()
@@ -467,7 +526,11 @@ describe("V6 rolling-server and magnitude safety", function()
 			activeBuffs = { luck = 1e300 },
 		}, 1000)
 		expect(data.potionInventory.LuckPotion):toBe(999)
-		expect(data.activeBuffs.luck):toBe(2593000)
+		expect(data.activeBuffs.luck):toEqual({
+			sources = {
+				LuckPotion = { expiresAt = 2593000 },
+			},
+		})
 	end)
 
 	it("drops non-finite potion quantities and timed expiries", function()
@@ -477,5 +540,374 @@ describe("V6 rolling-server and magnitude safety", function()
 		}, 1000)
 		expect(data.potionInventory):toEqual({})
 		expect(data.activeBuffs):toEqual({})
+	end)
+end)
+
+
+describe("V7 persistent hatch preferences", function()
+	it("migrates V6 profiles without a preference to the x1 default", function()
+		local data = DataSchema.migrate({ schemaVersion = 6, coins = 250 }, 1000)
+		expect(data.schemaVersion):toBe(DataSchema.VERSION)
+		expect(data.hatchPreferences):toEqual({ preferredBatchCount = 1 })
+		expect(data.coins):toBe(250)
+	end)
+
+	it("preserves only the fixed x1, x2, x5, and x10 tiers", function()
+		for _, count in ipairs({ 1, 2, 5, 10 }) do
+			local data = DataSchema.migrate({
+				hatchPreferences = { preferredBatchCount = count },
+			}, 1000)
+			expect(data.hatchPreferences.preferredBatchCount):toBe(count)
+		end
+
+		for _, invalid in ipairs({ 0, 3, 2.5, "5", true, math.huge, -math.huge }) do
+			local data = DataSchema.migrate({
+				hatchPreferences = { preferredBatchCount = invalid },
+			}, 1000)
+			expect(data.hatchPreferences.preferredBatchCount):toBe(1)
+		end
+		expect(DataSchema.migrate({ hatchPreferences = "invalid" }, 1000).hatchPreferences)
+			:toEqual({ preferredBatchCount = 1 })
+		expect(DataSchema.migrate({
+			hatchPreferences = { preferredBatchCount = 0 / 0 },
+		}, 1000).hatchPreferences.preferredBatchCount):toBe(1)
+	end)
+
+	it("keeps migration and persistence cloning idempotent and independent", function()
+		local once = DataSchema.migrate({
+			schemaVersion = 6,
+			hatchPreferences = { preferredBatchCount = 5 },
+		}, 1000)
+		local twice = DataSchema.migrate(once, 1000)
+		local snapshot = DataSchema.cloneForPersistence(twice, 1000)
+		expect(twice):toEqual(once)
+		expect(snapshot):toEqual(twice)
+		snapshot.hatchPreferences.preferredBatchCount = 1
+		expect(twice.hatchPreferences.preferredBatchCount):toBe(5)
+	end)
+end)
+
+
+local function simulateQof13PotionSave(profile, currentTime)
+	local saved = DataSchema.deepCopy(profile)
+	local downgradedBuffs = {}
+	for buffType, state in pairs(saved.activeBuffs or {}) do
+		-- QOF-13 accepts timed state only as one numeric expiry. Structured V8
+		-- sources are therefore dropped, while its known charge shape survives.
+		if type(state) == "number" and state > currentTime then
+			downgradedBuffs[buffType] = math.floor(state)
+		elseif buffType == "shinyChance" and type(state) == "table"
+			and type(state.charges) == "number" and state.charges > 0 then
+			downgradedBuffs[buffType] = { charges = math.min(30, math.floor(state.charges)) }
+		end
+	end
+	saved.activeBuffs = downgradedBuffs
+	saved.schemaVersion = 7
+	return saved
+end
+
+describe("V8 structured potion sources and Auto-Drink selection", function()
+	it("preserves independent Luck and Mega Luck timers under one buff type", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 8,
+			activeBuffs = {
+				luck = {
+					sources = {
+						LuckPotion = { expiresAt = 1600 },
+						MegaLuckPotion = { expiresAt = 1300 },
+						SpeedPotion = { expiresAt = 1800 },
+					},
+				},
+			},
+		}, 1000)
+		expect(data.activeBuffs):toEqual({
+			luck = {
+				sources = {
+					LuckPotion = { expiresAt = 1600 },
+					MegaLuckPotion = { expiresAt = 1300 },
+				},
+			},
+		})
+	end)
+
+	it("migrates legacy numeric timers conservatively and removes expired sources", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 7,
+			activeBuffs = { luck = 1400, speed = 999, coins = 1700 },
+		}, 1000)
+		expect(data.activeBuffs):toEqual({
+			luck = { sources = { LuckPotion = { expiresAt = 1400 } } },
+			coins = { sources = { CoinPotion = { expiresAt = 1700 } } },
+		})
+	end)
+
+	it("recovers every timed source after a realistic QOF-13 wipe and schema downgrade", function()
+		local v8 = DataSchema.migrate({
+			schemaVersion = 8,
+			activeBuffs = {
+				luck = {
+					sources = {
+						LuckPotion = { expiresAt = 1600 },
+						MegaLuckPotion = { expiresAt = 1e300 },
+					},
+				},
+				speed = { sources = { SpeedPotion = { expiresAt = 1700 } } },
+				coins = { sources = { CoinPotion = { expiresAt = 1800 } } },
+			},
+		}, 1000)
+		local cap = 1000 + BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds
+		expect(v8.potionBuffSources):toEqual({
+			LuckPotion = { expiresAt = 1600 },
+			MegaLuckPotion = { expiresAt = cap },
+			SpeedPotion = { expiresAt = 1700 },
+			CoinPotion = { expiresAt = 1800 },
+		})
+
+		local rollingQof13Save = simulateQof13PotionSave(
+			DataSchema.cloneForPersistence(v8, 1000),
+			1000
+		)
+		expect(rollingQof13Save.schemaVersion):toBe(7)
+		expect(rollingQof13Save.activeBuffs):toEqual({})
+		expect(rollingQof13Save.potionBuffSources):toEqual(v8.potionBuffSources)
+
+		local recovered = DataSchema.migrate(rollingQof13Save, 1000)
+		expect(recovered.schemaVersion):toBe(DataSchema.VERSION)
+		expect(recovered.activeBuffs):toEqual({
+			luck = { sources = {
+				LuckPotion = { expiresAt = 1600 },
+				MegaLuckPotion = { expiresAt = cap },
+			} },
+			speed = { sources = { SpeedPotion = { expiresAt = 1700 } } },
+			coins = { sources = { CoinPotion = { expiresAt = 1800 } } },
+		})
+		-- Luck and Mega Luck remain source identities under one runtime buff slot;
+		-- the compatibility mirror is never a second activeBuffs collection.
+		expect(recovered.activeBuffs.luck.sources.LuckPotion.expiresAt):toBe(1600)
+		expect(recovered.activeBuffs.luck.sources.MegaLuckPotion.expiresAt):toBe(cap)
+	end)
+
+	it("filters, merges, caps, and resynchronizes the rolling source mirror", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 7,
+			activeBuffs = { luck = 1400 },
+			potionBuffSources = {
+				LuckPotion = { expiresAt = 1300 },
+				MegaLuckPotion = { expiresAt = 1500 },
+				SpeedPotion = { expiresAt = 999 },
+				CoinPotion = { expiresAt = 1e300 },
+				ShinyPotion = { expiresAt = 1900 },
+				UnknownPotion = { expiresAt = 1900 },
+			},
+		}, 1000)
+		local cap = 1000 + BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds
+		expect(data.activeBuffs):toEqual({
+			luck = { sources = {
+				LuckPotion = { expiresAt = 1400 },
+				MegaLuckPotion = { expiresAt = 1500 },
+			} },
+			coins = { sources = { CoinPotion = { expiresAt = cap } } },
+		})
+		expect(data.potionBuffSources):toEqual({
+			LuckPotion = { expiresAt = 1400 },
+			MegaLuckPotion = { expiresAt = 1500 },
+			CoinPotion = { expiresAt = cap },
+		})
+
+		data.activeBuffs.luck.sources.LuckPotion.expiresAt = 1700
+		local snapshot = DataSchema.cloneForPersistence(data, 1000)
+		expect(snapshot.potionBuffSources.LuckPotion.expiresAt):toBe(1700)
+		snapshot.potionBuffSources.LuckPotion.expiresAt = 1800
+		expect(data.potionBuffSources.LuckPotion.expiresAt):toBe(1400)
+	end)
+
+	it("whitelists explicit selections and never selects Shiny by default", function()
+		local defaults = DataSchema.getDefaultData()
+		expect(defaults.autoDrinkSelection):toEqual({})
+		local data = DataSchema.migrate({
+			autoDrinkSelection = {
+				LuckPotion = true,
+				ShinyPotion = false,
+				UnknownPotion = true,
+				SpeedPotion = 1,
+			},
+		}, 1000)
+		expect(data.autoDrinkSelection):toEqual({ LuckPotion = true })
+		expect(data.autoDrinkSelection.ShinyPotion):toBeNil()
+	end)
+end)
+
+
+
+describe("V9 paid Auto-Hatch absolute expiry", function()
+	it("preserves only a canonical integer expiry in the exact live window", function()
+		for _, expiresAt in ipairs({ 1001, 1300, 1600 }) do
+			local data = DataSchema.migrate({ autoHatchExpiresAt = expiresAt }, 1000)
+			expect(data.schemaVersion):toBe(DataSchema.VERSION)
+			expect(data.autoHatchExpiresAt):toBe(expiresAt)
+		end
+	end)
+
+	it("fails closed for expired, fractional, corrupt, non-finite, and absurdly distant values", function()
+		for _, expiresAt in ipairs({ -1, 0, 999, 1000, 1000.1, 1300.5, 1600.9, 1601, 1e300, math.huge, -math.huge, "1600", true }) do
+			local data = DataSchema.migrate({ autoHatchExpiresAt = expiresAt }, 1000)
+			expect(data.autoHatchExpiresAt):toBe(0)
+		end
+		expect(DataSchema.migrate({ autoHatchExpiresAt = 0 / 0 }, 1000).autoHatchExpiresAt):toBe(0)
+	end)
+
+	it("counts offline wall time and clears access at the exact expiry", function()
+		local saved = DataSchema.cloneForPersistence(DataSchema.migrate({
+			autoHatchExpiresAt = 1500,
+			hatchPreferences = { preferredBatchCount = 10 },
+		}, 1000), 1200)
+		expect(saved.autoHatchExpiresAt):toBe(1500)
+		expect(saved.hatchPreferences.preferredBatchCount):toBe(10)
+		expect(DataSchema.migrate(saved, 1499).autoHatchExpiresAt):toBe(1500)
+		expect(DataSchema.migrate(saved, 1500).autoHatchExpiresAt):toBe(0)
+	end)
+end)
+
+
+describe("DataSchema V10 pet enchant persistence", function()
+	it("migrates ordinary V9 pets without inventing an enchant", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 9,
+			pets = {
+				{ id = "plain", petId = "Buddy", variant = "Normal", damage = 999 },
+			},
+			equippedPets = {},
+		}, 1000)
+		expect(data.schemaVersion):toBe(DataSchema.VERSION)
+		expect(data.pets[1].enchantId):toBeNil()
+		expect(data.pets[1].damage):toBe(1)
+	end)
+
+	it("preserves only a valid rolling enchantId and strips forged derived fields", function()
+		local valid = DataSchema.migrate({
+			schemaVersion = 9,
+			pets = {
+				{
+					id = "enchanted", petId = "Buddy", variant = "Golden", damage = 999,
+					enchantId = "StrongII", enchant = "StrongIII",
+					enchantData = { stat = "damage", multiplier = 999 },
+					enchants = { "StrongIII" }, enchantStat = "damage", enchantMultiplier = 999,
+				},
+			},
+			equippedPets = {},
+		}, 1000)
+		local pet = valid.pets[1]
+		expect(pet.enchantId):toBe("StrongII")
+		expect(pet.enchant):toBeNil()
+		expect(pet.enchantData):toBeNil()
+		expect(pet.enchants):toBeNil()
+		expect(pet.enchantStat):toBeNil()
+		expect(pet.enchantMultiplier):toBeNil()
+		-- The compatibility mirror remains canonical base damage, never enchanted damage.
+		expect(pet.damage):toBe(2)
+	end)
+
+	it("removes empty, wrong-type, and unknown enchant IDs", function()
+		local invalidValues = { "", "Unknown", "strongi", 12, true, { id = "StrongI" } }
+		for index, invalid in ipairs(invalidValues) do
+			local data = DataSchema.migrate({
+				pets = { { id = "pet-" .. tostring(index), petId = "Buddy", enchantId = invalid } },
+				equippedPets = {},
+			}, 1000)
+			expect(data.pets[1].enchantId):toBeNil()
+		end
+	end)
+
+	it("is idempotent across normalize, persistence clone, and reload", function()
+		local once = DataSchema.migrate({
+			schemaVersion = 9,
+			pets = {
+				{ id = "one", petId = "Buddy", enchantId = "AgileIII", enchantMultiplier = 50 },
+				{ id = "two", petId = "Dog", enchantId = "forged", enchant = "StrongI" },
+			},
+			equippedPets = {},
+		}, 1000)
+		local twice = DataSchema.migrate(once, 1000)
+		local snapshot = DataSchema.cloneForPersistence(twice, 1000)
+		local reloaded = DataSchema.migrate(snapshot, 1000)
+		expect(twice):toEqual(once)
+		expect(snapshot):toEqual(once)
+		expect(reloaded):toEqual(once)
+	end)
+end)
+
+
+describe("DataSchema V11 six-state Pet Dex migration", function()
+	it("backfills the starter as an exact Normal discovery for new profiles", function()
+		local data = DataSchema.migrate(nil, 1000)
+		expect(data.schemaVersion):toBe(11)
+		expect(data.discoveredPets.Buddy):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
+	end)
+
+	it("maps four legacy categories conservatively into canonical states", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 10,
+			pets = {},
+			equippedPets = {},
+			discoveredPets = {
+				Buddy = true,
+				Golden_Buddy = true,
+				Rainbow_Buddy = true,
+				Shiny_Buddy = true,
+				forged = true,
+				["Buddy|Golden|Shiny"] = false,
+			},
+		}, 1000)
+		expect(data.discoveredPets.Buddy):toBeTrue()
+		expect(data.discoveredPets.Golden_Buddy):toBeTrue()
+		expect(data.discoveredPets.Rainbow_Buddy):toBeTrue()
+		expect(data.discoveredPets.Shiny_Buddy):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Golden"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Rainbow"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal|Shiny"]):toBeTrue()
+		expect(data.discoveredPets["Buddy|Golden|Shiny"]):toBeNil()
+		expect(data.discoveredPets.forged):toBeNil()
+	end)
+
+	it("backfills exact owned combined states without inventing another Shiny", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 10,
+			pets = {
+				{ id = "gold-shiny", petId = "Buddy", variant = "Golden", shiny = true },
+				{ id = "rainbow", petId = "Whiskers", variant = "Rainbow", shiny = false },
+			},
+			equippedPets = {},
+			discoveredPets = {},
+		}, 1000)
+		expect(data.discoveredPets["Buddy|Golden|Shiny"]):toBeTrue()
+		expect(data.discoveredPets.Shiny_Buddy):toBeTrue()
+		expect(data.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
+		expect(data.discoveredPets["Whiskers|Rainbow"]):toBeTrue()
+		expect(data.discoveredPets.Rainbow_Whiskers):toBeTrue()
+	end)
+
+	it("keeps canonical progress through a rolling V10 stamp and remains idempotent", function()
+		local once = DataSchema.migrate({
+			schemaVersion = 10,
+			pets = {},
+			equippedPets = {},
+			discoveredPets = {
+				Shiny_Buddy = true,
+				["Buddy|Rainbow|Shiny"] = true,
+			},
+		}, 1000)
+		expect(once.discoveredPets["Buddy|Rainbow|Shiny"]):toBeTrue()
+		expect(once.discoveredPets["Buddy|Normal|Shiny"]):toBeNil()
+		local rolling = DataSchema.deepCopy(once)
+		rolling.schemaVersion = 10
+		local twice = DataSchema.migrate(rolling, 1000)
+		local snapshot = DataSchema.cloneForPersistence(twice, 1000)
+		expect(twice):toEqual(once)
+		expect(snapshot):toEqual(once)
+		snapshot.discoveredPets["Buddy|Rainbow|Shiny"] = nil
+		expect(once.discoveredPets["Buddy|Rainbow|Shiny"]):toBeTrue()
 	end)
 end)

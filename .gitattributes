@@ -1,2 +1,13 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Reproducible QOF-21 build inputs and XML output.
+*.lua text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.rbxlx text eol=lf
+
+# Roblox binary places and deterministic archives must never be transformed.
+*.rbxl binary
+*.zip binary

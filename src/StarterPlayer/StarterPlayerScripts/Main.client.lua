@@ -6,7 +6,7 @@
 	INPUT SYSTEM (Pet Simulator 1 style):
 	- Single left click on destructible: send 1 pet to attack it
 	- Hold left click (0.3s+) on destructible: send ALL pets to attack it
-	- E-key: hatch egg when near egg station (via ProximityPrompt)
+	- E-key near an egg station: open the quoted manual-purchase dialog
 	- Assigned pets keep attacking; target discovery is manual-only
 ]]
 
@@ -28,6 +28,17 @@ local CampaignData = require(Shared:WaitForChild("CampaignData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
+local MachineClientSession = require(Shared:WaitForChild("MachineClientSession"))
+-- Optional discovery keeps a QOF-18 client from waiting forever during rolling
+-- deployments where the server has not published the new contract yet.
+local autoHatchSessionModuleObject = Shared:FindFirstChild("AutoHatchClientSession")
+local AutoHatchClientSession = autoHatchSessionModuleObject and require(autoHatchSessionModuleObject) or nil
+-- QOF-19 is also optional during rolling deployment. Never wait for a client
+-- session module that an older server may not have replicated.
+local enchantingSessionModuleObject = Shared:FindFirstChild("EnchantingClientSession")
+local EnchantingClientSession = enchantingSessionModuleObject and require(enchantingSessionModuleObject) or nil
+local enchantingContractModuleObject = Shared:FindFirstChild("EnchantingClientContract")
+local EnchantingClientContract = enchantingContractModuleObject and require(enchantingContractModuleObject) or nil
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -54,6 +65,8 @@ local player = Players.LocalPlayer
 -- RemoteFunctions
 local GetPlayerData = Remotes:WaitForChild("GetPlayerData")
 local HatchEgg = Remotes:WaitForChild("HatchEgg")
+-- QOF-10 fresh manual-purchase quote; no currency is spent by this call.
+local GetHatchPurchaseOptions = Remotes:WaitForChild("GetHatchPurchaseOptions")
 local EquipPet = Remotes:WaitForChild("EquipPet")
 local UnequipPet = Remotes:WaitForChild("UnequipPet")
 local DeletePet = Remotes:WaitForChild("DeletePet")
@@ -69,10 +82,23 @@ local CritAttackDestructible = Remotes:WaitForChild("CritAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
-local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
-local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
+local UseMachine = Remotes:WaitForChild("UseMachine")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
+local GetPotionState = Remotes:WaitForChild("GetPotionState")
+local ConsumePotion = Remotes:WaitForChild("ConsumePotion")
+local PurchasePotionUpgrade = Remotes:WaitForChild("PurchasePotionUpgrade")
+local SetAutoDrinkSelection = Remotes:WaitForChild("SetAutoDrinkSelection")
+-- QOF-18 remotes are optional during rolling deployment. Missing references keep
+-- paid Auto-Hatch unavailable without blocking the rest of client startup.
+local PurchaseAutoHatch = Remotes:FindFirstChild("PurchaseAutoHatch")
+local SetAutoHatchBatch = Remotes:FindFirstChild("SetAutoHatchBatch")
+local StartAutoHatch = Remotes:FindFirstChild("StartAutoHatch")
+local StopAutoHatch = Remotes:FindFirstChild("StopAutoHatch")
+-- Missing QOF-19 remotes make enchanting visibly unavailable without blocking
+-- the rest of client startup.
+local GetEnchantingState = Remotes:FindFirstChild("GetEnchantingState")
+local RollPetEnchant = Remotes:FindFirstChild("RollPetEnchant")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -90,6 +116,8 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
+local PotionStateUpdated = Remotes:WaitForChild("PotionStateUpdated")
+local AutoHatchStateUpdated = Remotes:FindFirstChild("AutoHatchStateUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -234,6 +262,13 @@ uiController:init(Remotes, playerData)
 musicController:init()
 upgradeTreeController:init(Remotes, playerData)
 
+-- Reuse the UpgradeTreeController's authoritative initial request and every
+-- subsequent server update. This avoids a competing one-shot remote call whose
+-- failure could leave legacy Capacity bonuses hidden until the next purchase.
+upgradeTreeController:setStateObserver(function(state)
+	uiController:updateUpgradeTree(state)
+end)
+
 --------------------------------------------------------------------------------
 -- LIGHTWEIGHT NEW-PLAYER ONBOARDING
 --------------------------------------------------------------------------------
@@ -355,8 +390,9 @@ refreshOnboardingHint()
 -- of creating another tutorial system or blocking the player.
 task.delay(2, refreshOnboardingHint)
 
--- Track the egg station whose hatch prompt is currently visible. This keeps the
--- HUD target scoped to the active station and falls back when the player leaves.
+-- Track the concrete egg prompt as well as its egg type. Every async quote or
+-- purchase captures hatchOperationToken so a hidden/replaced prompt cannot
+-- revive a stale dialog or apply stale feedback.
 local function getEggTypeFromPrompt(prompt)
 	if prompt.Name ~= "HatchPrompt" or not prompt.Parent then return nil end
 	local eggTypeTag = prompt.Parent:FindFirstChild("PromptEggType")
@@ -366,27 +402,523 @@ local function getEggTypeFromPrompt(prompt)
 	return nil
 end
 
+local function getAutoHatchStationData(prompt)
+	local eggType = getEggTypeFromPrompt(prompt)
+	local egg = prompt and prompt.Parent
+	if not eggType or not egg then return nil end
+	local stationId = egg:GetAttribute("EggStationId")
+	local stationToken = egg:GetAttribute("EggStationIdentityToken")
+	local stationEggType = egg:GetAttribute("EggType")
+	if type(stationId) ~= "string" or #stationId < 1 or #stationId > 64
+		or type(stationToken) ~= "string" or #stationToken < 1 or #stationToken > 128
+		or stationEggType ~= eggType then
+		return nil
+	end
+	return stationId, stationToken, eggType
+end
+
+local activeEggPrompt = nil
+local activeEggType = nil
+local hatchOperationToken = 0
+local hatchQuoteInFlight = false
+local hatchPurchaseInFlight = false
+local autoHatchSession = nil
+local autoHatchGlobalToken = 0
+
+local function closeHatchPurchaseDialog()
+	hatchOperationToken += 1
+	hatchQuoteInFlight = false
+	hatchPurchaseInFlight = false
+	-- Cancel/navigation owns the same invalidation boundary as PromptHidden:
+	-- stale station actions and purchases cannot complete into a reopened UI.
+	if autoHatchSession and AutoHatchClientSession then
+		AutoHatchClientSession.close(autoHatchSession)
+	end
+	autoHatchGlobalToken += 1
+	uiController:setAutoHatchActionInFlight(nil)
+	uiController:closeHatchPurchaseDialog()
+	uiController:clearAutoHatchLocalStation()
+end
+
+local function describeHatchError(message, fallback)
+	local text = tostring(message or fallback or "Hatch purchase is unavailable right now.")
+	if text == "No feasible hatch purchase" then
+		return "No eggs fit your current Coins and pet inventory slots."
+	elseif text == "x1 hatch option unavailable" or text == "x3 hatch option unavailable" then
+		return "That option is no longer available. Refresh the quote to check Coins, slots, and entitlement."
+	elseif string.find(text, "Move closer", 1, true) then
+		return "Move closer to this egg station, then refresh the quote."
+	elseif string.find(text, "Not enough coins", 1, true) then
+		return "You do not have enough Coins for that option. Refresh the quote."
+	elseif string.find(text, "inventory", 1, true) or string.find(text, "Inventory", 1, true) then
+		return "Your pet inventory does not have enough free slots. Refresh after making room."
+	end
+	return text
+end
+
+local function requestFreshHatchQuote()
+	if hatchQuoteInFlight or hatchPurchaseInFlight then return end
+	local prompt = activeEggPrompt
+	local eggType = activeEggType
+	if not prompt or not prompt.Parent or not eggType then
+		closeHatchPurchaseDialog()
+		return
+	end
+
+	hatchOperationToken += 1
+	local token = hatchOperationToken
+	hatchQuoteInFlight = true
+	uiController:showHatchPurchaseLoading(eggType)
+	task.spawn(function()
+		local invoked, quote, quoteError = pcall(function()
+			return GetHatchPurchaseOptions:InvokeServer(eggType)
+		end)
+		if token ~= hatchOperationToken
+			or prompt ~= activeEggPrompt
+			or eggType ~= activeEggType
+			or not prompt.Parent then
+			return
+		end
+		hatchQuoteInFlight = false
+		if invoked and type(quote) == "table" and quote.eggType == eggType then
+			uiController:showHatchPurchaseQuote(eggType, quote)
+		else
+			local message = invoked and quoteError or quote
+			uiController:showHatchPurchaseError(describeHatchError(message, "Could not load a fresh quote."))
+		end
+	end)
+end
+
+local function confirmHatchPurchase(intent)
+	if hatchQuoteInFlight or hatchPurchaseInFlight then return end
+	local prompt = activeEggPrompt
+	local eggType = activeEggType
+	if not prompt or not prompt.Parent or not eggType or not uiController:isHatchPurchaseDialogOpen() then
+		closeHatchPurchaseDialog()
+		return
+	end
+
+	-- Rebuild, rather than forward, the only three intents accepted by QOF-10.
+	-- MAX intentionally never carries the count from the displayed quote.
+	local serverIntent = nil
+	if type(intent) == "table" and intent.mode == "Fixed" and intent.count == 1 then
+		serverIntent = { mode = "Fixed", count = 1 }
+	elseif type(intent) == "table" and intent.mode == "Fixed" and intent.count == 3 then
+		serverIntent = { mode = "Fixed", count = 3 }
+	elseif type(intent) == "table" and intent.mode == "Max" then
+		serverIntent = { mode = "Max" }
+	end
+	if not serverIntent then return end
+
+	hatchOperationToken += 1
+	local token = hatchOperationToken
+	hatchPurchaseInFlight = true
+	uiController:showHatchPurchaseBusy("Confirming purchase with the server…")
+	task.spawn(function()
+		local invoked, result, hatchError = pcall(function()
+			return HatchEgg:InvokeServer(eggType, serverIntent)
+		end)
+		if token ~= hatchOperationToken
+			or prompt ~= activeEggPrompt
+			or eggType ~= activeEggType then
+			return
+		end
+		hatchPurchaseInFlight = false
+		if invoked and type(result) == "table" then
+			-- EggHatchStart/EggHatchResult remain the sole QOF-09 cinematic owners.
+			closeHatchPurchaseDialog()
+		else
+			local message = invoked and hatchError or result
+			uiController:showHatchPurchaseError(describeHatchError(message, "Hatch purchase failed safely."))
+		end
+	end)
+end
+
+uiController:setHatchPurchaseCallbacks(
+	confirmHatchPurchase,
+	closeHatchPurchaseDialog,
+	requestFreshHatchQuote
+)
+
+local AUTO_HATCH_CONTRACT_VERSION = 1
+autoHatchSession = AutoHatchClientSession and AutoHatchClientSession.new() or nil
+
+local function applyAutoHatchState(state)
+	if type(state) == "table" and state.contractVersion == AUTO_HATCH_CONTRACT_VERSION then
+		if autoHatchSession
+			and not AutoHatchClientSession.acceptState(autoHatchSession, state) then
+			return false
+		end
+		return uiController:updateAutoHatchState(state)
+	end
+	return false
+end
+
+local function finishAutoAction(operation, invoked, success, reason, state)
+	if operation and autoHatchSession
+		and not AutoHatchClientSession.finishRequest(autoHatchSession, operation) then
+		return
+	end
+	uiController:setAutoHatchActionInFlight(nil)
+	local applied = applyAutoHatchState(state)
+	if not invoked or not applied then
+		-- Transport failures and malformed/stale DTOs get a display-only refresh.
+		-- Valid semantic failures carry revisioned authoritative actionFeedback.
+		uiController:_refreshAutoHatchStateFromServer()
+	end
+end
+
+local function runStationAutoAction(action, selectedCount)
+	if not autoHatchSession or not autoHatchSession.prompt or not autoHatchSession.prompt.Parent then return end
+	local remote = action == "SET_BATCH" and SetAutoHatchBatch
+		or action == "START" and StartAutoHatch
+		or action == "STOP" and StopAutoHatch or nil
+	if not remote then return end
+	local operation = AutoHatchClientSession.beginRequest(autoHatchSession, action)
+	if not operation then return end
+	uiController:setAutoHatchActionInFlight(
+		action == "SET_BATCH" and "batch" or string.lower(action)
+	)
+	local request = nil
+	if action == "SET_BATCH" then
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "SET_BATCH",
+			selectedCount = selectedCount,
+		}
+	elseif action == "START" then
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "START",
+			stationId = operation.stationId,
+			stationToken = operation.stationToken,
+		}
+	else
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "STOP",
+		}
+	end
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return remote:InvokeServer(request)
+		end)
+		finishAutoAction(operation, invoked, success, reason, state)
+	end)
+end
+
+local function purchaseAutoHatchAccess()
+	local remote = PurchaseAutoHatch
+	if not remote or not uiController:isAutoHatchRuntimeEnabled() then return end
+	autoHatchGlobalToken += 1
+	local token = autoHatchGlobalToken
+	uiController:setAutoHatchActionInFlight("buy")
+	task.spawn(function()
+		local invoked, success, _, state = pcall(function()
+			return remote:InvokeServer({
+				contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+				action = "PURCHASE",
+			})
+		end)
+		if token ~= autoHatchGlobalToken then return end
+		uiController:setAutoHatchActionInFlight(nil)
+		applyAutoHatchState(state)
+		if not invoked or not success then
+			uiController:_refreshAutoHatchStateFromServer()
+		end
+	end)
+end
+
+uiController:setAutoHatchCallbacks({
+	buy = purchaseAutoHatchAccess,
+	setBatch = function(count) runStationAutoAction("SET_BATCH", count) end,
+	start = function() runStationAutoAction("START") end,
+	stop = function() runStationAutoAction("STOP") end,
+})
+
+if AutoHatchStateUpdated then
+	AutoHatchStateUpdated.OnClientEvent:Connect(applyAutoHatchState)
+end
+
+-- QOF-19 enchanting is an optional Contract V1 surface. Main constructs every
+-- request itself; the UI receives only fully validated, current authoritative
+-- state DTOs.
+local ENCHANTING_CONTRACT_VERSION = 1
+local ENCHANTING_REASON_CODES = {
+	INVALID_REQUEST = true,
+	RUNTIME_DISABLED = true,
+	SERVICE_UNAVAILABLE = true,
+	PROFILE_UNAVAILABLE = true,
+	PET_NOT_FOUND = true,
+	INVALID_PET_STATE = true,
+	STALE_STATE = true,
+	INSUFFICIENT_BALANCE = true,
+	BUSY = true,
+	RATE_LIMITED = true,
+	TECHNICAL_FAILURE = true,
+	ROLLBACK_FAILED = true,
+}
+local enchantingSession = EnchantingClientSession and EnchantingClientSession.new() or nil
+
+local function validEnchantingState(state, petInstanceId)
+	return EnchantingClientContract ~= nil
+		and EnchantingClientContract.validateState(state, petInstanceId) == true
+end
+
+local function closeEnchantingSession()
+	if enchantingSession then
+		EnchantingClientSession.close(enchantingSession)
+	end
+	uiController:closePetEnchanting()
+end
+
+local requestEnchantingState
+
+local function finishEnchantingRequest(operation, invoked, success, reason, state)
+	if not operation or not enchantingSession
+		or not EnchantingClientSession.isCurrent(enchantingSession, operation) then
+		return
+	end
+	local validResultTuple = type(success) == "boolean"
+		and ((success == true and reason == nil)
+			or (success == false and ENCHANTING_REASON_CODES[reason] == true))
+	if not invoked or not validResultTuple
+		or not validEnchantingState(state, operation.petInstanceId) then
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not EnchantingClientSession.acceptState(
+		enchantingSession,
+		operation,
+		state,
+		success == true
+	) then
+		-- The stale payload itself never mutates the UI. One fresh GET gets a
+		-- retry opportunity without permitting an attacker to create a loop.
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		if operation.staleRefresh then
+			uiController:showEnchantingUnavailable("UNAVAILABLE")
+		else
+			requestEnchantingState(operation.petInstanceId, true)
+		end
+		return
+	end
+	uiController:applyEnchantingState(state, success == true, reason, operation.action)
+end
+
+requestEnchantingState = function(petInstanceId, staleRefresh)
+	if not enchantingSession
+		or not EnchantingClientSession.selectPet(enchantingSession, petInstanceId) then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not GetEnchantingState or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "GET_STATE")
+	if not operation then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	operation.staleRefresh = staleRefresh == true
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return GetEnchantingState:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "GET_STATE",
+				petInstanceId = operation.petInstanceId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+local function rollPetEnchant()
+	if not enchantingSession or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "ROLL")
+	if not operation then return end
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return RollPetEnchant:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "ROLL",
+				petInstanceId = operation.petInstanceId,
+				expectedStateRevision = operation.expectedStateRevision,
+				expectedEnchantId = operation.expectedEnchantId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+uiController:setEnchantingCallbacks(requestEnchantingState, rollPetEnchant, closeEnchantingSession)
+
+-- QOF-17 Machine sessions are created only by the central runtime prompt router.
+-- Attributes are UX routing data; the server independently validates the private
+-- station registry, token, unlock, exact instances, and live distance.
+local machineSession = MachineClientSession.new()
+local ACCEPTED_MACHINE_IDS = {
+	GoldMachine = true,
+	RainbowMachine = true,
+}
+
+local function getMachinePromptData(prompt)
+	if not prompt or prompt.Name ~= "UseMachinePrompt" or not prompt.Parent then
+		return nil
+	end
+	local anchor = prompt.Parent
+	local model = anchor.Parent
+	if not model or not model:IsA("Model") then return nil end
+	local machineId = model:GetAttribute("MachineId")
+	local identityToken = model:GetAttribute("MachineIdentityToken")
+	if ACCEPTED_MACHINE_IDS[machineId] ~= true
+		or type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128 then
+		return nil
+	end
+	return machineId, identityToken
+end
+
+local function closeMachineSession()
+	MachineClientSession.close(machineSession)
+	uiController:closeMachineSelection()
+end
+
+local function confirmMachine(selectedIds)
+	local prompt = machineSession.prompt
+	local machineId = machineSession.machineId
+	local identityToken = machineSession.identityToken
+	local routedId, routedToken = getMachinePromptData(prompt)
+	if routedId ~= machineId or routedToken ~= identityToken then
+		closeMachineSession()
+		return
+	end
+	local operation = MachineClientSession.beginRequest(machineSession)
+	if not operation then return end
+	task.spawn(function()
+		local invoked, result, machineError = pcall(function()
+			return UseMachine:InvokeServer(machineId, identityToken, selectedIds)
+		end)
+		if not MachineClientSession.finishRequest(machineSession, operation) then
+			return
+		end
+		if invoked and type(result) == "table" then
+			uiController:showMachineResult(result, nil)
+		else
+			uiController:showMachineResult(nil, invoked and machineError or result)
+		end
+	end)
+end
+
+uiController:setMachineCallbacks(confirmMachine, closeMachineSession)
+
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
-	if eggType then
-		uiController:showEggStationPrompt(eggType)
+	if not eggType then return end
+	if activeEggPrompt and activeEggPrompt ~= prompt then
+		local previousEggType = activeEggType
+		closeHatchPurchaseDialog()
+		if autoHatchSession then AutoHatchClientSession.close(autoHatchSession) end
+		-- Direct A-to-B prompt switches revoke both request and busy UI ownership.
+		uiController:setAutoHatchActionInFlight(nil)
+		activeEggPrompt = nil
+		activeEggType = nil
+		if previousEggType then
+			uiController:hideEggStationPrompt(previousEggType)
+		end
 	end
+	activeEggPrompt = prompt
+	activeEggType = eggType
+	local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+	if autoHatchSession and stationId
+		and AutoHatchClientSession.start(autoHatchSession, prompt, stationId, stationToken, stationEggType) then
+		uiController:setAutoHatchLocalStation(stationEggType, stationId)
+	else
+		uiController:clearAutoHatchLocalStation()
+	end
+	uiController:showEggStationPrompt(eggType)
 end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
-	local eggType = getEggTypeFromPrompt(prompt)
+	if prompt == machineSession.prompt then
+		closeMachineSession()
+		return
+	end
+	if prompt ~= activeEggPrompt then return end
+	local eggType = activeEggType
+	activeEggPrompt = nil
+	activeEggType = nil
+	closeHatchPurchaseDialog()
+	if autoHatchSession then AutoHatchClientSession.close(autoHatchSession) end
+	uiController:setAutoHatchActionInFlight(nil)
+	uiController:clearAutoHatchLocalStation()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end
 end)
 
--- The world shop prompt only opens the local modal. Purchases remain fully
--- server-authoritative through PurchaseShopItem.
+-- Prompt routing is centralized so respawns and delayed world creation never
+-- add duplicate hatch connections. PotionShopPrompt behavior is unchanged.
 ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer)
-	if prompt.Name == "PotionShopPrompt"
-		and (triggeringPlayer == nil or triggeringPlayer == player) then
-		uiController:openScreen("ShopScreen")
+	if triggeringPlayer ~= nil and triggeringPlayer ~= player then
+		return
 	end
+	if prompt.Name == "PotionShopPrompt" then
+		uiController:openScreen("ShopScreen")
+		return
+	end
+	local machineId, identityToken = getMachinePromptData(prompt)
+	if machineId then
+		-- Retriggering even the same station revokes every old overlay/callback
+		-- generation before a fresh capability is installed.
+		if machineSession.prompt then
+			closeMachineSession()
+		end
+		if MachineClientSession.start(machineSession, prompt, machineId, identityToken) then
+			uiController:openMachineSelection(machineId)
+		end
+		return
+	end
+	local eggType = getEggTypeFromPrompt(prompt)
+	if not eggType then return end
+	if activeEggPrompt ~= prompt then
+		local previousEggType = activeEggType
+		closeHatchPurchaseDialog()
+		uiController:setAutoHatchActionInFlight(nil)
+		if previousEggType then
+			uiController:hideEggStationPrompt(previousEggType)
+		end
+		activeEggPrompt = prompt
+		activeEggType = eggType
+		local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+		if autoHatchSession and stationId
+			and AutoHatchClientSession.start(autoHatchSession, prompt, stationId, stationToken, stationEggType) then
+			uiController:setAutoHatchLocalStation(stationEggType, stationId)
+		end
+		uiController:showEggStationPrompt(eggType)
+	elseif autoHatchSession then
+		-- Cancel/navigation closes the capability while Roblox may keep the same
+		-- prompt active; re-triggering must reinstall it before controls reopen.
+		if autoHatchSession.prompt ~= prompt then
+			local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+			if stationId and AutoHatchClientSession.start(
+				autoHatchSession, prompt, stationId, stationToken, stationEggType
+			) then
+				uiController:setAutoHatchLocalStation(stationEggType, stationId)
+			else
+				uiController:clearAutoHatchLocalStation()
+			end
+		else
+			uiController:setAutoHatchLocalStation(autoHatchSession.eggType, autoHatchSession.stationId)
+		end
+	end
+	requestFreshHatchQuote()
 end)
 
 -- Initialize equipped pets visuals from initial data (called ONCE)
@@ -541,41 +1073,88 @@ DestructibleDestroyed.OnClientEvent:Connect(function(destructibleId)
 	end
 end)
 
-EggHatchStart.OnClientEvent:Connect(function(eggType)
-	local hatchPosition = nil
-	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		if hrp then
-			local lookVector = hrp.CFrame.LookVector
-			hatchPosition = hrp.Position + lookVector * 6 + Vector3.new(0, 0, 0)
+local function normalizeHatchResult(payload)
+	if type(payload) ~= "table" then return nil end
+	local sourcePets = type(payload.pets) == "table" and payload.pets or { payload }
+	local pets = {}
+	for _, petData in ipairs(sourcePets) do
+		if type(petData) == "table" then
+			table.insert(pets, petData)
+			if #pets == 10 then break end
 		end
 	end
-	if hatchPosition then
-		effectsController._lastHatchPosition = hatchPosition
+	if #pets == 0 then return nil end
+
+	-- Preserve the complete authoritative DTO. Only normalize the rolling QOF-07
+	-- shape and clamp the presentation-only list to the supported x10 boundary.
+	local normalized = {}
+	for key, value in pairs(payload) do normalized[key] = value end
+	normalized.pets = pets
+	normalized.count = #pets
+	return normalized
+end
+
+EggHatchStart.OnClientEvent:Connect(function(payload)
+	local started, startError = xpcall(function()
+		effectsController:handleHatchStart(payload)
+	end, debug.traceback)
+	if not started then
+		warn("[Battle Pets] Hatch start feedback recovered from an error:\n" .. tostring(startError))
 	end
-	-- Start the egg wobble animation immediately so the player sees feedback right away
-	effectsController:startEggWobble()
 end)
 
-EggHatchResult.OnClientEvent:Connect(function(petData)
-	effectsController._lastHatchPosition = nil
-
-	if petData then
-		completeOnboardingStep("egg")
+EggHatchResult.OnClientEvent:Connect(function(payload)
+	local resultDto = normalizeHatchResult(payload)
+	if not resultDto then
+		local cleaned, cleanupError = xpcall(function()
+			effectsController:handleInvalidHatchResult(payload)
+		end, debug.traceback)
+		if not cleaned then
+			warn("[Battle Pets] Invalid hatch cleanup recovered from an error:\n" .. tostring(cleanupError))
+		end
+		return
 	end
 
-	if petData and petData.isNewDiscovery == true then
-		uiController:enqueueDiscoveryToast(petData)
+	-- Onboarding follows the committed server result, never presentation timing.
+	completeOnboardingStep("egg")
+	local pets = resultDto.pets
+	-- Every pet came from one committed server result. Update the local Dex cache
+	-- immediately; GetDiscoveredPets remains the recovery source on reopen.
+	uiController:recordPetDiscoveries(pets)
+	local presented = false
+	local function onPresented()
+		if presented then return end
+		presented = true
+		local gridSucceeded, gridError = xpcall(function()
+			uiController:showEggBatch(pets)
+		end, debug.traceback)
+		if not gridSucceeded then
+			warn("[Battle Pets] Hatch result grid recovered from a UI error:\n" .. tostring(gridError))
+		end
+
+		-- DisplayOrder 100 discovery toasts are released only after the DisplayOrder
+		-- 50 cinematic has finalized, so they cannot cover the rare reveal.
+		for _, petData in ipairs(pets) do
+			if petData.isNewDiscovery == true then
+				local toastSucceeded, toastError = xpcall(function()
+					uiController:enqueueDiscoveryToast(petData)
+				end, debug.traceback)
+				if not toastSucceeded then
+					warn("[Battle Pets] Discovery toast recovered from a UI error:\n" .. tostring(toastError))
+				end
+			end
+		end
 	end
 
-	-- Complete the egg hatch animation (cancels wobble, does shakes + reveal)
-	effectsController:completeEggHatch(petData)
-
-	-- Delay the UIController modal until after the EffectsController animation
-	-- finishes (~4s total: shakes + crack + flash + reveal + auto-dismiss)
-	task.delay(4, function()
-		uiController:showEggHatch(petData, petData and petData.isNewDiscovery)
-	end)
+	local enqueueSucceeded, acceptedOrError = xpcall(function()
+		return effectsController:enqueueHatchBatch(resultDto, onPresented)
+	end, debug.traceback)
+	if not enqueueSucceeded then
+		-- A controller boundary error must not lose the committed result.
+		onPresented()
+		warn("[Battle Pets] Hatch queue recovered from an error:\n" .. tostring(acceptedOrError))
+	end
+	-- acceptedOrError == false is the intentional bounded batchId dedupe path.
 end)
 
 CampaignBattleUpdate.OnClientEvent:Connect(function(battleState)
@@ -624,6 +1203,10 @@ end)
 
 ShopBuffsUpdated.OnClientEvent:Connect(function(state)
 	uiController:updateShopBuffs(state)
+end)
+
+PotionStateUpdated.OnClientEvent:Connect(function(state)
+	uiController:updatePotionState(state)
 end)
 
 local XPUpdated = Remotes:WaitForChild("XPUpdated")
@@ -794,33 +1377,22 @@ local function onCharacterAdded(character)
 		end)
 	end
 
-	-- ProximityPrompt interaction for egg stations (E-key)
-	-- This is the primary egg interaction method: directly invokes HatchEgg on server
-	local function connectEggPrompts()
-		local stationsFolder = workspace:FindFirstChild("EggStations")
-		if not stationsFolder then return end
-		for _, obj in ipairs(stationsFolder:GetChildren()) do
-			if obj:IsA("BasePart") and obj.Name == "EggModel" then
-				local prompt = obj:FindFirstChild("HatchPrompt")
-				local promptTag = obj:FindFirstChild("PromptEggType")
-				if prompt and promptTag then
-					prompt.Triggered:Connect(function(triggerPlayer)
-						if triggerPlayer == player then
-							-- Directly invoke HatchEgg on server (validates cost server-side)
-							local eggType = promptTag.Value
-							HatchEgg:InvokeServer(eggType)
-						end
-					end)
-				end
-			end
-		end
-	end
-	connectEggPrompts()
-	-- Also listen for any future egg stations (in case they spawn after character loads)
-	task.delay(2, connectEggPrompts)
+	-- Egg and shop prompts are routed once through ProximityPromptService above;
+	-- no per-character connections are created here.
 end
 
--- Connect character added
+-- Connect character lifecycle. ResetOnSpawn=false keeps the one dialog instance,
+-- while removing a character invalidates all pending quote/purchase callbacks.
+player.CharacterRemoving:Connect(function()
+	local eggType = activeEggType
+	activeEggPrompt = nil
+	activeEggType = nil
+	closeHatchPurchaseDialog()
+	closeEnchantingSession()
+	if eggType then
+		uiController:hideEggStationPrompt(eggType)
+	end
+end)
 if player.Character then
 	onCharacterAdded(player.Character)
 end
