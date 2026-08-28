@@ -269,6 +269,7 @@ function DataService.getClientData(player)
 		potionInventory = DataSchema.deepCopy(data.potionInventory or {}),
 		activeBuffs = DataSchema.deepCopy(data.activeBuffs or {}),
 		potionUpgrades = DataSchema.deepCopy(data.potionUpgrades or {}),
+		autoDrinkSelection = DataSchema.deepCopy(data.autoDrinkSelection or {}),
 	}
 end
 

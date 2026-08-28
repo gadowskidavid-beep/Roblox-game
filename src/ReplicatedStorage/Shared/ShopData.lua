@@ -1,13 +1,14 @@
 --[[
-	ShopData.lua - Shared presentation metadata for the QOF-13 shop.
-	Potion balance is sourced from the canonical BalanceConfig catalog. Buying a
-	potion stores one persistent inventory item; consumption remains QOF-14-owned.
+	ShopData.lua - Shared presentation metadata for the potion shop.
+	Potion purchase prices remain canonical in BalanceConfig; QOF-14 consumption
+	uses an independent authoritative state contract.
 ]]
 
 local BalanceConfig = require(script.Parent.BalanceConfig)
 
 local ShopData = {
 	ContractVersion = 2,
+	PotionContractVersion = 1,
 	PurchaseMode = "inventoryOnly",
 	MaxPotionInventory = BalanceConfig.Potions.Persistence.MaxInventoryPerPotion,
 }

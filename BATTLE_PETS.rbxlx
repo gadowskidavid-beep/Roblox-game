@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000076">
+	<Item class="ServerScriptService" referent="RBX00000078">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000075">
+			<Item class="Script" referent="RBX00000077">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -729,12 +729,14 @@ local DataService = require(script.Parent.Services.DataService)
 local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
+local MachineService = require(script.Parent.Services.MachineService)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local PotionService = require(script.Parent.Services.PotionService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
 local MovementService = require(script.Parent.Services.MovementService)
 local PickupService = require(script.Parent.Services.PickupService)
@@ -828,6 +830,7 @@ local remoteEvents = {
 	"QuestProgressUpdated",
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
+	"PotionStateUpdated",
 	"UpgradeTreeUpdated",
 }
 
@@ -863,6 +866,10 @@ local remoteFunctions = {
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
 	"GetShopBuffs",
+	"GetPotionState",
+	"ConsumePotion",
+	"PurchasePotionUpgrade",
+	"SetAutoDrinkSelection",
 	"PurchaseTreeUpgrade",
 	"GetUpgradeTreeState",
 }
@@ -887,6 +894,8 @@ CurrencyService._upgradeService = UpgradeService
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
+PotionService.init(DataService, CurrencyService)
+ShopService.setPotionService(PotionService)
 UpgradeTreeService.init(DataService, CurrencyService)
 PickupService.init(DataService, CurrencyService, QuestService, MasteryService, UpgradeTreeService)
 
@@ -898,8 +907,13 @@ PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
+MachineService.init(DataService, CurrencyService, PetService)
+MachineService.setQuestService(QuestService)
+-- QOF-15 intentionally supplies no activation validator: with the runtime gate
+-- disabled and no world authority injected, every machine attempt fails closed.
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
+EggService.setPotionService(PotionService)
 ShopService.setEggService(EggService)
 
 -- World generation should not prevent remotes, player data, and the GUI from
@@ -927,6 +941,8 @@ DataService.bindToClose(PickupService.settleAllPlayers)
 -- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
 MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
 ShopService.setWalkSpeedRefreshCallback(MovementService.refresh)
+PotionService.setMovementRefreshCallback(MovementService.refresh)
+PotionService.start()
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -1313,7 +1329,8 @@ getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, request)
 	return ShopService.purchaseItem(player, request)
 end
 
--- GetShopBuffs is a legacy remote name; it now returns the full shop state.
+-- GetShopBuffs is a legacy remote name; it now returns the purchase state and
+-- a delegated potion-state snapshot for rolling clients.
 getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return nil
@@ -1322,6 +1339,39 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 		return nil
 	end
 	return ShopService.getShopState(player)
+end
+
+getRemoteFunction("GetPotionState").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then return nil end
+	if not canCall(player, "GetPotionState", 0.2) then return nil end
+	return PotionService.getState(player)
+end
+
+getRemoteFunction("ConsumePotion").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid consume request" end
+	if not canCall(player, "ConsumePotion", 0.2) then
+		return false, "Please wait before drinking again", PotionService.getState(player)
+	end
+	return PotionService.consume(player, request)
+end
+
+getRemoteFunction("PurchasePotionUpgrade").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid upgrade request" end
+	if not canCall(player, "PurchasePotionUpgrade", 0.5) then
+		return false, "Please wait before purchasing again", PotionService.getState(player)
+	end
+	return PotionService.purchaseUpgrade(player, request)
+end
+
+getRemoteFunction("SetAutoDrinkSelection").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid Auto-Drink request" end
+	if not canCall(player, "SetAutoDrinkSelection", 0.15) then
+		return false, "Please wait before changing Auto-Drink", PotionService.getState(player)
+	end
+	return PotionService.setAutoDrinkSelection(player, request)
 end
 
 ----------------------------------------------
@@ -1352,7 +1402,9 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Bind current and future characters after the authoritative profile is loaded.
+	-- Reconcile persisted absolute potion timers and online-only Auto-Drink before
+	-- binding movement so the first character speed uses authoritative state.
+	PotionService.onPlayerAdded(player)
 	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
@@ -1472,6 +1524,13 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
+	-- Cleanup QOF-15 machine locks before profile persistence. No activation
+	-- validator, remote, station, prompt, event, or client UI is wired yet.
+	MachineService.cleanup(player)
+
+	-- Cleanup QOF-14 potion locks/reservations before profile persistence.
+	PotionService.onPlayerRemoving(player)
+
 	-- Cleanup ShopService transient locks and legacy buff compatibility state.
 	ShopService.onPlayerRemoving(player)
 
@@ -1493,6 +1552,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 			return
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
+		PotionService.onPlayerAdded(player)
 		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players
@@ -1587,7 +1647,7 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX00000074">
+			<Item class="Folder" referent="RBX00000076">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
@@ -1607,7 +1667,7 @@ local PetVariantMath = require(game.ReplicatedStorage.Shared.PetVariantMath)
 
 local DataSchema = {}
 
-DataSchema.VERSION = 7
+DataSchema.VERSION = 8
 
 local ARRAY_FIELDS = {
 	pets = true,
@@ -1621,9 +1681,15 @@ local POTION_UPGRADES = BalanceConfig.Potions.Upgrades
 local POTION_PERSISTENCE = BalanceConfig.Potions.Persistence
 local TIMED_BUFF_TYPES = {}
 local CHARGE_BUFF_TYPES = {}
-for _, potion in pairs(POTION_CATALOG) do
+local LEGACY_TIMED_SOURCE_BY_BUFF = {
+	luck = "LuckPotion",
+	speed = "SpeedPotion",
+	coins = "CoinPotion",
+}
+for potionId, potion in pairs(POTION_CATALOG) do
 	if potion.durationSeconds ~= nil then
-		TIMED_BUFF_TYPES[potion.buffType] = true
+		TIMED_BUFF_TYPES[potion.buffType] = TIMED_BUFF_TYPES[potion.buffType] or {}
+		TIMED_BUFF_TYPES[potion.buffType][potionId] = true
 	elseif potion.hatchCharges ~= nil then
 		CHARGE_BUFF_TYPES[potion.buffType] = true
 	end
@@ -1712,11 +1778,15 @@ function DataSchema.getDefaultData()
 		},
 		potionInventory = {},
 		activeBuffs = {},
+		-- Persistence-only rolling-version mirror. QOF-13 preserves this unknown
+		-- root field even though it rewrites structured activeBuffs as schema V7.
+		potionBuffSources = {},
 		potionUpgrades = {
 			slots = POTION_UPGRADES.BaseSlots,
 			durationLevel = 0,
 			autoDrink = false,
 		},
+		autoDrinkSelection = {},
 	}
 end
 
@@ -1848,6 +1918,26 @@ local function normalizePotionInventory(values)
 	return normalized
 end
 
+local function normalizeTimedSource(sourceState, currentTime)
+	local expiresAt = sourceState
+	if type(sourceState) == "table" then
+		expiresAt = sourceState.expiresAt
+	end
+	if type(expiresAt) ~= "number" then
+		return nil
+	end
+	expiresAt = math.floor(finiteNumber(expiresAt, 0, 0))
+	if expiresAt <= currentTime then
+		return nil
+	end
+	return {
+		expiresAt = math.min(
+			expiresAt,
+			currentTime + POTION_PERSISTENCE.MaxTimedBuffSeconds
+		),
+	}
+end
+
 local function normalizeActiveBuffs(values, currentTime)
 	local normalized = {}
 	if type(values) ~= "table" then
@@ -1855,13 +1945,36 @@ local function normalizeActiveBuffs(values, currentTime)
 	end
 
 	for buffType, state in pairs(values) do
-		if TIMED_BUFF_TYPES[buffType] and type(state) == "number" then
-			local expiresAt = math.floor(finiteNumber(state, 0, 0))
-			if expiresAt > currentTime then
-				normalized[buffType] = math.min(
-					expiresAt,
-					currentTime + POTION_PERSISTENCE.MaxTimedBuffSeconds
-				)
+		local validSources = TIMED_BUFF_TYPES[buffType]
+		if validSources then
+			local sources = {}
+			-- V7 stored one ambiguous numeric timer per type. Map it to the
+			-- conservative canonical source (Luck becomes x2, never an invented x5).
+			if type(state) == "number" then
+				local legacySource = LEGACY_TIMED_SOURCE_BY_BUFF[buffType]
+				local source = legacySource and normalizeTimedSource(state, currentTime)
+				if source then
+					sources[legacySource] = source
+				end
+			elseif type(state) == "table" then
+				local inputSources = type(state.sources) == "table" and state.sources or nil
+				-- Accept the short-lived pre-V8 structured prototype safely.
+				if not inputSources and state.expiresAt ~= nil then
+					local sourceId = validSources[state.sourceId] and state.sourceId
+						or LEGACY_TIMED_SOURCE_BY_BUFF[buffType]
+					inputSources = sourceId and { [sourceId] = state } or nil
+				end
+				for sourceId, sourceState in pairs(inputSources or {}) do
+					if validSources[sourceId] then
+						local source = normalizeTimedSource(sourceState, currentTime)
+						if source then
+							sources[sourceId] = source
+						end
+					end
+				end
+			end
+			if next(sources) ~= nil then
+				normalized[buffType] = { sources = sources }
 			end
 		elseif CHARGE_BUFF_TYPES[buffType] and type(state) == "table" then
 			local charges = math.clamp(
@@ -1875,6 +1988,53 @@ local function normalizeActiveBuffs(values, currentTime)
 		end
 	end
 	return normalized
+end
+
+local function normalizePotionBuffSources(values, currentTime)
+	local normalized = {}
+	if type(values) ~= "table" then
+		return normalized
+	end
+	for potionId, sourceState in pairs(values) do
+		local potion = POTION_CATALOG[potionId]
+		if potion and potion.durationSeconds ~= nil then
+			local source = normalizeTimedSource(sourceState, currentTime)
+			if source then
+				normalized[potionId] = source
+			end
+		end
+	end
+	return normalized
+end
+
+local function mergePotionBuffSources(activeBuffs, backupSources)
+	for potionId, source in pairs(backupSources) do
+		local potion = POTION_CATALOG[potionId]
+		local state = activeBuffs[potion.buffType]
+		if type(state) ~= "table" or type(state.sources) ~= "table" then
+			state = { sources = {} }
+			activeBuffs[potion.buffType] = state
+		end
+		local existing = state.sources[potionId]
+		if type(existing) ~= "table" or existing.expiresAt < source.expiresAt then
+			state.sources[potionId] = source
+		end
+	end
+end
+
+local function buildPotionBuffSources(activeBuffs)
+	local synchronized = {}
+	for buffType, state in pairs(activeBuffs) do
+		local validSources = TIMED_BUFF_TYPES[buffType]
+		if validSources and type(state) == "table" and type(state.sources) == "table" then
+			for potionId, source in pairs(state.sources) do
+				if validSources[potionId] then
+					synchronized[potionId] = { expiresAt = source.expiresAt }
+				end
+			end
+		end
+	end
+	return synchronized
 end
 
 local VALID_HATCH_BATCH_COUNTS = {
@@ -1947,8 +2107,22 @@ function DataSchema.normalize(data, currentTime)
 	)
 
 	data.potionInventory = normalizePotionInventory(data.potionInventory)
-	data.activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
+	local activeBuffs = normalizeActiveBuffs(data.activeBuffs, currentTime)
+	local backupSources = normalizePotionBuffSources(data.potionBuffSources, currentTime)
+	-- The runtime consumes only activeBuffs. The flat mirror exists solely so a
+	-- rolling QOF-13 server can preserve V8 source identity while dropping the
+	-- structured field. Prefer the later valid expiry; timed effects have no
+	-- cancellation operation, so a stale rolling save must never shorten one.
+	mergePotionBuffSources(activeBuffs, backupSources)
+	data.activeBuffs = activeBuffs
+	data.potionBuffSources = buildPotionBuffSources(activeBuffs)
 	data.potionUpgrades = normalizePotionUpgrades(data.potionUpgrades)
+	data.autoDrinkSelection = normalizeBooleanMap(data.autoDrinkSelection, 64)
+	for potionId in pairs(data.autoDrinkSelection) do
+		if not POTION_CATALOG[potionId] then
+			data.autoDrinkSelection[potionId] = nil
+		end
+	end
 	data.hatchPreferences = normalizeHatchPreferences(data.hatchPreferences)
 
 	data.schemaVersion = DataSchema.VERSION
@@ -2254,6 +2428,7 @@ function DataService.getClientData(player)
 		potionInventory = DataSchema.deepCopy(data.potionInventory or {}),
 		activeBuffs = DataSchema.deepCopy(data.activeBuffs or {}),
 		potionUpgrades = DataSchema.deepCopy(data.potionUpgrades or {}),
+		autoDrinkSelection = DataSchema.deepCopy(data.autoDrinkSelection or {}),
 	}
 end
 
@@ -2824,7 +2999,7 @@ local function copyBooleanMap(input)
 	return output
 end
 
-local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered)
+local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered, shinyBoosted)
 	local petId = weightedRandomPet(
 		eggDef.petPool,
 		luckMultiplier,
@@ -2835,11 +3010,21 @@ local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, disco
 		return nil, "Invalid pet in pool"
 	end
 
+	local directVariantMultipliers = hatchEntitlements.directVariantMultipliers
+	if shinyBoosted == true then
+		directVariantMultipliers = {
+			Golden = directVariantMultipliers.Golden,
+			Rainbow = directVariantMultipliers.Rainbow,
+			Shiny = (isFiniteNumber(directVariantMultipliers.Shiny)
+				and math.max(1, directVariantMultipliers.Shiny) or 1)
+				* BalanceConfig.Potions.Catalog.ShinyPotion.multiplier,
+		}
+	end
 	local baseVariant, isShiny = PetHatchMath.rollOutcome(
 		math.random(),
 		math.random(),
 		luckMultiplier,
-		hatchEntitlements.directVariantMultipliers
+		directVariantMultipliers
 	)
 	local presentation = PetVariantPresentation.resolve({
 		petId = petId,
@@ -2868,7 +3053,7 @@ end
 -- Prepare every random outcome without mutating inventory, discovery, currency,
 -- quests, or replication. EggService can therefore reject or roll back a whole
 -- batch instead of exposing partially completed hatches.
-function PetService.prepareHatchBatch(player, eggType, count)
+function PetService.prepareHatchBatch(player, eggType, count, options)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
@@ -2894,15 +3079,19 @@ function PetService.prepareHatchBatch(player, eggType, count)
 
 	local hatchEntitlements = PetService.getHatchEntitlements(player)
 	local luckMultiplier = PetService.getHatchLuckMultiplier(player, hatchEntitlements)
+	local shinyBoostCount = type(options) == "table" and options.shinyBoostCount or 0
+	if not isFiniteNumber(shinyBoostCount) or shinyBoostCount < 0 then shinyBoostCount = 0 end
+	shinyBoostCount = math.min(count, math.floor(shinyBoostCount))
 	local discovered = copyBooleanMap(data.discoveredPets)
 	local pets = {}
 	local newDiscoveryKeys = {}
-	for _ = 1, count do
+	for index = 1, count do
 		local pet, discoveryKeyOrError = buildPreparedPet(
 			eggDef,
 			luckMultiplier,
 			hatchEntitlements,
-			discovered
+			discovered,
+			index <= shinyBoostCount
 		)
 		if not pet then
 			return nil, discoveryKeyOrError
@@ -3301,6 +3490,297 @@ function PetService.deletePets(player, petInstanceIds)
 	return true, nil
 end
 
+-- Prepare a canonical variant conversion without mutating inventory, discovery,
+-- currency, quests, or replication. MachineService owns payment and chance.
+function PetService.prepareVariantConversion(player, petInstanceIds, inputVariant, outputVariant)
+	if not player or type(petInstanceIds) ~= "table" then
+		return nil, "Invalid parameters"
+	end
+	-- Reject before any iteration, length, or indexing so caller-controlled
+	-- metamethods cannot execute inside this admission path.
+	if getmetatable(petInstanceIds) ~= nil then
+		return nil, "Pet IDs must be a plain dense list"
+	end
+	if (inputVariant ~= "Normal" and inputVariant ~= "Golden" and inputVariant ~= "Rainbow")
+		or (outputVariant ~= "Normal" and outputVariant ~= "Golden" and outputVariant ~= "Rainbow")
+		or inputVariant == outputVariant then
+		return nil, "Invalid variant conversion"
+	end
+
+	local count = 0
+	for key in next, petInstanceIds do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+			return nil, "Pet IDs must be a dense list"
+		end
+		count = count + 1
+	end
+	if count < BalanceConfig.Machines.MinInputs or count > BalanceConfig.Machines.MaxInputs
+		or rawlen(petInstanceIds) ~= count then
+		return nil, "Pet IDs must be a dense list of 1 to 7 pets"
+	end
+
+	local validatedPetIds = {}
+	for index = 1, count do
+		validatedPetIds[index] = rawget(petInstanceIds, index)
+	end
+
+	local data = PetService._dataService and PetService._dataService.getPlayerData(player)
+	if type(data) ~= "table" or type(data.pets) ~= "table" then
+		return nil, "No player data"
+	end
+	local petsTable = data.pets
+	local petById = {}
+	for _, pet in ipairs(petsTable) do
+		if type(pet) == "table" and type(pet.id) == "string" then
+			petById[pet.id] = pet
+		end
+	end
+	local equippedById = {}
+	if type(data.equippedPets) == "table" then
+		for _, equippedId in ipairs(data.equippedPets) do
+			equippedById[equippedId] = true
+		end
+	end
+
+	local selectedIds = {}
+	local selectedPets = {}
+	local selectedSnapshots = {}
+	local speciesId = nil
+	local anyShiny = false
+	for index = 1, count do
+		local instanceId = validatedPetIds[index]
+		if type(instanceId) ~= "string" or instanceId == "" then
+			return nil, "Invalid pet ID in list"
+		end
+		if selectedIds[instanceId] then
+			return nil, "Duplicate pet ID in list"
+		end
+		selectedIds[instanceId] = true
+		local pet = petById[instanceId]
+		if not pet then
+			return nil, "Pet not found in inventory: " .. tostring(instanceId)
+		end
+		if pet.favorite == true then
+			return nil, "Favorited pets cannot be converted"
+		end
+		if pet.equipped == true or equippedById[instanceId] then
+			return nil, "Equipped pets cannot be converted"
+		end
+		local canonicalVariant = PetVariantPresentation.normalizeBaseVariant(pet)
+		if canonicalVariant ~= inputVariant then
+			return nil, "Pet has the wrong source variant"
+		end
+		if type(pet.petId) ~= "string" or not PetData.Pets[pet.petId] then
+			return nil, "Invalid pet species"
+		end
+		if speciesId == nil then
+			speciesId = pet.petId
+		elseif speciesId ~= pet.petId then
+			return nil, "All pets must be the same species"
+		end
+		anyShiny = anyShiny or pet.shiny == true
+		selectedPets[index] = pet
+		selectedSnapshots[index] = {
+			id = pet.id,
+			petId = pet.petId,
+			variant = canonicalVariant,
+			shiny = pet.shiny == true,
+		}
+	end
+
+	local projectedCount = #petsTable - count + 1
+	if projectedCount > PetService.getMaxInventory(player) then
+		return nil, "Pet inventory has no room for the conversion result"
+	end
+
+	local definition = PetData.Pets[speciesId]
+	local presentation = PetVariantPresentation.resolve({
+		petId = speciesId,
+		variant = outputVariant,
+		shiny = anyShiny,
+	})
+	local outputPet = {
+		id = HttpService:GenerateGUID(false),
+		petId = speciesId,
+		name = presentation.displayPetName,
+		rarity = definition.rarity,
+		damage = PetVariantMath.getBaseDamage(speciesId, outputVariant, anyShiny),
+		variant = outputVariant,
+		shiny = anyShiny,
+		golden = outputVariant == "Golden",
+		favorite = false,
+		equipped = false,
+	}
+	local discoveryKey = PetService.getLegacyDiscoveryKey(speciesId, outputVariant, anyShiny)
+	local originalPets = {}
+	for index, pet in ipairs(petsTable) do
+		originalPets[index] = pet
+	end
+	local discoveryTable = type(data.discoveredPets) == "table" and data.discoveredPets or nil
+	local discoverySnapshot = {}
+	if discoveryTable then
+		for key, value in pairs(discoveryTable) do
+			discoverySnapshot[key] = value
+		end
+	end
+
+	return {
+		player = player,
+		data = data,
+		petsTable = petsTable,
+		originalPets = originalPets,
+		selectedIds = selectedIds,
+		selectedPets = selectedPets,
+		selectedSnapshots = selectedSnapshots,
+		inputVariant = inputVariant,
+		outputVariant = outputVariant,
+		outputPet = outputPet,
+		discoveryKey = discoveryKey,
+		discoveryTable = discoveryTable,
+		discoverySnapshot = discoverySnapshot,
+		discoveryMutationStarted = false,
+		mutationStarted = false,
+		committed = false,
+		transactionCommitted = false,
+		isNewDiscovery = false,
+	}, nil
+end
+
+local function discoveryMatchesPreparedSnapshot(data, prepared)
+	if data.discoveredPets ~= prepared.discoveryTable then
+		return false
+	end
+	if prepared.discoveryTable == nil then
+		return true
+	end
+	for key, value in pairs(prepared.discoveryTable) do
+		if prepared.discoverySnapshot[key] ~= value then
+			return false
+		end
+	end
+	for key, value in pairs(prepared.discoverySnapshot) do
+		if prepared.discoveryTable[key] ~= value then
+			return false
+		end
+	end
+	return true
+end
+
+function PetService.commitVariantConversion(player, prepared, succeeded)
+	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed
+		or type(succeeded) ~= "boolean" then
+		return false, "Invalid prepared conversion"
+	end
+	local data = PetService._dataService.getPlayerData(player)
+	if data ~= prepared.data or data.pets ~= prepared.petsTable
+		or #data.pets ~= #prepared.originalPets then
+		return false, "Inventory changed during conversion"
+	end
+	if not discoveryMatchesPreparedSnapshot(data, prepared) then
+		return false, "Discovery changed during conversion"
+	end
+	for index, pet in ipairs(prepared.originalPets) do
+		if data.pets[index] ~= pet then
+			return false, "Inventory changed during conversion"
+		end
+	end
+	local equippedById = {}
+	if type(data.equippedPets) == "table" then
+		for _, equippedId in ipairs(data.equippedPets) do
+			equippedById[equippedId] = true
+		end
+	end
+	for index, pet in ipairs(prepared.selectedPets) do
+		local snapshot = prepared.selectedSnapshots[index]
+		if pet.id ~= snapshot.id or pet.petId ~= snapshot.petId
+			or PetVariantPresentation.normalizeBaseVariant(pet) ~= snapshot.variant
+			or (pet.shiny == true) ~= snapshot.shiny
+			or pet.favorite == true or pet.equipped == true or equippedById[pet.id] then
+			return false, "Selected pet changed during conversion"
+		end
+	end
+	if succeeded and #data.pets - #prepared.selectedPets + 1 > PetService.getMaxInventory(player) then
+		return false, "Pet inventory has no room for the conversion result"
+	end
+
+	prepared.mutationStarted = true
+	local writeIndex = 1
+	for _, pet in ipairs(prepared.originalPets) do
+		if not prepared.selectedIds[pet.id] then
+			data.pets[writeIndex] = pet
+			writeIndex = writeIndex + 1
+		end
+	end
+	for index = #data.pets, writeIndex, -1 do
+		data.pets[index] = nil
+	end
+
+	if succeeded then
+		prepared.isNewDiscovery = not prepared.discoveryTable
+			or prepared.discoveryTable[prepared.discoveryKey] ~= true
+		local discoveryWriteTable = data.discoveredPets
+		local createdDiscoveryTable = false
+		if type(discoveryWriteTable) ~= "table" then
+			discoveryWriteTable = {}
+			data.discoveredPets = discoveryWriteTable
+			createdDiscoveryTable = true
+		end
+		prepared.discoveryWriteTable = discoveryWriteTable
+		prepared.discoveryPreviousValue = rawget(discoveryWriteTable, prepared.discoveryKey)
+		prepared.discoveryPreviousPresent = prepared.discoveryPreviousValue ~= nil
+		prepared.discoveryWrittenValue = true
+		prepared.discoveryCreatedTable = createdDiscoveryTable
+		prepared.discoveryMutationStarted = true
+		discoveryWriteTable[prepared.discoveryKey] = prepared.discoveryWrittenValue
+		table.insert(data.pets, prepared.outputPet)
+	end
+	prepared.committed = true
+	return true
+end
+
+function PetService.rollbackVariantConversion(prepared)
+	if type(prepared) ~= "table" or not prepared.mutationStarted
+		or type(prepared.data) ~= "table" or type(prepared.petsTable) ~= "table" then
+		return true
+	end
+	local petsTable = prepared.petsTable
+	prepared.data.pets = petsTable
+	for index = #petsTable, 1, -1 do
+		petsTable[index] = nil
+	end
+	for index, pet in ipairs(prepared.originalPets) do
+		petsTable[index] = pet
+	end
+
+	-- Roll back only the discovery key this transaction wrote. Concurrent keys
+	-- or replacement tables belong to other work and must remain untouched.
+	if prepared.discoveryMutationStarted
+		and prepared.data.discoveredPets == prepared.discoveryWriteTable
+		and rawget(prepared.discoveryWriteTable, prepared.discoveryKey)
+			== prepared.discoveryWrittenValue then
+		if prepared.discoveryPreviousPresent then
+			prepared.discoveryWriteTable[prepared.discoveryKey] = prepared.discoveryPreviousValue
+		else
+			prepared.discoveryWriteTable[prepared.discoveryKey] = nil
+		end
+		if prepared.discoveryCreatedTable
+			and prepared.data.discoveredPets == prepared.discoveryWriteTable
+			and next(prepared.discoveryWriteTable) == nil then
+			prepared.data.discoveredPets = nil
+		end
+	end
+	prepared.discoveryMutationStarted = false
+	prepared.discoveryWriteTable = nil
+	prepared.discoveryPreviousValue = nil
+	prepared.discoveryPreviousPresent = nil
+	prepared.discoveryWrittenValue = nil
+	prepared.discoveryCreatedTable = nil
+	prepared.mutationStarted = false
+	prepared.committed = false
+	prepared.isNewDiscovery = false
+	return true
+end
+
 -- Get player's pet inventory
 function PetService.getInventory(player)
 	if not player then
@@ -3512,6 +3992,339 @@ return PetService
 				</Item>
 				<Item class="ModuleScript" referent="RBX0000006A">
 					<Properties>
+						<string name="Name">MachineService</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	MachineService.lua - Dormant QOF-15 machine transaction foundation.
+	Owns validated Gold/Rainbow payment, pet consumption, chance rolls, rollback,
+	and post-commit quest semantics. Public activation remains fail-closed until a
+	future QOF injects an authoritative world/proximity validator and enables the
+	BalanceConfig runtime gate.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local BalanceConfig = require(ReplicatedStorage.Shared.BalanceConfig)
+
+local MachineService = {}
+
+MachineService._dataService = nil
+MachineService._currencyService = nil
+MachineService._petService = nil
+MachineService._questService = nil
+MachineService._activationValidator = nil
+MachineService._randomSource = math.random
+MachineService._transactionHook = nil
+MachineService._playerLocks = {}
+
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function resolveMachine(machineId)
+	if type(machineId) ~= "string" then
+		return nil
+	end
+	for machineType, definition in pairs(BalanceConfig.Machines) do
+		if type(definition) == "table" and definition.id == machineId
+			and type(definition.cost) == "table" then
+			-- Never retain or expose the mutable canonical balance table. The
+			-- transaction consumes only this scalar snapshot.
+			return {
+				id = definition.id,
+				zoneId = definition.zoneId,
+				inputVariant = definition.inputVariant,
+				outputVariant = definition.outputVariant,
+				cost = {
+					currency = definition.cost.currency,
+					amount = definition.cost.amount,
+				},
+			}, machineType
+		end
+	end
+	return nil
+end
+
+local function validateDenseUniqueIds(petInstanceIds)
+	if type(petInstanceIds) ~= "table" then
+		return nil, "Invalid pet IDs"
+	end
+	-- This check must precede pairs, #, and indexing so hostile metamethods can
+	-- never execute outside the protected transaction boundary.
+	if getmetatable(petInstanceIds) ~= nil then
+		return nil, "Pet IDs must be a plain dense list"
+	end
+
+	local count = 0
+	for key in next, petInstanceIds do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+			return nil, "Pet IDs must be a dense list"
+		end
+		count = count + 1
+	end
+	if count < BalanceConfig.Machines.MinInputs or count > BalanceConfig.Machines.MaxInputs then
+		return nil, "Must provide between 1 and 7 pets"
+	end
+	if rawlen(petInstanceIds) ~= count then
+		return nil, "Pet IDs must be a dense list"
+	end
+
+	local seen = {}
+	local copy = {}
+	for index = 1, count do
+		local petId = rawget(petInstanceIds, index)
+		if type(petId) ~= "string" or petId == "" or #petId > 128 then
+			return nil, "Invalid pet ID in list"
+		end
+		if seen[petId] then
+			return nil, "Duplicate pet ID in list"
+		end
+		seen[petId] = true
+		copy[index] = petId
+	end
+	return copy
+end
+
+local function hasUnlockedZone(data, zoneId)
+	if type(data) ~= "table" or type(data.unlockedZones) ~= "table" then
+		return false
+	end
+	for _, unlockedZoneId in ipairs(data.unlockedZones) do
+		if unlockedZoneId == zoneId then
+			return true
+		end
+	end
+	return false
+end
+
+local function safeHook(stage, context)
+	if MachineService._transactionHook then
+		MachineService._transactionHook(stage, context)
+	end
+end
+
+function MachineService.init(dataService, currencyService, petService)
+	MachineService._dataService = dataService
+	MachineService._currencyService = currencyService
+	MachineService._petService = petService
+	MachineService._questService = nil
+	MachineService._activationValidator = nil
+	MachineService._randomSource = math.random
+	MachineService._transactionHook = nil
+	MachineService._playerLocks = {}
+end
+
+function MachineService.setQuestService(questService)
+	MachineService._questService = questService
+end
+
+-- A future world-owning service must inject a validator that checks the exact
+-- runtime station and player proximity. Nil/non-function always means denied.
+function MachineService.setActivationValidator(validator)
+	MachineService._activationValidator = type(validator) == "function" and validator or nil
+end
+
+function MachineService.setRandomSource(randomSource)
+	MachineService._randomSource = type(randomSource) == "function" and randomSource or math.random
+end
+
+function MachineService.setTransactionHook(hook)
+	MachineService._transactionHook = type(hook) == "function" and hook or nil
+end
+
+local function rollbackTechnicalFailure(prepared, spendTransaction)
+	local petRolledBack = true
+	local currencyRolledBack = true
+	if prepared and prepared.mutationStarted then
+		local callSucceeded, rollbackSucceeded = pcall(
+			MachineService._petService.rollbackVariantConversion,
+			prepared
+		)
+		petRolledBack = callSucceeded and rollbackSucceeded == true
+	end
+	if spendTransaction then
+		local callSucceeded, rollbackSucceeded = pcall(
+			MachineService._currencyService.rollbackSpendTransaction,
+			spendTransaction
+		)
+		currencyRolledBack = callSucceeded and rollbackSucceeded == true
+	end
+	return petRolledBack and currencyRolledBack
+end
+
+local function executeTransaction(player, machine, machineType, petInstanceIds, transactionState)
+	local data = MachineService._dataService and MachineService._dataService.getPlayerData(player)
+	if type(data) ~= "table" then
+		return nil, "No player data"
+	end
+	if not hasUnlockedZone(data, machine.zoneId) then
+		return nil, "Machine zone is locked"
+	end
+
+	local inputCount = #petInstanceIds
+	local chance = BalanceConfig.Machines.SuccessChanceByInput[inputCount]
+	if not isFiniteNumber(chance) or chance < 0 or chance > 1 then
+		return nil, "Machine configuration unavailable"
+	end
+	-- The callback receives a disposable facts DTO, never the canonical balance
+	-- definition or the private transaction snapshot consumed below.
+	local activationFacts = {
+		machineId = machine.id,
+		zoneId = machine.zoneId,
+	}
+	local activationOk, activationAllowed, activationError = pcall(
+		MachineService._activationValidator,
+		player,
+		machine.id,
+		activationFacts
+	)
+	if not activationOk or activationAllowed ~= true then
+		return nil, activationOk and (activationError or "Machine activation denied") or "Machine activation denied"
+	end
+
+	local prepared, prepareError = MachineService._petService.prepareVariantConversion(
+		player,
+		petInstanceIds,
+		machine.inputVariant,
+		machine.outputVariant
+	)
+	if not prepared then
+		return nil, prepareError
+	end
+	transactionState.prepared = prepared
+
+	local spendTransaction = MachineService._currencyService.beginSpendTransaction(
+		player,
+		machine.cost.currency,
+		machine.cost.amount
+	)
+	if not spendTransaction then
+		return nil, "Not enough diamonds"
+	end
+	transactionState.spendTransaction = spendTransaction
+
+	local context = {
+		player = player,
+		machineId = machine.id,
+		inputCount = inputCount,
+		prepared = prepared,
+	}
+	safeHook("afterSpend", context)
+
+	local roll = MachineService._randomSource()
+	if not isFiniteNumber(roll) or roll < 0 or roll > 1 then
+		error("Machine RNG returned an invalid roll")
+	end
+	local success = roll <= chance
+
+	local committed, commitError = MachineService._petService.commitVariantConversion(
+		player,
+		prepared,
+		success
+	)
+	if not committed then
+		local restored = rollbackTechnicalFailure(prepared, spendTransaction)
+		transactionState.prepared = nil
+		transactionState.spendTransaction = nil
+		if not restored then
+			return nil, "Conversion rollback failed"
+		end
+		return nil, commitError or "Conversion failed safely"
+	end
+	safeHook("afterPetMutation", context)
+
+	local result = {
+		success = success,
+		machineId = machine.id,
+		chance = chance,
+		cost = machine.cost.amount,
+		currency = machine.cost.currency,
+		outputPet = success and prepared.outputPet or nil,
+		isNewDiscovery = success and prepared.isNewDiscovery or false,
+	}
+	safeHook("beforeCommit", context)
+
+	if MachineService._currencyService.commitSpendTransaction(spendTransaction) ~= true then
+		local restored = rollbackTechnicalFailure(prepared, spendTransaction)
+		transactionState.prepared = nil
+		transactionState.spendTransaction = nil
+		return nil, restored and "Conversion failed safely" or "Conversion rollback failed"
+	end
+	spendTransaction = nil
+	transactionState.spendTransaction = nil
+	transactionState.prepared = nil
+	prepared.transactionCommitted = true
+
+	-- Notifications are deliberately post-commit and protected. A transport or
+	-- quest event failure must never turn a completed economic transaction into a
+	-- retryable failure or attempt an impossible partial rollback.
+	pcall(MachineService._petService.replicateInventory, player)
+	if success and machineType == "Gold" and MachineService._questService then
+		pcall(MachineService._questService.incrementStat, player, "goldenPetsConverted", 1)
+	end
+	return result
+end
+
+function MachineService.attemptConversion(player, machineId, petInstanceIds)
+	if BalanceConfig.Machines.RuntimeEnabled ~= true then
+		return nil, "Machines are not available"
+	end
+	if not player or not isFiniteNumber(player.UserId) or player.UserId % 1 ~= 0 then
+		return nil, "Invalid player"
+	end
+	local machine, machineType = resolveMachine(machineId)
+	if not machine then
+		return nil, "Unknown machine"
+	end
+	local ids, idsError = validateDenseUniqueIds(petInstanceIds)
+	if not ids then
+		return nil, idsError
+	end
+	if type(MachineService._activationValidator) ~= "function" then
+		return nil, "Machine activation unavailable"
+	end
+	if not MachineService._dataService
+		or not MachineService._currencyService
+		or not MachineService._petService then
+		return nil, "Machine service unavailable"
+	end
+	if MachineService._playerLocks[player.UserId] then
+		return nil, "Machine conversion already in progress"
+	end
+
+	MachineService._playerLocks[player.UserId] = true
+	local transactionState = {}
+	local ok, result, transactionError = xpcall(function()
+		return executeTransaction(player, machine, machineType, ids, transactionState)
+	end, debug.traceback)
+	MachineService._playerLocks[player.UserId] = nil
+
+	if not ok then
+		local restored = rollbackTechnicalFailure(
+			transactionState.prepared,
+			transactionState.spendTransaction
+		)
+		return nil, restored and "Conversion failed safely" or "Conversion rollback failed"
+	end
+	return result, transactionError
+end
+
+function MachineService.cleanup(player)
+	if player and isFiniteNumber(player.UserId) then
+		MachineService._playerLocks[player.UserId] = nil
+	end
+end
+
+MachineService.onPlayerRemoving = MachineService.cleanup
+
+return MachineService
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX0000006B">
+					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
@@ -3606,7 +4419,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006B">
+				<Item class="ModuleScript" referent="RBX0000006C">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6229,7 +7042,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6831,7 +7644,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006D">
+				<Item class="ModuleScript" referent="RBX0000006E">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -6854,6 +7667,7 @@ EggService._currencyService = nil
 EggService._petService = nil
 EggService._questService = nil
 EggService._upgradeTreeService = nil
+EggService._potionService = nil
 EggService._hatchLock = {}
 EggService._transactionHook = nil
 EggService._stationValidator = nil
@@ -6892,6 +7706,10 @@ function EggService.init(dataService, currencyService, petService, upgradeTreeSe
 	EggService._currencyService = currencyService
 	EggService._petService = petService
 	EggService._upgradeTreeService = upgradeTreeService
+end
+
+function EggService.setPotionService(potionService)
+	EggService._potionService = potionService
 end
 
 function EggService.setQuestService(questService)
@@ -7204,6 +8022,7 @@ function EggService.purchaseFromIntent(player, eggType, intent)
 
 		return purchaseAndHatchUnlocked(player, eggType, count, {
 			bypassStation = false,
+			consumeShinyCharges = true,
 		})
 	end)
 end
@@ -7224,6 +8043,14 @@ local function rollbackTransaction(transaction)
 	if transaction.prepared and transaction.prepared.mutationStarted then
 		inventoryRestored = EggService._petService.rollbackHatchBatch(transaction.prepared) == true
 	end
+	local chargesRestored = true
+	if transaction.shinyChargeTransaction then
+		chargesRestored = EggService._potionService
+			and EggService._potionService.rollbackShinyChargeTransaction(
+				transaction.shinyChargeTransaction
+			) == true
+		transaction.shinyChargeTransaction = nil
+	end
 	local currencyRestored = true
 	if transaction.spent and transaction.totalCost > 0 then
 		currencyRestored = EggService._currencyService.creditRaw(
@@ -7233,7 +8060,7 @@ local function rollbackTransaction(transaction)
 		) == true
 		transaction.spent = false
 	end
-	return inventoryRestored and currencyRestored
+	return inventoryRestored and chargesRestored and currencyRestored
 end
 
 local function notifyCommittedBatch(player, result)
@@ -7297,6 +8124,8 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		eggType = eggType,
 		count = validatedCount,
 		prepared = nil,
+		shinyChargeTransaction = nil,
+		shinyBoostCount = 0,
 		spent = false,
 		totalCost = 0,
 	}
@@ -7323,10 +8152,20 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 			return nil, "No valid coin cost for egg zone"
 		end
 
+		local consumeShinyCharges = options.consumeShinyCharges
+		if consumeShinyCharges == nil then
+			consumeShinyCharges = options.bypassStation ~= true and options.skipCharge ~= true
+		end
+		if consumeShinyCharges == true and EggService._potionService then
+			transaction.shinyChargeTransaction, transaction.shinyBoostCount =
+				EggService._potionService.beginShinyChargeTransaction(player, validatedCount)
+		end
+
 		local prepared, prepareError = EggService._petService.prepareHatchBatch(
 			player,
 			eggType,
-			validatedCount
+			validatedCount,
+			{ shinyBoostCount = transaction.shinyBoostCount }
 		)
 		if not prepared then
 			return nil, prepareError
@@ -7372,6 +8211,16 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	end
 	if not result then
 		return nil, hatchError
+	end
+	if transaction.shinyChargeTransaction then
+		if not EggService._potionService
+			or EggService._potionService.commitShinyChargeTransaction(
+				transaction.shinyChargeTransaction
+			) ~= true then
+			local restored = rollbackTransaction(transaction)
+			return nil, restored and "Hatch failed safely" or "Hatch rollback failed"
+		end
+		transaction.shinyChargeTransaction = nil
 	end
 
 	notifyCommittedBatch(player, result)
@@ -7425,7 +8274,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006E">
+				<Item class="ModuleScript" referent="RBX0000006F">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7625,7 +8474,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006F">
+				<Item class="ModuleScript" referent="RBX00000070">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7775,7 +8624,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000070">
+				<Item class="ModuleScript" referent="RBX00000071">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7806,6 +8655,7 @@ local MAX_POTION_INVENTORY = BalanceConfig.Potions.Persistence.MaxInventoryPerPo
 ShopService._dataService = nil
 ShopService._currencyService = nil
 ShopService._eggService = nil
+ShopService._potionService = nil
 ShopService._walkSpeedRefresh = nil
 
 -- Legacy read-only timed buff compatibility state.
@@ -7911,6 +8761,10 @@ function ShopService.init(dataService, currencyService)
 	end
 end
 
+function ShopService.setPotionService(potionService)
+	ShopService._potionService = potionService
+end
+
 function ShopService.setEggService(eggService)
 	ShopService._eggService = eggService
 end
@@ -7951,6 +8805,10 @@ local function getMaxExtraEquipSlots()
 end
 
 function ShopService.getActiveBuffs(player)
+	if ShopService._potionService then
+		local state = ShopService._potionService.getState(player)
+		return state and state.activeBuffs or {}
+	end
 	if not player then
 		return {}
 	end
@@ -8014,6 +8872,7 @@ function ShopService.getShopState(player)
 		purchases = { extraEquipSlots = extraEquipSlots },
 		maxExtraEquipSlots = getMaxExtraEquipSlots(),
 		buffs = snapshotActiveBuffs(player),
+		potionState = ShopService._potionService and ShopService._potionService.getState(player) or nil,
 	}
 end
 
@@ -8212,12 +9071,24 @@ function ShopService.purchaseItem(player, request)
 		return false, message
 	end
 
+	if purchaseKind == "potion" and ShopService._potionService then
+		local notifyOk, potionState = pcall(
+			ShopService._potionService.notifyInventoryChanged,
+			player
+		)
+		if notifyOk and type(potionState) == "table" then
+			state.potionState = potionState
+		end
+	end
 	fireShopUpdate(player, state)
 	return true, nil, state
 end
 
 -- Legacy multipliers remain neutral unless preexisting transient state exists.
 function ShopService.getShopMultiplier(player, buffType)
+	if ShopService._potionService then
+		return ShopService._potionService.getMultiplier(player, buffType)
+	end
 	if not player or not buffType then
 		return 1
 	end
@@ -8287,7 +9158,774 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000071">
+				<Item class="ModuleScript" referent="RBX00000072">
+					<Properties>
+						<string name="Name">PotionService</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[--[[
+	PotionService.lua - QOF-14 server-authoritative potion state owner.
+	Purchases remain in ShopService. This service owns consumption, persistent
+	absolute-time effects, upgrades, online Auto-Drink, and Shiny hatch charges.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
+
+local PotionService = {}
+
+local CONTRACT_VERSION = 1
+local CATALOG_ORDER = {
+	"LuckPotion",
+	"MegaLuckPotion",
+	"SpeedPotion",
+	"CoinPotion",
+	"ShinyPotion",
+}
+local MAX_INVENTORY = BalanceConfig.Potions.Persistence.MaxInventoryPerPotion
+local MAX_TIMED_SECONDS = BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds
+local MAX_SHINY_CHARGES = BalanceConfig.Potions.Upgrades.MaxShinyCharges
+local RECONCILE_INTERVAL = 1
+
+PotionService._dataService = nil
+PotionService._currencyService = nil
+PotionService._movementRefresh = nil
+PotionService._mutationLocks = {}
+PotionService._stateRevisions = {}
+PotionService._pendingShinyCharges = setmetatable({}, { __mode = "k" })
+PotionService._transactionHook = nil
+PotionService._running = false
+
+local function isFiniteNumber(value)
+	return type(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+end
+
+local function deepCopy(value)
+	if type(value) ~= "table" then
+		return value
+	end
+	local result = {}
+	for key, child in pairs(value) do
+		result[deepCopy(key)] = deepCopy(child)
+	end
+	return result
+end
+
+local function exactRequest(request, fields)
+	if type(request) ~= "table" or getmetatable(request) ~= nil then
+		return false
+	end
+	local count = 0
+	for key in pairs(request) do
+		if not fields[key] then
+			return false
+		end
+		count = count + 1
+	end
+	local expected = 0
+	for _ in pairs(fields) do
+		expected = expected + 1
+	end
+	return count == expected
+end
+
+local function validIdentifier(value)
+	return type(value) == "string" and #value > 0 and #value <= 64
+end
+
+local function getData(player)
+	if not player or not PotionService._dataService then
+		return nil
+	end
+	return PotionService._dataService.getPlayerData(player)
+end
+
+local function currentRevision(player)
+	local key = player and player.UserId
+	return key and PotionService._stateRevisions[key] or 0
+end
+
+local function bumpRevision(player)
+	local key = player and player.UserId
+	if not key then return 0 end
+	local revision = (PotionService._stateRevisions[key] or 0) + 1
+	PotionService._stateRevisions[key] = revision
+	return revision
+end
+
+local function sourceExpiresAt(source)
+	if type(source) ~= "table" or not isFiniteNumber(source.expiresAt) then
+		return nil
+	end
+	return math.floor(source.expiresAt)
+end
+
+local function timedTypeIsActive(state, now)
+	if type(state) ~= "table" or type(state.sources) ~= "table" then
+		return false
+	end
+	for _, source in pairs(state.sources) do
+		local expiresAt = sourceExpiresAt(source)
+		if expiresAt and expiresAt > now then
+			return true
+		end
+	end
+	return false
+end
+
+local function buffTypeIsActive(buffType, state, now)
+	if buffType == "shinyChance" then
+		return type(state) == "table"
+			and isFiniteNumber(state.charges)
+			and math.floor(state.charges) > 0
+	end
+	return timedTypeIsActive(state, now)
+end
+
+local function countActiveTypes(activeBuffs, now)
+	local count = 0
+	if type(activeBuffs) == "table" then
+		for buffType, state in pairs(activeBuffs) do
+			if buffTypeIsActive(buffType, state, now) then
+				count = count + 1
+			end
+		end
+	end
+	return count
+end
+
+local function cleanupExpired(data, now)
+	if type(data.activeBuffs) ~= "table" then
+		data.activeBuffs = {}
+		return true, false
+	end
+	local changed = false
+	local speedChanged = false
+	for buffType, state in pairs(data.activeBuffs) do
+		if buffType == "shinyChance" then
+			local charges = type(state) == "table" and state.charges or nil
+			if not isFiniteNumber(charges) or math.floor(charges) <= 0 then
+				data.activeBuffs[buffType] = nil
+				changed = true
+			end
+		elseif type(state) ~= "table" or type(state.sources) ~= "table" then
+			data.activeBuffs[buffType] = nil
+			changed = true
+			if buffType == "speed" then speedChanged = true end
+		else
+			for sourceId, source in pairs(state.sources) do
+				local potion = BalanceConfig.Potions.Catalog[sourceId]
+				local expiresAt = sourceExpiresAt(source)
+				if not potion or potion.buffType ~= buffType or not potion.durationSeconds
+					or not expiresAt or expiresAt <= now then
+					state.sources[sourceId] = nil
+					changed = true
+					if buffType == "speed" then speedChanged = true end
+				end
+			end
+			if next(state.sources) == nil then
+				data.activeBuffs[buffType] = nil
+			end
+		end
+	end
+	return changed, speedChanged
+end
+
+local function durationMultiplier(data)
+	local upgrades = type(data.potionUpgrades) == "table" and data.potionUpgrades or {}
+	local level = isFiniteNumber(upgrades.durationLevel) and math.floor(upgrades.durationLevel) or 0
+	local definition = BalanceConfig.Potions.Upgrades.Duration[level]
+	return definition and definition.multiplier or 1
+end
+
+local function maxSlots(data)
+	local upgrades = type(data.potionUpgrades) == "table" and data.potionUpgrades or {}
+	local slots = isFiniteNumber(upgrades.slots) and math.floor(upgrades.slots)
+		or BalanceConfig.Potions.Upgrades.BaseSlots
+	return math.clamp(
+		slots,
+		BalanceConfig.Potions.Upgrades.BaseSlots,
+		BalanceConfig.Potions.Upgrades.MaxSlots
+	)
+end
+
+local function resolveConsumeAvailability(data, potionId, now)
+	local potion = BalanceConfig.Potions.Catalog[potionId]
+	if not potion then
+		return false, "Unknown potion"
+	end
+	local count = type(data.potionInventory) == "table" and data.potionInventory[potionId] or nil
+	if not isFiniteNumber(count) or count < 1 or count % 1 ~= 0 or count > MAX_INVENTORY then
+		return false, "No potion available"
+	end
+
+	local typeState = type(data.activeBuffs) == "table" and data.activeBuffs[potion.buffType] or nil
+	local existingTypeActive = buffTypeIsActive(potion.buffType, typeState, now)
+	if potion.durationSeconds then
+		local source = type(typeState) == "table" and type(typeState.sources) == "table"
+			and typeState.sources[potionId] or nil
+		local oldExpiry = sourceExpiresAt(source)
+		if oldExpiry and oldExpiry >= now + MAX_TIMED_SECONDS then
+			return false, "Maximum timed duration reached (30 days)"
+		end
+	else
+		local currentCharges = type(typeState) == "table" and typeState.charges or 0
+		if not isFiniteNumber(currentCharges) or currentCharges < 0 then
+			return false, "Invalid Shiny charge state"
+		end
+		if currentCharges >= MAX_SHINY_CHARGES then
+			return false, "Maximum Shiny charges reached (" .. tostring(MAX_SHINY_CHARGES) .. ")"
+		end
+	end
+	if not existingTypeActive and countActiveTypes(data.activeBuffs, now) >= maxSlots(data) then
+		return false, "No active potion slots available"
+	end
+	return true, nil
+end
+
+local function upgradeOffers(data)
+	local upgrades = data.potionUpgrades
+	local slotOffer = nil
+	for _, level in ipairs(BalanceConfig.Potions.Upgrades.PotionSlots) do
+		if level.slots == upgrades.slots + 1 then
+			slotOffer = { target = level.slots, cost = deepCopy(level.cost) }
+			break
+		end
+	end
+	local durationDef = BalanceConfig.Potions.Upgrades.Duration[upgrades.durationLevel + 1]
+	local autoDrinkOffer = nil
+	if upgrades.autoDrink ~= true then
+		autoDrinkOffer = {
+			target = true,
+			cost = deepCopy(BalanceConfig.Potions.Upgrades.AutoDrink.cost),
+		}
+	end
+	return {
+		PotionSlot = slotOffer,
+		Duration = durationDef and {
+			target = upgrades.durationLevel + 1,
+			multiplier = durationDef.multiplier,
+			cost = deepCopy(durationDef.cost),
+		} or nil,
+		AutoDrink = autoDrinkOffer,
+	}
+end
+
+local function buildActiveBuffDto(data, now)
+	local result = {}
+	for buffType, state in pairs(data.activeBuffs or {}) do
+		if buffType == "shinyChance" and buffTypeIsActive(buffType, state, now) then
+			result[buffType] = {
+				charges = math.min(MAX_SHINY_CHARGES, math.floor(state.charges)),
+				multiplier = BalanceConfig.Potions.Catalog.ShinyPotion.multiplier,
+			}
+		elseif timedTypeIsActive(state, now) then
+			local sources = {}
+			local effectiveMultiplier = 1
+			for sourceId, source in pairs(state.sources) do
+				local expiresAt = sourceExpiresAt(source)
+				local potion = BalanceConfig.Potions.Catalog[sourceId]
+				if expiresAt and expiresAt > now and potion and potion.buffType == buffType then
+					sources[sourceId] = {
+						expiresAt = expiresAt,
+						multiplier = potion.multiplier,
+					}
+					effectiveMultiplier = math.max(effectiveMultiplier, potion.multiplier)
+				end
+			end
+			result[buffType] = {
+				sources = sources,
+				effectiveMultiplier = effectiveMultiplier,
+			}
+		end
+	end
+	return result
+end
+
+local function fireState(player, state)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local event = remotes and remotes:FindFirstChild("PotionStateUpdated")
+	if event then
+		pcall(function()
+			event:FireClient(player, deepCopy(state))
+		end)
+	end
+end
+
+local function invokeHook(stage, context)
+	if type(PotionService._transactionHook) == "function" then
+		PotionService._transactionHook(stage, context)
+	end
+end
+
+function PotionService.init(dataService, currencyService)
+	PotionService._dataService = dataService
+	PotionService._currencyService = currencyService
+end
+
+function PotionService.setMovementRefreshCallback(callback)
+	PotionService._movementRefresh = callback
+end
+
+function PotionService.getState(player)
+	local data = getData(player)
+	local now = os.time()
+	if type(data) ~= "table" then
+		return {
+			contractVersion = CONTRACT_VERSION,
+			stateRevision = currentRevision(player),
+			serverTime = now,
+			catalogOrder = deepCopy(CATALOG_ORDER),
+			potionInventory = {},
+			activeBuffs = {},
+			consumeAvailability = {},
+			autoDrinkSelection = {},
+			upgrades = { slots = 0, durationLevel = 0, durationMultiplier = 1, autoDrink = false },
+			slots = { active = 0, maximum = 0 },
+			upgradeOffers = {},
+		}
+	end
+	if type(data.potionInventory) ~= "table" then data.potionInventory = {} end
+	if type(data.potionUpgrades) ~= "table" then
+		data.potionUpgrades = {
+			slots = BalanceConfig.Potions.Upgrades.BaseSlots,
+			durationLevel = 0,
+			autoDrink = false,
+		}
+	end
+	if type(data.autoDrinkSelection) ~= "table" then data.autoDrinkSelection = {} end
+	local expiredChanged, speedChanged = cleanupExpired(data, now)
+	if expiredChanged then
+		bumpRevision(player)
+	end
+	if speedChanged and PotionService._movementRefresh then
+		pcall(PotionService._movementRefresh, player)
+	end
+	local slots = maxSlots(data)
+	local inventory = {}
+	local selection = {}
+	local consumeAvailability = {}
+	for _, potionId in ipairs(CATALOG_ORDER) do
+		local count = data.potionInventory[potionId]
+		if isFiniteNumber(count) and count > 0 then
+			inventory[potionId] = math.min(MAX_INVENTORY, math.floor(count))
+		end
+		if data.autoDrinkSelection[potionId] == true then
+			selection[potionId] = true
+		end
+		local canConsume, reason = resolveConsumeAvailability(data, potionId, now)
+		consumeAvailability[potionId] = {
+			canConsume = canConsume,
+			reason = reason,
+		}
+	end
+	return {
+		contractVersion = CONTRACT_VERSION,
+		stateRevision = currentRevision(player),
+		serverTime = now,
+		catalogOrder = deepCopy(CATALOG_ORDER),
+		potionInventory = inventory,
+		activeBuffs = buildActiveBuffDto(data, now),
+		consumeAvailability = consumeAvailability,
+		autoDrinkSelection = selection,
+		upgrades = {
+			slots = slots,
+			durationLevel = math.floor(data.potionUpgrades.durationLevel or 0),
+			durationMultiplier = durationMultiplier(data),
+			autoDrink = data.potionUpgrades.autoDrink == true,
+		},
+		slots = {
+			active = countActiveTypes(data.activeBuffs, now),
+			maximum = slots,
+		},
+		upgradeOffers = upgradeOffers(data),
+		maxShinyCharges = MAX_SHINY_CHARGES,
+	}
+end
+
+local function consumePotionLocked(player, potionId, origin)
+	if BalanceConfig.Potions.ConsumeRuntimeEnabled ~= true then
+		return false, "Potion consumption is not available yet"
+	end
+	local potion = BalanceConfig.Potions.Catalog[potionId]
+	if not potion then
+		return false, "Unknown potion"
+	end
+	local data = getData(player)
+	if type(data) ~= "table" or type(data.potionInventory) ~= "table"
+		or type(data.activeBuffs) ~= "table" then
+		return false, "Invalid potion state"
+	end
+	local now = os.time()
+	cleanupExpired(data, now)
+	local canConsume, unavailableReason = resolveConsumeAvailability(data, potionId, now)
+	if not canConsume then
+		return false, unavailableReason
+	end
+	local count = data.potionInventory[potionId]
+
+	local oldInventory = data.potionInventory[potionId]
+	local oldBuffState = deepCopy(data.activeBuffs[potion.buffType])
+	local context = { action = "consumePotion", potionId = potionId, origin = origin or "manual" }
+	local state = nil
+	local committed = false
+	local ok = pcall(function()
+		if count == 1 then
+			data.potionInventory[potionId] = nil
+		else
+			data.potionInventory[potionId] = count - 1
+		end
+		invokeHook("afterInventory", context)
+		if potion.durationSeconds then
+			local typeState = data.activeBuffs[potion.buffType]
+			if type(typeState) ~= "table" or type(typeState.sources) ~= "table" then
+				typeState = { sources = {} }
+				data.activeBuffs[potion.buffType] = typeState
+			end
+			local oldSource = typeState.sources[potionId]
+			local oldExpiry = sourceExpiresAt(oldSource) or now
+			local duration = math.floor(potion.durationSeconds * durationMultiplier(data))
+			typeState.sources[potionId] = {
+				expiresAt = math.min(math.max(now, oldExpiry) + duration, now + MAX_TIMED_SECONDS),
+			}
+		else
+			local typeState = data.activeBuffs[potion.buffType]
+			local charges = type(typeState) == "table" and typeState.charges or 0
+			if not isFiniteNumber(charges) or charges < 0 then
+				error("invalid charge state")
+			end
+			if charges >= MAX_SHINY_CHARGES then
+				error("maximum shiny charges")
+			end
+			data.activeBuffs[potion.buffType] = {
+				charges = math.min(MAX_SHINY_CHARGES, math.floor(charges) + potion.hatchCharges),
+			}
+		end
+		invokeHook("afterBuff", context)
+		state = PotionService.getState(player)
+		state.stateRevision = bumpRevision(player)
+		committed = true
+	end)
+	if not ok or not committed then
+		data.potionInventory[potionId] = oldInventory
+		data.activeBuffs[potion.buffType] = oldBuffState
+		return false, "Potion consumption failed"
+	end
+	if potion.buffType == "speed" and PotionService._movementRefresh then
+		pcall(PotionService._movementRefresh, player)
+	end
+	fireState(player, state)
+	return true, nil, state
+end
+
+local function withMutationLock(player, callback)
+	if not player or player.UserId == nil then
+		return false, "Invalid player"
+	end
+	local key = player.UserId
+	if PotionService._mutationLocks[key] then
+		return false, "Potion action already in progress"
+	end
+	PotionService._mutationLocks[key] = true
+	local ok, success, message, state = pcall(callback)
+	PotionService._mutationLocks[key] = nil
+	if not ok then
+		return false, "Potion action failed"
+	end
+	return success, message, state
+end
+
+function PotionService.consume(player, request)
+	if not exactRequest(request, { contractVersion = true, action = true, potionId = true })
+		or request.contractVersion ~= CONTRACT_VERSION
+		or request.action ~= "consumePotion"
+		or not validIdentifier(request.potionId) then
+		return false, "Invalid consume request"
+	end
+	return withMutationLock(player, function()
+		return consumePotionLocked(player, request.potionId, "manual")
+	end)
+end
+
+local function resolveUpgrade(data, upgradeId)
+	local upgrades = data.potionUpgrades
+	if upgradeId == "PotionSlot" then
+		for _, level in ipairs(BalanceConfig.Potions.Upgrades.PotionSlots) do
+			if level.slots == upgrades.slots + 1 then
+				return level.cost, function() upgrades.slots = level.slots end, "slots", upgrades.slots
+			end
+		end
+		return nil, nil, nil, nil, "Potion slots are maxed"
+	elseif upgradeId == "Duration" then
+		local nextLevel = upgrades.durationLevel + 1
+		local level = BalanceConfig.Potions.Upgrades.Duration[nextLevel]
+		if level then
+			return level.cost, function() upgrades.durationLevel = nextLevel end,
+				"durationLevel", upgrades.durationLevel
+		end
+		return nil, nil, nil, nil, "Potion duration is maxed"
+	elseif upgradeId == "AutoDrink" then
+		if upgrades.autoDrink then
+			return nil, nil, nil, nil, "Auto-Drink is already owned"
+		end
+		return BalanceConfig.Potions.Upgrades.AutoDrink.cost,
+			function() upgrades.autoDrink = true end, "autoDrink", upgrades.autoDrink
+	end
+	return nil, nil, nil, nil, "Unknown potion upgrade"
+end
+
+function PotionService.purchaseUpgrade(player, request)
+	if not exactRequest(request, { contractVersion = true, action = true, upgradeId = true })
+		or request.contractVersion ~= CONTRACT_VERSION
+		or request.action ~= "purchasePotionUpgrade"
+		or not validIdentifier(request.upgradeId) then
+		return false, "Invalid upgrade request"
+	end
+	return withMutationLock(player, function()
+		local data = getData(player)
+		if type(data) ~= "table" or type(data.potionUpgrades) ~= "table"
+			or not PotionService._currencyService then
+			return false, "Invalid potion state"
+		end
+		local cost, mutate, field, oldValue, unavailable = resolveUpgrade(data, request.upgradeId)
+		if not cost then
+			return false, unavailable
+		end
+		local transaction = PotionService._currencyService.beginSpendTransaction(
+			player,
+			cost.currency,
+			cost.amount
+		)
+		if type(transaction) ~= "table" then
+			return false, "Not enough " .. tostring(cost.currency)
+		end
+		local state = nil
+		local committed = false
+		local context = { action = "purchasePotionUpgrade", upgradeId = request.upgradeId }
+		local ok = pcall(function()
+			invokeHook("afterSpend", context)
+			mutate()
+			invokeHook("afterUpgrade", context)
+			state = PotionService.getState(player)
+			state.stateRevision = bumpRevision(player)
+			if PotionService._currencyService.commitSpendTransaction(transaction) ~= true then
+				error("currency commit failed")
+			end
+			committed = true
+		end)
+		if not ok or not committed then
+			data.potionUpgrades[field] = oldValue
+			local rollbackOk, rolledBack = pcall(function()
+				return PotionService._currencyService.rollbackSpendTransaction(transaction)
+			end)
+			if not rollbackOk or rolledBack ~= true then
+				return false, "Potion upgrade rollback failed"
+			end
+			return false, "Potion upgrade purchase failed"
+		end
+		fireState(player, state)
+		return true, nil, state
+	end)
+end
+
+function PotionService.setAutoDrinkSelection(player, request)
+	if not exactRequest(request, {
+		contractVersion = true,
+		action = true,
+		potionId = true,
+		selected = true,
+	}) or request.contractVersion ~= CONTRACT_VERSION
+		or request.action ~= "setAutoDrinkSelection"
+		or not validIdentifier(request.potionId)
+		or type(request.selected) ~= "boolean"
+		or not BalanceConfig.Potions.Catalog[request.potionId] then
+		return false, "Invalid Auto-Drink request"
+	end
+	return withMutationLock(player, function()
+		local data = getData(player)
+		if type(data) ~= "table" or type(data.potionUpgrades) ~= "table"
+			or data.potionUpgrades.autoDrink ~= true then
+			return false, "Auto-Drink upgrade required"
+		end
+		if type(data.autoDrinkSelection) ~= "table" then data.autoDrinkSelection = {} end
+		data.autoDrinkSelection[request.potionId] = request.selected and true or nil
+		local state = PotionService.getState(player)
+		state.stateRevision = bumpRevision(player)
+		fireState(player, state)
+		return true, nil, state
+	end)
+end
+
+function PotionService.notifyInventoryChanged(player)
+	local state = PotionService.getState(player)
+	state.stateRevision = bumpRevision(player)
+	fireState(player, state)
+	return state
+end
+
+function PotionService.getMultiplier(player, buffType)
+	local data = getData(player)
+	if type(data) ~= "table" or type(data.activeBuffs) ~= "table" then
+		return 1
+	end
+	local now = os.time()
+	local state = data.activeBuffs[buffType]
+	if not timedTypeIsActive(state, now) then
+		return 1
+	end
+	local multiplier = 1
+	for sourceId, source in pairs(state.sources) do
+		local potion = BalanceConfig.Potions.Catalog[sourceId]
+		local expiresAt = sourceExpiresAt(source)
+		if potion and potion.buffType == buffType and expiresAt and expiresAt > now then
+			multiplier = math.max(multiplier, potion.multiplier)
+		end
+	end
+	return multiplier
+end
+
+function PotionService.beginShinyChargeTransaction(player, requestedCount)
+	if not isFiniteNumber(requestedCount) or requestedCount < 1 or requestedCount % 1 ~= 0 then
+		return nil, 0
+	end
+	local data = getData(player)
+	local state = data and type(data.activeBuffs) == "table" and data.activeBuffs.shinyChance or nil
+	local charges = type(state) == "table" and state.charges or 0
+	if not isFiniteNumber(charges) or charges <= 0 then
+		return nil, 0
+	end
+	local reserved = math.min(math.floor(charges), requestedCount)
+	local handle = {}
+	PotionService._pendingShinyCharges[handle] = {
+		player = player,
+		profile = data,
+		oldState = deepCopy(state),
+		reserved = reserved,
+	}
+	local remaining = math.floor(charges) - reserved
+	data.activeBuffs.shinyChance = remaining > 0 and { charges = remaining } or nil
+	return handle, reserved
+end
+
+function PotionService.rollbackShinyChargeTransaction(handle)
+	local pending = PotionService._pendingShinyCharges[handle]
+	if not pending then return false end
+	PotionService._pendingShinyCharges[handle] = nil
+	if getData(pending.player) ~= pending.profile or type(pending.profile.activeBuffs) ~= "table" then
+		return false
+	end
+	pending.profile.activeBuffs.shinyChance = deepCopy(pending.oldState)
+	return true
+end
+
+function PotionService.commitShinyChargeTransaction(handle)
+	local pending = PotionService._pendingShinyCharges[handle]
+	if not pending then return false end
+	local ok, state = pcall(PotionService.getState, pending.player)
+	if not ok then return false end
+	state.stateRevision = bumpRevision(pending.player)
+	PotionService._pendingShinyCharges[handle] = nil
+	fireState(pending.player, state)
+	return true
+end
+
+local function shouldAutoDrink(data, potionId, now)
+	local potion = BalanceConfig.Potions.Catalog[potionId]
+	local count = type(data.potionInventory) == "table" and data.potionInventory[potionId] or 0
+	if not potion or not isFiniteNumber(count) or count < 1 then
+		return false
+	end
+	local state = type(data.activeBuffs) == "table" and data.activeBuffs[potion.buffType] or nil
+	if potion.durationSeconds then
+		local source = type(state) == "table" and type(state.sources) == "table"
+			and state.sources[potionId] or nil
+		local expiresAt = sourceExpiresAt(source)
+		return not expiresAt or expiresAt <= now
+	end
+	local charges = type(state) == "table" and state.charges or 0
+	return not isFiniteNumber(charges) or charges <= 0
+end
+
+function PotionService.processAutoDrink(player)
+	local data = getData(player)
+	if type(data) ~= "table" or type(data.potionUpgrades) ~= "table"
+		or data.potionUpgrades.autoDrink ~= true
+		or type(data.autoDrinkSelection) ~= "table" then
+		return false
+	end
+	local consumed = false
+	for _, potionId in ipairs(CATALOG_ORDER) do
+		if data.autoDrinkSelection[potionId] == true and shouldAutoDrink(data, potionId, os.time()) then
+			local success = withMutationLock(player, function()
+				return consumePotionLocked(player, potionId, "auto")
+			end)
+			if success then consumed = true end
+		end
+	end
+	return consumed
+end
+
+function PotionService.reconcilePlayer(player, allowAutoDrink)
+	local data = getData(player)
+	if type(data) ~= "table" then return false end
+	local changed, speedChanged = cleanupExpired(data, os.time())
+	if speedChanged and PotionService._movementRefresh then
+		pcall(PotionService._movementRefresh, player)
+	end
+	if changed then
+		bumpRevision(player)
+		fireState(player, PotionService.getState(player))
+	end
+	if allowAutoDrink == true then
+		PotionService.processAutoDrink(player)
+	end
+	return changed
+end
+
+function PotionService.onPlayerAdded(player)
+	if player and player.UserId ~= nil then
+		PotionService._stateRevisions[player.UserId] = 0
+	end
+	PotionService.reconcilePlayer(player, true)
+end
+
+function PotionService.onPlayerRemoving(player)
+	if not player then return end
+	PotionService._mutationLocks[player.UserId] = nil
+	PotionService._stateRevisions[player.UserId] = nil
+	for handle, pending in pairs(PotionService._pendingShinyCharges) do
+		if pending.player == player then
+			PotionService.rollbackShinyChargeTransaction(handle)
+		end
+	end
+end
+
+function PotionService.step()
+	for _, player in ipairs(Players:GetPlayers()) do
+		PotionService.reconcilePlayer(player, true)
+	end
+end
+
+function PotionService.start()
+	if PotionService._running then return end
+	PotionService._running = true
+	task.spawn(function()
+		while PotionService._running do
+			task.wait(RECONCILE_INTERVAL)
+			PotionService.step()
+		end
+	end)
+end
+
+return PotionService
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000073">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8703,7 +10341,7 @@ return UpgradeTreeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000072">
+				<Item class="ModuleScript" referent="RBX00000074">
 					<Properties>
 						<string name="Name">MovementService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8907,7 +10545,7 @@ return MovementService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000073">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">PickupService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9298,15 +10936,15 @@ return PickupService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX0000007F">
+	<Item class="StarterPlayer" referent="RBX00000081">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX0000007E">
+		<Item class="StarterPlayerScripts" referent="RBX00000080">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX0000007D">
+				<Item class="LocalScript" referent="RBX0000007F">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -9388,6 +11026,10 @@ local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
+local GetPotionState = Remotes:WaitForChild("GetPotionState")
+local ConsumePotion = Remotes:WaitForChild("ConsumePotion")
+local PurchasePotionUpgrade = Remotes:WaitForChild("PurchasePotionUpgrade")
+local SetAutoDrinkSelection = Remotes:WaitForChild("SetAutoDrinkSelection")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -9405,6 +11047,7 @@ local CampaignDefeat = Remotes:WaitForChild("CampaignDefeat")
 local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
+local PotionStateUpdated = Remotes:WaitForChild("PotionStateUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -10136,6 +11779,10 @@ ShopBuffsUpdated.OnClientEvent:Connect(function(state)
 	uiController:updateShopBuffs(state)
 end)
 
+PotionStateUpdated.OnClientEvent:Connect(function(state)
+	uiController:updatePotionState(state)
+end)
+
 local XPUpdated = Remotes:WaitForChild("XPUpdated")
 local _previousLevel = playerData and playerData.level or 1
 XPUpdated.OnClientEvent:Connect(function(level, xp, xpNeeded)
@@ -10331,7 +11978,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000077">
+				<Item class="ModuleScript" referent="RBX00000079">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10557,8 +12204,8 @@ function UIController.new()
 	self._masteryState = { masteryPoints = 0, level = 1, buffs = {} }
 	-- Pet index (collection book) state
 	self._discoveredPets = {}
-	-- QOF-13 shop state. Potion buttons stay fail-closed until the server
-	-- advertises the exact V2 inventory-only contract.
+	-- Purchase state remains V2 inventory-only. QOF-14 potion effects use their
+	-- own strict V1 state/event and are never predicted by the client.
 	self._shopState = {
 		contractVersion = 0,
 		purchaseMode = nil,
@@ -10569,6 +12216,22 @@ function UIController.new()
 		maxExtraEquipSlots = ShopData.Items.ExtraEquipSlot.maxPurchases or 5,
 	}
 	self._shopCards = {}
+	self._potionState = {
+		contractVersion = 0,
+		serverTime = 0,
+		potionInventory = {},
+		activeBuffs = {},
+		consumeAvailability = {},
+		autoDrinkSelection = {},
+		upgrades = { slots = 2, durationLevel = 0, durationMultiplier = 1, autoDrink = false },
+		slots = { active = 0, maximum = 2 },
+		upgradeOffers = {},
+		maxShinyCharges = 30,
+	}
+	self._potionServerOffset = 0
+	self._potionStateRevision = -1
+	self._potionActionInFlight = nil
+	self._potionControls = {}
 	self._shopDiamondLabel = nil
 	self._shopFeedbackLabel = nil
 	self._shopFeedbackToken = 0
@@ -10632,6 +12295,7 @@ function UIController:init(remotes, playerData)
 				local count = safePotionCount(initialInventory[potionId], self._shopState.maxPotionInventory)
 				if count > 0 then
 					self._shopState.potionInventory[potionId] = count
+					self._potionState.potionInventory[potionId] = count
 				end
 			end
 		end
@@ -10646,6 +12310,18 @@ function UIController:init(remotes, playerData)
 	self:_createShopScreen()
 	self:_createPetIndex()
 
+	-- Render countdowns from server Unix time without predicting mutations.
+	task.spawn(function()
+		while self._player and self._player.Parent do
+			task.wait(1)
+			if self._screens.ShopScreen and self._screens.ShopScreen.Enabled then
+				self:_updateShopCardStates()
+			end
+		end
+	end)
+
+	self:_refreshShopStateFromServer()
+	self:_refreshPotionStateFromServer()
 	self._initialized = true
 end
 
@@ -13529,7 +15205,7 @@ function UIController:_createShopScreen()
 	subtitle.Size = UDim2.new(0.56, 0, 0, 25)
 	subtitle.Position = UDim2.new(0.22, 0, 0, 67)
 	subtitle.BackgroundTransparency = 1
-	subtitle.Text = "BUY POTIONS • STORED UNTIL DRINKING UNLOCKS"
+	subtitle.Text = "BUY • DRINK • UPGRADE • SERVER-AUTHORITATIVE"
 	subtitle.TextColor3 = Color3.fromRGB(76, 124, 83)
 	subtitle.Font = Enum.Font.GothamBold
 	subtitle.TextScaled = true
@@ -13622,7 +15298,7 @@ function UIController:_createShopScreen()
 
 	local gridLayout = Instance.new("UIGridLayout")
 	gridLayout.Name = "GridLayout"
-	gridLayout.CellSize = UDim2.fromOffset(360, 220)
+	gridLayout.CellSize = UDim2.fromOffset(360, 270)
 	gridLayout.CellPadding = UDim2.fromOffset(14, 14)
 	gridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -13638,9 +15314,9 @@ function UIController:_createShopScreen()
 		local cellWidth = math.max(1, math.floor((availableWidth - gap * (columns - 1)) / columns))
 		local cellHeight
 		if columns == 1 then
-			cellHeight = math.clamp(math.floor(cellWidth * 0.62), 180, 265)
+			cellHeight = math.clamp(math.floor(cellWidth * 0.72), 230, 310)
 		else
-			cellHeight = math.clamp(math.floor(cellWidth * 0.61), 185, 245)
+			cellHeight = math.clamp(math.floor(cellWidth * 0.72), 235, 285)
 		end
 		gridLayout.FillDirectionMaxCells = columns
 		gridLayout.CellSize = UDim2.fromOffset(cellWidth, cellHeight)
@@ -13669,6 +15345,63 @@ function UIController:_refreshShopGrid()
 		end
 	end
 	self._shopCards = {}
+	self._potionControls = {}
+
+	local controls = Instance.new("Frame")
+	controls.Name = "PotionControls"
+	controls.LayoutOrder = 0
+	controls.BackgroundColor3 = Color3.fromRGB(230, 244, 255)
+	controls.BorderSizePixel = 0
+	controls.Parent = scrollFrame
+	addShopCorner(controls, 18)
+	addShopStroke(controls, Color3.fromRGB(68, 145, 220), 4)
+
+	local controlTitle = Instance.new("TextLabel")
+	controlTitle.Name = "ControlTitle"
+	controlTitle.Size = UDim2.new(1, -20, 0.22, 0)
+	controlTitle.Position = UDim2.fromOffset(10, 8)
+	controlTitle.BackgroundTransparency = 1
+	controlTitle.Text = "POTION LOADOUT"
+	controlTitle.TextColor3 = Color3.fromRGB(35, 74, 120)
+	controlTitle.Font = Enum.Font.GothamBlack
+	controlTitle.TextScaled = true
+	controlTitle.Parent = controls
+
+	local summary = Instance.new("TextLabel")
+	summary.Name = "Summary"
+	summary.Size = UDim2.new(1, -20, 0.18, 0)
+	summary.Position = UDim2.new(0, 10, 0.24, 0)
+	summary.BackgroundTransparency = 1
+	summary.TextColor3 = Color3.fromRGB(55, 78, 105)
+	summary.Font = Enum.Font.GothamBold
+	summary.TextScaled = true
+	summary.Parent = controls
+	self._potionControls.summary = summary
+
+	local upgradeDefinitions = {
+		{ id = "PotionSlot", label = "SLOT +" },
+		{ id = "Duration", label = "DURATION +" },
+		{ id = "AutoDrink", label = "AUTO-DRINK" },
+	}
+	for index, definition in ipairs(upgradeDefinitions) do
+		local button = Instance.new("TextButton")
+		button.Name = definition.id .. "Btn"
+		button.Size = UDim2.new(0.3, 0, 0.32, 0)
+		button.Position = UDim2.new(0.035 + (index - 1) * 0.32, 0, 0.53, 0)
+		button.BackgroundColor3 = Color3.fromRGB(68, 145, 220)
+		button.Text = definition.label
+		button.TextColor3 = COLORS.White
+		button.Font = Enum.Font.GothamBlack
+		button.TextScaled = true
+		button.AutoButtonColor = false
+		button.Parent = controls
+		addShopCorner(button, 12)
+		addShopStroke(button, Color3.fromRGB(35, 88, 150), 2)
+		button.Activated:Connect(function()
+			self:_purchasePotionUpgrade(definition.id)
+		end)
+		self._potionControls[definition.id] = button
+	end
 
 	for order, itemId in ipairs(ShopData.Order) do
 		local item = ShopData.Items[itemId]
@@ -13747,8 +15480,13 @@ function UIController:_refreshShopGrid()
 
 			local buyBtn = Instance.new("TextButton")
 			buyBtn.Name = "BuyBtn"
-			buyBtn.Size = UDim2.fromScale(0.61, 0.22)
-			buyBtn.Position = UDim2.fromScale(0.34, 0.71)
+			if item.itemType == "potion" then
+				buyBtn.Size = UDim2.fromScale(0.29, 0.17)
+				buyBtn.Position = UDim2.fromScale(0.34, 0.64)
+			else
+				buyBtn.Size = UDim2.fromScale(0.61, 0.22)
+				buyBtn.Position = UDim2.fromScale(0.34, 0.71)
+			end
 			buyBtn.BackgroundColor3 = color
 			buyBtn.Text = "◆ " .. tostring(item.cost)
 			buyBtn.TextColor3 = COLORS.White
@@ -13767,8 +15505,47 @@ function UIController:_refreshShopGrid()
 				self:_purchaseShopItem(itemId)
 			end)
 
+			local drinkBtn = nil
+			local autoBtn = nil
+			if item.itemType == "potion" then
+				drinkBtn = Instance.new("TextButton")
+				drinkBtn.Name = "DrinkBtn"
+				drinkBtn.Size = UDim2.fromScale(0.29, 0.17)
+				drinkBtn.Position = UDim2.fromScale(0.66, 0.64)
+				drinkBtn.BackgroundColor3 = Color3.fromRGB(48, 174, 90)
+				drinkBtn.Text = "DRINK"
+				drinkBtn.TextColor3 = COLORS.White
+				drinkBtn.Font = Enum.Font.GothamBlack
+				drinkBtn.TextScaled = true
+				drinkBtn.AutoButtonColor = false
+				drinkBtn.Parent = card
+				addShopCorner(drinkBtn, 12)
+				addShopStroke(drinkBtn, Color3.fromRGB(25, 108, 55), 3)
+				drinkBtn.Activated:Connect(function()
+					self:_consumePotion(itemId)
+				end)
+
+				autoBtn = Instance.new("TextButton")
+				autoBtn.Name = "AutoDrinkBtn"
+				autoBtn.Size = UDim2.fromScale(0.61, 0.11)
+				autoBtn.Position = UDim2.fromScale(0.34, 0.84)
+				autoBtn.BackgroundColor3 = Color3.fromRGB(92, 112, 145)
+				autoBtn.Text = "AUTO-DRINK: OFF"
+				autoBtn.TextColor3 = COLORS.White
+				autoBtn.Font = Enum.Font.GothamBold
+				autoBtn.TextScaled = true
+				autoBtn.AutoButtonColor = false
+				autoBtn.Parent = card
+				addShopCorner(autoBtn, 10)
+				autoBtn.Activated:Connect(function()
+					self:_setAutoDrinkSelection(itemId)
+				end)
+			end
+
 			self._shopCards[itemId] = {
 				button = buyBtn,
+				drinkButton = drinkBtn,
+				autoButton = autoBtn,
 				buttonStroke = buyStroke,
 				cardStroke = cardStroke,
 				status = statusLabel,
@@ -13787,7 +15564,16 @@ function UIController:_updateShopCardStates()
 	end
 
 	local purchases = type(self._shopState.purchases) == "table" and self._shopState.purchases or {}
-	local inventory = type(self._shopState.potionInventory) == "table" and self._shopState.potionInventory or {}
+	local potionReady = self._potionState.contractVersion == ShopData.PotionContractVersion
+	local inventory = potionReady and self._potionState.potionInventory or self._shopState.potionInventory
+	inventory = type(inventory) == "table" and inventory or {}
+	local activeBuffs = type(self._potionState.activeBuffs) == "table" and self._potionState.activeBuffs or {}
+	local consumeAvailability = type(self._potionState.consumeAvailability) == "table"
+		and self._potionState.consumeAvailability or {}
+	local selections = type(self._potionState.autoDrinkSelection) == "table"
+		and self._potionState.autoDrinkSelection or {}
+	local upgrades = type(self._potionState.upgrades) == "table" and self._potionState.upgrades or {}
+	local potionSlots = type(self._potionState.slots) == "table" and self._potionState.slots or {}
 	local ownedSlots = tonumber(purchases.extraEquipSlots) or 0
 	local maxSlots = tonumber(self._shopState.maxExtraEquipSlots)
 		or ShopData.Items.ExtraEquipSlot.maxPurchases
@@ -13796,11 +15582,39 @@ function UIController:_updateShopCardStates()
 		self._shopState.maxPotionInventory,
 		ShopData.MaxPotionInventory or 999
 	)
-	if maxPotionInventory == 0 then
-		maxPotionInventory = ShopData.MaxPotionInventory or 999
-	end
-	local contractReady = self._shopState.contractVersion == ShopData.ContractVersion
+	if maxPotionInventory == 0 then maxPotionInventory = ShopData.MaxPotionInventory or 999 end
+	local purchaseReady = self._shopState.contractVersion == ShopData.ContractVersion
 		and self._shopState.purchaseMode == ShopData.PurchaseMode
+	local now = os.time() + self._potionServerOffset
+
+	if self._potionControls.summary then
+		self._potionControls.summary.Text = potionReady
+			and ("ACTIVE SLOTS " .. tostring(potionSlots.active or 0) .. "/" .. tostring(potionSlots.maximum or 0)
+				.. " • DURATION x" .. tostring(upgrades.durationMultiplier or 1))
+			or "SYNCING AUTHORITATIVE POTION STATE..."
+	end
+	local offers = type(self._potionState.upgradeOffers) == "table" and self._potionState.upgradeOffers or {}
+	for _, upgradeId in ipairs({ "PotionSlot", "Duration", "AutoDrink" }) do
+		local button = self._potionControls[upgradeId]
+		if button then
+			local offer = offers[upgradeId]
+			local busy = self._potionActionInFlight ~= nil or self._shopPurchaseInFlight ~= nil
+			local enabled = potionReady and type(offer) == "table" and not busy
+			if upgradeId == "AutoDrink" and upgrades.autoDrink == true then
+				button.Text = "AUTO-DRINK\nOWNED"
+			elseif type(offer) == "table" and type(offer.cost) == "table" then
+				local label = upgradeId == "PotionSlot" and "SLOT +"
+					or upgradeId == "Duration" and "DURATION +" or "AUTO-DRINK"
+				button.Text = label .. "\n◆ " .. tostring(offer.cost.amount)
+			else
+				button.Text = potionReady and "MAXED" or "SYNCING..."
+			end
+			button.Active = enabled
+			button.Selectable = enabled
+			button.BackgroundColor3 = enabled and Color3.fromRGB(68, 145, 220)
+				or Color3.fromRGB(145, 155, 170)
+		end
+	end
 
 	for itemId, card in pairs(self._shopCards) do
 		local item = ShopData.Items[itemId]
@@ -13811,17 +15625,28 @@ function UIController:_updateShopCardStates()
 				or item.permanent and ownedSlots >= maxSlots
 			local isPurchasing = self._shopPurchaseInFlight ~= nil
 			local isAffordable = self._diamonds >= item.cost
-			local contractBlocked = isPotion and not contractReady
-			local enabled = not contractBlocked and not isMaxed and not isPurchasing and isAffordable
+			local contractBlocked = isPotion and not purchaseReady
+			local enabled = not contractBlocked and not isMaxed and not isPurchasing
+				and self._potionActionInFlight == nil and isAffordable
 
 			if isPotion then
-				if isMaxed then
-					card.status.Text = "OWNED " .. tostring(potionCount) .. "/" .. tostring(maxPotionInventory) .. " • MAXED"
-					card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
+				local buffState = activeBuffs[item.buffType]
+				local activeText = "INACTIVE"
+				if item.hatchCharges then
+					local charges = type(buffState) == "table" and tonumber(buffState.charges) or 0
+					if charges > 0 then activeText = tostring(math.floor(charges)) .. " SHINY CHARGES" end
 				else
-					card.status.Text = "OWNED " .. tostring(potionCount) .. "/" .. tostring(maxPotionInventory) .. " • STORED"
-					card.status.TextColor3 = Color3.fromRGB(20, 115, 48)
+					local source = type(buffState) == "table" and type(buffState.sources) == "table"
+						and buffState.sources[itemId] or nil
+					local expiresAt = type(source) == "table" and tonumber(source.expiresAt) or 0
+					local remaining = math.max(0, math.ceil(expiresAt - now))
+					if remaining > 0 then
+						activeText = string.format("ACTIVE %d:%02d", math.floor(remaining / 60), remaining % 60)
+					end
 				end
+				card.status.Text = "OWNED " .. tostring(potionCount) .. " • " .. activeText
+				card.status.TextColor3 = activeText == "INACTIVE"
+					and Color3.fromRGB(70, 90, 105) or Color3.fromRGB(20, 115, 48)
 			elseif isMaxed then
 				card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • MAXED"
 				card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
@@ -13831,7 +15656,7 @@ function UIController:_updateShopCardStates()
 			end
 
 			if self._shopPurchaseInFlight == itemId then
-				card.button.Text = "PURCHASING..."
+				card.button.Text = "BUYING..."
 			elseif contractBlocked then
 				card.button.Text = "SYNCING..."
 			elseif isMaxed then
@@ -13839,21 +15664,46 @@ function UIController:_updateShopCardStates()
 			elseif not isAffordable then
 				card.button.Text = "NEED ◆ " .. tostring(item.cost)
 			else
-				card.button.Text = "BUY • ◆ " .. tostring(item.cost)
+				card.button.Text = "BUY ◆ " .. tostring(item.cost)
 			end
-
 			card.button.Active = enabled
 			card.button.Selectable = enabled
-			if enabled then
-				card.button.BackgroundColor3 = card.color
-				card.button.TextColor3 = COLORS.White
-				card.buttonStroke.Color = card.color:Lerp(Color3.new(0, 0, 0), 0.35)
-				card.cardStroke.Transparency = 0
-			else
-				card.button.BackgroundColor3 = Color3.fromRGB(160, 166, 174)
-				card.button.TextColor3 = Color3.fromRGB(235, 238, 240)
-				card.buttonStroke.Color = Color3.fromRGB(112, 117, 124)
-				card.cardStroke.Transparency = isMaxed and 0.45 or 0.2
+			card.button.BackgroundColor3 = enabled and card.color or Color3.fromRGB(160, 166, 174)
+			card.button.TextColor3 = enabled and COLORS.White or Color3.fromRGB(235, 238, 240)
+			card.buttonStroke.Color = enabled and card.color:Lerp(Color3.new(0, 0, 0), 0.35)
+				or Color3.fromRGB(112, 117, 124)
+			card.cardStroke.Transparency = isMaxed and 0.45 or (enabled and 0 or 0.2)
+
+			if card.drinkButton then
+				local availability = consumeAvailability[itemId]
+				local serverAllowsDrink = type(availability) ~= "table"
+					or availability.canConsume ~= false
+				local drinkEnabled = potionReady and potionCount > 0 and serverAllowsDrink
+					and self._potionActionInFlight == nil and self._shopPurchaseInFlight == nil
+				if self._potionActionInFlight == ("drink:" .. itemId) then
+					card.drinkButton.Text = "DRINKING..."
+				elseif type(availability) == "table"
+					and availability.reason == "Maximum timed duration reached (30 days)" then
+					card.drinkButton.Text = "30D CAP"
+				else
+					card.drinkButton.Text = "DRINK"
+				end
+				card.drinkButton.Active = drinkEnabled
+				card.drinkButton.Selectable = drinkEnabled
+				card.drinkButton.BackgroundColor3 = drinkEnabled and Color3.fromRGB(48, 174, 90)
+					or Color3.fromRGB(145, 155, 150)
+			end
+			if card.autoButton then
+				local autoOwned = upgrades.autoDrink == true
+				local selected = selections[itemId] == true
+				local autoEnabled = potionReady and autoOwned and self._potionActionInFlight == nil
+				card.autoButton.Text = autoOwned
+					and ("AUTO-DRINK: " .. (selected and "ON" or "OFF"))
+					or "AUTO-DRINK: LOCKED"
+				card.autoButton.Active = autoEnabled
+				card.autoButton.Selectable = autoEnabled
+				card.autoButton.BackgroundColor3 = selected and Color3.fromRGB(45, 155, 95)
+					or Color3.fromRGB(92, 112, 145)
 			end
 		end
 	end
@@ -13918,8 +15768,116 @@ function UIController:_applyShopState(payload)
 		purchases = { extraEquipSlots = ownedSlots },
 		maxExtraEquipSlots = maxSlots,
 	}
-	self:_updateShopCardStates()
+	if type(payload.potionState) == "table" then
+		self:_applyPotionState(payload.potionState)
+	else
+		self:_updateShopCardStates()
+	end
 	self:_refreshCapacityUI()
+end
+
+function UIController:_applyPotionState(payload)
+	if type(payload) ~= "table" or payload.contractVersion ~= ShopData.PotionContractVersion then
+		return false
+	end
+	local revision = tonumber(payload.stateRevision)
+	if not revision or revision < 0 or revision % 1 ~= 0
+		or revision < self._potionStateRevision then
+		return false
+	end
+	self._potionStateRevision = revision
+	self._potionServerOffset = (tonumber(payload.serverTime) or os.time()) - os.time()
+	self._potionState = {
+		contractVersion = ShopData.PotionContractVersion,
+		serverTime = tonumber(payload.serverTime) or os.time(),
+		potionInventory = type(payload.potionInventory) == "table" and payload.potionInventory or {},
+		activeBuffs = type(payload.activeBuffs) == "table" and payload.activeBuffs or {},
+		consumeAvailability = type(payload.consumeAvailability) == "table"
+			and payload.consumeAvailability or {},
+		autoDrinkSelection = type(payload.autoDrinkSelection) == "table" and payload.autoDrinkSelection or {},
+		upgrades = type(payload.upgrades) == "table" and payload.upgrades or {},
+		slots = type(payload.slots) == "table" and payload.slots or {},
+		upgradeOffers = type(payload.upgradeOffers) == "table" and payload.upgradeOffers or {},
+		maxShinyCharges = tonumber(payload.maxShinyCharges) or 30,
+	}
+	-- Keep the purchase card count in sync with the independent consume event.
+	self._shopState.potionInventory = self._potionState.potionInventory
+	self:_updateShopCardStates()
+	return true
+end
+
+function UIController:_refreshPotionStateFromServer()
+	if not self._remotes then return end
+	local remote = self._remotes:FindFirstChild("GetPotionState")
+	if not remote then return end
+	task.spawn(function()
+		local ok, state = pcall(function() return remote:InvokeServer() end)
+		if ok and state then
+			self:_applyPotionState(state)
+		elseif not ok then
+			self:_setShopFeedback("Could not load potions: " .. tostring(state), COLORS.ButtonRed)
+		end
+	end)
+end
+
+function UIController:_runPotionAction(token, remoteName, request, successMessage)
+	if self._potionActionInFlight or not self._remotes then return end
+	local remote = self._remotes:FindFirstChild(remoteName)
+	if not remote then
+		self:_setShopFeedback("Potion service is unavailable.", COLORS.ButtonRed)
+		return
+	end
+	self._potionActionInFlight = token
+	self:_updateShopCardStates()
+	task.spawn(function()
+		local ok, success, message, state = pcall(function()
+			return remote:InvokeServer(request)
+		end)
+		self._potionActionInFlight = nil
+		if type(state) == "table" then self:_applyPotionState(state) end
+		if not ok then
+			self:_setShopFeedback("Potion action failed: " .. tostring(success), COLORS.ButtonRed)
+		elseif success then
+			if type(state) ~= "table" then self:_refreshPotionStateFromServer() end
+			self:_setShopFeedback(successMessage, Color3.fromRGB(35, 160, 62))
+		else
+			self:_setShopFeedback(tostring(message or "Potion action failed."), COLORS.ButtonRed)
+		end
+		self:_updateShopCardStates()
+	end)
+end
+
+function UIController:_consumePotion(itemId)
+	if self._potionState.contractVersion ~= ShopData.PotionContractVersion then
+		self:_setShopFeedback("Potion state is still syncing.", COLORS.ButtonRed)
+		return
+	end
+	local item = ShopData.Items[itemId]
+	if not item or item.itemType ~= "potion" then return end
+	self:_runPotionAction("drink:" .. itemId, "ConsumePotion", {
+		contractVersion = ShopData.PotionContractVersion,
+		action = "consumePotion",
+		potionId = itemId,
+	}, item.displayName .. " consumed.")
+end
+
+function UIController:_purchasePotionUpgrade(upgradeId)
+	self:_runPotionAction("upgrade:" .. upgradeId, "PurchasePotionUpgrade", {
+		contractVersion = ShopData.PotionContractVersion,
+		action = "purchasePotionUpgrade",
+		upgradeId = upgradeId,
+	}, "Potion upgrade purchased.")
+end
+
+function UIController:_setAutoDrinkSelection(itemId)
+	local selected = type(self._potionState.autoDrinkSelection) == "table"
+		and self._potionState.autoDrinkSelection[itemId] == true
+	self:_runPotionAction("auto:" .. itemId, "SetAutoDrinkSelection", {
+		contractVersion = ShopData.PotionContractVersion,
+		action = "setAutoDrinkSelection",
+		potionId = itemId,
+		selected = not selected,
+	}, "Auto-Drink selection updated.")
 end
 
 function UIController:_refreshShopStateFromServer()
@@ -14013,6 +15971,10 @@ end
 
 function UIController:updateShopBuffs(state)
 	self:_applyShopState(state)
+end
+
+function UIController:updatePotionState(state)
+	self:_applyPotionState(state)
 end
 
 --------------------------------------------------------------------------------
@@ -14867,6 +16829,7 @@ function UIController:_refreshScreenData(screenName)
 		end
 	elseif screenName == "ShopScreen" then
 		self:_refreshShopStateFromServer()
+		self:_refreshPotionStateFromServer()
 	end
 end
 
@@ -15038,7 +17001,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000078">
+				<Item class="ModuleScript" referent="RBX0000007A">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -16692,7 +18655,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000079">
+				<Item class="ModuleScript" referent="RBX0000007B">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -17607,7 +19570,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007A">
+				<Item class="ModuleScript" referent="RBX0000007C">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19210,7 +21173,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007B">
+				<Item class="ModuleScript" referent="RBX0000007D">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19392,7 +21355,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007C">
+				<Item class="ModuleScript" referent="RBX0000007E">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -20146,10 +22109,10 @@ local BalanceConfig = {
 	},
 
 	Potions = {
-		-- QOF-13 activates purchases into persistent inventory only. Consumption,
-		-- buff timers, charges, and potion upgrades remain owned by QOF-14.
+		-- QOF-13 keeps purchases inventory-only; QOF-14 activates a separate
+		-- server-authoritative consume/effect contract.
 		RuntimeEnabled = true,
-		ConsumeRuntimeEnabled = false,
+		ConsumeRuntimeEnabled = true,
 		Persistence = {
 			MaxInventoryPerPotion = 999,
 			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
@@ -20355,10 +22318,44 @@ function BalanceConfig.Validate()
 	for name, section in pairs(futureSections) do
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
+
+	-- QOF-15 ships the complete machine transaction definition while keeping its
+	-- public runtime dormant. These exact values are the sole authority used by
+	-- MachineService and must not drift toward the retained legacy conversion.
+	local machines = BalanceConfig.Machines
+	assert(machines.RuntimeEnabled == false, "Machines must remain publicly dormant in QOF-15")
+	assert(machines.MinInputs == 1 and machines.MaxInputs == 7, "machine input bounds must be 1..7")
+	local expectedMachineChances = { 0.13, 0.26, 0.39, 0.50, 0.63, 0.88, 1.00 }
+	for count, expectedChance in ipairs(expectedMachineChances) do
+		assert(
+			machines.SuccessChanceByInput[count] == expectedChance,
+			"machine chance changed for " .. tostring(count) .. " inputs"
+		)
+	end
+	for key in pairs(machines.SuccessChanceByInput) do
+		assert(type(key) == "number" and key % 1 == 0 and key >= 1 and key <= 7, "unknown machine chance key")
+	end
+	local expectedMachines = {
+		Gold = { id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
+		Rainbow = { id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
+	}
+	for machineType, expected in pairs(expectedMachines) do
+		local machine = machines[machineType]
+		assert(type(machine) == "table", machineType .. " machine definition is missing")
+		assert(machine.id == expected.id, machineType .. " machine ID changed")
+		assert(machine.zoneId == expected.zoneId, machineType .. " machine zone changed")
+		assert(machine.inputVariant == expected.inputVariant, machineType .. " input variant changed")
+		assert(machine.outputVariant == expected.outputVariant, machineType .. " output variant changed")
+		validateCost(machine.cost, machineType .. " machine")
+		assert(machine.cost.currency == "diamonds", machineType .. " machine must cost diamonds")
+		assert(machine.cost.amount == expected.amount, machineType .. " machine price changed")
+		assert(machine.cost.amount % 1 == 0, machineType .. " machine price must be an integer")
+	end
+	assert(machines.Gold.id ~= machines.Rainbow.id, "machine IDs must be unique")
 	assert(BalanceConfig.Potions.RuntimeEnabled == true, "Potion inventory purchases must be enabled in QOF-13")
 	assert(
-		BalanceConfig.Potions.ConsumeRuntimeEnabled == false,
-		"Potion consumption must remain disabled until QOF-14"
+		BalanceConfig.Potions.ConsumeRuntimeEnabled == true,
+		"Potion consumption must be enabled in QOF-14"
 	)
 	local core = BalanceConfig.CoreUpgrades
 	assert(core.RuntimeEnabled == true, "Core upgrades must be enabled")
@@ -22289,15 +24286,16 @@ return MasteryData
 						<string name="Name">ShopData</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	ShopData.lua - Shared presentation metadata for the QOF-13 shop.
-	Potion balance is sourced from the canonical BalanceConfig catalog. Buying a
-	potion stores one persistent inventory item; consumption remains QOF-14-owned.
+	ShopData.lua - Shared presentation metadata for the potion shop.
+	Potion purchase prices remain canonical in BalanceConfig; QOF-14 consumption
+	uses an independent authoritative state contract.
 ]]
 
 local BalanceConfig = require(script.Parent.BalanceConfig)
 
 local ShopData = {
 	ContractVersion = 2,
+	PotionContractVersion = 1,
 	PurchaseMode = "inventoryOnly",
 	MaxPotionInventory = BalanceConfig.Potions.Persistence.MaxInventoryPerPotion,
 }
@@ -26979,7 +28977,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX00000080">
+	<Item class="StarterGui" referent="RBX00000082">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -27014,7 +29012,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX00000081">
+	<Item class="SoundService" referent="RBX00000083">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

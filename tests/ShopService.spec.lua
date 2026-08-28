@@ -145,6 +145,7 @@ local function resetState()
 	ShopService._activeBuffs = {}
 	ShopService._purchaseLocks = {}
 	ShopService._transactionHook = nil
+	ShopService.setPotionService(nil)
 	ShopService.setWalkSpeedRefreshCallback(nil)
 	ShopService.init(dataService, currencyService)
 	ShopService.setEggService(eggService)
@@ -410,6 +411,27 @@ describe("ShopService retained shop contracts", function()
 		ShopService._activeBuffs[player.UserId] = { autoHatch = os.clock() + 600 }
 		expect(ShopService._processAutoHatch()):toBeFalse()
 		expect(hatchCalls):toBe(0)
+	end)
+
+	it("delegates potion state and effect reads while retaining purchase ownership", function()
+		resetState()
+		local potionReads = 0
+		local potionService = {}
+		function potionService.getMultiplier(_, buffType)
+			expect(buffType):toBe("luck")
+			return 5
+		end
+		function potionService.getState()
+			potionReads = potionReads + 1
+			return { contractVersion = 1, potionInventory = { LuckPotion = 2 } }
+		end
+		ShopService.setPotionService(potionService)
+		expect(ShopService.getShopMultiplier(player, "luck")):toBe(5)
+		local state = ShopService.getShopState(player)
+		expect(state.contractVersion):toBe(2)
+		expect(state.purchaseMode):toBe("inventoryOnly")
+		expect(state.potionState.contractVersion):toBe(1)
+		expect(potionReads):toBe(1)
 	end)
 
 	it("clears only transient locks and legacy buffs on player removal", function()

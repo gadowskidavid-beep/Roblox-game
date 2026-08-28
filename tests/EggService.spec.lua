@@ -80,6 +80,10 @@ local prepareThrows = false
 local commitError = nil
 local commitThrows = false
 local stationNear = true
+local shinyCharges = 0
+local shinyBoostCounts = {}
+local shinyCommits = 0
+local shinyRollbacks = 0
 
 local dataService = {}
 function dataService.getPlayerData()
@@ -113,8 +117,9 @@ function petService.canAddPets(_, count)
 	end
 	return true
 end
-function petService.prepareHatchBatch(_, eggType, count)
+function petService.prepareHatchBatch(_, eggType, count, options)
 	expect(eggType):toBe("BasicEgg")
+	table.insert(shinyBoostCounts, type(options) == "table" and options.shinyBoostCount or 0)
 	if prepareThrows then error("prepare exploded") end
 	if prepareError then return nil, prepareError end
 	local pets = {}
@@ -164,7 +169,33 @@ function upgradeTreeService.getEntitlements()
 	return { multiOpenCount = maximumBatchCount }
 end
 
+local potionService = {}
+local pendingShiny = {}
+function potionService.beginShinyChargeTransaction(_, count)
+	local reserved = math.min(shinyCharges, count)
+	if reserved <= 0 then return nil, 0 end
+	local handle = {}
+	pendingShiny[handle] = { old = shinyCharges }
+	shinyCharges = shinyCharges - reserved
+	return handle, reserved
+end
+function potionService.rollbackShinyChargeTransaction(handle)
+	local pendingState = pendingShiny[handle]
+	if not pendingState then return false end
+	pendingShiny[handle] = nil
+	shinyCharges = pendingState.old
+	shinyRollbacks = shinyRollbacks + 1
+	return true
+end
+function potionService.commitShinyChargeTransaction(handle)
+	if not pendingShiny[handle] then return false end
+	pendingShiny[handle] = nil
+	shinyCommits = shinyCommits + 1
+	return true
+end
+
 EggService.init(dataService, currencyService, petService, upgradeTreeService)
+EggService.setPotionService(potionService)
 EggService.setQuestService(questService)
 EggService._stationValidator = function()
 	return stationNear
@@ -190,6 +221,11 @@ local function resetState()
 	commitError = nil
 	commitThrows = false
 	stationNear = true
+	shinyCharges = 0
+	shinyBoostCounts = {}
+	shinyCommits = 0
+	shinyRollbacks = 0
+	pendingShiny = {}
 	startEvents = {}
 	resultEvents = {}
 	EggService._hatchLock[player.UserId] = nil
@@ -528,6 +564,58 @@ describe("EggService QOF-08 atomic batches", function()
 		expect(refundedCoins):toBe(500)
 		expect(profile.coins):toBe(550)
 		expect(#profile.pets):toBe(0)
+	end)
+
+	it("consumes Shiny charges only for successfully committed paid manual intent rolls", function()
+		resetState()
+		shinyCharges = 2
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", {
+			mode = "Fixed",
+			count = 3,
+		})
+		expect(err):toBeNil()
+		expect(result.count):toBe(3)
+		expect(shinyBoostCounts[1]):toBe(2)
+		expect(shinyCharges):toBe(0)
+		expect(shinyCommits):toBe(1)
+		expect(shinyRollbacks):toBe(0)
+	end)
+
+	it("restores exact Shiny charges when a paid manual hatch rolls back", function()
+		resetState()
+		shinyCharges = 4
+		EggService._transactionHook = function(stage)
+			if stage == "afterInventory" then error("injected") end
+		end
+		local result, err = EggService.purchaseFromIntent(player, "BasicEgg", {
+			mode = "Fixed",
+			count = 3,
+		})
+		expect(result):toBeNil()
+		expect(err):toBe("Hatch failed safely")
+		expect(shinyBoostCounts[1]):toBe(3)
+		expect(shinyCharges):toBe(4)
+		expect(shinyCommits):toBe(0)
+		expect(shinyRollbacks):toBe(1)
+	end)
+
+	it("does not consume Shiny charges for bypass or free hatches by default", function()
+		resetState()
+		shinyCharges = 5
+		local bypassResult, bypassError = EggService.purchaseAndHatch(player, "BasicEgg", 2, {
+			bypassStation = true,
+		})
+		expect(bypassError):toBeNil()
+		expect(bypassResult.count):toBe(2)
+		expect(shinyBoostCounts[1]):toBe(0)
+		expect(shinyCharges):toBe(5)
+
+		local freeResult, freeError = EggService.hatchFree(player, "BasicEgg")
+		expect(freeError):toBeNil()
+		expect(freeResult.count):toBe(1)
+		expect(shinyBoostCounts[2]):toBe(0)
+		expect(shinyCharges):toBe(5)
+		expect(shinyCommits):toBe(0)
 	end)
 
 	it("cleans transient hatch locks without deleting the persistent preference", function()

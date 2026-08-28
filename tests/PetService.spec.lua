@@ -420,6 +420,36 @@ describe("PetService QOF-08 prepared batch boundary", function()
 		expect(profile.discoveredPets.Buddy):toBeNil()
 	end)
 
+	it("boosts exactly the first reserved Shiny rolls without changing other variants", function()
+		freshProfile()
+		questLuckMultiplier = 0
+		masteryLuckMultiplier = 0
+		shopLuckMultiplier = 1
+		treeGeneralLuckMultiplier = 1
+		treeDirectVariantMultipliers = { Golden = 1, Rainbow = 1, Shiny = 1 }
+		local rolls = {
+			0, 0.5, 0.0005,
+			0, 0.5, 0.0005,
+			0, 0.5, 0.0005,
+		}
+		local index = 0
+		local originalRandom = math.random
+		math.random = function()
+			index = index + 1
+			return rolls[index]
+		end
+		local prepared, prepareError = PetService.prepareHatchBatch(player, "BasicEgg", 3, {
+			shinyBoostCount = 2,
+		})
+		math.random = originalRandom
+		expect(prepareError):toBeNil()
+		expect(prepared.pets[1].variant):toBe("Normal")
+		expect(prepared.pets[1].shiny):toBeTrue()
+		expect(prepared.pets[2].shiny):toBeTrue()
+		expect(prepared.pets[3].shiny):toBeFalse()
+		expect(#profile.pets):toBe(0)
+	end)
+
 	it("rejects a whole batch when total capacity is unavailable", function()
 		freshProfile()
 		for index = 1, 99 do

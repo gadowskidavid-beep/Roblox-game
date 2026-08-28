@@ -226,7 +226,7 @@ local function copyBooleanMap(input)
 	return output
 end
 
-local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered)
+local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered, shinyBoosted)
 	local petId = weightedRandomPet(
 		eggDef.petPool,
 		luckMultiplier,
@@ -237,11 +237,21 @@ local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, disco
 		return nil, "Invalid pet in pool"
 	end
 
+	local directVariantMultipliers = hatchEntitlements.directVariantMultipliers
+	if shinyBoosted == true then
+		directVariantMultipliers = {
+			Golden = directVariantMultipliers.Golden,
+			Rainbow = directVariantMultipliers.Rainbow,
+			Shiny = (isFiniteNumber(directVariantMultipliers.Shiny)
+				and math.max(1, directVariantMultipliers.Shiny) or 1)
+				* BalanceConfig.Potions.Catalog.ShinyPotion.multiplier,
+		}
+	end
 	local baseVariant, isShiny = PetHatchMath.rollOutcome(
 		math.random(),
 		math.random(),
 		luckMultiplier,
-		hatchEntitlements.directVariantMultipliers
+		directVariantMultipliers
 	)
 	local presentation = PetVariantPresentation.resolve({
 		petId = petId,
@@ -270,7 +280,7 @@ end
 -- Prepare every random outcome without mutating inventory, discovery, currency,
 -- quests, or replication. EggService can therefore reject or roll back a whole
 -- batch instead of exposing partially completed hatches.
-function PetService.prepareHatchBatch(player, eggType, count)
+function PetService.prepareHatchBatch(player, eggType, count, options)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
@@ -296,15 +306,19 @@ function PetService.prepareHatchBatch(player, eggType, count)
 
 	local hatchEntitlements = PetService.getHatchEntitlements(player)
 	local luckMultiplier = PetService.getHatchLuckMultiplier(player, hatchEntitlements)
+	local shinyBoostCount = type(options) == "table" and options.shinyBoostCount or 0
+	if not isFiniteNumber(shinyBoostCount) or shinyBoostCount < 0 then shinyBoostCount = 0 end
+	shinyBoostCount = math.min(count, math.floor(shinyBoostCount))
 	local discovered = copyBooleanMap(data.discoveredPets)
 	local pets = {}
 	local newDiscoveryKeys = {}
-	for _ = 1, count do
+	for index = 1, count do
 		local pet, discoveryKeyOrError = buildPreparedPet(
 			eggDef,
 			luckMultiplier,
 			hatchEntitlements,
-			discovered
+			discovered,
+			index <= shinyBoostCount
 		)
 		if not pet then
 			return nil, discoveryKeyOrError
@@ -701,6 +715,297 @@ function PetService.deletePets(player, petInstanceIds)
 
 	fireInventoryUpdate(player, data.pets)
 	return true, nil
+end
+
+-- Prepare a canonical variant conversion without mutating inventory, discovery,
+-- currency, quests, or replication. MachineService owns payment and chance.
+function PetService.prepareVariantConversion(player, petInstanceIds, inputVariant, outputVariant)
+	if not player or type(petInstanceIds) ~= "table" then
+		return nil, "Invalid parameters"
+	end
+	-- Reject before any iteration, length, or indexing so caller-controlled
+	-- metamethods cannot execute inside this admission path.
+	if getmetatable(petInstanceIds) ~= nil then
+		return nil, "Pet IDs must be a plain dense list"
+	end
+	if (inputVariant ~= "Normal" and inputVariant ~= "Golden" and inputVariant ~= "Rainbow")
+		or (outputVariant ~= "Normal" and outputVariant ~= "Golden" and outputVariant ~= "Rainbow")
+		or inputVariant == outputVariant then
+		return nil, "Invalid variant conversion"
+	end
+
+	local count = 0
+	for key in next, petInstanceIds do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+			return nil, "Pet IDs must be a dense list"
+		end
+		count = count + 1
+	end
+	if count < BalanceConfig.Machines.MinInputs or count > BalanceConfig.Machines.MaxInputs
+		or rawlen(petInstanceIds) ~= count then
+		return nil, "Pet IDs must be a dense list of 1 to 7 pets"
+	end
+
+	local validatedPetIds = {}
+	for index = 1, count do
+		validatedPetIds[index] = rawget(petInstanceIds, index)
+	end
+
+	local data = PetService._dataService and PetService._dataService.getPlayerData(player)
+	if type(data) ~= "table" or type(data.pets) ~= "table" then
+		return nil, "No player data"
+	end
+	local petsTable = data.pets
+	local petById = {}
+	for _, pet in ipairs(petsTable) do
+		if type(pet) == "table" and type(pet.id) == "string" then
+			petById[pet.id] = pet
+		end
+	end
+	local equippedById = {}
+	if type(data.equippedPets) == "table" then
+		for _, equippedId in ipairs(data.equippedPets) do
+			equippedById[equippedId] = true
+		end
+	end
+
+	local selectedIds = {}
+	local selectedPets = {}
+	local selectedSnapshots = {}
+	local speciesId = nil
+	local anyShiny = false
+	for index = 1, count do
+		local instanceId = validatedPetIds[index]
+		if type(instanceId) ~= "string" or instanceId == "" then
+			return nil, "Invalid pet ID in list"
+		end
+		if selectedIds[instanceId] then
+			return nil, "Duplicate pet ID in list"
+		end
+		selectedIds[instanceId] = true
+		local pet = petById[instanceId]
+		if not pet then
+			return nil, "Pet not found in inventory: " .. tostring(instanceId)
+		end
+		if pet.favorite == true then
+			return nil, "Favorited pets cannot be converted"
+		end
+		if pet.equipped == true or equippedById[instanceId] then
+			return nil, "Equipped pets cannot be converted"
+		end
+		local canonicalVariant = PetVariantPresentation.normalizeBaseVariant(pet)
+		if canonicalVariant ~= inputVariant then
+			return nil, "Pet has the wrong source variant"
+		end
+		if type(pet.petId) ~= "string" or not PetData.Pets[pet.petId] then
+			return nil, "Invalid pet species"
+		end
+		if speciesId == nil then
+			speciesId = pet.petId
+		elseif speciesId ~= pet.petId then
+			return nil, "All pets must be the same species"
+		end
+		anyShiny = anyShiny or pet.shiny == true
+		selectedPets[index] = pet
+		selectedSnapshots[index] = {
+			id = pet.id,
+			petId = pet.petId,
+			variant = canonicalVariant,
+			shiny = pet.shiny == true,
+		}
+	end
+
+	local projectedCount = #petsTable - count + 1
+	if projectedCount > PetService.getMaxInventory(player) then
+		return nil, "Pet inventory has no room for the conversion result"
+	end
+
+	local definition = PetData.Pets[speciesId]
+	local presentation = PetVariantPresentation.resolve({
+		petId = speciesId,
+		variant = outputVariant,
+		shiny = anyShiny,
+	})
+	local outputPet = {
+		id = HttpService:GenerateGUID(false),
+		petId = speciesId,
+		name = presentation.displayPetName,
+		rarity = definition.rarity,
+		damage = PetVariantMath.getBaseDamage(speciesId, outputVariant, anyShiny),
+		variant = outputVariant,
+		shiny = anyShiny,
+		golden = outputVariant == "Golden",
+		favorite = false,
+		equipped = false,
+	}
+	local discoveryKey = PetService.getLegacyDiscoveryKey(speciesId, outputVariant, anyShiny)
+	local originalPets = {}
+	for index, pet in ipairs(petsTable) do
+		originalPets[index] = pet
+	end
+	local discoveryTable = type(data.discoveredPets) == "table" and data.discoveredPets or nil
+	local discoverySnapshot = {}
+	if discoveryTable then
+		for key, value in pairs(discoveryTable) do
+			discoverySnapshot[key] = value
+		end
+	end
+
+	return {
+		player = player,
+		data = data,
+		petsTable = petsTable,
+		originalPets = originalPets,
+		selectedIds = selectedIds,
+		selectedPets = selectedPets,
+		selectedSnapshots = selectedSnapshots,
+		inputVariant = inputVariant,
+		outputVariant = outputVariant,
+		outputPet = outputPet,
+		discoveryKey = discoveryKey,
+		discoveryTable = discoveryTable,
+		discoverySnapshot = discoverySnapshot,
+		discoveryMutationStarted = false,
+		mutationStarted = false,
+		committed = false,
+		transactionCommitted = false,
+		isNewDiscovery = false,
+	}, nil
+end
+
+local function discoveryMatchesPreparedSnapshot(data, prepared)
+	if data.discoveredPets ~= prepared.discoveryTable then
+		return false
+	end
+	if prepared.discoveryTable == nil then
+		return true
+	end
+	for key, value in pairs(prepared.discoveryTable) do
+		if prepared.discoverySnapshot[key] ~= value then
+			return false
+		end
+	end
+	for key, value in pairs(prepared.discoverySnapshot) do
+		if prepared.discoveryTable[key] ~= value then
+			return false
+		end
+	end
+	return true
+end
+
+function PetService.commitVariantConversion(player, prepared, succeeded)
+	if type(prepared) ~= "table" or prepared.player ~= player or prepared.committed
+		or type(succeeded) ~= "boolean" then
+		return false, "Invalid prepared conversion"
+	end
+	local data = PetService._dataService.getPlayerData(player)
+	if data ~= prepared.data or data.pets ~= prepared.petsTable
+		or #data.pets ~= #prepared.originalPets then
+		return false, "Inventory changed during conversion"
+	end
+	if not discoveryMatchesPreparedSnapshot(data, prepared) then
+		return false, "Discovery changed during conversion"
+	end
+	for index, pet in ipairs(prepared.originalPets) do
+		if data.pets[index] ~= pet then
+			return false, "Inventory changed during conversion"
+		end
+	end
+	local equippedById = {}
+	if type(data.equippedPets) == "table" then
+		for _, equippedId in ipairs(data.equippedPets) do
+			equippedById[equippedId] = true
+		end
+	end
+	for index, pet in ipairs(prepared.selectedPets) do
+		local snapshot = prepared.selectedSnapshots[index]
+		if pet.id ~= snapshot.id or pet.petId ~= snapshot.petId
+			or PetVariantPresentation.normalizeBaseVariant(pet) ~= snapshot.variant
+			or (pet.shiny == true) ~= snapshot.shiny
+			or pet.favorite == true or pet.equipped == true or equippedById[pet.id] then
+			return false, "Selected pet changed during conversion"
+		end
+	end
+	if succeeded and #data.pets - #prepared.selectedPets + 1 > PetService.getMaxInventory(player) then
+		return false, "Pet inventory has no room for the conversion result"
+	end
+
+	prepared.mutationStarted = true
+	local writeIndex = 1
+	for _, pet in ipairs(prepared.originalPets) do
+		if not prepared.selectedIds[pet.id] then
+			data.pets[writeIndex] = pet
+			writeIndex = writeIndex + 1
+		end
+	end
+	for index = #data.pets, writeIndex, -1 do
+		data.pets[index] = nil
+	end
+
+	if succeeded then
+		prepared.isNewDiscovery = not prepared.discoveryTable
+			or prepared.discoveryTable[prepared.discoveryKey] ~= true
+		local discoveryWriteTable = data.discoveredPets
+		local createdDiscoveryTable = false
+		if type(discoveryWriteTable) ~= "table" then
+			discoveryWriteTable = {}
+			data.discoveredPets = discoveryWriteTable
+			createdDiscoveryTable = true
+		end
+		prepared.discoveryWriteTable = discoveryWriteTable
+		prepared.discoveryPreviousValue = rawget(discoveryWriteTable, prepared.discoveryKey)
+		prepared.discoveryPreviousPresent = prepared.discoveryPreviousValue ~= nil
+		prepared.discoveryWrittenValue = true
+		prepared.discoveryCreatedTable = createdDiscoveryTable
+		prepared.discoveryMutationStarted = true
+		discoveryWriteTable[prepared.discoveryKey] = prepared.discoveryWrittenValue
+		table.insert(data.pets, prepared.outputPet)
+	end
+	prepared.committed = true
+	return true
+end
+
+function PetService.rollbackVariantConversion(prepared)
+	if type(prepared) ~= "table" or not prepared.mutationStarted
+		or type(prepared.data) ~= "table" or type(prepared.petsTable) ~= "table" then
+		return true
+	end
+	local petsTable = prepared.petsTable
+	prepared.data.pets = petsTable
+	for index = #petsTable, 1, -1 do
+		petsTable[index] = nil
+	end
+	for index, pet in ipairs(prepared.originalPets) do
+		petsTable[index] = pet
+	end
+
+	-- Roll back only the discovery key this transaction wrote. Concurrent keys
+	-- or replacement tables belong to other work and must remain untouched.
+	if prepared.discoveryMutationStarted
+		and prepared.data.discoveredPets == prepared.discoveryWriteTable
+		and rawget(prepared.discoveryWriteTable, prepared.discoveryKey)
+			== prepared.discoveryWrittenValue then
+		if prepared.discoveryPreviousPresent then
+			prepared.discoveryWriteTable[prepared.discoveryKey] = prepared.discoveryPreviousValue
+		else
+			prepared.discoveryWriteTable[prepared.discoveryKey] = nil
+		end
+		if prepared.discoveryCreatedTable
+			and prepared.data.discoveredPets == prepared.discoveryWriteTable
+			and next(prepared.discoveryWriteTable) == nil then
+			prepared.data.discoveredPets = nil
+		end
+	end
+	prepared.discoveryMutationStarted = false
+	prepared.discoveryWriteTable = nil
+	prepared.discoveryPreviousValue = nil
+	prepared.discoveryPreviousPresent = nil
+	prepared.discoveryWrittenValue = nil
+	prepared.discoveryCreatedTable = nil
+	prepared.mutationStarted = false
+	prepared.committed = false
+	prepared.isNewDiscovery = false
+	return true
 end
 
 -- Get player's pet inventory

@@ -12,12 +12,14 @@ local DataService = require(script.Parent.Services.DataService)
 local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
+local MachineService = require(script.Parent.Services.MachineService)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local PotionService = require(script.Parent.Services.PotionService)
 local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
 local MovementService = require(script.Parent.Services.MovementService)
 local PickupService = require(script.Parent.Services.PickupService)
@@ -111,6 +113,7 @@ local remoteEvents = {
 	"QuestProgressUpdated",
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
+	"PotionStateUpdated",
 	"UpgradeTreeUpdated",
 }
 
@@ -146,6 +149,10 @@ local remoteFunctions = {
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
 	"GetShopBuffs",
+	"GetPotionState",
+	"ConsumePotion",
+	"PurchasePotionUpgrade",
+	"SetAutoDrinkSelection",
 	"PurchaseTreeUpgrade",
 	"GetUpgradeTreeState",
 }
@@ -170,6 +177,8 @@ CurrencyService._upgradeService = UpgradeService
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
+PotionService.init(DataService, CurrencyService)
+ShopService.setPotionService(PotionService)
 UpgradeTreeService.init(DataService, CurrencyService)
 PickupService.init(DataService, CurrencyService, QuestService, MasteryService, UpgradeTreeService)
 
@@ -181,8 +190,13 @@ PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
+MachineService.init(DataService, CurrencyService, PetService)
+MachineService.setQuestService(QuestService)
+-- QOF-15 intentionally supplies no activation validator: with the runtime gate
+-- disabled and no world authority injected, every machine attempt fails closed.
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
+EggService.setPotionService(PotionService)
 ShopService.setEggService(EggService)
 
 -- World generation should not prevent remotes, player data, and the GUI from
@@ -210,6 +224,8 @@ DataService.bindToClose(PickupService.settleAllPlayers)
 -- QOF-12 centralizes every WalkSpeed source and owns character reconciliation.
 MovementService.init(QuestService, MasteryService, ShopService, UpgradeTreeService)
 ShopService.setWalkSpeedRefreshCallback(MovementService.refresh)
+PotionService.setMovementRefreshCallback(MovementService.refresh)
+PotionService.start()
 
 ----------------------------------------------
 -- Connect RemoteFunction handlers (server-authoritative validation)
@@ -596,7 +612,8 @@ getRemoteFunction("PurchaseShopItem").OnServerInvoke = function(player, request)
 	return ShopService.purchaseItem(player, request)
 end
 
--- GetShopBuffs is a legacy remote name; it now returns the full shop state.
+-- GetShopBuffs is a legacy remote name; it now returns the purchase state and
+-- a delegated potion-state snapshot for rolling clients.
 getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 	if not player or not player:IsA("Player") then
 		return nil
@@ -605,6 +622,39 @@ getRemoteFunction("GetShopBuffs").OnServerInvoke = function(player)
 		return nil
 	end
 	return ShopService.getShopState(player)
+end
+
+getRemoteFunction("GetPotionState").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then return nil end
+	if not canCall(player, "GetPotionState", 0.2) then return nil end
+	return PotionService.getState(player)
+end
+
+getRemoteFunction("ConsumePotion").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid consume request" end
+	if not canCall(player, "ConsumePotion", 0.2) then
+		return false, "Please wait before drinking again", PotionService.getState(player)
+	end
+	return PotionService.consume(player, request)
+end
+
+getRemoteFunction("PurchasePotionUpgrade").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid upgrade request" end
+	if not canCall(player, "PurchasePotionUpgrade", 0.5) then
+		return false, "Please wait before purchasing again", PotionService.getState(player)
+	end
+	return PotionService.purchaseUpgrade(player, request)
+end
+
+getRemoteFunction("SetAutoDrinkSelection").OnServerInvoke = function(player, request)
+	if not player or not player:IsA("Player") then return false, "Invalid player" end
+	if type(request) ~= "table" then return false, "Invalid Auto-Drink request" end
+	if not canCall(player, "SetAutoDrinkSelection", 0.15) then
+		return false, "Please wait before changing Auto-Drink", PotionService.getState(player)
+	end
+	return PotionService.setAutoDrinkSelection(player, request)
 end
 
 ----------------------------------------------
@@ -635,7 +685,9 @@ Players.PlayerAdded:Connect(function(player)
 	-- Record join time for playtime tracking
 	_sessionJoinTimes[player.UserId] = os.time()
 
-	-- Bind current and future characters after the authoritative profile is loaded.
+	-- Reconcile persisted absolute potion timers and online-only Auto-Drink before
+	-- binding movement so the first character speed uses authoritative state.
+	PotionService.onPlayerAdded(player)
 	MovementService.bindPlayer(player)
 
 	-- Create leaderstats folder for Roblox built-in leaderboard
@@ -755,6 +807,13 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
+	-- Cleanup QOF-15 machine locks before profile persistence. No activation
+	-- validator, remote, station, prompt, event, or client UI is wired yet.
+	MachineService.cleanup(player)
+
+	-- Cleanup QOF-14 potion locks/reservations before profile persistence.
+	PotionService.onPlayerRemoving(player)
+
 	-- Cleanup ShopService transient locks and legacy buff compatibility state.
 	ShopService.onPlayerRemoving(player)
 
@@ -776,6 +835,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 			return
 		end
 		_sessionJoinTimes[player.UserId] = os.time()
+		PotionService.onPlayerAdded(player)
 		MovementService.bindPlayer(player)
 
 		-- Create leaderstats for already-connected players

@@ -25,6 +25,7 @@ local MAX_POTION_INVENTORY = BalanceConfig.Potions.Persistence.MaxInventoryPerPo
 ShopService._dataService = nil
 ShopService._currencyService = nil
 ShopService._eggService = nil
+ShopService._potionService = nil
 ShopService._walkSpeedRefresh = nil
 
 -- Legacy read-only timed buff compatibility state.
@@ -130,6 +131,10 @@ function ShopService.init(dataService, currencyService)
 	end
 end
 
+function ShopService.setPotionService(potionService)
+	ShopService._potionService = potionService
+end
+
 function ShopService.setEggService(eggService)
 	ShopService._eggService = eggService
 end
@@ -170,6 +175,10 @@ local function getMaxExtraEquipSlots()
 end
 
 function ShopService.getActiveBuffs(player)
+	if ShopService._potionService then
+		local state = ShopService._potionService.getState(player)
+		return state and state.activeBuffs or {}
+	end
 	if not player then
 		return {}
 	end
@@ -233,6 +242,7 @@ function ShopService.getShopState(player)
 		purchases = { extraEquipSlots = extraEquipSlots },
 		maxExtraEquipSlots = getMaxExtraEquipSlots(),
 		buffs = snapshotActiveBuffs(player),
+		potionState = ShopService._potionService and ShopService._potionService.getState(player) or nil,
 	}
 end
 
@@ -431,12 +441,24 @@ function ShopService.purchaseItem(player, request)
 		return false, message
 	end
 
+	if purchaseKind == "potion" and ShopService._potionService then
+		local notifyOk, potionState = pcall(
+			ShopService._potionService.notifyInventoryChanged,
+			player
+		)
+		if notifyOk and type(potionState) == "table" then
+			state.potionState = potionState
+		end
+	end
 	fireShopUpdate(player, state)
 	return true, nil, state
 end
 
 -- Legacy multipliers remain neutral unless preexisting transient state exists.
 function ShopService.getShopMultiplier(player, buffType)
+	if ShopService._potionService then
+		return ShopService._potionService.getMultiplier(player, buffType)
+	end
 	if not player or not buffType then
 		return 1
 	end
