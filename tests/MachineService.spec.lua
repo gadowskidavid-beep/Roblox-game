@@ -82,14 +82,18 @@ end
 rawset(_G, "require", serviceRequire)
 local PetService = originalRequire("src/ServerScriptService/Services/PetService")
 local MachineService = originalRequire("src/ServerScriptService/Services/MachineService")
+local CurrencyService = originalRequire("src/ServerScriptService/Services/CurrencyService")
+local ProfileTransactionService = originalRequire("src/ServerScriptService/Services/ProfileTransactionService")
 rawset(_G, "require", originalRequire)
 
 -- PetService may already be cached by its earlier spec with that spec's private
 -- ReplicatedStorage mock. Count the public replication boundary directly here.
 local inventoryShouldError = false
+local transactionEventSink = nil
 PetService.replicateInventory = function()
 	if inventoryShouldError then error("injected inventory notification failure") end
 	inventoryEvents = inventoryEvents + 1
+	if transactionEventSink then table.insert(transactionEventSink, "inventoryNotification") end
 end
 
 local player = { Name = "MachineTester", UserId = 501 }
@@ -107,6 +111,12 @@ local questCalls = {}
 local dataService = {}
 function dataService.getPlayerData()
 	return profile
+end
+function dataService.isMutationAdmissionOpen()
+	return true
+end
+function dataService.isProfileSaveInProgress()
+	return false
 end
 
 local currencyService = {}
@@ -142,6 +152,7 @@ function currencyService.commitSpendTransaction(transaction)
 	pendingTransactions[transaction] = nil
 	currencyEvents = currencyEvents + 1
 	table.insert(transactionEvents, "currencyCommit")
+	if transactionEventSink then table.insert(transactionEventSink, "currencyPONR") end
 	return true
 end
 function currencyService.rollbackSpendTransaction(transaction)
@@ -198,6 +209,9 @@ local function resetState(pets, zones)
 		questStats = { goldenPetsConverted = 0 },
 	}
 	pendingTransactions = {}
+	lastSpendSettler = nil
+	transactionEvents = {}
+	transactionEventSink = nil
 	currencyEvents = 0
 	inventoryEvents = 0
 	rollbackCalls = 0
@@ -819,7 +833,7 @@ describe("MachineService QOF-17 adversarial transaction boundaries", function()
 		expect(metamethodCalls):toBe(0)
 	end)
 
-	it("rejects discovery content divergence without clobbering new progress", function()
+	it("preserves unrelated discovery progress added before post-RNG outcome staging", function()
 		resetState()
 		local inventory = profile.pets
 		local originalPet = inventory[1]
@@ -829,18 +843,19 @@ describe("MachineService QOF-17 adversarial transaction boundaries", function()
 			end
 		end)
 		local result, message = attempt("GoldMachine", { "pet-1" })
-		expect(result):toBeNil()
-		expect(message):toBe("Discovery changed during conversion")
-		expect(profile.diamonds):toBe(10000)
+		expect(message):toBeNil()
+		expect(result.success):toBeTrue()
+		expect(profile.diamonds):toBe(9250)
 		expect(profile.pets):toBe(inventory)
-		expect(profile.pets[1]):toBe(originalPet)
+		expect(profile.pets[1] == originalPet):toBeFalse()
 		expect(profile.discoveredPets.External):toBeTrue()
-		expect(rollbackCalls):toBe(1)
-		expect(currencyEvents):toBe(0)
-		expect(inventoryEvents):toBe(0)
+		expect(profile.discoveredPets["Buddy|Golden"]):toBeTrue()
+		expect(rollbackCalls):toBe(0)
+		expect(currencyEvents):toBe(1)
+		expect(inventoryEvents):toBe(1)
 	end)
 
-	it("rejects discovery identity divergence and preserves the replacement", function()
+	it("uses a replacement discovery table installed before outcome staging", function()
 		resetState()
 		local replacement = { External = true }
 		MachineService.setTransactionHook(function(stage)
@@ -849,12 +864,14 @@ describe("MachineService QOF-17 adversarial transaction boundaries", function()
 			end
 		end)
 		local result, message = attempt("GoldMachine", { "pet-1" })
-		expect(result):toBeNil()
-		expect(message):toBe("Discovery changed during conversion")
-		expect(profile.diamonds):toBe(10000)
+		expect(message):toBeNil()
+		expect(result.success):toBeTrue()
+		expect(profile.diamonds):toBe(9250)
 		expect(profile.discoveredPets):toBe(replacement)
 		expect(profile.discoveredPets.External):toBeTrue()
+		expect(profile.discoveredPets["Buddy|Golden"]):toBeTrue()
 		expect(#profile.pets):toBe(1)
+		expect(profile.pets[1].variant):toBe("Golden")
 	end)
 
 	it("rolls back only its discovery key and remains idempotent", function()
@@ -969,5 +986,308 @@ describe("MachineService QOF-19 enchant snapshot and consumption", function()
 		expect(profile.pets[1]):toBe(enchanted)
 		expect(profile.pets[1].enchantId):toBe("AgileIII")
 		expect(profile.diamonds):toBe(10000)
+	end)
+end)
+
+
+
+describe("MachineService QOF-27 staged-input transaction", function()
+	local function pendingSpendCount()
+		local count = 0
+		for _ in pairs(pendingTransactions) do count = count + 1 end
+		return count
+	end
+
+	it("removes every selected input before RNG while preserving keepers and silent ownership", function()
+		local keepOne = makePet("keep-1", "Buddy", "Normal", false)
+		local removeOne = makePet("remove-1", "Buddy", "Normal", false)
+		local keepTwo = makePet("keep-2", "Buddy", "Normal", false)
+		local removeTwo = makePet("remove-2", "Buddy", "Normal", true)
+		local keepThree = makePet("keep-3", "Buddy", "Normal", false)
+		resetState({ keepOne, removeOne, keepTwo, removeTwo, keepThree })
+		local inventory = profile.pets
+		local preparedAtRng = nil
+		MachineService.setTransactionHook(function(stage, context)
+			if stage == "afterInputStaging" then preparedAtRng = context.prepared end
+		end)
+		MachineService.setRandomSource(function()
+			expect(preparedAtRng.phase):toBe("INPUTS_STAGED")
+			expect(profile.pets):toBe(inventory)
+			expect(profile.pets):toEqual({ keepOne, keepTwo, keepThree })
+			expect(profile.pets[1]):toBe(keepOne)
+			expect(profile.pets[2]):toBe(keepTwo)
+			expect(profile.pets[3]):toBe(keepThree)
+			expect(profile.diamonds):toBe(10000)
+			expect(profile.discoveredPets):toEqual({})
+			expect(preparedAtRng.outputPet):toBeNil()
+			expect(preparedAtRng.discoveryKeys):toBeNil()
+			expect(pendingSpendCount()):toBe(1)
+			local active = MachineService._activeTransactions[player.UserId]
+			expect(active ~= nil):toBeTrue()
+			expect(PetService.isInventoryMutationCurrent(player, active.inventoryLease)):toBeTrue()
+			return 1
+		end)
+		local result, message = attempt("GoldMachine", { "remove-1", "remove-2" })
+		expect(message):toBeNil()
+		expect(result.success):toBeFalse()
+		expect(profile.pets):toEqual({ keepOne, keepTwo, keepThree })
+		expect(profile.diamonds):toBe(9250)
+	end)
+
+	it("uses stage then RNG then optional output and Dex then one PONR then notifications", function()
+		local cases = {
+			{ machine = "GoldMachine", variant = "Normal", roll = 0, success = true },
+			{ machine = "GoldMachine", variant = "Normal", roll = 1, success = false },
+			{ machine = "RainbowMachine", variant = "Golden", roll = 0, success = true },
+			{ machine = "RainbowMachine", variant = "Golden", roll = 1, success = false },
+		}
+		for _, case in ipairs(cases) do
+			local pets, ids = idsFor(2, case.variant)
+			resetState(pets)
+			local events = {}
+			transactionEventSink = events
+			MachineService.setTransactionHook(function(stage)
+				if stage == "afterInputStaging" then table.insert(events, "stageInputs") end
+				if stage == "afterNotifications" then table.insert(events, "notifications") end
+			end)
+			PetService.setVariantConversionHook(function(stage)
+				if stage == "afterOutputInsertion" then table.insert(events, "output") end
+				if stage == "afterAllDiscoveryWrites" then table.insert(events, "dex") end
+			end)
+			MachineService.setRandomSource(function()
+				table.insert(events, "rng")
+				return case.roll
+			end)
+			local result, message = attempt(case.machine, ids)
+			expect(message):toBeNil()
+			expect(result.success):toBe(case.success)
+			if case.success then
+				expect(events):toEqual({
+					"stageInputs", "rng", "output", "dex",
+					"currencyPONR", "inventoryNotification", "notifications",
+				})
+			else
+				expect(events):toEqual({
+					"stageInputs", "rng", "currencyPONR",
+					"inventoryNotification", "notifications",
+				})
+				expect(result.outputPet):toBeNil()
+				expect(profile.discoveredPets):toEqual({})
+			end
+		end
+	end)
+
+	it("restores exact non-adjacent identities for every invalid RNG result", function()
+		local invalidRolls = {
+			function() error("rng exploded") end,
+			function() return nil end,
+			function() return "0" end,
+			function() return 0 / 0 end,
+			function() return math.huge end,
+			function() return -math.huge end,
+			function() return -0.000001 end,
+			function() return 1.000001 end,
+		}
+		for _, invalidRoll in ipairs(invalidRolls) do
+			local keepOne = makePet("keep-1", "Buddy", "Normal", false)
+			local removeOne = makePet("remove-1", "Buddy", "Normal", false)
+			local keepTwo = makePet("keep-2", "Buddy", "Normal", false)
+			local removeTwo = makePet("remove-2", "Buddy", "Normal", true)
+			local discovery = { Existing = true }
+			resetState({ keepOne, removeOne, keepTwo, removeTwo })
+			local inventory = profile.pets
+			profile.discoveredPets = discovery
+			MachineService.setRandomSource(invalidRoll)
+			local result, message = attempt("GoldMachine", { "remove-1", "remove-2" })
+			expect(result):toBeNil()
+			expect(message):toBe("Conversion failed safely")
+			expect(profile.diamonds):toBe(10000)
+			expect(profile.pets):toBe(inventory)
+			expect(profile.pets):toEqual({ keepOne, removeOne, keepTwo, removeTwo })
+			expect(profile.pets[1]):toBe(keepOne)
+			expect(profile.pets[2]):toBe(removeOne)
+			expect(profile.pets[3]):toBe(keepTwo)
+			expect(profile.pets[4]):toBe(removeTwo)
+			expect(profile.discoveredPets):toBe(discovery)
+			expect(profile.discoveredPets):toEqual({ Existing = true })
+			expect(rollbackCalls):toBe(1)
+			expect(MachineService._activeTransactions[player.UserId]):toBeNil()
+		end
+	end)
+
+	it("rolls back partial inputs, full inputs, output, and partial or complete Dex faults", function()
+		local faults = {
+			{ stage = "afterInputRemoval", detail = 1 },
+			{ stage = "afterAllInputsStaged" },
+			{ stage = "afterOutputInsertion" },
+			{ stage = "afterDiscoveryWrite", detail = 1 },
+			{ stage = "afterAllDiscoveryWrites" },
+		}
+		for _, fault in ipairs(faults) do
+			local keepOne = makePet("keep-1", "Buddy", "Normal", false)
+			local removeOne = makePet("remove-1", "Buddy", "Normal", false)
+			local keepTwo = makePet("keep-2", "Buddy", "Normal", false)
+			local removeTwo = makePet("remove-2", "Buddy", "Normal", true)
+			local discovery = { Existing = true }
+			resetState({ keepOne, removeOne, keepTwo, removeTwo })
+			local inventory = profile.pets
+			profile.discoveredPets = discovery
+			PetService.setVariantConversionHook(function(stage, _, detail)
+				if stage == fault.stage and (fault.detail == nil or detail == fault.detail) then
+					error("injected phase fault")
+				end
+			end)
+			local result, message = attempt("GoldMachine", { "remove-1", "remove-2" })
+			expect(result):toBeNil()
+			expect(message):toBe("Conversion failed safely")
+			expect(profile.diamonds):toBe(10000)
+			expect(profile.pets):toBe(inventory)
+			expect(profile.pets):toEqual({ keepOne, removeOne, keepTwo, removeTwo })
+			expect(profile.pets[1]):toBe(keepOne)
+			expect(profile.pets[2]):toBe(removeOne)
+			expect(profile.pets[3]):toBe(keepTwo)
+			expect(profile.pets[4]):toBe(removeTwo)
+			expect(profile.discoveredPets):toBe(discovery)
+			expect(profile.discoveredPets):toEqual({ Existing = true })
+			expect(rollbackCalls):toBe(1)
+			expect(currencyEvents):toBe(0)
+		end
+	end)
+
+	it("exposes a strict direct PetService phase machine and forbids post-PONR rollback", function()
+		local keepOne = makePet("keep-1", "Buddy", "Normal", false)
+		local selected = makePet("selected", "Buddy", "Normal", true)
+		local keepTwo = makePet("keep-2", "Buddy", "Normal", false)
+		resetState({ keepOne, selected, keepTwo })
+		local inventory = profile.pets
+		local lease = PetService.beginInventoryMutation(player, "QOF27DirectTest")
+		local prepared = PetService.prepareVariantConversion(
+			player,
+			{ "selected" },
+			"Normal",
+			"Golden",
+			lease
+		)
+		expect(prepared.phase):toBe("VALIDATED")
+		expect(prepared.outputPet):toBeNil()
+		expect(prepared.discoveryKeys):toBeNil()
+		expect(PetService.finalizeVariantConversion(player, prepared, true, lease)):toBeFalse()
+		expect(PetService.stageVariantConversion(player, prepared, lease)):toBeTrue()
+		expect(prepared.phase):toBe("INPUTS_STAGED")
+		expect(profile.pets):toEqual({ keepOne, keepTwo })
+		expect(PetService.stageVariantConversion(player, prepared, lease)):toBeFalse()
+		expect(PetService.finalizeVariantConversion(player, prepared, true, lease)):toBeTrue()
+		expect(prepared.phase):toBe("OUTCOME_STAGED")
+		expect(prepared.outputPet.variant):toBe("Golden")
+		expect(prepared.outputPet.shiny):toBeTrue()
+		expect(prepared.outputPet.enchantId):toBeNil()
+		expect(profile.pets[3]):toBe(prepared.outputPet)
+		expect(profile.discoveredPets["Buddy|Golden|Shiny"]):toBeTrue()
+		expect(PetService.finalizeVariantConversion(player, prepared, true, lease)):toBeFalse()
+		expect(PetService.rollbackVariantConversion(prepared, lease)):toBeTrue()
+		expect(profile.pets):toBe(inventory)
+		expect(profile.pets):toEqual({ keepOne, selected, keepTwo })
+		prepared.transactionCommitted = true
+		expect(PetService.rollbackVariantConversion(prepared, lease)):toBeFalse()
+		expect(PetService.endInventoryMutation(player, lease, false)):toBeTrue()
+	end)
+
+	it("holds the real central profile owner while inputs are staged", function()
+		resetState()
+		ProfileTransactionService.init(dataService)
+		CurrencyService.init(dataService, nil, ProfileTransactionService)
+		PetService.init(dataService, CurrencyService, upgradeService)
+		MachineService.init(dataService, CurrencyService, PetService)
+		MachineService.setQuestService(questService)
+		MachineService.setActivationValidator(function(_, machineId, activationToken)
+			return ACTIVATION_TOKENS[machineId] == activationToken
+		end)
+		local inspected = false
+		MachineService.setRandomSource(function()
+			inspected = true
+			expect(#profile.pets):toBe(0)
+			expect(profile.diamonds):toBe(10000)
+			expect(ProfileTransactionService.hasPending(player)):toBeTrue()
+			expect(ProfileTransactionService.getOwnerName(player)):toBe("MachineService")
+			local saveCanSnapshot = not ProfileTransactionService.hasPending(player)
+			expect(saveCanSnapshot):toBeFalse()
+			return 1
+		end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		expect(message):toBeNil()
+		expect(result.success):toBeFalse()
+		expect(inspected):toBeTrue()
+		expect(profile.diamonds):toBe(9250)
+		expect(ProfileTransactionService.hasPending(player)):toBeFalse()
+	end)
+
+	it("retains exact leave and shutdown settlement when restoration initially cannot prove ownership", function()
+		for _, lifecycle in ipairs({ "leave", "shutdown" }) do
+			local original = makePet("pet-1", "Buddy", "Normal", false)
+			resetState({ original })
+			local inventory = profile.pets
+			local foreign = makePet("foreign", "Buddy", "Normal", false)
+			PetService.setVariantConversionHook(function(stage)
+				if stage == "afterOutputInsertion" then
+					table.insert(profile.pets, foreign)
+					error("injected unowned inventory change")
+				end
+			end)
+			local result, message = attempt("GoldMachine", { "pet-1" })
+			expect(result):toBeNil()
+			expect(message):toBe("Conversion rollback failed")
+			expect(MachineService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+			expect(MachineService._playerLocks[player.UserId]):toBeTrue()
+			expect(pendingSpendCount()):toBe(1)
+			table.remove(profile.pets)
+			local settled = lifecycle == "leave"
+				and MachineService.onPlayerRemoving(player)
+				or MachineService.prepareForShutdown()
+			expect(settled):toBeTrue()
+			expect(profile.diamonds):toBe(10000)
+			expect(profile.pets):toBe(inventory)
+			expect(profile.pets):toEqual({ original })
+			expect(profile.pets[1]):toBe(original)
+			expect(pendingSpendCount()):toBe(0)
+			expect(MachineService._activeTransactions[player.UserId]):toBeNil()
+			expect(MachineService._playerLocks[player.UserId]):toBeNil()
+		end
+	end)
+
+	it("keeps post-PONR hook, notification, and lease-release faults economically terminal", function()
+		resetState()
+		local originalEndInventoryMutation = PetService.endInventoryMutation
+		local failRelease = true
+		local rolls = 0
+		PetService.endInventoryMutation = function(candidatePlayer, lease, mutated)
+			if failRelease then return false end
+			return originalEndInventoryMutation(candidatePlayer, lease, mutated)
+		end
+		inventoryShouldError = true
+		questShouldError = true
+		MachineService.setTransactionHook(function(stage)
+			if stage == "afterCurrencyCommit" then error("post-PONR hook fault") end
+		end)
+		MachineService.setRandomSource(function()
+			rolls = rolls + 1
+			return 0
+		end)
+		local result, message = attempt("GoldMachine", { "pet-1" })
+		local retryResult, retryMessage = attempt("GoldMachine", { "pet-1" })
+		failRelease = false
+		PetService.endInventoryMutation = originalEndInventoryMutation
+		local cleanupSucceeded = MachineService.cleanup(player)
+		expect(message):toBeNil()
+		expect(result.success):toBeTrue()
+		expect(profile.diamonds):toBe(9250)
+		expect(#profile.pets):toBe(1)
+		expect(profile.pets[1].variant):toBe("Golden")
+		expect(rolls):toBe(1)
+		expect(retryResult):toBeNil()
+		expect(retryMessage):toBe("Machine conversion already in progress")
+		expect(cleanupSucceeded):toBeTrue()
+		expect(profile.diamonds):toBe(9250)
+		expect(MachineService._activeTransactions[player.UserId]):toBeNil()
+		expect(MachineService._playerLocks[player.UserId]):toBeNil()
 	end)
 end)

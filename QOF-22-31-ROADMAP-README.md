@@ -156,7 +156,7 @@ Keine Aufgabe wird nur aufgrund eines erfolgreichen Exitcodes als fertig markier
 | QOF-24 | Kanonische Schadenspräzision | ABGESCHLOSSEN | QOF-23 | QOF-25 durch ausdrückliches `Weiter` freigegeben | nicht separat bestätigt; Nutzer hat Fortsetzung ausdrücklich freigegeben | Implementierung: `52a335690d56a236016194065e5fa8138457e6ef`; RBXL: `68ec212191c21d9d2f524bada14e20eef2505c3ff5848e22c35a5ba6dd5f33bb`; Manifest: `bd12420d1989dd4a184e0ecc6ae90340666b52b56aa79955075120a8126e3b1c`; Tests 366/366 normal + reverse; Compile 78/78; Abschluss durch Nutzer-`Weiter` ohne separat gemeldetes Studioergebnis |
 | QOF-25 | Zentrale atomare Profil-/Currency-Transaktionen | ABGESCHLOSSEN | QOF-24 | QOF-26 durch ausdrückliches `Weiter` freigegeben | nicht separat bestätigt; Nutzer hat Fortsetzung ausdrücklich freigegeben | Implementierungscommit: `b25979fb0ce38250a9c6079a535a35e1dfe6d093`; RBXL: `2df665a6baa4b0b335abad48f3c1dbe7d58884e07eeb57c462e0083617143286`; Manifest: `c523966008de7a15fa60f88b3622b9bc0615a65acd0c5a38ce5a86a8444146dc`; Tests 399/399 normal + reverse; Compile 79/79; Abschluss durch Nutzer-`Weiter` ohne separat gemeldetes Studioergebnis |
 | QOF-26 | Potion-Concurrency und Lifecycle | ABGESCHLOSSEN | QOF-25 | QOF-27 durch ausdrückliches `Weiter` freigegeben | nicht separat bestätigt; Nutzer hat Fortsetzung ausdrücklich freigegeben | Implementierungscommit: `5df4944`; RBXL: `2df33d0b3bd136e4030c2583fabdd4b8f731b3224e47abf103e47dd8f7770db1`; Manifest: `78f94977ea444650141295a70dfbcdbb62c9104d2a6ca25957f42f475080747e`; Tests 409/409 normal + reverse; Compile 79/79; semantischer Review APPROVED; Abschluss durch Nutzer-`Weiter` ohne separat gemeldetes Studioergebnis |
-| QOF-27 | Maschinenreihenfolge und Rollback-Invarianten | IN ARBEIT | QOF-25 | bestehende MachineService-Reihenfolge untersuchen und Input-Staging vor RNG implementieren | separat | Nutzerfreigabe: `Weiter`; Basis: QOF-26 Handoff `baded8d055a8429f12b31822fe7caf7812fc8dea` |
+| QOF-27 | Maschinenreihenfolge und Rollback-Invarianten | CODE-VERIFIZIERT – STUDIO-TEST AUSSTEHEND | QOF-25 | gebundenen Studio-Testplan ausführen und Ergebnis melden | separat ausstehend | RBXL: `cf21636b78b8b9cf589969baf824bce9d1adede30a71a0b648fa17963d3ba88e`; Manifest: `35f33e5910930a7ba38261ee5f5500993b2950d745fd4c3c7737b6bf5238189b`; Tests 417/417 normal + reverse; Compile 79/79; semantischer Review APPROVED |
 | QOF-28 | Auto-Hatch Contract V2, HUD-Toggle und Lifecycle (x1/x3/x9) | BLOCKIERT | QOF-25, QOF-26 + Produktentscheidungen | Station-UX und Entitlement-Migration bestätigen | separat | – |
 | QOF-29 | Pickup-, Leave- und Shutdown-Garantien | OFFEN | QOF-23, QOF-25–28 | nach Abschluss aller Lifecycle-Owner | separat | – |
 | QOF-30 | Release-Pipeline und verpflichtende CI | OFFEN | QOF-22–29 | nach Abschluss aller Code-QOFs | n/a | – |
@@ -356,7 +356,7 @@ Der bisherige Maschinenpfad würfelt vor dem tatsächlichen Entfernen der Eingab
 
 1. Pet-Auswahl und Snapshots unter Inventory-Lease validieren.
 2. Zentralen Profil-Owner registrieren und Currency still reservieren.
-3. Eingabe-Pets vor dem RNG aus dem sichtbaren Inventar in transaktionseigenes Staging verschieben. Vor dem RNG werden nur Dex-Snapshot und Undo-Metadaten vorbereitet; noch keine Output-Discovery geschrieben.
+3. Eingabe-Pets vor dem RNG aus dem sichtbaren Inventar in transaktionseigenes Staging verschieben. Vor dem RNG werden ausschließlich Input-/Undo-Metadaten gehalten; Output-GUID, Output-Pet und Dex-Schreibplan existieren noch nicht.
 4. Erst danach RNG ausführen.
 5. Erfolg:
    - Ausgabe-Pet einfügen,
@@ -369,7 +369,7 @@ Der bisherige Maschinenpfad würfelt vor dem tatsächlichen Entfernen der Eingab
    - gestagte Eingaben bleiben entfernt.
 7. Danach Currency-Commit als eindeutigen Point of No Return (PONR) ausführen.
 8. Technischer Fehler oder ungültiges RNG **vor dem PONR** restauriert ursprüngliche Pet-Reihenfolge, Pet-Objektidentität, Diamonds, eigene Dex-Writes, Lease und Locks exakt oder hält den Owner retrybar.
-9. Fehler bei Benachrichtigungen **nach dem PONR** werden geloggt/retrybar repliziert, dürfen die abgeschlossene Business-Transaktion aber nicht zurückrollen.
+9. Fehler bei Benachrichtigungen **nach dem PONR** bleiben geschützt und dürfen die abgeschlossene Business-Transaktion weder zurückrollen noch als wirtschaftlich retrybar melden. Ein dauerhaftes Notification-Retry-Ledger ist nicht Bestandteil von QOF-27.
 10. Private Zone-/Station-Autorität und Remote-Validierung unverändert beibehalten.
 
 ## Abnahmekriterien

@@ -156,11 +156,28 @@ def main() -> None:
         b"commitSpendTransaction",
         b"rollbackSpendTransaction",
         b"prepareVariantConversion",
-        b"commitVariantConversion",
+        b"stageVariantConversion",
+        b"finalizeVariantConversion",
         b"rollbackVariantConversion",
+        b'phase = "INPUTS_STAGED"',
+        b'phase = "PONR"',
+        b'"afterInputStaging"',
+        b'"afterCurrencyCommit"',
         b'"goldenPetsConverted"',
     ):
-        assert required in machine_service_source, f"missing QOF-17 machine authority: {required!r}"
+        assert required in machine_service_source, f"missing QOF-17/QOF-27 machine authority: {required!r}"
+    assert b"._petService.commitVariantConversion(" not in machine_service_source, (
+        "QOF-27 MachineService must use explicit stage and post-RNG finalize phases"
+    )
+    stage_call = machine_service_source.index(b"._petService.stageVariantConversion(")
+    rng_call = machine_service_source.index(b"local roll = MachineService._randomSource()")
+    finalize_call = machine_service_source.index(b"._petService.finalizeVariantConversion(")
+    ponr_call = machine_service_source.index(
+        b"._currencyService.commitSpendTransaction(spendTransaction)"
+    )
+    assert stage_call < rng_call < finalize_call < ponr_call, (
+        "QOF-27 source-shape guard expects inputs -> RNG -> outcome -> Currency PONR"
+    )
 
     zone_service_source = (
         ROOT / "src/ServerScriptService/Services/ZoneService.lua"
@@ -359,8 +376,26 @@ def main() -> None:
         b'PetDex.getCanonicalKey(petId, baseVariant, isShiny == true)',
         b'PetDex.getWriteKeys(petId, baseVariant, isShiny)',
         b'newPet.isNewDiscovery = discovered[discoveryKeys[1]] ~= true',
+        b'function PetService.stageVariantConversion',
+        b'function PetService.finalizeVariantConversion',
+        b'phase = "VALIDATED"',
+        b'prepared.phase = "STAGING_INPUTS"',
+        b'prepared.phase = "INPUTS_STAGED"',
+        b'prepared.phase = "STAGING_OUTCOME"',
+        b'prepared.phase = "OUTCOME_STAGED"',
+        b'prepared.transactionCommitted',
+        b'not arrayMatches(prepared.petsTable, prepared.expectedPets)',
     ):
-        assert required in pet_service_source, f"missing QOF-20 mutation contract: {required!r}"
+        assert required in pet_service_source, f"missing QOF-20/QOF-27 mutation contract: {required!r}"
+    prepare_conversion = pet_service_source.split(
+        b"function PetService.prepareVariantConversion", 1
+    )[1].split(b"local function arrayMatches", 1)[0]
+    assert b"GenerateGUID" not in prepare_conversion, (
+        "QOF-27 source-shape guard found output GUID generation in prepare"
+    )
+    assert b"PetDex.getWriteKeys" not in prepare_conversion, (
+        "QOF-27 source-shape guard found output Dex planning in prepare"
+    )
 
     for required in (
         b'getRemoteFunction("GetDiscoveredPets").OnServerInvoke',
