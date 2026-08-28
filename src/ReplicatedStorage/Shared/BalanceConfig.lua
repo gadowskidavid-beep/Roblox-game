@@ -435,10 +435,10 @@ local BalanceConfig = {
 	},
 
 	Potions = {
-		-- QOF-13 activates purchases into persistent inventory only. Consumption,
-		-- buff timers, charges, and potion upgrades remain owned by QOF-14.
+		-- QOF-13 keeps purchases inventory-only; QOF-14 activates a separate
+		-- server-authoritative consume/effect contract.
 		RuntimeEnabled = true,
-		ConsumeRuntimeEnabled = false,
+		ConsumeRuntimeEnabled = true,
 		Persistence = {
 			MaxInventoryPerPotion = 999,
 			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
@@ -646,8 +646,8 @@ function BalanceConfig.Validate()
 	end
 	assert(BalanceConfig.Potions.RuntimeEnabled == true, "Potion inventory purchases must be enabled in QOF-13")
 	assert(
-		BalanceConfig.Potions.ConsumeRuntimeEnabled == false,
-		"Potion consumption must remain disabled until QOF-14"
+		BalanceConfig.Potions.ConsumeRuntimeEnabled == true,
+		"Potion consumption must be enabled in QOF-14"
 	)
 	local core = BalanceConfig.CoreUpgrades
 	assert(core.RuntimeEnabled == true, "Core upgrades must be enabled")

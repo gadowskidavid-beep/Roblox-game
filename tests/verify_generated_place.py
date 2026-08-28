@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-13 runtime source."""
+"""Verify that the generated Battle Pets place embeds every QOF-14 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -22,6 +22,7 @@ EXPECTED_SOURCES = {
     "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
     "EggService": "src/ServerScriptService/Services/EggService.lua",
     "ShopService": "src/ServerScriptService/Services/ShopService.lua",
+    "PotionService": "src/ServerScriptService/Services/PotionService.lua",
     "UpgradeTreeService": "src/ServerScriptService/Services/UpgradeTreeService.lua",
     "MovementService": "src/ServerScriptService/Services/MovementService.lua",
     "PickupService": "src/ServerScriptService/Services/PickupService.lua",
@@ -32,7 +33,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 64, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 65, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -54,7 +55,7 @@ def all_expected_runtime_paths() -> list[Path]:
         *sorted((ROOT / "src/StarterPlayer/StarterPlayerScripts").glob("*Controller.lua")),
     ]
     assert len(paths) == EXPECTED_SCRIPT_COUNTS["ModuleScript"] + 2, (
-        f"expected 66 runtime source paths, found {len(paths)}"
+        f"expected 67 runtime source paths, found {len(paths)}"
     )
     return paths
 
@@ -80,6 +81,10 @@ def main() -> None:
         b"DataService.bindToClose(PickupService.settleAllPlayers)",
         b"request.contractVersion == 2",
         b"ShopService.onPlayerRemoving(player)",
+        b"PotionService.onPlayerAdded(player)",
+        b'getRemoteFunction("ConsumePotion")',
+        b'getRemoteFunction("PurchasePotionUpgrade")',
+        b'getRemoteFunction("SetAutoDrinkSelection")',
     ):
         assert required in main_source, f"missing server lifecycle or purchase wiring: {required!r}"
 
@@ -104,6 +109,21 @@ def main() -> None:
     ):
         assert required in shop_service_source, f"missing QOF-13 shop authority: {required!r}"
 
+    potion_service_source = (
+        ROOT / "src/ServerScriptService/Services/PotionService.lua"
+    ).read_bytes()
+    for required in (
+        b'local CONTRACT_VERSION = 1',
+        b'os.time()',
+        b'beginShinyChargeTransaction',
+        b'processAutoDrink',
+        b'purchaseUpgrade',
+        b'setAutoDrinkSelection',
+        b'stateRevision',
+        b'notifyInventoryChanged',
+    ):
+        assert required in potion_service_source, f"missing QOF-14 potion authority: {required!r}"
+
     shop_data_source = (ROOT / "src/ReplicatedStorage/Shared/ShopData.lua").read_bytes()
     assert b'"LuckPotion"' in shop_data_source and b'"ShinyPotion"' in shop_data_source
     assert b"LuckyPotion =" not in shop_data_source and b"PowerPotion =" not in shop_data_source
@@ -115,6 +135,13 @@ def main() -> None:
         b"contractVersion = ShopData.ContractVersion",
         b"purchaseMode == ShopData.PurchaseMode",
         b'card.status.Text = "OWNED "',
+        b'PotionContractVersion',
+        b'revision < self._potionStateRevision',
+        b'drinkBtn.Name = "DrinkBtn"',
+        b'consumeAvailability = type(payload.consumeAvailability) == "table"',
+        b'availability.reason == "Maximum timed duration reached (30 days)"',
+        b'autoBtn.Name = "AutoDrinkBtn"',
+        b'_purchasePotionUpgrade',
     ):
         assert required in ui_source, f"missing QOF-13 inventory UI contract: {required!r}"
 
@@ -175,8 +202,8 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-13 runtime source exactly once")
-    print("PASS: all 66 generated script sources have byte-exact source parity")
+    print("PASS: generated place embeds every QOF-14 runtime source exactly once")
+    print("PASS: all 67 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

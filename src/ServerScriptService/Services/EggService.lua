@@ -17,6 +17,7 @@ EggService._currencyService = nil
 EggService._petService = nil
 EggService._questService = nil
 EggService._upgradeTreeService = nil
+EggService._potionService = nil
 EggService._hatchLock = {}
 EggService._transactionHook = nil
 EggService._stationValidator = nil
@@ -55,6 +56,10 @@ function EggService.init(dataService, currencyService, petService, upgradeTreeSe
 	EggService._currencyService = currencyService
 	EggService._petService = petService
 	EggService._upgradeTreeService = upgradeTreeService
+end
+
+function EggService.setPotionService(potionService)
+	EggService._potionService = potionService
 end
 
 function EggService.setQuestService(questService)
@@ -367,6 +372,7 @@ function EggService.purchaseFromIntent(player, eggType, intent)
 
 		return purchaseAndHatchUnlocked(player, eggType, count, {
 			bypassStation = false,
+			consumeShinyCharges = true,
 		})
 	end)
 end
@@ -387,6 +393,14 @@ local function rollbackTransaction(transaction)
 	if transaction.prepared and transaction.prepared.mutationStarted then
 		inventoryRestored = EggService._petService.rollbackHatchBatch(transaction.prepared) == true
 	end
+	local chargesRestored = true
+	if transaction.shinyChargeTransaction then
+		chargesRestored = EggService._potionService
+			and EggService._potionService.rollbackShinyChargeTransaction(
+				transaction.shinyChargeTransaction
+			) == true
+		transaction.shinyChargeTransaction = nil
+	end
 	local currencyRestored = true
 	if transaction.spent and transaction.totalCost > 0 then
 		currencyRestored = EggService._currencyService.creditRaw(
@@ -396,7 +410,7 @@ local function rollbackTransaction(transaction)
 		) == true
 		transaction.spent = false
 	end
-	return inventoryRestored and currencyRestored
+	return inventoryRestored and chargesRestored and currencyRestored
 end
 
 local function notifyCommittedBatch(player, result)
@@ -460,6 +474,8 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		eggType = eggType,
 		count = validatedCount,
 		prepared = nil,
+		shinyChargeTransaction = nil,
+		shinyBoostCount = 0,
 		spent = false,
 		totalCost = 0,
 	}
@@ -486,10 +502,20 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 			return nil, "No valid coin cost for egg zone"
 		end
 
+		local consumeShinyCharges = options.consumeShinyCharges
+		if consumeShinyCharges == nil then
+			consumeShinyCharges = options.bypassStation ~= true and options.skipCharge ~= true
+		end
+		if consumeShinyCharges == true and EggService._potionService then
+			transaction.shinyChargeTransaction, transaction.shinyBoostCount =
+				EggService._potionService.beginShinyChargeTransaction(player, validatedCount)
+		end
+
 		local prepared, prepareError = EggService._petService.prepareHatchBatch(
 			player,
 			eggType,
-			validatedCount
+			validatedCount,
+			{ shinyBoostCount = transaction.shinyBoostCount }
 		)
 		if not prepared then
 			return nil, prepareError
@@ -535,6 +561,16 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 	end
 	if not result then
 		return nil, hatchError
+	end
+	if transaction.shinyChargeTransaction then
+		if not EggService._potionService
+			or EggService._potionService.commitShinyChargeTransaction(
+				transaction.shinyChargeTransaction
+			) ~= true then
+			local restored = rollbackTransaction(transaction)
+			return nil, restored and "Hatch failed safely" or "Hatch rollback failed"
+		end
+		transaction.shinyChargeTransaction = nil
 	end
 
 	notifyCommittedBatch(player, result)

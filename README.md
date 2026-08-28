@@ -15,6 +15,7 @@ Open `BATTLE_PETS.rbxlx` in Roblox Studio to play or edit the game directly.
 - Each pet has a rarity: Common, Uncommon, Rare, Epic, or Legendary
 - Unlock new zones by spending coins at zone gates
 - Upgrade your pets, speed, luck, and more through the upgrade system
+- Buy and drink persistent potions with timed Luck, Speed, Coin, and Shiny-charge effects
 
 ### Side Mode: Campaign (Battle Cats-style)
 - Accessible through a portal in the main world
@@ -55,7 +56,8 @@ src/
       DataSchema.lua              -- Versioned player data schema and migrations
       PetService.lua              -- Pet hatching, equipping, inventory
       EggService.lua              -- Egg station logic and hatching
-      ShopService.lua             -- In-game shop purchases
+      ShopService.lua             -- Inventory-only shop purchases
+      PotionService.lua           -- Potion consumption, effects, upgrades, Auto-Drink
       CampaignService.lua         -- Campaign level logic
       CurrencyService.lua         -- Coins and diamonds management
       ZoneService.lua             -- Zone unlocking and destructibles
@@ -83,7 +85,8 @@ src/
 
 tests/
   run_tests.lua                   -- Minimal test runner (describe/it/expect)
-  DataSchema.spec.lua             -- Unit tests for DataSchema module
+  DataSchema.spec.lua             -- Unit tests for schema and migrations
+  PotionService.spec.lua          -- Potion consumption/effect transaction tests
 
 tools/
   generate_rbxlx.py               -- Generates BATTLE_PETS.rbxlx from src/ tree
@@ -102,7 +105,8 @@ The game uses a server-authoritative architecture where all state mutations happ
 | **DataSchema** | Defines the canonical player data shape, handles migrations and normalization |
 | **PetService** | Manages pet inventory, equipping, deletion, and multi-select operations |
 | **EggService** | Handles egg hatching with rarity rolls and variant chances |
-| **ShopService** | Processes in-game purchases (extra equip slots, etc.) |
+| **ShopService** | Retains purchase ownership; potion purchases only add inventory |
+| **PotionService** | Owns timed potion sources, Shiny charges, upgrades, Auto-Drink, and effect state |
 | **ZoneService** | Spawns all 8 zones, gates, egg stations, and destructibles |
 | **CampaignService** | Runs campaign battles, energy system, and boss encounters |
 | **CurrencyService** | Awards and deducts coins/diamonds with validation |

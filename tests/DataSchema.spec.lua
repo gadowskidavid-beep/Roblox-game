@@ -75,10 +75,11 @@ describe("DataSchema.getDefaultData", function()
 		expect(data.pets[1].shiny):toBeFalse()
 	end)
 
-	it("creates empty persistent potion inventory while consume state remains dormant", function()
+	it("creates empty persistent potion inventory and active state", function()
 		local data = DataSchema.getDefaultData()
 		expect(data.potionInventory):toEqual({})
 		expect(data.activeBuffs):toEqual({})
+		expect(data.potionBuffSources):toEqual({})
 		expect(data.potionUpgrades):toEqual({ slots = 2, durationLevel = 0, autoDrink = false })
 	end)
 
@@ -298,7 +299,7 @@ describe("V6 pet migration", function()
 			equippedPets = {},
 		}, 1000)
 
-		expect(data.schemaVersion):toBe(7)
+		expect(data.schemaVersion):toBe(8)
 		expect(data.pets[1].variant):toBe("Normal")
 		expect(data.pets[1].shiny):toBeFalse()
 		expect(data.pets[1].damage):toBe(1)
@@ -369,10 +370,15 @@ describe("V6 potion persistence normalization", function()
 
 		expect(data.potionInventory):toEqual({ LuckPotion = 4, ShinyPotion = 2 })
 		expect(data.activeBuffs):toEqual({
-			luck = 1200,
+			luck = {
+				sources = {
+					LuckPotion = { expiresAt = 1200 },
+				},
+			},
 			shinyChance = { charges = 30 },
 		})
 		expect(data.potionUpgrades):toEqual({ slots = 5, durationLevel = 4, autoDrink = false })
+		expect(data.autoDrinkSelection):toEqual({})
 	end)
 
 	it("restores safe potion upgrade defaults from malformed values", function()
@@ -397,7 +403,7 @@ describe("V6 potion persistence normalization", function()
 		expect(atCap.potionInventory):toEqual({ LuckPotion = 999, SpeedPotion = 999 })
 	end)
 
-	it("round-trips canonical inventory through migration and persistence at schema V7", function()
+	it("round-trips canonical inventory through migration and persistence at schema V8", function()
 		local migrated = DataSchema.migrate({
 			schemaVersion = 7,
 			potionInventory = {
@@ -409,7 +415,7 @@ describe("V6 potion persistence normalization", function()
 		}, 1000)
 		local snapshot = DataSchema.cloneForPersistence(migrated, 1000)
 		local reloaded = DataSchema.migrate(snapshot, 1000)
-		expect(reloaded.schemaVersion):toBe(7)
+		expect(reloaded.schemaVersion):toBe(8)
 		expect(reloaded.potionInventory):toEqual({ LuckPotion = 7, MegaLuckPotion = 3 })
 		snapshot.potionInventory.LuckPotion = 1
 		expect(migrated.potionInventory.LuckPotion):toBe(7)
@@ -507,7 +513,11 @@ describe("V6 rolling-server and magnitude safety", function()
 			activeBuffs = { luck = 1e300 },
 		}, 1000)
 		expect(data.potionInventory.LuckPotion):toBe(999)
-		expect(data.activeBuffs.luck):toBe(2593000)
+		expect(data.activeBuffs.luck):toEqual({
+			sources = {
+				LuckPotion = { expiresAt = 2593000 },
+			},
+		})
 	end)
 
 	it("drops non-finite potion quantities and timed expiries", function()
@@ -524,7 +534,7 @@ end)
 describe("V7 persistent hatch preferences", function()
 	it("migrates V6 profiles without a preference to the x1 default", function()
 		local data = DataSchema.migrate({ schemaVersion = 6, coins = 250 }, 1000)
-		expect(data.schemaVersion):toBe(7)
+		expect(data.schemaVersion):toBe(8)
 		expect(data.hatchPreferences):toEqual({ preferredBatchCount = 1 })
 		expect(data.coins):toBe(250)
 	end)
@@ -561,5 +571,155 @@ describe("V7 persistent hatch preferences", function()
 		expect(snapshot):toEqual(twice)
 		snapshot.hatchPreferences.preferredBatchCount = 1
 		expect(twice.hatchPreferences.preferredBatchCount):toBe(5)
+	end)
+end)
+
+
+local function simulateQof13PotionSave(profile, currentTime)
+	local saved = DataSchema.deepCopy(profile)
+	local downgradedBuffs = {}
+	for buffType, state in pairs(saved.activeBuffs or {}) do
+		-- QOF-13 accepts timed state only as one numeric expiry. Structured V8
+		-- sources are therefore dropped, while its known charge shape survives.
+		if type(state) == "number" and state > currentTime then
+			downgradedBuffs[buffType] = math.floor(state)
+		elseif buffType == "shinyChance" and type(state) == "table"
+			and type(state.charges) == "number" and state.charges > 0 then
+			downgradedBuffs[buffType] = { charges = math.min(30, math.floor(state.charges)) }
+		end
+	end
+	saved.activeBuffs = downgradedBuffs
+	saved.schemaVersion = 7
+	return saved
+end
+
+describe("V8 structured potion sources and Auto-Drink selection", function()
+	it("preserves independent Luck and Mega Luck timers under one buff type", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 8,
+			activeBuffs = {
+				luck = {
+					sources = {
+						LuckPotion = { expiresAt = 1600 },
+						MegaLuckPotion = { expiresAt = 1300 },
+						SpeedPotion = { expiresAt = 1800 },
+					},
+				},
+			},
+		}, 1000)
+		expect(data.activeBuffs):toEqual({
+			luck = {
+				sources = {
+					LuckPotion = { expiresAt = 1600 },
+					MegaLuckPotion = { expiresAt = 1300 },
+				},
+			},
+		})
+	end)
+
+	it("migrates legacy numeric timers conservatively and removes expired sources", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 7,
+			activeBuffs = { luck = 1400, speed = 999, coins = 1700 },
+		}, 1000)
+		expect(data.activeBuffs):toEqual({
+			luck = { sources = { LuckPotion = { expiresAt = 1400 } } },
+			coins = { sources = { CoinPotion = { expiresAt = 1700 } } },
+		})
+	end)
+
+	it("recovers every timed source after a realistic QOF-13 wipe and schema downgrade", function()
+		local v8 = DataSchema.migrate({
+			schemaVersion = 8,
+			activeBuffs = {
+				luck = {
+					sources = {
+						LuckPotion = { expiresAt = 1600 },
+						MegaLuckPotion = { expiresAt = 1e300 },
+					},
+				},
+				speed = { sources = { SpeedPotion = { expiresAt = 1700 } } },
+				coins = { sources = { CoinPotion = { expiresAt = 1800 } } },
+			},
+		}, 1000)
+		local cap = 1000 + BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds
+		expect(v8.potionBuffSources):toEqual({
+			LuckPotion = { expiresAt = 1600 },
+			MegaLuckPotion = { expiresAt = cap },
+			SpeedPotion = { expiresAt = 1700 },
+			CoinPotion = { expiresAt = 1800 },
+		})
+
+		local rollingQof13Save = simulateQof13PotionSave(
+			DataSchema.cloneForPersistence(v8, 1000),
+			1000
+		)
+		expect(rollingQof13Save.schemaVersion):toBe(7)
+		expect(rollingQof13Save.activeBuffs):toEqual({})
+		expect(rollingQof13Save.potionBuffSources):toEqual(v8.potionBuffSources)
+
+		local recovered = DataSchema.migrate(rollingQof13Save, 1000)
+		expect(recovered.schemaVersion):toBe(8)
+		expect(recovered.activeBuffs):toEqual({
+			luck = { sources = {
+				LuckPotion = { expiresAt = 1600 },
+				MegaLuckPotion = { expiresAt = cap },
+			} },
+			speed = { sources = { SpeedPotion = { expiresAt = 1700 } } },
+			coins = { sources = { CoinPotion = { expiresAt = 1800 } } },
+		})
+		-- Luck and Mega Luck remain source identities under one runtime buff slot;
+		-- the compatibility mirror is never a second activeBuffs collection.
+		expect(recovered.activeBuffs.luck.sources.LuckPotion.expiresAt):toBe(1600)
+		expect(recovered.activeBuffs.luck.sources.MegaLuckPotion.expiresAt):toBe(cap)
+	end)
+
+	it("filters, merges, caps, and resynchronizes the rolling source mirror", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 7,
+			activeBuffs = { luck = 1400 },
+			potionBuffSources = {
+				LuckPotion = { expiresAt = 1300 },
+				MegaLuckPotion = { expiresAt = 1500 },
+				SpeedPotion = { expiresAt = 999 },
+				CoinPotion = { expiresAt = 1e300 },
+				ShinyPotion = { expiresAt = 1900 },
+				UnknownPotion = { expiresAt = 1900 },
+			},
+		}, 1000)
+		local cap = 1000 + BalanceConfig.Potions.Persistence.MaxTimedBuffSeconds
+		expect(data.activeBuffs):toEqual({
+			luck = { sources = {
+				LuckPotion = { expiresAt = 1400 },
+				MegaLuckPotion = { expiresAt = 1500 },
+			} },
+			coins = { sources = { CoinPotion = { expiresAt = cap } } },
+		})
+		expect(data.potionBuffSources):toEqual({
+			LuckPotion = { expiresAt = 1400 },
+			MegaLuckPotion = { expiresAt = 1500 },
+			CoinPotion = { expiresAt = cap },
+		})
+
+		data.activeBuffs.luck.sources.LuckPotion.expiresAt = 1700
+		local snapshot = DataSchema.cloneForPersistence(data, 1000)
+		expect(snapshot.potionBuffSources.LuckPotion.expiresAt):toBe(1700)
+		snapshot.potionBuffSources.LuckPotion.expiresAt = 1800
+		expect(data.potionBuffSources.LuckPotion.expiresAt):toBe(1400)
+	end)
+
+	it("whitelists explicit selections and never selects Shiny by default", function()
+		local defaults = DataSchema.getDefaultData()
+		expect(defaults.autoDrinkSelection):toEqual({})
+		local data = DataSchema.migrate({
+			autoDrinkSelection = {
+				LuckPotion = true,
+				ShinyPotion = false,
+				UnknownPotion = true,
+				SpeedPotion = 1,
+			},
+		}, 1000)
+		expect(data.autoDrinkSelection):toEqual({ LuckPotion = true })
+		expect(data.autoDrinkSelection.ShinyPotion):toBeNil()
 	end)
 end)

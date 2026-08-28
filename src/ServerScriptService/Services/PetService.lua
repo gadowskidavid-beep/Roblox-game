@@ -226,7 +226,7 @@ local function copyBooleanMap(input)
 	return output
 end
 
-local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered)
+local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, discovered, shinyBoosted)
 	local petId = weightedRandomPet(
 		eggDef.petPool,
 		luckMultiplier,
@@ -237,11 +237,21 @@ local function buildPreparedPet(eggDef, luckMultiplier, hatchEntitlements, disco
 		return nil, "Invalid pet in pool"
 	end
 
+	local directVariantMultipliers = hatchEntitlements.directVariantMultipliers
+	if shinyBoosted == true then
+		directVariantMultipliers = {
+			Golden = directVariantMultipliers.Golden,
+			Rainbow = directVariantMultipliers.Rainbow,
+			Shiny = (isFiniteNumber(directVariantMultipliers.Shiny)
+				and math.max(1, directVariantMultipliers.Shiny) or 1)
+				* BalanceConfig.Potions.Catalog.ShinyPotion.multiplier,
+		}
+	end
 	local baseVariant, isShiny = PetHatchMath.rollOutcome(
 		math.random(),
 		math.random(),
 		luckMultiplier,
-		hatchEntitlements.directVariantMultipliers
+		directVariantMultipliers
 	)
 	local presentation = PetVariantPresentation.resolve({
 		petId = petId,
@@ -270,7 +280,7 @@ end
 -- Prepare every random outcome without mutating inventory, discovery, currency,
 -- quests, or replication. EggService can therefore reject or roll back a whole
 -- batch instead of exposing partially completed hatches.
-function PetService.prepareHatchBatch(player, eggType, count)
+function PetService.prepareHatchBatch(player, eggType, count, options)
 	if not player or type(eggType) ~= "string" then
 		return nil, "Invalid parameters"
 	end
@@ -296,15 +306,19 @@ function PetService.prepareHatchBatch(player, eggType, count)
 
 	local hatchEntitlements = PetService.getHatchEntitlements(player)
 	local luckMultiplier = PetService.getHatchLuckMultiplier(player, hatchEntitlements)
+	local shinyBoostCount = type(options) == "table" and options.shinyBoostCount or 0
+	if not isFiniteNumber(shinyBoostCount) or shinyBoostCount < 0 then shinyBoostCount = 0 end
+	shinyBoostCount = math.min(count, math.floor(shinyBoostCount))
 	local discovered = copyBooleanMap(data.discoveredPets)
 	local pets = {}
 	local newDiscoveryKeys = {}
-	for _ = 1, count do
+	for index = 1, count do
 		local pet, discoveryKeyOrError = buildPreparedPet(
 			eggDef,
 			luckMultiplier,
 			hatchEntitlements,
-			discovered
+			discovered,
+			index <= shinyBoostCount
 		)
 		if not pet then
 			return nil, discoveryKeyOrError

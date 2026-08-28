@@ -525,7 +525,7 @@ def build_server_script_service():
     service_names = [
         "DataSchema", "DataService", "CurrencyService", "PetService",
         "UpgradeService", "ZoneService", "CampaignService", "EggService",
-        "QuestService", "MasteryService", "ShopService", "UpgradeTreeService",
+        "QuestService", "MasteryService", "ShopService", "PotionService", "UpgradeTreeService",
         "MovementService", "PickupService",
     ]
     service_scripts = []
