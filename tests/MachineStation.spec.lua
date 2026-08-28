@@ -306,6 +306,30 @@ describe("QOF-16 Gold machine station authority", function()
 		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
 		fixture.prompt.Enabled = true
 
+		fixture.prompt.HoldDuration = 1
+		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
+		fixture.prompt.HoldDuration = 0
+
+		fixture.prompt.RequiresLineOfSight = true
+		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
+		fixture.prompt.RequiresLineOfSight = false
+
+		fixture.prompt.MaxActivationDistance = 99
+		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
+		fixture.prompt.MaxActivationDistance = 12
+
+		fixture.prompt.ActionText = "Free Convert"
+		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
+		fixture.prompt.ActionText = "Use Machine"
+
+		fixture.prompt.ObjectText = "Forged Machine"
+		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
+		fixture.prompt.ObjectText = "Gold Machine"
+
+		fixture.prompt.Name = "ForgedPrompt"
+		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
+		fixture.prompt.Name = "UseMachinePrompt"
+
 		fixture.prompt.Parent = fixture.model
 		expect(fixture.validator(fixture.player, "GoldMachine", fixture.token)):toBeFalse()
 		fixture.prompt.Parent = fixture.anchor

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-15 runtime source."""
+"""Verify that the generated Battle Pets place embeds every QOF-16 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -34,7 +34,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 66, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 68, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -56,7 +56,7 @@ def all_expected_runtime_paths() -> list[Path]:
         *sorted((ROOT / "src/StarterPlayer/StarterPlayerScripts").glob("*Controller.lua")),
     ]
     assert len(paths) == EXPECTED_SCRIPT_COUNTS["ModuleScript"] + 2, (
-        f"expected 68 runtime source paths, found {len(paths)}"
+        f"expected 70 runtime source paths, found {len(paths)}"
     )
     return paths
 
@@ -89,23 +89,28 @@ def main() -> None:
         b"MachineService.init(DataService, CurrencyService, PetService)",
         b"MachineService.setQuestService(QuestService)",
         b"MachineService.cleanup(player)",
+        b'getRemoteFunction("UseMachine")',
+        b"MachineAuthorityBootstrap.install",
     ):
         assert required in main_source, f"missing server lifecycle or purchase wiring: {required!r}"
-    assert b'"AttemptMachineConversion"' not in main_source, (
-        "QOF-15 must not add a public machine remote"
+    assert b'"ConvertToGoldenPet",' in main_source, (
+        "rolling clients would block without the fail-closed compatibility remote"
     )
-    assert b"MachineService.setActivationValidator" not in main_source, (
-        "QOF-15 Main must not inject machine activation authority"
-    )
-    assert b"PetService.convertToGoldenPet(player, petInstanceIds)" in main_source, (
-        "legacy ConvertToGoldenPet routing changed before QOF-16"
+    assert b'getRemoteFunction("ConvertToGoldenPet").OnServerInvoke' in main_source
+    assert b"Legacy conversion unavailable" in main_source
+    assert b"PetService.convertToGoldenPet(player, petInstanceIds)" not in main_source, (
+        "legacy free conversion remains publicly routed"
     )
 
     balance_source = (
         ROOT / "src/ReplicatedStorage/Shared/BalanceConfig.lua"
     ).read_bytes()
-    assert b"Machines = {\n\t\tRuntimeEnabled = false," in balance_source, (
-        "QOF-15 machine runtime must remain dormant"
+    assert b"Machines = {\n\t\t-- QOF-16" in balance_source
+    assert b"Gold = {\n\t\t\tRuntimeEnabled = true," in balance_source, (
+        "QOF-16 Gold machine gate is not active"
+    )
+    assert b"Rainbow = {\n\t\t\tRuntimeEnabled = false," in balance_source, (
+        "Rainbow must remain dormant in QOF-16"
     )
 
     machine_service_source = (
@@ -125,7 +130,33 @@ def main() -> None:
         b"rollbackVariantConversion",
         b'"goldenPetsConverted"',
     ):
-        assert required in machine_service_source, f"missing QOF-15 machine authority: {required!r}"
+        assert required in machine_service_source, f"missing QOF-16 machine authority: {required!r}"
+
+    zone_service_source = (
+        ROOT / "src/ServerScriptService/Services/ZoneService.lua"
+    ).read_bytes()
+    for required in (
+        b"spawnGoldMachineStation",
+        b"validateMachineActivation",
+        b'prompt.Name = "UseMachinePrompt"',
+        b'identityToken = HttpService:GenerateGUID(false)',
+        b"GOLD_MACHINE_MAX_DISTANCE",
+    ):
+        assert required in zone_service_source, f"missing QOF-16 world authority: {required!r}"
+    assert b"spawnRainbowMachineStation" not in zone_service_source
+
+    client_source = (
+        ROOT / "src/StarterPlayer/StarterPlayerScripts/Main.client.lua"
+    ).read_bytes()
+    for required in (
+        b'WaitForChild("UseMachine")',
+        b"getGoldMachinePromptData",
+        b"UseMachine:InvokeServer(machineId, identityToken, selectedIds)",
+        b"MachineClientSession.finishRequest(machineSession, operation)",
+        b"prompt == machineSession.prompt",
+    ):
+        assert required in client_source, f"missing QOF-16 client prompt routing: {required!r}"
+    assert b'WaitForChild("ConvertToGoldenPet")' not in client_source
 
     purchase_handler = main_source.split(
         b'getRemoteFunction("PurchaseShopItem").OnServerInvoke', 1
@@ -183,6 +214,18 @@ def main() -> None:
         b'_purchasePotionUpgrade',
     ):
         assert required in ui_source, f"missing QOF-13 inventory UI contract: {required!r}"
+    for required in (
+        b'goldenBtn.Name = "UseGoldMachineBtn"',
+        b"self._multiSelectMode and self._goldMachineSessionActive",
+        b"BalanceConfig.Machines.SuccessChanceByInput[count]",
+        b"Pets and 750 Diamonds are consumed even on failure",
+        b"result.outputPet",
+        b"self:_requestGoldMachineCancel()",
+        b"self._goldMachineOverlay ~= completedOverlay",
+    ):
+        assert required in ui_source, f"missing QOF-16 machine UI contract: {required!r}"
+    assert b'FindFirstChild("MakeGoldenBtn")' not in ui_source
+    assert b'FindFirstChild("ConvertToGoldenPet")' not in ui_source
 
     root = ET.parse(PLACE).getroot()
     scripts: dict[str, list[str]] = {}
@@ -241,8 +284,8 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-15 runtime source exactly once")
-    print("PASS: all 68 generated script sources have byte-exact source parity")
+    print("PASS: generated place embeds every QOF-16 runtime source exactly once")
+    print("PASS: all 70 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

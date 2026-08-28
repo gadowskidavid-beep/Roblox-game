@@ -16,7 +16,7 @@ Open `BATTLE_PETS.rbxlx` in Roblox Studio to play or edit the game directly.
 - Unlock new zones by spending coins at zone gates
 - Upgrade your pets, speed, luck, and more through the upgrade system
 - Buy and drink persistent potions with timed Luck, Speed, Coin, and Shiny-charge effects
-- Includes a dormant server transaction foundation for future Gold and Rainbow machines (no public machine UI or stations yet)
+- Use the live Gold Machine in Zone 3 for server-authoritative paid conversions; Rainbow remains dormant
 
 ### Side Mode: Campaign (Battle Cats-style)
 - Accessible through a portal in the main world
@@ -56,7 +56,7 @@ src/
       DataService.lua             -- Save/load with DataStore + session locking
       DataSchema.lua              -- Versioned player data schema and migrations
       PetService.lua              -- Pet hatching, inventory, canonical conversion mutations
-      MachineService.lua          -- Dormant atomic Gold/Rainbow transaction foundation
+      MachineService.lua          -- Atomic Gold Machine payment, roll, conversion, and rollback authority
       EggService.lua              -- Egg station logic and hatching
       ShopService.lua             -- Inventory-only shop purchases
       PotionService.lua           -- Potion consumption, effects, upgrades, Auto-Drink
@@ -106,11 +106,11 @@ The game uses a server-authoritative architecture where all state mutations happ
 | **DataService** | Loads/saves player data via DataStore with session locking and auto-save |
 | **DataSchema** | Defines the canonical player data shape, handles migrations and normalization |
 | **PetService** | Manages pet inventory and canonical mutation-free conversion preparation/rollback |
-| **MachineService** | Owns the dormant atomic Gold/Rainbow payment, consumption, roll, and quest foundation |
+| **MachineService** | Owns active Gold Machine admission, payment, consumption, roll, rollback, and post-commit quest progress; Rainbow remains dormant |
 | **EggService** | Handles egg hatching with rarity rolls and variant chances |
 | **ShopService** | Retains purchase ownership; potion purchases only add inventory |
 | **PotionService** | Owns timed potion sources, Shiny charges, upgrades, Auto-Drink, and effect state |
-| **ZoneService** | Spawns all 8 zones, gates, egg stations, and destructibles |
+| **ZoneService** | Spawns all zones plus the private-authority Zone 3 Gold Machine station, gates, egg stations, and destructibles |
 | **CampaignService** | Runs campaign battles, energy system, and boss encounters |
 | **CurrencyService** | Awards and deducts coins/diamonds with validation |
 | **QuestService** | Tracks quest progress and distributes rewards |

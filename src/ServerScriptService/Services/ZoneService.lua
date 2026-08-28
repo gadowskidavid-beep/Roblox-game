@@ -167,6 +167,8 @@ local function validateMachineActivation(player, machineId, activationToken)
 		or prompt.Parent ~= anchor
 		or not prompt:IsDescendantOf(model)
 		or prompt.Enabled ~= true
+		or prompt.HoldDuration ~= 0
+		or prompt.RequiresLineOfSight ~= false
 		or prompt.MaxActivationDistance ~= GOLD_MACHINE_MAX_DISTANCE
 		or prompt.ActionText ~= "Use Machine"
 		or prompt.ObjectText ~= "Gold Machine" then

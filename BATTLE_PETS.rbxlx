@@ -706,11 +706,11 @@
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="ServerScriptService" referent="RBX00000078">
+	<Item class="ServerScriptService" referent="RBX0000007A">
 		<Properties>
 			<string name="Name">ServerScriptService</string>
 		</Properties>
-			<Item class="Script" referent="RBX00000077">
+			<Item class="Script" referent="RBX00000079">
 				<Properties>
 					<string name="Name">Main</string>
 					<bool name="Disabled">false</bool>
@@ -730,6 +730,7 @@ local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
 local MachineService = require(script.Parent.Services.MachineService)
+local MachineAuthorityBootstrap = require(script.Parent.Services.MachineAuthorityBootstrap)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
@@ -776,6 +777,34 @@ end
 
 local function isValidIdentifier(value)
 	return type(value) == "string" and #value > 0 and #value <= 64
+end
+
+local function isValidMachinePetIdList(petInstanceIds)
+	if type(petInstanceIds) ~= "table" or getmetatable(petInstanceIds) ~= nil then
+		return false
+	end
+	local count = 0
+	for key in next, petInstanceIds do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+			return false
+		end
+		count = count + 1
+		if count > BalanceConfig.Machines.MaxInputs then
+			return false
+		end
+	end
+	if count < BalanceConfig.Machines.MinInputs
+		or count > BalanceConfig.Machines.MaxInputs
+		or rawlen(petInstanceIds) ~= count then
+		return false
+	end
+	for index = 1, count do
+		local petId = rawget(petInstanceIds, index)
+		if type(petId) ~= "string" or petId == "" or #petId > 128 then
+			return false
+		end
+	end
+	return true
 end
 
 local function isValidShopPurchaseRequest(request)
@@ -861,7 +890,9 @@ local remoteFunctions = {
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
+	-- Rolling-client compatibility only. Its handler is permanently fail-closed.
 	"ConvertToGoldenPet",
+	"UseMachine",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
@@ -909,8 +940,6 @@ PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
 MachineService.init(DataService, CurrencyService, PetService)
 MachineService.setQuestService(QuestService)
--- QOF-15 intentionally supplies no activation validator: with the runtime gate
--- disabled and no world authority injected, every machine attempt fails closed.
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
 EggService.setPotionService(PotionService)
@@ -919,11 +948,17 @@ ShopService.setEggService(EggService)
 -- World generation should not prevent remotes, player data, and the GUI from
 -- starting if a future world builder fails. The current failure is still logged
 -- with a traceback so it is visible in the Roblox Studio server output.
-local zoneInitSucceeded, zoneInitError = xpcall(function()
-	ZoneService.init(DataService, CurrencyService, PetService)
+local zoneInitSucceeded, activationValidatorOrError = xpcall(function()
+	return ZoneService.init(DataService, CurrencyService, PetService)
 end, debug.traceback)
 if not zoneInitSucceeded then
-	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(zoneInitError))
+	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(activationValidatorOrError))
+elseif not MachineAuthorityBootstrap.install(
+	MachineService,
+	zoneInitSucceeded,
+	activationValidatorOrError
+) then
+	warn("[Battle Pets] ZoneService did not provide machine activation authority")
 end
 ZoneService.setQuestService(QuestService)
 ZoneService.setMasteryService(MasteryService)
@@ -1189,33 +1224,37 @@ getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgra
 	return success, message, state
 end
 
--- ConvertToGoldenPet (2 second cooldown)
-getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function(player, petInstanceIds)
+-- Rolling clients may still wait for this historical remote during startup.
+-- Retaining a mutation-free rejection avoids deadlocking their entire client
+-- while guaranteeing that no free conversion path survives QOF-16.
+getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function()
+	return nil, "Legacy conversion unavailable; use the Gold Machine in Zone 3"
+end
+
+-- UseMachine is the sole machine mutation entry point. Main validates only request
+-- identity/shape and abuse limits; all world, pet, currency, RNG, and quest
+-- semantics remain owned by MachineService and its injected ZoneService authority.
+getRemoteFunction("UseMachine").OnServerInvoke = function(player, machineId, activationToken, petInstanceIds)
 	if not player or not player:IsA("Player") then
 		return nil, "Invalid player"
 	end
-	if not canCall(player, "ConvertToGoldenPet", 2) then
-		return nil, "Please wait before converting again"
+	-- Account every request from a valid player before traversing caller-owned
+	-- data so malformed traffic cannot bypass either abuse-control bucket.
+	local cooldownAllowed = canCall(player, "UseMachine", 0.25)
+	local burstAllowed = canCallBurst(player, "UseMachine", 8, 10)
+	if not cooldownAllowed or not burstAllowed then
+		return nil, "Please wait before using a machine again"
 	end
-	if type(petInstanceIds) ~= "table" then
-		return nil, "Invalid pet IDs parameter (expected list)"
+	if not isValidIdentifier(machineId) then
+		return nil, "Invalid machine ID"
 	end
-	-- Validate each ID is a string
-	for _, id in ipairs(petInstanceIds) do
-		if type(id) ~= "string" then
-			return nil, "Invalid pet ID in list"
-		end
+	if type(activationToken) ~= "string" or activationToken == "" or #activationToken > 128 then
+		return nil, "Invalid machine activation"
 	end
-	-- Limit to 7 pets max
-	if #petInstanceIds < 1 or #petInstanceIds > 7 then
-		return nil, "Must sacrifice between 1 and 7 pets"
+	if not isValidMachinePetIdList(petInstanceIds) then
+		return nil, "Invalid pet IDs parameter (expected plain dense list)"
 	end
-	local result, err = PetService.convertToGoldenPet(player, petInstanceIds)
-	if result and result.success then
-		-- Track quest progress for golden pet conversion
-		QuestService.incrementStat(player, "goldenPetsConverted", 1)
-	end
-	return result, err
+	return MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
 end
 
 -- StartCampaignLevel (2 second cooldown)
@@ -1524,8 +1563,7 @@ Players.PlayerRemoving:Connect(function(player)
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
 
-	-- Cleanup QOF-15 machine locks before profile persistence. No activation
-	-- validator, remote, station, prompt, event, or client UI is wired yet.
+	-- Cleanup QOF-16 machine transaction locks.
 	MachineService.cleanup(player)
 
 	-- Cleanup QOF-14 potion locks/reservations before profile persistence.
@@ -1647,11 +1685,11 @@ print("[Battle Pets] Server initialized successfully!")
 ]]></ProtectedString>
 				</Properties>
 			</Item>
-			<Item class="Folder" referent="RBX00000076">
+			<Item class="Folder" referent="RBX00000078">
 				<Properties>
 					<string name="Name">Services</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000066">
+				<Item class="ModuleScript" referent="RBX00000067">
 					<Properties>
 						<string name="Name">DataSchema</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2153,7 +2191,7 @@ return DataSchema
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000067">
+				<Item class="ModuleScript" referent="RBX00000068">
 					<Properties>
 						<string name="Name">DataService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2493,7 +2531,7 @@ return DataService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000068">
+				<Item class="ModuleScript" referent="RBX00000069">
 					<Properties>
 						<string name="Name">CurrencyService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -2767,7 +2805,7 @@ return CurrencyService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000069">
+				<Item class="ModuleScript" referent="RBX0000006A">
 					<Properties>
 						<string name="Name">PetService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -3990,16 +4028,15 @@ return PetService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006A">
+				<Item class="ModuleScript" referent="RBX0000006B">
 					<Properties>
 						<string name="Name">MachineService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	MachineService.lua - Dormant QOF-15 machine transaction foundation.
-	Owns validated Gold/Rainbow payment, pet consumption, chance rolls, rollback,
-	and post-commit quest semantics. Public activation remains fail-closed until a
-	future QOF injects an authoritative world/proximity validator and enables the
-	BalanceConfig runtime gate.
+	MachineService.lua - QOF-16 server-authoritative machine transactions.
+	Owns Gold payment, pet consumption, chance rolls, rollback, and post-commit
+	quest semantics. The global gate is active, Gold is enabled per definition,
+	and Rainbow remains explicitly dormant before all activation/economic work.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -4033,6 +4070,7 @@ local function resolveMachine(machineId)
 			-- Never retain or expose the mutable canonical balance table. The
 			-- transaction consumes only this scalar snapshot.
 			return {
+				RuntimeEnabled = definition.RuntimeEnabled == true,
 				id = definition.id,
 				zoneId = definition.zoneId,
 				inputVariant = definition.inputVariant,
@@ -4120,8 +4158,8 @@ function MachineService.setQuestService(questService)
 	MachineService._questService = questService
 end
 
--- A future world-owning service must inject a validator that checks the exact
--- runtime station and player proximity. Nil/non-function always means denied.
+-- The world-owning service injects a validator over its private station
+-- registry. Nil/non-function always means denied.
 function MachineService.setActivationValidator(validator)
 	MachineService._activationValidator = type(validator) == "function" and validator or nil
 end
@@ -4154,7 +4192,7 @@ local function rollbackTechnicalFailure(prepared, spendTransaction)
 	return petRolledBack and currencyRolledBack
 end
 
-local function executeTransaction(player, machine, machineType, petInstanceIds, transactionState)
+local function executeTransaction(player, machine, machineType, activationToken, petInstanceIds, transactionState)
 	local data = MachineService._dataService and MachineService._dataService.getPlayerData(player)
 	if type(data) ~= "table" then
 		return nil, "No player data"
@@ -4168,17 +4206,14 @@ local function executeTransaction(player, machine, machineType, petInstanceIds, 
 	if not isFiniteNumber(chance) or chance < 0 or chance > 1 then
 		return nil, "Machine configuration unavailable"
 	end
-	-- The callback receives a disposable facts DTO, never the canonical balance
-	-- definition or the private transaction snapshot consumed below.
-	local activationFacts = {
-		machineId = machine.id,
-		zoneId = machine.zoneId,
-	}
+	-- The validator receives only scalar request identity. Station instances,
+	-- ancestry, prompt integrity, profile unlocks, and distance remain private to
+	-- ZoneService's registry and cannot be supplied or rewritten by the caller.
 	local activationOk, activationAllowed, activationError = pcall(
 		MachineService._activationValidator,
 		player,
 		machine.id,
-		activationFacts
+		activationToken
 	)
 	if not activationOk or activationAllowed ~= true then
 		return nil, activationOk and (activationError or "Machine activation denied") or "Machine activation denied"
@@ -4267,7 +4302,7 @@ local function executeTransaction(player, machine, machineType, petInstanceIds, 
 	return result
 end
 
-function MachineService.attemptConversion(player, machineId, petInstanceIds)
+function MachineService.attemptConversion(player, machineId, activationToken, petInstanceIds)
 	if BalanceConfig.Machines.RuntimeEnabled ~= true then
 		return nil, "Machines are not available"
 	end
@@ -4277,6 +4312,15 @@ function MachineService.attemptConversion(player, machineId, petInstanceIds)
 	local machine, machineType = resolveMachine(machineId)
 	if not machine then
 		return nil, "Unknown machine"
+	end
+	-- Definition dormancy is checked before token/list validation, profile access,
+	-- world validation, pet preparation, RNG, or currency work. In particular,
+	-- Rainbow cannot become reachable merely because the global runtime is live.
+	if machine.RuntimeEnabled ~= true then
+		return nil, "Machine is not available"
+	end
+	if type(activationToken) ~= "string" or activationToken == "" or #activationToken > 128 then
+		return nil, "Invalid machine activation"
 	end
 	local ids, idsError = validateDenseUniqueIds(petInstanceIds)
 	if not ids then
@@ -4297,7 +4341,7 @@ function MachineService.attemptConversion(player, machineId, petInstanceIds)
 	MachineService._playerLocks[player.UserId] = true
 	local transactionState = {}
 	local ok, result, transactionError = xpcall(function()
-		return executeTransaction(player, machine, machineType, ids, transactionState)
+		return executeTransaction(player, machine, machineType, activationToken, ids, transactionState)
 	end, debug.traceback)
 	MachineService._playerLocks[player.UserId] = nil
 
@@ -4323,7 +4367,30 @@ return MachineService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006B">
+				<Item class="ModuleScript" referent="RBX0000006C">
+					<Properties>
+						<string name="Name">MachineAuthorityBootstrap</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[-- MachineAuthorityBootstrap.lua - Fail-closed installation of QOF-16 world authority.
+
+local MachineAuthorityBootstrap = {}
+
+function MachineAuthorityBootstrap.install(machineService, initSucceeded, candidate)
+	if type(machineService) ~= "table"
+		or type(machineService.setActivationValidator) ~= "function"
+		or initSucceeded ~= true
+		or type(candidate) ~= "function" then
+		return false
+	end
+	machineService.setActivationValidator(candidate)
+	return true
+end
+
+return MachineAuthorityBootstrap
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX0000006D">
 					<Properties>
 						<string name="Name">UpgradeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4419,7 +4486,7 @@ return UpgradeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006C">
+				<Item class="ModuleScript" referent="RBX0000006E">
 					<Properties>
 						<string name="Name">ZoneService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -4430,9 +4497,11 @@ return UpgradeService
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
 local ZoneData = require(game.ReplicatedStorage.Shared.ZoneData)
+local BalanceConfig = require(game.ReplicatedStorage.Shared.BalanceConfig)
 
 local ZoneService = {}
 
@@ -4476,11 +4545,150 @@ local DESTRUCTIBLES_PER_ZONE = 20
 -- Minimum distance between spawned destructibles (studs) - prevents overlap between all types
 local MIN_SPAWN_DISTANCE = 15
 
+-- QOF-16 machine authority. This registry is intentionally module-private: a
+-- replicated name, attribute, or token copied onto another Instance can never
+-- replace the exact server-created references retained here.
+local GOLD_MACHINE_MAX_DISTANCE = 12
+local GOLD_MACHINE_ANCHOR_SIZE = Vector3.new(12, 6, 8)
+local machineRegistry = {}
+
+local function profileHasUnlockedZone(data, zoneId)
+	if type(data) ~= "table" or type(data.unlockedZones) ~= "table" then
+		return false
+	end
+	for _, unlockedZoneId in ipairs(data.unlockedZones) do
+		if unlockedZoneId == zoneId then
+			return true
+		end
+	end
+	return false
+end
+
+local function spawnGoldMachineStation(zonesFolder)
+	local definition = BalanceConfig.Machines.Gold
+	if BalanceConfig.Machines.RuntimeEnabled ~= true
+		or type(definition) ~= "table"
+		or definition.RuntimeEnabled ~= true then
+		error("Gold machine runtime configuration is unavailable")
+	end
+
+	local zoneFolder = zonesFolder:FindFirstChild("Zone_" .. tostring(definition.zoneId))
+	if not zoneFolder then
+		error("Gold machine zone was not generated")
+	end
+
+	local model = Instance.new("Model")
+	model.Name = definition.id
+	model:SetAttribute("MachineId", definition.id)
+	model:SetAttribute("MachineZoneId", definition.zoneId)
+	local identityToken = HttpService:GenerateGUID(false)
+	model:SetAttribute("MachineIdentityToken", identityToken)
+
+	local anchor = Instance.new("Part")
+	anchor.Name = "Anchor"
+	anchor.Anchored = true
+	anchor.CanCollide = true
+	anchor.Size = GOLD_MACHINE_ANCHOR_SIZE
+	anchor.CFrame = CFrame.new((definition.zoneId - 1) * ZONE_SPACING, 3, -55)
+	anchor.Color = Color3.fromRGB(255, 194, 32)
+	anchor.Material = Enum.Material.Metal
+	anchor.Parent = model
+	model.PrimaryPart = anchor
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "UseMachinePrompt"
+	prompt.ActionText = "Use Machine"
+	prompt.ObjectText = "Gold Machine"
+	prompt.Enabled = true
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = GOLD_MACHINE_MAX_DISTANCE
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = anchor
+
+	model.Parent = zoneFolder
+	machineRegistry[definition.id] = {
+		model = model,
+		anchor = anchor,
+		prompt = prompt,
+		zoneFolder = zoneFolder,
+		zonesFolder = zonesFolder,
+		machineId = definition.id,
+		zoneId = definition.zoneId,
+		identityToken = identityToken,
+		anchorCFrame = anchor.CFrame,
+	}
+end
+
+local function validateMachineActivation(player, machineId, activationToken)
+	local record = machineRegistry[machineId]
+	if not record or machineId ~= BalanceConfig.Machines.Gold.id then
+		return false, "Machine activation denied"
+	end
+	if type(activationToken) ~= "string" or activationToken ~= record.identityToken then
+		return false, "Machine activation denied"
+	end
+	if not player or not player:IsA("Player") then
+		return false, "Machine activation denied"
+	end
+
+	local model = record.model
+	local anchor = record.anchor
+	local prompt = record.prompt
+	if not model or not model:IsA("Model")
+		or model.Name ~= record.machineId
+		or model.Parent ~= record.zoneFolder
+		or not model:IsDescendantOf(record.zonesFolder)
+		or record.zonesFolder:FindFirstChild("Zone_" .. tostring(record.zoneId)) ~= record.zoneFolder
+		or model.PrimaryPart ~= anchor
+		or model:GetAttribute("MachineId") ~= record.machineId
+		or model:GetAttribute("MachineZoneId") ~= record.zoneId
+		or model:GetAttribute("MachineIdentityToken") ~= record.identityToken then
+		return false, "Machine station integrity check failed"
+	end
+	if not anchor or not anchor:IsA("BasePart")
+		or anchor.Name ~= "Anchor"
+		or anchor.Parent ~= model
+		or not anchor:IsDescendantOf(model)
+		or anchor.Anchored ~= true
+		or anchor.Size ~= GOLD_MACHINE_ANCHOR_SIZE
+		or anchor.CFrame ~= record.anchorCFrame then
+		return false, "Machine station integrity check failed"
+	end
+	if not prompt or not prompt:IsA("ProximityPrompt")
+		or prompt.Name ~= "UseMachinePrompt"
+		or prompt.Parent ~= anchor
+		or not prompt:IsDescendantOf(model)
+		or prompt.Enabled ~= true
+		or prompt.HoldDuration ~= 0
+		or prompt.RequiresLineOfSight ~= false
+		or prompt.MaxActivationDistance ~= GOLD_MACHINE_MAX_DISTANCE
+		or prompt.ActionText ~= "Use Machine"
+		or prompt.ObjectText ~= "Gold Machine" then
+		return false, "Machine prompt integrity check failed"
+	end
+
+	local data = ZoneService._dataService and ZoneService._dataService.getPlayerData(player)
+	if not profileHasUnlockedZone(data, record.zoneId) then
+		return false, "Machine zone is locked"
+	end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not root or not root:IsA("BasePart") or not root:IsDescendantOf(character) then
+		return false, "Character is unavailable"
+	end
+	local distance = (root.Position - anchor.Position).Magnitude
+	if distance ~= distance or distance > GOLD_MACHINE_MAX_DISTANCE then
+		return false, "Too far from machine"
+	end
+	return true
+end
+
 function ZoneService.init(dataService, currencyService, petService)
 	ZoneService._dataService = dataService
 	ZoneService._currencyService = currencyService
 	ZoneService._petService = petService
 	ZoneService._questService = nil -- set later via setQuestService
+	machineRegistry = {}
 
 	-- Create zones folder in workspace
 	local workspace = game:GetService("Workspace")
@@ -4511,6 +4719,12 @@ function ZoneService.init(dataService, currencyService, petService)
 
 	-- Spawn invisible barriers at zone edges to prevent falling off
 	ZoneService._spawnBarriers()
+
+	-- Publish the validator only after every world-generation step completed.
+	-- Main wires this returned closure atomically; any init failure leaves
+	-- MachineService without world authority.
+	spawnGoldMachineStation(zonesFolder)
+	return validateMachineActivation
 end
 
 -- Get zone origin position (bottom-left corner of the zone floor)
@@ -7042,7 +7256,7 @@ return ZoneService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006D">
+				<Item class="ModuleScript" referent="RBX0000006F">
 					<Properties>
 						<string name="Name">CampaignService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -7644,7 +7858,7 @@ return CampaignService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006E">
+				<Item class="ModuleScript" referent="RBX00000070">
 					<Properties>
 						<string name="Name">EggService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8274,7 +8488,7 @@ return EggService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000006F">
+				<Item class="ModuleScript" referent="RBX00000071">
 					<Properties>
 						<string name="Name">QuestService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8474,7 +8688,7 @@ return QuestService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000070">
+				<Item class="ModuleScript" referent="RBX00000072">
 					<Properties>
 						<string name="Name">MasteryService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -8624,7 +8838,7 @@ return MasteryService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000071">
+				<Item class="ModuleScript" referent="RBX00000073">
 					<Properties>
 						<string name="Name">ShopService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9158,7 +9372,7 @@ return ShopService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000072">
+				<Item class="ModuleScript" referent="RBX00000074">
 					<Properties>
 						<string name="Name">PotionService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -9925,7 +10139,7 @@ return PotionService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000073">
+				<Item class="ModuleScript" referent="RBX00000075">
 					<Properties>
 						<string name="Name">UpgradeTreeService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10341,7 +10555,7 @@ return UpgradeTreeService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000074">
+				<Item class="ModuleScript" referent="RBX00000076">
 					<Properties>
 						<string name="Name">MovementService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10545,7 +10759,7 @@ return MovementService
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000075">
+				<Item class="ModuleScript" referent="RBX00000077">
 					<Properties>
 						<string name="Name">PickupService</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -10936,15 +11150,15 @@ return PickupService
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterPlayer" referent="RBX00000081">
+	<Item class="StarterPlayer" referent="RBX00000083">
 		<Properties>
 			<string name="Name">StarterPlayer</string>
 		</Properties>
-		<Item class="StarterPlayerScripts" referent="RBX00000080">
+		<Item class="StarterPlayerScripts" referent="RBX00000082">
 			<Properties>
 				<string name="Name">StarterPlayerScripts</string>
 			</Properties>
-				<Item class="LocalScript" referent="RBX0000007F">
+				<Item class="LocalScript" referent="RBX00000081">
 					<Properties>
 						<string name="Name">Main</string>
 						<bool name="Disabled">false</bool>
@@ -10979,6 +11193,7 @@ local CampaignData = require(Shared:WaitForChild("CampaignData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
+local MachineClientSession = require(Shared:WaitForChild("MachineClientSession"))
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -11022,7 +11237,7 @@ local CritAttackDestructible = Remotes:WaitForChild("CritAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
-local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
+local UseMachine = Remotes:WaitForChild("UseMachine")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
@@ -11445,6 +11660,59 @@ uiController:setHatchPurchaseCallbacks(
 	requestFreshHatchQuote
 )
 
+-- QOF-16 Gold Machine sessions are created only by the central runtime prompt
+-- router. Attributes are UX routing data; the server independently validates the
+-- private station registry, token, unlock, exact instances, and live distance.
+local machineSession = MachineClientSession.new()
+
+local function getGoldMachinePromptData(prompt)
+	if not prompt or prompt.Name ~= "UseMachinePrompt" or not prompt.Parent then
+		return nil
+	end
+	local anchor = prompt.Parent
+	local model = anchor.Parent
+	if not model or not model:IsA("Model") then return nil end
+	local machineId = model:GetAttribute("MachineId")
+	local identityToken = model:GetAttribute("MachineIdentityToken")
+	if machineId ~= "GoldMachine" or type(identityToken) ~= "string" or identityToken == "" then
+		return nil
+	end
+	return machineId, identityToken
+end
+
+local function closeGoldMachineSession()
+	MachineClientSession.close(machineSession)
+	uiController:closeGoldMachineSelection()
+end
+
+local function confirmGoldMachine(selectedIds)
+	local prompt = machineSession.prompt
+	local machineId = machineSession.machineId
+	local identityToken = machineSession.identityToken
+	local routedId, routedToken = getGoldMachinePromptData(prompt)
+	if routedId ~= machineId or routedToken ~= identityToken then
+		closeGoldMachineSession()
+		return
+	end
+	local operation = MachineClientSession.beginRequest(machineSession)
+	if not operation then return end
+	task.spawn(function()
+		local invoked, result, machineError = pcall(function()
+			return UseMachine:InvokeServer(machineId, identityToken, selectedIds)
+		end)
+		if not MachineClientSession.finishRequest(machineSession, operation) then
+			return
+		end
+		if invoked and type(result) == "table" then
+			uiController:showGoldMachineResult(result, nil)
+		else
+			uiController:showGoldMachineResult(nil, invoked and machineError or result)
+		end
+	end)
+end
+
+uiController:setGoldMachineCallbacks(confirmGoldMachine, closeGoldMachineSession)
+
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
 	if not eggType then return end
@@ -11463,6 +11731,10 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
+	if prompt == machineSession.prompt then
+		closeGoldMachineSession()
+		return
+	end
 	if prompt ~= activeEggPrompt then return end
 	local eggType = activeEggType
 	activeEggPrompt = nil
@@ -11481,6 +11753,15 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 	end
 	if prompt.Name == "PotionShopPrompt" then
 		uiController:openScreen("ShopScreen")
+		return
+	end
+	local machineId, identityToken = getGoldMachinePromptData(prompt)
+	if machineId then
+		if machineSession.prompt and machineSession.prompt ~= prompt then
+			closeGoldMachineSession()
+		end
+		MachineClientSession.start(machineSession, prompt, machineId, identityToken)
+		uiController:openGoldMachineSelection()
 		return
 	end
 	local eggType = getEggTypeFromPrompt(prompt)
@@ -11978,7 +12259,7 @@ print("[Battle Pets] Client initialized successfully!")
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX00000079">
+				<Item class="ModuleScript" referent="RBX0000007B">
 					<Properties>
 						<string name="Name">UIController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -12196,6 +12477,12 @@ function UIController.new()
 	self._equippedBar = nil
 	self._multiSelectMode = false
 	self._selectedPets = {}
+	self._goldMachineSessionActive = false
+	self._goldMachineCallbacks = {}
+	self._goldMachineOverlay = nil
+	self._goldMachineResultLabel = nil
+	self._goldMachineConfirmButton = nil
+	self._goldMachineCancelButton = nil
 	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
@@ -13277,7 +13564,8 @@ function UIController:_createPetInventory()
 	closeBtnCorner.Parent = closeBtn
 
 	closeBtn.MouseButton1Click:Connect(function()
-		self:toggleScreen("PetInventory")
+		self:_requestGoldMachineCancel()
+		self:closeScreen("PetInventory")
 	end)
 
 	local multiSelectBtn = Instance.new("TextButton")
@@ -13381,13 +13669,13 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
-	-- "Make Golden" button (visible in multi-select mode)
+	-- Gold Machine action is visible only during a server-world prompt session.
 	local goldenBtn = Instance.new("TextButton")
-	goldenBtn.Name = "MakeGoldenBtn"
+	goldenBtn.Name = "UseGoldMachineBtn"
 	goldenBtn.Size = UDim2.fromScale(0.15, 0.06)
 	goldenBtn.Position = UDim2.fromScale(0.18, 0.92)
 	goldenBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-	goldenBtn.Text = "Make Golden"
+	goldenBtn.Text = "Use Gold Machine"
 	goldenBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
 	goldenBtn.Font = Enum.Font.GothamBold
 	goldenBtn.TextScaled = true
@@ -13404,7 +13692,7 @@ function UIController:_createPetInventory()
 	goldenStroke.Parent = goldenBtn
 
 	goldenBtn.MouseButton1Click:Connect(function()
-		self:_showGoldenConversionConfirm()
+		self:_showGoldMachineConfirm()
 	end)
 
 	goldenBtn.MouseEnter:Connect(function()
@@ -13664,9 +13952,9 @@ function UIController:_refreshPetGrid()
 		deleteBtn.Visible = self._multiSelectMode
 	end
 
-	local goldenBtn = mainFrame:FindFirstChild("MakeGoldenBtn")
+	local goldenBtn = mainFrame:FindFirstChild("UseGoldMachineBtn")
 	if goldenBtn then
-		goldenBtn.Visible = self._multiSelectMode
+		goldenBtn.Visible = self._multiSelectMode and self._goldMachineSessionActive
 	end
 
 	local duplicatesBtn = mainFrame:FindFirstChild("SelectDuplicatesBtn")
@@ -13969,56 +14257,60 @@ function UIController:_deleteSelectedPets()
 end
 
 --------------------------------------------------------------------------------
--- GOLDEN CONVERSION CONFIRM PANEL
+-- GOLD MACHINE CONFIRM PANEL (available only from the Zone 3 prompt session)
 --------------------------------------------------------------------------------
-function UIController:_showGoldenConversionConfirm()
-	-- Validate selection: must be 1-7 same-type pets, not golden, not equipped
-	local selectedIds = {}
-	for id, _ in pairs(self._selectedPets) do
-		table.insert(selectedIds, id)
+function UIController:_showGoldMachineConfirm()
+	if not self._goldMachineSessionActive then
+		self:_showGoldenError("Use the Gold Machine in Zone 3 first!")
+		return
 	end
 
+	local selectedIds = {}
+	for id in pairs(self._selectedPets) do
+		table.insert(selectedIds, id)
+	end
+	table.sort(selectedIds)
+
 	if #selectedIds < 1 or #selectedIds > 7 then
-		-- Show brief error
 		self:_showGoldenError("Select 1-7 same-type pets!")
 		return
 	end
 
-	-- Check all selected pets are same type and valid
 	local requiredPetId = nil
+	local shinyCount = 0
 	for _, selId in ipairs(selectedIds) do
+		local selectedPet = nil
 		for _, pet in ipairs(self._petInventoryData) do
-			local petUniqueId = pet.uniqueId or pet.id
-			if petUniqueId == selId then
-				if pet.favorite == true then
-					self:_showGoldenError("Favorite pets are protected!")
-					return
-				end
-				if pet.golden == true or pet.variant == "Golden" then
-					self:_showGoldenError("Cannot use golden pets!")
-					return
-				end
-				if pet.shiny == true or pet.variant == "Shiny" then
-					self:_showGoldenError("Shiny pets are protected!")
-					return
-				end
-				local variant = pet.variant or "Normal"
-				if variant ~= "Normal" then
-					self:_showGoldenError("Only normal pets can become Golden!")
-					return
-				end
-				if pet.equipped then
-					self:_showGoldenError("Unequip pets first!")
-					return
-				end
-				if requiredPetId == nil then
-					requiredPetId = pet.petId
-				elseif pet.petId ~= requiredPetId then
-					self:_showGoldenError("All pets must be the same type!")
-					return
-				end
+			if (pet.uniqueId or pet.id) == selId then
+				selectedPet = pet
 				break
 			end
+		end
+		if not selectedPet then
+			self:_showGoldenError("A selected pet is no longer available!")
+			return
+		end
+		if selectedPet.favorite == true then
+			self:_showGoldenError("Favorite pets are protected!")
+			return
+		end
+		local presentation = PetVariantPresentation.resolve(selectedPet)
+		if presentation.baseVariant ~= "Normal" then
+			self:_showGoldenError("Only normal pets can become Golden!")
+			return
+		end
+		if selectedPet.equipped == true or self:_isPetEquipped(selId) then
+			self:_showGoldenError("Unequip pets first!")
+			return
+		end
+		if requiredPetId == nil then
+			requiredPetId = selectedPet.petId
+		elseif selectedPet.petId ~= requiredPetId then
+			self:_showGoldenError("All pets must be the same type!")
+			return
+		end
+		if selectedPet.shiny == true then
+			shinyCount += 1
 		end
 	end
 
@@ -14027,13 +14319,9 @@ function UIController:_showGoldenConversionConfirm()
 		return
 	end
 
-	-- Calculate chance based on count
-	local chanceTable = { 13, 26, 39, 50, 63, 88, 100 }
 	local count = #selectedIds
-	local chance = chanceTable[count] or 13
-
-	-- Show confirmation overlay
-	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds)
+	local chance = math.floor((BalanceConfig.Machines.SuccessChanceByInput[count] or 0) * 100 + 0.5)
+	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
 end
 
 function UIController:_showGoldenError(message)
@@ -14066,7 +14354,7 @@ function UIController:_showGoldenError(message)
 	end)
 end
 
-function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds)
+function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
 	if not self._playerGui then return end
 
 	-- Remove old overlay if exists
@@ -14077,6 +14365,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	overlay.Name = "GoldenConfirmOverlay"
 	overlay.ResetOnSpawn = false
 	overlay.Parent = self._playerGui
+	self._goldMachineOverlay = overlay
 
 	local bg = Instance.new("Frame")
 	bg.Size = UDim2.fromScale(1, 1)
@@ -14116,7 +14405,8 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	infoLabel.Size = UDim2.fromScale(0.8, 0.1)
 	infoLabel.Position = UDim2.fromScale(0.1, 0.17)
 	infoLabel.BackgroundTransparency = 1
-	infoLabel.Text = "Sacrificing " .. tostring(count) .. "x " .. tostring(petId)
+	infoLabel.Text = "Sacrifice " .. tostring(count) .. "x " .. tostring(petId)
+		.. "  •  " .. tostring(BalanceConfig.Machines.Gold.cost.amount) .. " Diamonds"
 	infoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
 	infoLabel.Font = Enum.Font.GothamBold
 	infoLabel.TextScaled = true
@@ -14146,7 +14436,10 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
 	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
 	warnLabel.BackgroundTransparency = 1
-	warnLabel.Text = "WARNING: All pets are consumed even on failure!"
+	warnLabel.Text = "WARNING: Pets and 750 Diamonds are consumed even on failure!"
+	if shinyCount > 1 then
+		warnLabel.Text ..= " Shiny does not stack."
+	end
 	warnLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	warnLabel.Font = Enum.Font.GothamBold
 	warnLabel.TextScaled = true
@@ -14195,66 +14488,78 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	resultLabel.Font = Enum.Font.GothamBold
 	resultLabel.TextScaled = true
 	resultLabel.Parent = panel
+	self._goldMachineResultLabel = resultLabel
+	self._goldMachineConfirmButton = confirmBtn
+	self._goldMachineCancelButton = cancelBtn
 
 	cancelBtn.MouseButton1Click:Connect(function()
-		overlay:Destroy()
+		self:_requestGoldMachineCancel()
 	end)
 
 	confirmBtn.MouseButton1Click:Connect(function()
-		-- Disable buttons during request
-		confirmBtn.Text = "..."
+		if not self._goldMachineSessionActive then return end
+		local onConfirm = self._goldMachineCallbacks.onConfirm
+		if type(onConfirm) ~= "function" then
+			self:showGoldMachineResult(nil, "Machine request is unavailable")
+			return
+		end
+		confirmBtn.Active = false
+		confirmBtn.AutoButtonColor = false
+		confirmBtn.Text = "CONFIRMING…"
 		confirmBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+		cancelBtn.Active = false
 		cancelBtn.Visible = false
-
-		-- Fire remote
-		self:_convertToGolden(selectedIds, resultLabel, overlay)
+		onConfirm(selectedIds)
 	end)
 end
 
-function UIController:_convertToGolden(petInstanceIds, resultLabel, overlay)
-	if not self._remotes then return end
-
-	local remote = self._remotes:FindFirstChild("ConvertToGoldenPet")
-	if not remote then return end
-
-	local result, err = remote:InvokeServer(petInstanceIds)
-
-	if err then
-		if resultLabel then
-			resultLabel.Text = "Error: " .. tostring(err)
-			resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+function UIController:showGoldMachineResult(result, requestError)
+	local resultLabel = self._goldMachineResultLabel
+	if not resultLabel or not resultLabel.Parent then return end
+	if requestError then
+		resultLabel.Text = "Error: " .. tostring(requestError)
+		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+		if self._goldMachineConfirmButton then
+			self._goldMachineConfirmButton.Active = true
+			self._goldMachineConfirmButton.AutoButtonColor = true
+			self._goldMachineConfirmButton.Text = "TRY AGAIN"
+			self._goldMachineConfirmButton.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
 		end
-		task.delay(3, function()
-			if overlay and overlay.Parent then
-				overlay:Destroy()
-			end
-		end)
+		if self._goldMachineCancelButton then
+			self._goldMachineCancelButton.Active = true
+			self._goldMachineCancelButton.Visible = true
+		end
 		return
 	end
 
-	if result and result.success then
-		if resultLabel then
-			local goldenName = result.goldenPet and result.goldenPet.name or "Golden Pet"
-			resultLabel.Text = "SUCCESS! Got " .. goldenName .. "!"
-			resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
-		end
-		if result.goldenPet and result.isNewDiscovery == true then
-			self:enqueueDiscoveryToast(result.goldenPet)
+	if type(result) ~= "table" then
+		self:showGoldMachineResult(nil, "Machine request failed safely")
+		return
+	end
+	if result.success then
+		local outputName = result.outputPet and result.outputPet.name or "Golden Pet"
+		resultLabel.Text = "SUCCESS! Got " .. outputName .. "!"
+		resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		if result.outputPet and result.isNewDiscovery == true then
+			self:enqueueDiscoveryToast(result.outputPet)
 		end
 	else
-		if resultLabel then
-			resultLabel.Text = "FAILED! All pets lost..."
-			resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-		end
+		resultLabel.Text = "FAILED! Pets and Diamonds were consumed."
+		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	end
-
-	-- Clear selection
 	self._selectedPets = {}
-
+	local completedOverlay = self._goldMachineOverlay
 	task.delay(3, function()
-		if overlay and overlay.Parent then
-			overlay:Destroy()
+		-- Delayed work owns only the overlay generation that scheduled it. A newer
+		-- prompt/session may already have installed another confirmation.
+		if self._goldMachineOverlay ~= completedOverlay then return end
+		if completedOverlay and completedOverlay.Parent then
+			completedOverlay:Destroy()
 		end
+		self._goldMachineOverlay = nil
+		self._goldMachineResultLabel = nil
+		self._goldMachineConfirmButton = nil
+		self._goldMachineCancelButton = nil
 		self:_refreshPetGrid()
 	end)
 end
@@ -16238,6 +16543,48 @@ end
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
+function UIController:_requestGoldMachineCancel()
+	if not self._goldMachineSessionActive then return end
+	local onCancel = self._goldMachineCallbacks.onCancel
+	if type(onCancel) == "function" then
+		pcall(onCancel)
+	end
+	-- A callback is advisory; the UI always closes its local capability even if
+	-- the owner throws, is absent, or neglects to clear it.
+	if self._goldMachineSessionActive then
+		self:closeGoldMachineSelection()
+	end
+end
+
+function UIController:setGoldMachineCallbacks(onConfirm, onCancel)
+	self._goldMachineCallbacks = {
+		onConfirm = type(onConfirm) == "function" and onConfirm or nil,
+		onCancel = type(onCancel) == "function" and onCancel or nil,
+	}
+end
+
+function UIController:openGoldMachineSelection()
+	self._goldMachineSessionActive = true
+	self._selectedPets = {}
+	self._multiSelectMode = true
+	self:openScreen("PetInventory")
+	self:_refreshPetGrid()
+end
+
+function UIController:closeGoldMachineSelection()
+	self._goldMachineSessionActive = false
+	self._selectedPets = {}
+	self._multiSelectMode = false
+	if self._goldMachineOverlay and self._goldMachineOverlay.Parent then
+		self._goldMachineOverlay:Destroy()
+	end
+	self._goldMachineOverlay = nil
+	self._goldMachineResultLabel = nil
+	self._goldMachineConfirmButton = nil
+	self._goldMachineCancelButton = nil
+	self:_refreshPetGrid()
+end
+
 function UIController:updateCurrency(coins, diamonds)
 	self._coins = tonumber(coins) or 0
 	self._diamonds = tonumber(diamonds) or 0
@@ -16834,6 +17181,11 @@ function UIController:_refreshScreenData(screenName)
 end
 
 function UIController:openScreen(screenName)
+	-- Leaving a machine-owned inventory surface revokes the prompt capability and
+	-- its selection before another screen becomes interactive.
+	if screenName ~= "PetInventory" then
+		self:_requestGoldMachineCancel()
+	end
 	-- Navigation always dismisses a pending manual hatch flow and invalidates its
 	-- async request through Main's registered cancel callback.
 	self:_requestHatchPurchaseCancel()
@@ -16895,6 +17247,9 @@ function UIController:openScreen(screenName)
 end
 
 function UIController:closeScreen(screenName)
+	if screenName == "PetInventory" then
+		self:_requestGoldMachineCancel()
+	end
 	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen or not screen.Enabled or self._screenStates[screenName] == "closing" then return end
@@ -17001,7 +17356,7 @@ return UIController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007A">
+				<Item class="ModuleScript" referent="RBX0000007C">
 					<Properties>
 						<string name="Name">PetController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -18655,7 +19010,7 @@ return PetController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007B">
+				<Item class="ModuleScript" referent="RBX0000007D">
 					<Properties>
 						<string name="Name">CampaignController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -19570,7 +19925,7 @@ return CampaignController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007C">
+				<Item class="ModuleScript" referent="RBX0000007E">
 					<Properties>
 						<string name="Name">EffectsController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -21173,7 +21528,7 @@ return EffectsController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007D">
+				<Item class="ModuleScript" referent="RBX0000007F">
 					<Properties>
 						<string name="Name">MusicController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -21355,7 +21710,7 @@ return MusicController
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="ModuleScript" referent="RBX0000007E">
+				<Item class="ModuleScript" referent="RBX00000080">
 					<Properties>
 						<string name="Name">UpgradeTreeController</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -21660,11 +22015,11 @@ return UpgradeTreeController
 				</Item>
 		</Item>
 	</Item>
-	<Item class="ReplicatedStorage" referent="RBX00000065">
+	<Item class="ReplicatedStorage" referent="RBX00000066">
 		<Properties>
 			<string name="Name">ReplicatedStorage</string>
 		</Properties>
-			<Item class="Folder" referent="RBX0000003C">
+			<Item class="Folder" referent="RBX0000003D">
 				<Properties>
 					<string name="Name">Shared</string>
 				</Properties>
@@ -21905,7 +22260,9 @@ local BalanceConfig = {
 	},
 
 	Machines = {
-		RuntimeEnabled = false,
+		-- QOF-16 activates the machine runtime while retaining an explicit
+		-- per-definition gate. Gold is live; Rainbow remains fail-closed.
+		RuntimeEnabled = true,
 		MinInputs = 1,
 		MaxInputs = 7,
 		SuccessChanceByInput = {
@@ -21918,6 +22275,7 @@ local BalanceConfig = {
 			[7] = 1.00,
 		},
 		Gold = {
+			RuntimeEnabled = true,
 			id = "GoldMachine",
 			zoneId = 3,
 			inputVariant = "Normal",
@@ -21925,6 +22283,7 @@ local BalanceConfig = {
 			cost = { currency = "diamonds", amount = 750 },
 		},
 		Rainbow = {
+			RuntimeEnabled = false,
 			id = "RainbowMachine",
 			zoneId = 6,
 			inputVariant = "Golden",
@@ -22312,18 +22671,16 @@ function BalanceConfig.Validate()
 	assert(BalanceConfig.Hatch.MultiOpenRuntimeEnabled == true, "Multi-Open must be enabled in QOF-08")
 	assert(BalanceConfig.Hatch.DirectVariantUpgradesRuntimeEnabled == true, "direct variant upgrades must be enabled in QOF-07")
 	local futureSections = {
-		Machines = BalanceConfig.Machines,
 		Enchanting = BalanceConfig.Enchanting,
 	}
 	for name, section in pairs(futureSections) do
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
 
-	-- QOF-15 ships the complete machine transaction definition while keeping its
-	-- public runtime dormant. These exact values are the sole authority used by
-	-- MachineService and must not drift toward the retained legacy conversion.
+	-- QOF-16 exposes only the Gold machine. The global gate remains an emergency
+	-- kill switch and each definition has an independent activation gate.
 	local machines = BalanceConfig.Machines
-	assert(machines.RuntimeEnabled == false, "Machines must remain publicly dormant in QOF-15")
+	assert(machines.RuntimeEnabled == true, "Machines must be globally enabled in QOF-16")
 	assert(machines.MinInputs == 1 and machines.MaxInputs == 7, "machine input bounds must be 1..7")
 	local expectedMachineChances = { 0.13, 0.26, 0.39, 0.50, 0.63, 0.88, 1.00 }
 	for count, expectedChance in ipairs(expectedMachineChances) do
@@ -22336,12 +22693,13 @@ function BalanceConfig.Validate()
 		assert(type(key) == "number" and key % 1 == 0 and key >= 1 and key <= 7, "unknown machine chance key")
 	end
 	local expectedMachines = {
-		Gold = { id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
-		Rainbow = { id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
+		Gold = { runtimeEnabled = true, id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
+		Rainbow = { runtimeEnabled = false, id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
 	}
 	for machineType, expected in pairs(expectedMachines) do
 		local machine = machines[machineType]
 		assert(type(machine) == "table", machineType .. " machine definition is missing")
+		assert(machine.RuntimeEnabled == expected.runtimeEnabled, machineType .. " machine runtime gate changed")
 		assert(machine.id == expected.id, machineType .. " machine ID changed")
 		assert(machine.zoneId == expected.zoneId, machineType .. " machine zone changed")
 		assert(machine.inputVariant == expected.inputVariant, machineType .. " input variant changed")
@@ -24387,12 +24745,90 @@ return ShopData
 ]]></ProtectedString>
 					</Properties>
 				</Item>
+				<Item class="ModuleScript" referent="RBX0000003C">
+					<Properties>
+						<string name="Name">MachineClientSession</string>
+						<Content name="LinkedSource"><null></null></Content>
+						<ProtectedString name="Source"><![CDATA[-- MachineClientSession.lua - Pure generation ownership for QOF-16 prompt sessions.
+
+local MachineClientSession = {}
+
+function MachineClientSession.new()
+	return {
+		generation = 0,
+		prompt = nil,
+		machineId = nil,
+		identityToken = nil,
+		inFlight = false,
+	}
+end
+
+function MachineClientSession.start(state, prompt, machineId, identityToken)
+	if type(state) ~= "table" or prompt == nil
+		or machineId ~= "GoldMachine"
+		or type(identityToken) ~= "string" or identityToken == "" then
+		return false
+	end
+	state.generation = (state.generation or 0) + 1
+	state.prompt = prompt
+	state.machineId = machineId
+	state.identityToken = identityToken
+	state.inFlight = false
+	return true
+end
+
+function MachineClientSession.close(state)
+	if type(state) ~= "table" then return end
+	state.generation = (state.generation or 0) + 1
+	state.prompt = nil
+	state.machineId = nil
+	state.identityToken = nil
+	state.inFlight = false
+end
+
+function MachineClientSession.beginRequest(state)
+	if type(state) ~= "table" or state.inFlight
+		or state.prompt == nil or state.machineId ~= "GoldMachine"
+		or type(state.identityToken) ~= "string" or state.identityToken == "" then
+		return nil
+	end
+	state.generation = (state.generation or 0) + 1
+	state.inFlight = true
+	return {
+		generation = state.generation,
+		prompt = state.prompt,
+		machineId = state.machineId,
+		identityToken = state.identityToken,
+	}
+end
+
+function MachineClientSession.isCurrent(state, operation)
+	return type(state) == "table" and type(operation) == "table"
+		and state.generation == operation.generation
+		and state.inFlight == true
+		and state.prompt == operation.prompt
+		and state.machineId == operation.machineId
+		and state.identityToken == operation.identityToken
+end
+
+function MachineClientSession.finishRequest(state, operation)
+	if not MachineClientSession.isCurrent(state, operation) then
+		return false
+	end
+	state.inFlight = false
+	return true
+end
+
+return MachineClientSession
+]]></ProtectedString>
+					</Properties>
+				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000058">
+			<Item class="Folder" referent="RBX00000059">
 				<Properties>
 					<string name="Name">packages</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000057">
+				<Item class="ModuleScript" referent="RBX00000058">
 					<Properties>
 						<string name="Name">vide</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -24408,7 +24844,7 @@ export type Context<T> = vide.Context<T>
 return vide
 ]]></ProtectedString>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX0000003D">
+					<Item class="ModuleScript" referent="RBX0000003E">
 						<Properties>
 							<string name="Name">action</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24440,7 +24876,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003E">
+					<Item class="ModuleScript" referent="RBX0000003F">
 						<Properties>
 							<string name="Name">apply</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24609,7 +25045,7 @@ return apply
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000003F">
+					<Item class="ModuleScript" referent="RBX00000040">
 						<Properties>
 							<string name="Name">batch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24639,7 +25075,7 @@ return batch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000040">
+					<Item class="ModuleScript" referent="RBX00000041">
 						<Properties>
 							<string name="Name">branch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24686,7 +25122,7 @@ return branch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000041">
+					<Item class="ModuleScript" referent="RBX00000042">
 						<Properties>
 							<string name="Name">changed</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24711,7 +25147,7 @@ return changed
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000042">
+					<Item class="ModuleScript" referent="RBX00000043">
 						<Properties>
 							<string name="Name">cleanup</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24761,7 +25197,7 @@ return cleanup ::
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000043">
+					<Item class="ModuleScript" referent="RBX00000044">
 						<Properties>
 							<string name="Name">context</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24842,7 +25278,7 @@ return context
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000044">
+					<Item class="ModuleScript" referent="RBX00000045">
 						<Properties>
 							<string name="Name">create</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -24959,7 +25395,7 @@ return (create :: any) :: Create
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000045">
+					<Item class="ModuleScript" referent="RBX00000046">
 						<Properties>
 							<string name="Name">defaults</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25079,7 +25515,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000046">
+					<Item class="ModuleScript" referent="RBX00000047">
 						<Properties>
 							<string name="Name">derive</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25104,7 +25540,7 @@ return derive
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000047">
+					<Item class="ModuleScript" referent="RBX00000048">
 						<Properties>
 							<string name="Name">effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25123,7 +25559,7 @@ return effect :: (<T>(callback: (T) -> T, initial_value: T) -> ()) & ((callback:
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000048">
+					<Item class="ModuleScript" referent="RBX00000049">
 						<Properties>
 							<string name="Name">flags</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25142,7 +25578,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000049">
+					<Item class="ModuleScript" referent="RBX0000004A">
 						<Properties>
 							<string name="Name">graph</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25470,7 +25906,7 @@ return table.freeze {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004A">
+					<Item class="ModuleScript" referent="RBX0000004B">
 						<Properties>
 							<string name="Name">implicit_effect</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25602,7 +26038,7 @@ return {
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004B">
+					<Item class="ModuleScript" referent="RBX0000004C">
 						<Properties>
 							<string name="Name">indexes</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25730,7 +26166,7 @@ return indexes
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004C">
+					<Item class="ModuleScript" referent="RBX0000004D">
 						<Properties>
 							<string name="Name">lib</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25857,7 +26293,7 @@ return vide
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004D">
+					<Item class="ModuleScript" referent="RBX0000004E">
 						<Properties>
 							<string name="Name">mount</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25875,7 +26311,7 @@ return mount :: (<T>(component: () -> T, target: Instance) -> () -> ()) & ((comp
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004E">
+					<Item class="ModuleScript" referent="RBX0000004F">
 						<Properties>
 							<string name="Name">read</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25887,7 +26323,7 @@ return read
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000004F">
+					<Item class="ModuleScript" referent="RBX00000050">
 						<Properties>
 							<string name="Name">root</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25929,7 +26365,7 @@ return root :: <T...>(fn: (destroy: () -> ()) -> T...) -> (() -> (), T...)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000050">
+					<Item class="ModuleScript" referent="RBX00000051">
 						<Properties>
 							<string name="Name">show</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -25972,7 +26408,7 @@ return show
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000051">
+					<Item class="ModuleScript" referent="RBX00000052">
 						<Properties>
 							<string name="Name">source</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26010,7 +26446,7 @@ return source :: (<T>(initial_value: T) -> Source<T>) & (<T>() -> Source<T>)
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000052">
+					<Item class="ModuleScript" referent="RBX00000053">
 						<Properties>
 							<string name="Name">spring</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26345,7 +26781,7 @@ end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000053">
+					<Item class="ModuleScript" referent="RBX00000054">
 						<Properties>
 							<string name="Name">switch</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26466,7 +26902,7 @@ return switch
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000054">
+					<Item class="ModuleScript" referent="RBX00000055">
 						<Properties>
 							<string name="Name">timeout</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26500,7 +26936,7 @@ return function() return timeout, update_timeouts end
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000055">
+					<Item class="ModuleScript" referent="RBX00000056">
 						<Properties>
 							<string name="Name">untrack</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26532,7 +26968,7 @@ return untrack :: ( <T>(fn: () -> T) -> T ) & ( (fn: () -> ()) -> () )
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX00000056">
+					<Item class="ModuleScript" referent="RBX00000057">
 						<Properties>
 							<string name="Name">values</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26672,11 +27108,11 @@ return values
 					</Item>
 				</Item>
 			</Item>
-			<Item class="Folder" referent="RBX00000064">
+			<Item class="Folder" referent="RBX00000065">
 				<Properties>
 					<string name="Name">modules</string>
 				</Properties>
-				<Item class="ModuleScript" referent="RBX00000063">
+				<Item class="ModuleScript" referent="RBX00000064">
 					<Properties>
 						<string name="Name">formatNumber</string>
 						<Content name="LinkedSource"><null></null></Content>
@@ -26728,11 +27164,11 @@ return formatNumber
 ]]></ProtectedString>
 					</Properties>
 				</Item>
-				<Item class="Folder" referent="RBX00000062">
+				<Item class="Folder" referent="RBX00000063">
 					<Properties>
 						<string name="Name">upgradeTree</string>
 					</Properties>
-					<Item class="ModuleScript" referent="RBX00000059">
+					<Item class="ModuleScript" referent="RBX0000005A">
 						<Properties>
 							<string name="Name">upgradeState</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -26835,7 +27271,7 @@ end
 return createUpgradeState]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005A">
+					<Item class="ModuleScript" referent="RBX0000005B">
 						<Properties>
 							<string name="Name">upgradeTree</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28004,7 +28440,7 @@ return createUpgradeTree
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005B">
+					<Item class="ModuleScript" referent="RBX0000005C">
 						<Properties>
 							<string name="Name">upgradeTreeData</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28867,7 +29303,7 @@ return upgradeTreeData
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="ModuleScript" referent="RBX0000005C">
+					<Item class="ModuleScript" referent="RBX0000005D">
 						<Properties>
 							<string name="Name">upgradeTreeSettings</string>
 							<Content name="LinkedSource"><null></null></Content>
@@ -28945,29 +29381,29 @@ return upgradeTreeSettings
 ]]></ProtectedString>
 						</Properties>
 					</Item>
-					<Item class="Folder" referent="RBX00000061">
+					<Item class="Folder" referent="RBX00000062">
 						<Properties>
 							<string name="Name">sounds</string>
 						</Properties>
-						<Item class="Sound" referent="RBX0000005D">
+						<Item class="Sound" referent="RBX0000005E">
 							<Properties>
 								<string name="Name">close</string>
 								<Content name="SoundId"><url>rbxassetid://134438769993456</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005E">
+						<Item class="Sound" referent="RBX0000005F">
 							<Properties>
 								<string name="Name">hover</string>
 								<Content name="SoundId"><url>rbxassetid://86397706758188</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX0000005F">
+						<Item class="Sound" referent="RBX00000060">
 							<Properties>
 								<string name="Name">open</string>
 								<Content name="SoundId"><url>rbxassetid://72320208051245</url></Content>
 							</Properties>
 						</Item>
-						<Item class="Sound" referent="RBX00000060">
+						<Item class="Sound" referent="RBX00000061">
 							<Properties>
 								<string name="Name">upgrade</string>
 								<Content name="SoundId"><url>rbxassetid://72362215248423</url></Content>
@@ -28977,7 +29413,7 @@ return upgradeTreeSettings
 				</Item>
 			</Item>
 	</Item>
-	<Item class="StarterGui" referent="RBX00000082">
+	<Item class="StarterGui" referent="RBX00000084">
 		<Properties>
 			<string name="Name">StarterGui</string>
 		</Properties>
@@ -29012,7 +29448,7 @@ return upgradeTreeSettings
 			</Properties>
 		</Item>
 	</Item>
-	<Item class="SoundService" referent="RBX00000083">
+	<Item class="SoundService" referent="RBX00000085">
 		<Properties>
 			<string name="Name">SoundService</string>
 		</Properties>

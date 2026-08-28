@@ -13,6 +13,7 @@ local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
 local MachineService = require(script.Parent.Services.MachineService)
+local MachineAuthorityBootstrap = require(script.Parent.Services.MachineAuthorityBootstrap)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
@@ -172,6 +173,8 @@ local remoteFunctions = {
 	"GetQuestProgress",
 	"PurchaseMasteryBuff",
 	"GetMasteryState",
+	-- Rolling-client compatibility only. Its handler is permanently fail-closed.
+	"ConvertToGoldenPet",
 	"UseMachine",
 	"AssignPetTarget",
 	"GetDiscoveredPets",
@@ -233,9 +236,11 @@ local zoneInitSucceeded, activationValidatorOrError = xpcall(function()
 end, debug.traceback)
 if not zoneInitSucceeded then
 	warn("[Battle Pets] ZoneService failed to initialize:\n" .. tostring(activationValidatorOrError))
-elseif type(activationValidatorOrError) == "function" then
-	MachineService.setActivationValidator(activationValidatorOrError)
-else
+elseif not MachineAuthorityBootstrap.install(
+	MachineService,
+	zoneInitSucceeded,
+	activationValidatorOrError
+) then
 	warn("[Battle Pets] ZoneService did not provide machine activation authority")
 end
 ZoneService.setQuestService(QuestService)
@@ -502,7 +507,14 @@ getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgra
 	return success, message, state
 end
 
--- UseMachine is the sole machine entry point. Main validates only request
+-- Rolling clients may still wait for this historical remote during startup.
+-- Retaining a mutation-free rejection avoids deadlocking their entire client
+-- while guaranteeing that no free conversion path survives QOF-16.
+getRemoteFunction("ConvertToGoldenPet").OnServerInvoke = function()
+	return nil, "Legacy conversion unavailable; use the Gold Machine in Zone 3"
+end
+
+-- UseMachine is the sole machine mutation entry point. Main validates only request
 -- identity/shape and abuse limits; all world, pet, currency, RNG, and quest
 -- semantics remain owned by MachineService and its injected ZoneService authority.
 getRemoteFunction("UseMachine").OnServerInvoke = function(player, machineId, activationToken, petInstanceIds)
@@ -511,8 +523,9 @@ getRemoteFunction("UseMachine").OnServerInvoke = function(player, machineId, act
 	end
 	-- Account every request from a valid player before traversing caller-owned
 	-- data so malformed traffic cannot bypass either abuse-control bucket.
-	if not canCall(player, "UseMachine", 0.25)
-		or not canCallBurst(player, "UseMachine", 8, 10) then
+	local cooldownAllowed = canCall(player, "UseMachine", 0.25)
+	local burstAllowed = canCallBurst(player, "UseMachine", 8, 10)
+	if not cooldownAllowed or not burstAllowed then
 		return nil, "Please wait before using a machine again"
 	end
 	if not isValidIdentifier(machineId) then

@@ -212,6 +212,12 @@ function UIController.new()
 	self._equippedBar = nil
 	self._multiSelectMode = false
 	self._selectedPets = {}
+	self._goldMachineSessionActive = false
+	self._goldMachineCallbacks = {}
+	self._goldMachineOverlay = nil
+	self._goldMachineResultLabel = nil
+	self._goldMachineConfirmButton = nil
+	self._goldMachineCancelButton = nil
 	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
@@ -1293,7 +1299,8 @@ function UIController:_createPetInventory()
 	closeBtnCorner.Parent = closeBtn
 
 	closeBtn.MouseButton1Click:Connect(function()
-		self:toggleScreen("PetInventory")
+		self:_requestGoldMachineCancel()
+		self:closeScreen("PetInventory")
 	end)
 
 	local multiSelectBtn = Instance.new("TextButton")
@@ -1397,13 +1404,13 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
-	-- "Make Golden" button (visible in multi-select mode)
+	-- Gold Machine action is visible only during a server-world prompt session.
 	local goldenBtn = Instance.new("TextButton")
-	goldenBtn.Name = "MakeGoldenBtn"
+	goldenBtn.Name = "UseGoldMachineBtn"
 	goldenBtn.Size = UDim2.fromScale(0.15, 0.06)
 	goldenBtn.Position = UDim2.fromScale(0.18, 0.92)
 	goldenBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-	goldenBtn.Text = "Make Golden"
+	goldenBtn.Text = "Use Gold Machine"
 	goldenBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
 	goldenBtn.Font = Enum.Font.GothamBold
 	goldenBtn.TextScaled = true
@@ -1420,7 +1427,7 @@ function UIController:_createPetInventory()
 	goldenStroke.Parent = goldenBtn
 
 	goldenBtn.MouseButton1Click:Connect(function()
-		self:_showGoldenConversionConfirm()
+		self:_showGoldMachineConfirm()
 	end)
 
 	goldenBtn.MouseEnter:Connect(function()
@@ -1680,9 +1687,9 @@ function UIController:_refreshPetGrid()
 		deleteBtn.Visible = self._multiSelectMode
 	end
 
-	local goldenBtn = mainFrame:FindFirstChild("MakeGoldenBtn")
+	local goldenBtn = mainFrame:FindFirstChild("UseGoldMachineBtn")
 	if goldenBtn then
-		goldenBtn.Visible = self._multiSelectMode
+		goldenBtn.Visible = self._multiSelectMode and self._goldMachineSessionActive
 	end
 
 	local duplicatesBtn = mainFrame:FindFirstChild("SelectDuplicatesBtn")
@@ -1985,56 +1992,60 @@ function UIController:_deleteSelectedPets()
 end
 
 --------------------------------------------------------------------------------
--- GOLDEN CONVERSION CONFIRM PANEL
+-- GOLD MACHINE CONFIRM PANEL (available only from the Zone 3 prompt session)
 --------------------------------------------------------------------------------
-function UIController:_showGoldenConversionConfirm()
-	-- Validate selection: must be 1-7 same-type pets, not golden, not equipped
-	local selectedIds = {}
-	for id, _ in pairs(self._selectedPets) do
-		table.insert(selectedIds, id)
+function UIController:_showGoldMachineConfirm()
+	if not self._goldMachineSessionActive then
+		self:_showGoldenError("Use the Gold Machine in Zone 3 first!")
+		return
 	end
 
+	local selectedIds = {}
+	for id in pairs(self._selectedPets) do
+		table.insert(selectedIds, id)
+	end
+	table.sort(selectedIds)
+
 	if #selectedIds < 1 or #selectedIds > 7 then
-		-- Show brief error
 		self:_showGoldenError("Select 1-7 same-type pets!")
 		return
 	end
 
-	-- Check all selected pets are same type and valid
 	local requiredPetId = nil
+	local shinyCount = 0
 	for _, selId in ipairs(selectedIds) do
+		local selectedPet = nil
 		for _, pet in ipairs(self._petInventoryData) do
-			local petUniqueId = pet.uniqueId or pet.id
-			if petUniqueId == selId then
-				if pet.favorite == true then
-					self:_showGoldenError("Favorite pets are protected!")
-					return
-				end
-				if pet.golden == true or pet.variant == "Golden" then
-					self:_showGoldenError("Cannot use golden pets!")
-					return
-				end
-				if pet.shiny == true or pet.variant == "Shiny" then
-					self:_showGoldenError("Shiny pets are protected!")
-					return
-				end
-				local variant = pet.variant or "Normal"
-				if variant ~= "Normal" then
-					self:_showGoldenError("Only normal pets can become Golden!")
-					return
-				end
-				if pet.equipped then
-					self:_showGoldenError("Unequip pets first!")
-					return
-				end
-				if requiredPetId == nil then
-					requiredPetId = pet.petId
-				elseif pet.petId ~= requiredPetId then
-					self:_showGoldenError("All pets must be the same type!")
-					return
-				end
+			if (pet.uniqueId or pet.id) == selId then
+				selectedPet = pet
 				break
 			end
+		end
+		if not selectedPet then
+			self:_showGoldenError("A selected pet is no longer available!")
+			return
+		end
+		if selectedPet.favorite == true then
+			self:_showGoldenError("Favorite pets are protected!")
+			return
+		end
+		local presentation = PetVariantPresentation.resolve(selectedPet)
+		if presentation.baseVariant ~= "Normal" then
+			self:_showGoldenError("Only normal pets can become Golden!")
+			return
+		end
+		if selectedPet.equipped == true or self:_isPetEquipped(selId) then
+			self:_showGoldenError("Unequip pets first!")
+			return
+		end
+		if requiredPetId == nil then
+			requiredPetId = selectedPet.petId
+		elseif selectedPet.petId ~= requiredPetId then
+			self:_showGoldenError("All pets must be the same type!")
+			return
+		end
+		if selectedPet.shiny == true then
+			shinyCount += 1
 		end
 	end
 
@@ -2043,13 +2054,9 @@ function UIController:_showGoldenConversionConfirm()
 		return
 	end
 
-	-- Calculate chance based on count
-	local chanceTable = { 13, 26, 39, 50, 63, 88, 100 }
 	local count = #selectedIds
-	local chance = chanceTable[count] or 13
-
-	-- Show confirmation overlay
-	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds)
+	local chance = math.floor((BalanceConfig.Machines.SuccessChanceByInput[count] or 0) * 100 + 0.5)
+	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
 end
 
 function UIController:_showGoldenError(message)
@@ -2082,7 +2089,7 @@ function UIController:_showGoldenError(message)
 	end)
 end
 
-function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds)
+function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
 	if not self._playerGui then return end
 
 	-- Remove old overlay if exists
@@ -2093,6 +2100,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	overlay.Name = "GoldenConfirmOverlay"
 	overlay.ResetOnSpawn = false
 	overlay.Parent = self._playerGui
+	self._goldMachineOverlay = overlay
 
 	local bg = Instance.new("Frame")
 	bg.Size = UDim2.fromScale(1, 1)
@@ -2132,7 +2140,8 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	infoLabel.Size = UDim2.fromScale(0.8, 0.1)
 	infoLabel.Position = UDim2.fromScale(0.1, 0.17)
 	infoLabel.BackgroundTransparency = 1
-	infoLabel.Text = "Sacrificing " .. tostring(count) .. "x " .. tostring(petId)
+	infoLabel.Text = "Sacrifice " .. tostring(count) .. "x " .. tostring(petId)
+		.. "  •  " .. tostring(BalanceConfig.Machines.Gold.cost.amount) .. " Diamonds"
 	infoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
 	infoLabel.Font = Enum.Font.GothamBold
 	infoLabel.TextScaled = true
@@ -2162,7 +2171,10 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
 	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
 	warnLabel.BackgroundTransparency = 1
-	warnLabel.Text = "WARNING: All pets are consumed even on failure!"
+	warnLabel.Text = "WARNING: Pets and 750 Diamonds are consumed even on failure!"
+	if shinyCount > 1 then
+		warnLabel.Text ..= " Shiny does not stack."
+	end
 	warnLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	warnLabel.Font = Enum.Font.GothamBold
 	warnLabel.TextScaled = true
@@ -2211,66 +2223,78 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	resultLabel.Font = Enum.Font.GothamBold
 	resultLabel.TextScaled = true
 	resultLabel.Parent = panel
+	self._goldMachineResultLabel = resultLabel
+	self._goldMachineConfirmButton = confirmBtn
+	self._goldMachineCancelButton = cancelBtn
 
 	cancelBtn.MouseButton1Click:Connect(function()
-		overlay:Destroy()
+		self:_requestGoldMachineCancel()
 	end)
 
 	confirmBtn.MouseButton1Click:Connect(function()
-		-- Disable buttons during request
-		confirmBtn.Text = "..."
+		if not self._goldMachineSessionActive then return end
+		local onConfirm = self._goldMachineCallbacks.onConfirm
+		if type(onConfirm) ~= "function" then
+			self:showGoldMachineResult(nil, "Machine request is unavailable")
+			return
+		end
+		confirmBtn.Active = false
+		confirmBtn.AutoButtonColor = false
+		confirmBtn.Text = "CONFIRMING…"
 		confirmBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+		cancelBtn.Active = false
 		cancelBtn.Visible = false
-
-		-- Fire remote
-		self:_convertToGolden(selectedIds, resultLabel, overlay)
+		onConfirm(selectedIds)
 	end)
 end
 
-function UIController:_convertToGolden(petInstanceIds, resultLabel, overlay)
-	if not self._remotes then return end
-
-	local remote = self._remotes:FindFirstChild("ConvertToGoldenPet")
-	if not remote then return end
-
-	local result, err = remote:InvokeServer(petInstanceIds)
-
-	if err then
-		if resultLabel then
-			resultLabel.Text = "Error: " .. tostring(err)
-			resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+function UIController:showGoldMachineResult(result, requestError)
+	local resultLabel = self._goldMachineResultLabel
+	if not resultLabel or not resultLabel.Parent then return end
+	if requestError then
+		resultLabel.Text = "Error: " .. tostring(requestError)
+		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+		if self._goldMachineConfirmButton then
+			self._goldMachineConfirmButton.Active = true
+			self._goldMachineConfirmButton.AutoButtonColor = true
+			self._goldMachineConfirmButton.Text = "TRY AGAIN"
+			self._goldMachineConfirmButton.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
 		end
-		task.delay(3, function()
-			if overlay and overlay.Parent then
-				overlay:Destroy()
-			end
-		end)
+		if self._goldMachineCancelButton then
+			self._goldMachineCancelButton.Active = true
+			self._goldMachineCancelButton.Visible = true
+		end
 		return
 	end
 
-	if result and result.success then
-		if resultLabel then
-			local goldenName = result.goldenPet and result.goldenPet.name or "Golden Pet"
-			resultLabel.Text = "SUCCESS! Got " .. goldenName .. "!"
-			resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
-		end
-		if result.goldenPet and result.isNewDiscovery == true then
-			self:enqueueDiscoveryToast(result.goldenPet)
+	if type(result) ~= "table" then
+		self:showGoldMachineResult(nil, "Machine request failed safely")
+		return
+	end
+	if result.success then
+		local outputName = result.outputPet and result.outputPet.name or "Golden Pet"
+		resultLabel.Text = "SUCCESS! Got " .. outputName .. "!"
+		resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		if result.outputPet and result.isNewDiscovery == true then
+			self:enqueueDiscoveryToast(result.outputPet)
 		end
 	else
-		if resultLabel then
-			resultLabel.Text = "FAILED! All pets lost..."
-			resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-		end
+		resultLabel.Text = "FAILED! Pets and Diamonds were consumed."
+		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	end
-
-	-- Clear selection
 	self._selectedPets = {}
-
+	local completedOverlay = self._goldMachineOverlay
 	task.delay(3, function()
-		if overlay and overlay.Parent then
-			overlay:Destroy()
+		-- Delayed work owns only the overlay generation that scheduled it. A newer
+		-- prompt/session may already have installed another confirmation.
+		if self._goldMachineOverlay ~= completedOverlay then return end
+		if completedOverlay and completedOverlay.Parent then
+			completedOverlay:Destroy()
 		end
+		self._goldMachineOverlay = nil
+		self._goldMachineResultLabel = nil
+		self._goldMachineConfirmButton = nil
+		self._goldMachineCancelButton = nil
 		self:_refreshPetGrid()
 	end)
 end
@@ -4254,6 +4278,48 @@ end
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
+function UIController:_requestGoldMachineCancel()
+	if not self._goldMachineSessionActive then return end
+	local onCancel = self._goldMachineCallbacks.onCancel
+	if type(onCancel) == "function" then
+		pcall(onCancel)
+	end
+	-- A callback is advisory; the UI always closes its local capability even if
+	-- the owner throws, is absent, or neglects to clear it.
+	if self._goldMachineSessionActive then
+		self:closeGoldMachineSelection()
+	end
+end
+
+function UIController:setGoldMachineCallbacks(onConfirm, onCancel)
+	self._goldMachineCallbacks = {
+		onConfirm = type(onConfirm) == "function" and onConfirm or nil,
+		onCancel = type(onCancel) == "function" and onCancel or nil,
+	}
+end
+
+function UIController:openGoldMachineSelection()
+	self._goldMachineSessionActive = true
+	self._selectedPets = {}
+	self._multiSelectMode = true
+	self:openScreen("PetInventory")
+	self:_refreshPetGrid()
+end
+
+function UIController:closeGoldMachineSelection()
+	self._goldMachineSessionActive = false
+	self._selectedPets = {}
+	self._multiSelectMode = false
+	if self._goldMachineOverlay and self._goldMachineOverlay.Parent then
+		self._goldMachineOverlay:Destroy()
+	end
+	self._goldMachineOverlay = nil
+	self._goldMachineResultLabel = nil
+	self._goldMachineConfirmButton = nil
+	self._goldMachineCancelButton = nil
+	self:_refreshPetGrid()
+end
+
 function UIController:updateCurrency(coins, diamonds)
 	self._coins = tonumber(coins) or 0
 	self._diamonds = tonumber(diamonds) or 0
@@ -4850,6 +4916,11 @@ function UIController:_refreshScreenData(screenName)
 end
 
 function UIController:openScreen(screenName)
+	-- Leaving a machine-owned inventory surface revokes the prompt capability and
+	-- its selection before another screen becomes interactive.
+	if screenName ~= "PetInventory" then
+		self:_requestGoldMachineCancel()
+	end
 	-- Navigation always dismisses a pending manual hatch flow and invalidates its
 	-- async request through Main's registered cancel callback.
 	self:_requestHatchPurchaseCancel()
@@ -4911,6 +4982,9 @@ function UIController:openScreen(screenName)
 end
 
 function UIController:closeScreen(screenName)
+	if screenName == "PetInventory" then
+		self:_requestGoldMachineCancel()
+	end
 	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
 	if not screen or not screen.Enabled or self._screenStates[screenName] == "closing" then return end

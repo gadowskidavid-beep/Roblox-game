@@ -132,6 +132,8 @@ local specFiles = {
 	"tests/PotionService.spec",
 	"tests/MachineService.spec",
 	"tests/MachineStation.spec",
+	"tests/MachineBootstrap.spec",
+	"tests/MachineClient.spec",
 }
 
 local function loadSpec(specPath)

@@ -28,6 +28,7 @@ local CampaignData = require(Shared:WaitForChild("CampaignData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
+local MachineClientSession = require(Shared:WaitForChild("MachineClientSession"))
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -71,7 +72,7 @@ local CritAttackDestructible = Remotes:WaitForChild("CritAttackDestructible")
 local GetQuestProgress = Remotes:WaitForChild("GetQuestProgress")
 local PurchaseMasteryBuff = Remotes:WaitForChild("PurchaseMasteryBuff")
 local GetMasteryState = Remotes:WaitForChild("GetMasteryState")
-local ConvertToGoldenPet = Remotes:WaitForChild("ConvertToGoldenPet")
+local UseMachine = Remotes:WaitForChild("UseMachine")
 local GetDiscoveredPets = Remotes:WaitForChild("GetDiscoveredPets")
 local PurchaseShopItem = Remotes:WaitForChild("PurchaseShopItem")
 local GetShopBuffs = Remotes:WaitForChild("GetShopBuffs")
@@ -494,6 +495,59 @@ uiController:setHatchPurchaseCallbacks(
 	requestFreshHatchQuote
 )
 
+-- QOF-16 Gold Machine sessions are created only by the central runtime prompt
+-- router. Attributes are UX routing data; the server independently validates the
+-- private station registry, token, unlock, exact instances, and live distance.
+local machineSession = MachineClientSession.new()
+
+local function getGoldMachinePromptData(prompt)
+	if not prompt or prompt.Name ~= "UseMachinePrompt" or not prompt.Parent then
+		return nil
+	end
+	local anchor = prompt.Parent
+	local model = anchor.Parent
+	if not model or not model:IsA("Model") then return nil end
+	local machineId = model:GetAttribute("MachineId")
+	local identityToken = model:GetAttribute("MachineIdentityToken")
+	if machineId ~= "GoldMachine" or type(identityToken) ~= "string" or identityToken == "" then
+		return nil
+	end
+	return machineId, identityToken
+end
+
+local function closeGoldMachineSession()
+	MachineClientSession.close(machineSession)
+	uiController:closeGoldMachineSelection()
+end
+
+local function confirmGoldMachine(selectedIds)
+	local prompt = machineSession.prompt
+	local machineId = machineSession.machineId
+	local identityToken = machineSession.identityToken
+	local routedId, routedToken = getGoldMachinePromptData(prompt)
+	if routedId ~= machineId or routedToken ~= identityToken then
+		closeGoldMachineSession()
+		return
+	end
+	local operation = MachineClientSession.beginRequest(machineSession)
+	if not operation then return end
+	task.spawn(function()
+		local invoked, result, machineError = pcall(function()
+			return UseMachine:InvokeServer(machineId, identityToken, selectedIds)
+		end)
+		if not MachineClientSession.finishRequest(machineSession, operation) then
+			return
+		end
+		if invoked and type(result) == "table" then
+			uiController:showGoldMachineResult(result, nil)
+		else
+			uiController:showGoldMachineResult(nil, invoked and machineError or result)
+		end
+	end)
+end
+
+uiController:setGoldMachineCallbacks(confirmGoldMachine, closeGoldMachineSession)
+
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
 	if not eggType then return end
@@ -512,6 +566,10 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
+	if prompt == machineSession.prompt then
+		closeGoldMachineSession()
+		return
+	end
 	if prompt ~= activeEggPrompt then return end
 	local eggType = activeEggType
 	activeEggPrompt = nil
@@ -530,6 +588,15 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 	end
 	if prompt.Name == "PotionShopPrompt" then
 		uiController:openScreen("ShopScreen")
+		return
+	end
+	local machineId, identityToken = getGoldMachinePromptData(prompt)
+	if machineId then
+		if machineSession.prompt and machineSession.prompt ~= prompt then
+			closeGoldMachineSession()
+		end
+		MachineClientSession.start(machineSession, prompt, machineId, identityToken)
+		uiController:openGoldMachineSelection()
 		return
 	end
 	local eggType = getEggTypeFromPrompt(prompt)
