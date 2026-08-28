@@ -131,6 +131,7 @@ local specFiles = {
 	"tests/MovementService.spec",
 	"tests/PickupService.spec",
 	"tests/PetService.spec",
+	"tests/ZoneService.spec",
 	"tests/CampaignService.spec",
 	"tests/EggService.spec",
 	"tests/AutoHatchService.spec",
