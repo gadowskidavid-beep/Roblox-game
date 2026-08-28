@@ -1,6 +1,6 @@
 # QOF-24 – Kanonische Schadenspräzision
 
-Status: **Code-verifiziert – Studio-Test ausstehend**
+Status: **Abgeschlossen – Fortsetzung durch ausdrückliches Nutzer-`Weiter`; Studio-Ergebnis nicht separat gemeldet**
 
 Implementierungscommit: `52a335690d56a236016194065e5fa8138457e6ef`
 
@@ -99,4 +99,4 @@ Die RBXL beginnt mit der exakten binären Roblox-Signatur `<roblox!\x89\xff\r\n\
 
 ## Bekannte Grenzen
 
-Der echte Roblox-Studio-Playtest, Physik-/Netzwerkpfad und DataStore-Rejoin können im Linux-Sandbox-Build nicht ausgeführt werden. Die Serverautorität behält IEEE-754/Luau-Fließkommazahlen; QOF-24 führt keine Decimal-/Fixed-Point-Economy ein. UI darf Zahlen weiterhin formatieren, ohne die Kampfauthorität zu ändern. Ein separates positives Studio-Ergebnis liegt noch nicht vor.
+Der echte Roblox-Studio-Playtest, Physik-/Netzwerkpfad und DataStore-Rejoin können im Linux-Sandbox-Build nicht ausgeführt werden. Die Serverautorität behält IEEE-754/Luau-Fließkommazahlen; QOF-24 führt keine Decimal-/Fixed-Point-Economy ein. UI darf Zahlen weiterhin formatieren, ohne die Kampfauthorität zu ändern. Der Nutzer hat anschließend ausdrücklich `Weiter` geschrieben und damit die Fortsetzung zu QOF-25 freigegeben; ein separates positives Studio-Ergebnis wurde nicht gemeldet und wird deshalb nicht behauptet.
