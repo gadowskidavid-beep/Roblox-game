@@ -9,6 +9,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- Require all services
 local DataService = require(script.Parent.Services.DataService)
+local ProfileTransactionService = require(script.Parent.Services.ProfileTransactionService)
 local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
@@ -209,7 +210,7 @@ end
 ----------------------------------------------
 
 -- Init currency first (with nil upgradeService, we set it after)
-CurrencyService.init(DataService, nil)
+CurrencyService.init(DataService, nil, ProfileTransactionService)
 UpgradeService.init(DataService, CurrencyService)
 -- Now set the upgrade reference for CurrencyService
 CurrencyService._upgradeService = UpgradeService
@@ -218,7 +219,7 @@ CurrencyService._upgradeService = UpgradeService
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
-PotionService.init(DataService, CurrencyService)
+PotionService.init(DataService, CurrencyService, ProfileTransactionService)
 ShopService.setPotionService(PotionService)
 UpgradeTreeService.init(DataService, CurrencyService)
 PickupService.init(DataService, CurrencyService, QuestService, MasteryService, UpgradeTreeService)
@@ -234,7 +235,13 @@ PetService.setUpgradeTreeService(UpgradeTreeService)
 MachineService.init(DataService, CurrencyService, PetService)
 MachineService.setQuestService(QuestService)
 EnchantingService.init(DataService, CurrencyService, PetService)
-EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
+EggService.init(
+	DataService,
+	CurrencyService,
+	PetService,
+	UpgradeTreeService,
+	ProfileTransactionService
+)
 EggService.setQuestService(QuestService)
 EggService.setPotionService(PotionService)
 ShopService.setEggService(EggService)
@@ -270,7 +277,7 @@ ZoneService.setMasteryService(MasteryService)
 ZoneService.setShopService(ShopService)
 ZoneService.setPickupService(PickupService)
 
-CampaignService.init(DataService, CurrencyService, PetService)
+CampaignService.init(DataService, CurrencyService, PetService, EggService)
 
 -- Start DataService auto-save loop
 DataService.startAutoSave()
@@ -281,18 +288,27 @@ DataService.bindToClose({
 	beginShutdown = function()
 		AutoHatchService.prepareForShutdown()
 		EggService.beginShutdown()
+		ShopService.beginShutdown()
+		PotionService.beginShutdown()
 		MachineService.beginShutdown()
 		EnchantingService.beginShutdown()
 		return true
 	end,
 	settlePlayer = function(player)
+		-- Egg owns any nested Shiny reservation and must decide commit/rollback
+		-- before Shop/Potion attempt their own retained lifecycle settlement.
 		local eggSettled = EggService.cleanup(player)
+		local shopSettled = ShopService.cleanup(player)
+		local potionSettled = eggSettled and PotionService.cleanup(player) or false
 		local machinesSettled = MachineService.cleanup(player)
 		local enchantingSettled = EnchantingService.cleanup(player)
 		local pickupsSettled = PickupService.settlePlayer(player)
+		local profileSettled = ProfileTransactionService.settlePlayer(player)
 		local inventoryIdle = PetService.isInventoryMutationIdle(player)
-		return eggSettled and machinesSettled and enchantingSettled
-			and pickupsSettled and inventoryIdle
+		local potionIdle = PotionService.isPotionMutationIdle(player)
+		return eggSettled and shopSettled and potionSettled
+			and machinesSettled and enchantingSettled and pickupsSettled
+			and profileSettled and inventoryIdle and potionIdle
 	end,
 })
 
@@ -975,20 +991,23 @@ Players.PlayerRemoving:Connect(function(player)
 
 	local postSettlementCleanupDone = false
 	local released = DataService.onPlayerRemoving(player, function()
-		-- Attempt every independent owner on every pass. One unresolved profile
-		-- never prevents another user from settling or saving.
+		-- Attempt every independent owner on every pass. Egg settles first because
+		-- it owns the commit/rollback decision for any nested Shiny Potion lease.
 		local pickupsSettled = PickupService.settlePlayer(player)
 		local eggSettled = EggService.onPlayerRemoving(player)
+		local shopSettled = ShopService.onPlayerRemoving(player)
+		local potionSettled = eggSettled and PotionService.onPlayerRemoving(player) or false
 		local machineSettled = MachineService.onPlayerRemoving(player)
 		local enchantingSettled = EnchantingService.onPlayerRemoving(player)
+		local profileSettled = ProfileTransactionService.settlePlayer(player)
 		local inventoryIdle = PetService.isInventoryMutationIdle(player)
-		if not (pickupsSettled and eggSettled and machineSettled
-			and enchantingSettled and inventoryIdle) then
+		local potionIdle = PotionService.isPotionMutationIdle(player)
+		if not (pickupsSettled and eggSettled and shopSettled and potionSettled
+			and machineSettled and enchantingSettled and profileSettled
+			and inventoryIdle and potionIdle) then
 			return false
 		end
 		if not postSettlementCleanupDone then
-			PotionService.onPlayerRemoving(player)
-			ShopService.onPlayerRemoving(player)
 			ZoneService.onPlayerRemoving(player)
 			CampaignService.onPlayerRemoving(player)
 			postSettlementCleanupDone = true

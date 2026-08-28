@@ -10,6 +10,7 @@ local CurrencyService = {}
 
 CurrencyService._dataService = nil
 CurrencyService._upgradeService = nil
+CurrencyService._profileTransactionService = nil
 
 local VALID_CURRENCIES = {
 	coins = true,
@@ -19,7 +20,7 @@ local VALID_CURRENCIES = {
 -- Opaque pending debits keep the already validated profile reference private.
 -- Shop transactions can therefore roll back silently without a second
 -- DataService lookup or any pre-commit client event.
-local pendingSpendTransactions = setmetatable({}, { __mode = "k" })
+local pendingSpendTransactions = {}
 
 local function isFiniteNumber(value)
 	return type(value) == "number"
@@ -67,9 +68,11 @@ local function fireCurrencyUpdate(player, data)
 	end
 end
 
-function CurrencyService.init(dataService, upgradeService)
+function CurrencyService.init(dataService, upgradeService, profileTransactionService)
 	CurrencyService._dataService = dataService
 	CurrencyService._upgradeService = upgradeService
+	CurrencyService._profileTransactionService = profileTransactionService
+	pendingSpendTransactions = {}
 end
 
 -- Resolve existing quest/mastery reward bonuses exactly once for a future credit.
@@ -172,34 +175,82 @@ function CurrencyService.addDiamonds(player, amount)
 	return true, finalAmount
 end
 
--- Begin a silent exact debit against one already validated profile. The opaque
--- handle can be committed once (publishing one CurrencyUpdated event) or rolled
--- back once (publishing nothing). This is the atomic boundary used by systems
--- that must mutate another profile field before the purchase can commit.
-function CurrencyService.beginSpendTransaction(player, currency, amount)
+-- Reserve one exact debit without exposing an intermediate live balance. The
+-- central profile owner blocks every save and competing composite transaction
+-- until commit applies the debit once or rollback cancels the reservation.
+function CurrencyService.beginSpendTransaction(player, currency, amount, ownerName)
 	amount = normalizePositiveAmount(amount, true)
 	if not amount or VALID_CURRENCIES[currency] ~= true then
 		return nil
 	end
+	local coordinator = CurrencyService._profileTransactionService
+	if type(coordinator) ~= "table"
+		or type(coordinator.begin) ~= "function"
+		or type(coordinator.setSettler) ~= "function"
+		or type(coordinator.commit) ~= "function" then
+		return nil
+	end
+	local owner = coordinator.begin(
+		player,
+		type(ownerName) == "string" and ownerName or "CurrencyService.spend"
+	)
+	if not owner then return nil end
 	local data = getProfile(player)
-	if not data or data[currency] < amount then
+	if not data or data ~= owner.profile or data[currency] < amount then
+		coordinator.commit(owner)
 		return nil
 	end
 
-	data[currency] = data[currency] - amount
 	local transaction = {}
 	pendingSpendTransactions[transaction] = {
 		player = player,
 		profile = data,
 		currency = currency,
 		amount = amount,
+		owner = owner,
 	}
+	-- Install a safe lifecycle fallback before returning the reservation. Composite
+	-- services may replace it with domain-first compensation, but even a failed
+	-- replacement can never strand an owner without a retryable cancellation path.
+	local settlerOk, settlerRegistered = pcall(coordinator.setSettler, owner, function()
+		return CurrencyService.rollbackSpendTransaction(transaction)
+	end)
+	if not settlerOk or settlerRegistered ~= true then
+		pendingSpendTransactions[transaction] = nil
+		pcall(coordinator.commit, owner)
+		return nil
+	end
 	return transaction
+end
+
+function CurrencyService.setSpendSettler(transaction, settler)
+	local pending = type(transaction) == "table" and pendingSpendTransactions[transaction] or nil
+	local coordinator = CurrencyService._profileTransactionService
+	if not pending or type(settler) ~= "function"
+		or type(coordinator) ~= "table" or type(coordinator.setSettler) ~= "function" then
+		return false
+	end
+	return coordinator.setSettler(pending.owner, function()
+		return settler(transaction)
+	end)
 end
 
 function CurrencyService.commitSpendTransaction(transaction)
 	local pending = type(transaction) == "table" and pendingSpendTransactions[transaction] or nil
-	if not pending then
+	local coordinator = CurrencyService._profileTransactionService
+	if not pending or type(coordinator) ~= "table"
+		or type(coordinator.isCurrent) ~= "function"
+		or not coordinator.isCurrent(pending.owner) then
+		return false
+	end
+	local balance = pending.profile[pending.currency]
+	if not isFiniteNumber(balance) or balance < pending.amount then
+		return false
+	end
+	local finalBalance = balance - pending.amount
+	pending.profile[pending.currency] = finalBalance
+	if not coordinator.commit(pending.owner) then
+		pending.profile[pending.currency] = balance
 		return false
 	end
 	pendingSpendTransactions[transaction] = nil
@@ -209,22 +260,20 @@ end
 
 function CurrencyService.rollbackSpendTransaction(transaction)
 	local pending = type(transaction) == "table" and pendingSpendTransactions[transaction] or nil
-	if not pending then
+	local coordinator = CurrencyService._profileTransactionService
+	if not pending or type(coordinator) ~= "table"
+		or type(coordinator.commit) ~= "function" then
 		return false
 	end
-	local balance = pending.profile[pending.currency]
-	if not isFiniteNumber(balance) or balance < 0 then
+	if not coordinator.commit(pending.owner) then
 		return false
 	end
-	local restoredBalance = balance + pending.amount
-	if not isFiniteNumber(restoredBalance) or restoredBalance < balance then
-		return false
-	end
-	pending.profile[pending.currency] = restoredBalance
-	-- A failed restore must leave the opaque handle pending so lifecycle code can
-	-- retry it. Consume the handle only after the exact refund is observable.
 	pendingSpendTransactions[transaction] = nil
 	return true
+end
+
+function CurrencyService.hasPendingSpend(transaction)
+	return type(transaction) == "table" and pendingSpendTransactions[transaction] ~= nil
 end
 
 -- Canonical immediate deduction API. Currency and amount always come from

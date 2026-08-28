@@ -26,6 +26,7 @@ end
 rawset(_G, "game", gameMock)
 
 local CurrencyService = originalRequire("src/ServerScriptService/Services/CurrencyService")
+local ProfileTransactionService = originalRequire("src/ServerScriptService/Services/ProfileTransactionService")
 local player = { UserId = 7 }
 local profile = nil
 local bonuses = {}
@@ -33,13 +34,22 @@ local dataService = {}
 function dataService.getPlayerData()
 	return profile
 end
+function dataService.isMutationAdmissionOpen()
+	return profile ~= nil
+end
+function dataService.isProfileSaveInProgress()
+	return false
+end
 local upgradeService = {}
 function upgradeService.getUpgradeBonus(_, id)
 	return bonuses[id] or 0
 end
-CurrencyService.init(dataService, upgradeService)
+ProfileTransactionService.init(dataService)
+CurrencyService.init(dataService, upgradeService, ProfileTransactionService)
 
 local function resetState()
+	ProfileTransactionService.init(dataService)
+	CurrencyService.init(dataService, upgradeService, ProfileTransactionService)
 	profile = { coins = 1000, diamonds = 500 }
 	bonuses = {}
 	updates = {}
@@ -122,11 +132,11 @@ describe("CurrencyService composite spend transactions", function()
 		local capturedProfile = profile
 		local transaction = CurrencyService.beginSpendTransaction(player, "diamonds", 125)
 		expect(type(transaction)):toBe("table")
-		expect(capturedProfile.diamonds):toBe(375)
+		expect(capturedProfile.diamonds):toBe(500)
 		expect(#updates):toBe(0)
 
-		-- Simulate DataService becoming unavailable after the debit. Rollback must
-		-- use the transaction's validated profile rather than reacquiring it.
+		-- Simulate DataService becoming unavailable after the reservation. Rollback
+		-- uses only the captured owner/profile and never needs a refund mutation.
 		profile = nil
 		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeTrue()
 		expect(capturedProfile.diamonds):toBe(500)
@@ -139,7 +149,7 @@ describe("CurrencyService composite spend transactions", function()
 		resetState()
 		local transaction = CurrencyService.beginSpendTransaction(player, "coins", 200)
 		expect(type(transaction)):toBe("table")
-		expect(profile.coins):toBe(800)
+		expect(profile.coins):toBe(1000)
 		expect(#updates):toBe(0)
 		expect(CurrencyService.commitSpendTransaction(transaction)):toBeTrue()
 		expect(updates):toEqual({ { coins = 800, diamonds = 500 } })
@@ -158,14 +168,21 @@ describe("CurrencyService composite spend transactions", function()
 		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
 	end)
 
-	it("retains a pending rollback handle until exact restoration succeeds", function()
+	it("retains a central owner until its registered rollback can settle", function()
 		resetState()
-		local transaction = CurrencyService.beginSpendTransaction(player, "diamonds", 125)
-		expect(profile.diamonds):toBe(375)
-		profile.diamonds = "corrupt"
-		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
-		profile.diamonds = 375
-		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeTrue()
+		local transaction = CurrencyService.beginSpendTransaction(player, "diamonds", 125, "TestComposite")
+		expect(profile.diamonds):toBe(500)
+		local allowRollback = false
+		expect(CurrencyService.setSpendSettler(transaction, function(current)
+			if not allowRollback then return false end
+			return CurrencyService.rollbackSpendTransaction(current)
+		end)):toBeTrue()
+		expect(ProfileTransactionService.settlePlayer(player)):toBeFalse()
+		expect(ProfileTransactionService.hasPending(player)):toBeTrue()
+		expect(CurrencyService.beginSpendTransaction(player, "coins", 1)):toBeNil()
+		allowRollback = true
+		expect(ProfileTransactionService.settlePlayer(player)):toBeTrue()
+		expect(ProfileTransactionService.hasPending(player)):toBeFalse()
 		expect(profile.diamonds):toBe(500)
 		expect(CurrencyService.rollbackSpendTransaction(transaction)):toBeFalse()
 	end)

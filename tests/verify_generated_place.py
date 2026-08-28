@@ -27,6 +27,7 @@ EXPECTED_SOURCES = {
     "MachineService": "src/ServerScriptService/Services/MachineService.lua",
     "EnchantingService": "src/ServerScriptService/Services/EnchantingService.lua",
     "CurrencyService": "src/ServerScriptService/Services/CurrencyService.lua",
+    "ProfileTransactionService": "src/ServerScriptService/Services/ProfileTransactionService.lua",
     "EggService": "src/ServerScriptService/Services/EggService.lua",
     "AutoHatchService": "src/ServerScriptService/Services/AutoHatchService.lua",
     "ShopService": "src/ServerScriptService/Services/ShopService.lua",
@@ -41,7 +42,7 @@ EXPECTED_SOURCES = {
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
     "UpgradeTreeController": "src/StarterPlayer/StarterPlayerScripts/UpgradeTreeController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 75, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 77, "Script": 1, "LocalScript": 1}
 EXPECTED_DUPLICATE_NAME_SOURCES = {
     "Main": [
         "src/ServerScriptService/Main.server.lua",
@@ -89,12 +90,16 @@ def main() -> None:
         b"DataService.bindToClose({",
         b"AutoHatchService.prepareForShutdown()",
         b"EggService.beginShutdown()",
+        b"ShopService.beginShutdown()",
+        b"PotionService.beginShutdown()",
         b"MachineService.beginShutdown()",
         b"EnchantingService.beginShutdown()",
         b"EggService.cleanup(player)",
         b"MachineService.cleanup(player)",
         b"EnchantingService.cleanup(player)",
-        b"PickupService.settlePlayer(player)",
+        b"ProfileTransactionService.settlePlayer(player)",
+        b"CurrencyService.init(DataService, nil, ProfileTransactionService)",
+        b"PotionService.init(DataService, CurrencyService, ProfileTransactionService)",
         b"request.contractVersion == 2",
         b"ShopService.onPlayerRemoving(player)",
         b"PotionService.onPlayerAdded(player)",
@@ -105,6 +110,7 @@ def main() -> None:
         b"MachineService.setQuestService(QuestService)",
         b"MachineService.onPlayerRemoving(player)",
         b"EnchantingService.init(DataService, CurrencyService, PetService)",
+        b"CampaignService.init(DataService, CurrencyService, PetService, EggService)",
         b"EnchantingService.onPlayerRemoving(player)",
         b'getRemoteFunction("UseMachine")',
         b"MachineAuthorityBootstrap.install",
@@ -205,6 +211,13 @@ def main() -> None:
     for required in (
         b'local PURCHASE_MODE = "inventoryOnly"',
         b"_purchaseLocks",
+        b"_activeTransactions",
+        b"_shuttingDown",
+        b"beginMutation",
+        b"endMutation",
+        b"function ShopService.cleanup",
+        b"function ShopService.beginShutdown",
+        b"function ShopService.prepareForShutdown",
         b"beginSpendTransaction",
         b"rollbackSpendTransaction",
         b"commitSpendTransaction",
@@ -224,6 +237,16 @@ def main() -> None:
         b'setAutoDrinkSelection',
         b'stateRevision',
         b'notifyInventoryChanged',
+        b'_potionLeases',
+        b'_activeTransactions',
+        b'function PotionService.beginMutation',
+        b'function PotionService.endMutation',
+        b'function PotionService.cleanup',
+        b'function PotionService.beginShutdown',
+        b'function PotionService.prepareForShutdown',
+        b'acquireOwnedLease',
+        b'_profileTransactionService',
+        b'currentCharges + pending.reserved',
     ):
         assert required in potion_service_source, f"missing QOF-14 potion authority: {required!r}"
 
@@ -304,7 +327,7 @@ def main() -> None:
     data_schema_source = (
         ROOT / "src/ServerScriptService/Services/DataSchema.lua"
     ).read_bytes()
-    assert b'DataSchema.VERSION = 11' in data_schema_source
+    assert b'DataSchema.VERSION = 12' in data_schema_source
     assert b'autoHatchExpiresAt = 0' in data_schema_source
     assert b'normalizeAutoHatchExpiry' in data_schema_source
     assert b'or value % 1 ~= 0' in data_schema_source
@@ -379,8 +402,53 @@ def main() -> None:
         b"while DataService._clock() < deadline",
         b"DataService._shutdownMaxPasses == nil",
         b"DataService.savePlayerData(record.player, true)",
+        b"ProfileTransactionService.hasPending(player)",
+        b'"Profile transaction pending"',
+        b"ProfileTransactionService.settlePlayer(record.player)",
     ):
         assert required in data_service_source, f"missing isolated retrying profile lifecycle: {required!r}"
+
+    profile_transaction_source = (
+        ROOT / "src/ServerScriptService/Services/ProfileTransactionService.lua"
+    ).read_bytes()
+    for required in (
+        b"function ProfileTransactionService.begin",
+        b"function ProfileTransactionService.closeAdmission",
+        b"function ProfileTransactionService.hasPending",
+        b"function ProfileTransactionService.settlePlayer",
+        b"function ProfileTransactionService.commit",
+        b"function ProfileTransactionService.rollback",
+        b"pcall(handle.settler, handle)",
+    ):
+        assert required in profile_transaction_source, f"missing QOF-25 profile owner: {required!r}"
+
+    currency_service_source = (
+        ROOT / "src/ServerScriptService/Services/CurrencyService.lua"
+    ).read_bytes()
+    for required in (
+        b"_profileTransactionService",
+        b"function CurrencyService.beginSpendTransaction",
+        b"function CurrencyService.setSpendSettler",
+        b"function CurrencyService.commitSpendTransaction",
+        b"function CurrencyService.rollbackSpendTransaction",
+        b"pending.profile[pending.currency] = finalBalance",
+        b"CurrencyService.rollbackSpendTransaction(transaction)",
+    ):
+        assert required in currency_service_source, f"missing QOF-25 silent reservation: {required!r}"
+
+    composite_owner_names = {
+        "UpgradeTreeService.lua": b'"UpgradeTreeService"',
+        "EggService.lua": b'"EggService"',
+        "ShopService.lua": b'"ShopService"',
+        "PotionService.lua": b'"PotionService.purchaseUpgrade"',
+        "AutoHatchService.lua": b'"AutoHatchService.purchase"',
+        "MachineService.lua": b'"MachineService"',
+        "EnchantingService.lua": b'"EnchantingService"',
+    }
+    for filename, owner_name in composite_owner_names.items():
+        source = (ROOT / "src/ServerScriptService/Services" / filename).read_bytes()
+        assert b"setSpendSettler" in source, f"missing QOF-25 retained settler in {filename}"
+        assert owner_name in source, f"missing QOF-25 owner name in {filename}"
 
     for required in (
         b'local eggStationRegistry = {}',
@@ -447,6 +515,10 @@ def main() -> None:
         b"function EggService.cleanup",
         b"function EggService.beginShutdown",
         b"function EggService.prepareForShutdown",
+        b"function EggService.claimCampaignBossReward",
+        b"campaignClaimKey = claimKey",
+        b"restoreCampaignClaim(transaction)",
+        b"notifyCommittedCampaignReward",
     ):
         assert required in egg_service_source, f"missing lease-held hatch lifecycle: {required!r}"
 
@@ -517,7 +589,7 @@ def main() -> None:
     assert b"RuntimeEnabled = false" not in enchanting_balance
 
     for required in (
-        b"DataSchema.VERSION = 11",
+        b"DataSchema.VERSION = 12",
         b"PetEnchantMath.normalizeEnchantId(pet.enchantId)",
         b"pet.enchant = nil",
         b"pet.enchantData = nil",
@@ -572,6 +644,8 @@ def main() -> None:
         b"rollbackSpendTransaction",
         b"petStillMatches(transaction)",
         b"transaction.writtenEnchantId = rolledEnchantId",
+        b"local projectedState = buildState(player, request.petInstanceId)",
+        b"transaction.resultState = projectedState",
         b"transaction.committed = true",
         b"pcall(bumpRevision",
         b"pcall(EnchantingService._petService.replicateInventory, player)",
@@ -588,6 +662,10 @@ def main() -> None:
         assert required in enchanting_service_source, f"missing QOF-19 service contract: {required!r}"
     assert b"data.diamonds = data.diamonds -" not in enchanting_service_source
     assert b"math.random()" not in enchanting_service_source
+    projection_at = enchanting_service_source.index(b"transaction.resultState = projectedState")
+    assert projection_at < enchanting_service_source.index(
+        b"EnchantingService._currencyService.commitSpendTransaction,", projection_at
+    )
 
     # Main owns only remote creation and abuse controls; the service owns exact
     # Contract V1 shape, optimistic concurrency, economy, RNG, and rollback.
@@ -639,7 +717,11 @@ def main() -> None:
         b"rawget(pet, \"enchantId\") ~= snapshot.enchantId",
         b"outputPet.enchantId = nil",
         b"PetEnchantMath.getDamageMultiplier",
-        b"local enchantedDamage = baseDamage * enchantMultiplier",
+        b"normalizedPositiveDamageFactor",
+        b"local completeDamage = baseDamage",
+        b"* enchantMultiplier",
+        b"* questMultiplier",
+        b"* shopMultiplier",
         b"PetData.Pets[petId]",
         b"PetEnchantMath.getCampaignSpeedMultiplier",
         b"local speed = baseSpeed * multiplier",
@@ -653,6 +735,23 @@ def main() -> None:
     ):
         assert required in pet_service_source, f"missing shared lease/stat/machine semantics: {required!r}"
 
+    damage_function = pet_service_source.split(
+        b"function PetService.getPetDamage", 1
+    )[1].split(b"function PetService.getCampaignLaneSpeed", 1)[0]
+    assert b"math.floor" not in damage_function, (
+        "canonical combat damage must stay unrounded through every factor"
+    )
+    assert b"value > 0" in pet_service_source, (
+        "finite positive reduction factors must remain valid damage multipliers"
+    )
+    for required in (
+        b"local totalDamage = 0",
+        b"totalDamage = totalDamage + ZoneService._petService.getPetDamage(pet, player)",
+        b"local appliedDamage = math.max(0, math.min(damage, destructible.hp))",
+        b"destructible.hp = destructible.hp - appliedDamage",
+    ):
+        assert required in zone_service_source, f"missing QOF-24 aggregate damage boundary: {required!r}"
+
     campaign_service_source = (
         ROOT / "src/ServerScriptService/Services/CampaignService.lua"
     ).read_bytes()
@@ -662,9 +761,18 @@ def main() -> None:
         b'return false, "Pet stats unavailable"',
         b"battle.energy = battle.energy - deployCost",
         b"speed = speed",
+        b"damage = effectiveDamage",
+        b"hp = hp",
+        b"maxHp = hp",
         b"getCurrentPetDamage",
+        b"closestEnemy.hp = closestEnemy.hp - getCurrentPetDamage(userId, pet)",
+        b"battle.enemyBaseHP = battle.enemyBaseHP - getCurrentPetDamage(userId, pet)",
+        b"CampaignService._eggService.claimCampaignBossReward(",
+        b"CampaignService._activeBattles[userId] = nil",
+        b"pcall(event.FireClient, event, player, battle.levelNum, rewardsForClient)",
     ):
         assert required in campaign_service_source, f"missing Strong/Agile campaign semantics: {required!r}"
+    assert b"CampaignService._petService.hatchEgg" not in campaign_service_source
     assert campaign_service_source.index(b"CampaignService._petService.getCampaignLaneSpeed") < (
         campaign_service_source.index(b"battle.energy = battle.energy - deployCost")
     )

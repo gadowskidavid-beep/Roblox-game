@@ -103,6 +103,7 @@ local function dependenciesReady()
 		and type(EnchantingService._dataService.getPlayerData) == "function"
 		and type(EnchantingService._currencyService) == "table"
 		and type(EnchantingService._currencyService.beginSpendTransaction) == "function"
+		and type(EnchantingService._currencyService.setSpendSettler) == "function"
 		and type(EnchantingService._currencyService.commitSpendTransaction) == "function"
 		and type(EnchantingService._currencyService.rollbackSpendTransaction) == "function"
 		and type(EnchantingService._petService) == "table"
@@ -268,8 +269,6 @@ local function restoreTransaction(transaction)
 	if transaction.committed then
 		return true
 	end
-	local petRestored = true
-	local currencyRestored = true
 	if transaction.mutationStarted then
 		local ok, restored = pcall(function()
 			local currentData = EnchantingService._dataService.getPlayerData(transaction.player)
@@ -294,22 +293,22 @@ local function restoreTransaction(transaction)
 			return (rawget(transaction.pet, "enchantId") ~= nil) == transaction.oldEnchantPresent
 				and rawget(transaction.pet, "enchantId") == transaction.oldEnchantId
 		end)
-		petRestored = ok and restored == true
-		if petRestored then
-			transaction.mutationStarted = false
+		if not ok or restored ~= true then
+			return false
 		end
+		transaction.mutationStarted = false
 	end
 	if transaction.spendTransaction then
 		local ok, restored = pcall(
 			EnchantingService._currencyService.rollbackSpendTransaction,
 			transaction.spendTransaction
 		)
-		currencyRestored = ok and restored == true
-		if currencyRestored then
-			transaction.spendTransaction = nil
+		if not ok or restored ~= true then
+			return false
 		end
+		transaction.spendTransaction = nil
 	end
-	return petRestored and currencyRestored
+	return true
 end
 
 local function executeRoll(player, request, transaction)
@@ -352,12 +351,26 @@ local function executeRoll(player, request, transaction)
 	local spendTransaction = EnchantingService._currencyService.beginSpendTransaction(
 		player,
 		COST_CURRENCY,
-		COST_AMOUNT
+		COST_AMOUNT,
+		"EnchantingService"
 	)
 	if not spendTransaction then
 		return false, reasons.INSUFFICIENT_BALANCE
 	end
 	transaction.spendTransaction = spendTransaction
+	local settlerRegistered = EnchantingService._currencyService.setSpendSettler(
+		spendTransaction,
+		function(currentSpendTransaction)
+			if transaction.executing
+				or currentSpendTransaction ~= transaction.spendTransaction then
+				return false
+			end
+			return restoreTransaction(transaction)
+		end
+	)
+	if settlerRegistered ~= true then
+		error("Unable to register enchanting spend settler")
+	end
 	invokeHook("afterSpend", transaction)
 
 	local rolledEnchantId = chooseEnchantId()
@@ -373,6 +386,19 @@ local function executeRoll(player, request, transaction)
 	transaction.mutationStarted = true
 	pet.enchantId = rolledEnchantId
 	invokeHook("afterMutation", transaction)
+
+	-- Build and retain the complete post-roll Contract V1 response before the
+	-- currency PONR. The reservation has not changed the live balance, so project
+	-- availability from the exact post-debit amount while all other fields come
+	-- from the already-mutated authoritative pet.
+	local projectedState = buildState(player, request.petInstanceId)
+	projectedState.stateRevision = transaction.expectedRevision + 1
+	local projectedBalance = data[COST_CURRENCY] - COST_AMOUNT
+	if projectedBalance < COST_AMOUNT then
+		projectedState.availability.canRoll = false
+		projectedState.availability.reason = reasons.INSUFFICIENT_BALANCE
+	end
+	transaction.resultState = projectedState
 	invokeHook("beforeCommit", transaction)
 
 	local commitOk, committed = pcall(
@@ -492,11 +518,13 @@ function EnchantingService.roll(player, request)
 			EnchantingService._playerLocks[player.UserId] = nil
 		end
 	end
+	if success and transaction.resultState then
+		-- The response was completed before the PONR and remains authoritative even
+		-- when postcommit inventory replication or a later profile lookup fails.
+		return true, nil, transaction.resultState
+	end
 	local stateOk, state = pcall(buildState, player, petInstanceId)
 	if not stateOk then
-		-- State refresh is post-commit presentation. In particular, a successful
-		-- currency commit must remain an unambiguous success even if profile lookup
-		-- or DTO construction fails afterwards.
 		return success, reason, nil
 	end
 	return success, reason, state

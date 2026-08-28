@@ -70,33 +70,58 @@ rawset(_G, "require", originalRequire)
 local player = { UserId = 55 }
 local profile = nil
 local spendCalls = {}
-local refundCalls = {}
+local spendOwnerNames = {}
+local rollbackCalls = {}
 local currencyEvents = {}
 local pendingCurrencyTransactions = {}
+local centralOwner = nil
+local rollbackFailuresRemaining = 0
+local settlerRegistrations = 0
 local hatchCalls = 0
 local dataService = {}
 function dataService.getPlayerData()
 	return profile
 end
 local currencyService = {}
-function currencyService.beginSpendTransaction(_, currency, amount)
+function currencyService.beginSpendTransaction(_, currency, amount, ownerName)
 	table.insert(spendCalls, { currency = currency, amount = amount })
-	if not profile or type(profile[currency]) ~= "number" or profile[currency] < amount then
+	table.insert(spendOwnerNames, ownerName)
+	if centralOwner ~= nil
+		or not profile
+		or type(profile[currency]) ~= "number"
+		or profile[currency] < amount then
 		return nil
 	end
 	local transaction = {}
-	pendingCurrencyTransactions[transaction] = {
+	local pending = {
+		transaction = transaction,
 		profile = profile,
 		currency = currency,
 		amount = amount,
+		ownerName = ownerName,
+		settler = nil,
 	}
-	profile[currency] = profile[currency] - amount
+	pendingCurrencyTransactions[transaction] = pending
+	centralOwner = pending
 	return transaction
+end
+function currencyService.setSpendSettler(transaction, settler)
+	local pending = pendingCurrencyTransactions[transaction]
+	if not pending or centralOwner ~= pending or type(settler) ~= "function" then
+		return false
+	end
+	pending.settler = settler
+	settlerRegistrations = settlerRegistrations + 1
+	return true
 end
 function currencyService.commitSpendTransaction(transaction)
 	local pending = pendingCurrencyTransactions[transaction]
-	if not pending then return false end
+	if not pending or centralOwner ~= pending then return false end
+	local balance = pending.profile[pending.currency]
+	if type(balance) ~= "number" or balance < pending.amount then return false end
+	pending.profile[pending.currency] = balance - pending.amount
 	pendingCurrencyTransactions[transaction] = nil
+	centralOwner = nil
 	table.insert(currencyEvents, {
 		coins = pending.profile.coins,
 		diamonds = pending.profile.diamonds,
@@ -105,16 +130,69 @@ function currencyService.commitSpendTransaction(transaction)
 end
 function currencyService.rollbackSpendTransaction(transaction)
 	local pending = pendingCurrencyTransactions[transaction]
-	if not pending then return false end
+	if not pending or centralOwner ~= pending then return false end
+	table.insert(rollbackCalls, { currency = pending.currency, amount = pending.amount })
+	if rollbackFailuresRemaining > 0 then
+		rollbackFailuresRemaining = rollbackFailuresRemaining - 1
+		return false
+	end
 	pendingCurrencyTransactions[transaction] = nil
-	pending.profile[pending.currency] = pending.profile[pending.currency] + pending.amount
-	table.insert(refundCalls, { currency = pending.currency, amount = pending.amount })
+	centralOwner = nil
 	return true
+end
+
+local function settleCentralOwner()
+	local pending = centralOwner
+	if not pending then return true end
+	if type(pending.settler) ~= "function" then return false end
+	local ok, restored = pcall(pending.settler, pending.transaction)
+	if ok and restored == true then
+		if centralOwner == pending then
+			pendingCurrencyTransactions[pending.transaction] = nil
+			centralOwner = nil
+		end
+		return true
+	end
+	return false
 end
 local eggService = {}
 function eggService.purchaseAndHatch()
 	hatchCalls = hatchCalls + 1
 end
+
+local currentPotionLease = nil
+local potionRevision = 0
+local potionService = {}
+function potionService.beginMutation(ownerPlayer, ownerName)
+	if currentPotionLease ~= nil then return nil, "BUSY" end
+	currentPotionLease = { player = ownerPlayer, owner = ownerName }
+	return currentPotionLease, nil
+end
+function potionService.isMutationCurrent(ownerPlayer, lease)
+	return currentPotionLease == lease and lease.player == ownerPlayer
+end
+function potionService.endMutation(ownerPlayer, lease)
+	if not potionService.isMutationCurrent(ownerPlayer, lease) then return false end
+	currentPotionLease = nil
+	return true
+end
+function potionService.notifyInventoryChanged(ownerPlayer, lease)
+	if not potionService.isMutationCurrent(ownerPlayer, lease) then return nil, "BUSY" end
+	potionRevision = potionRevision + 1
+	return {
+		contractVersion = 1,
+		stateRevision = potionRevision,
+		potionInventory = profile and profile.potionInventory or {},
+	}
+end
+function potionService.getState()
+	return {
+		contractVersion = 1,
+		stateRevision = potionRevision,
+		potionInventory = profile and profile.potionInventory or {},
+	}
+end
+function potionService.getMultiplier() return 1 end
 
 local function potionRequest(itemId)
 	return {
@@ -136,16 +214,24 @@ local function resetState()
 		unlockedZones = { 1 },
 	}
 	spendCalls = {}
-	refundCalls = {}
+	spendOwnerNames = {}
+	rollbackCalls = {}
 	currencyEvents = {}
 	pendingCurrencyTransactions = {}
+	centralOwner = nil
+	rollbackFailuresRemaining = 0
+	settlerRegistrations = 0
 	eventPayloads = {}
 	eventShouldError = false
 	hatchCalls = 0
 	ShopService._activeBuffs = {}
 	ShopService._purchaseLocks = {}
+	ShopService._activeTransactions = {}
+	ShopService._shuttingDown = false
 	ShopService._transactionHook = nil
-	ShopService.setPotionService(nil)
+	currentPotionLease = nil
+	potionRevision = 0
+	ShopService.setPotionService(potionService)
 	ShopService.setWalkSpeedRefreshCallback(nil)
 	ShopService.init(dataService, currencyService)
 	ShopService.setEggService(eggService)
@@ -167,6 +253,8 @@ describe("ShopService QOF-13 canonical potion purchases", function()
 			expect(message):toBeNil()
 			expect(profile.potionInventory[itemId]):toBe(1)
 			expect(spendCalls):toEqual({ { currency = "diamonds", amount = amount } })
+			expect(spendOwnerNames):toEqual({ "ShopService" })
+			expect(settlerRegistrations):toBe(1)
 			expect(state.contractVersion):toBe(2)
 			expect(state.purchaseMode):toBe("inventoryOnly")
 			expect(state.potionInventory[itemId]):toBe(1)
@@ -242,42 +330,118 @@ describe("ShopService QOF-13 canonical potion purchases", function()
 		ShopService._purchaseLocks[player.UserId] = true
 		local success, message = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
 		expect(success):toBeFalse()
-		expect(message):toBe("Purchase already in progress")
+		expect(message):toBe("BUSY")
 		expect(#spendCalls):toBe(0)
 		expect(profile.potionInventory):toEqual({})
 	end)
 end)
 
 describe("ShopService QOF-13 transaction boundaries", function()
-	it("refunds exactly and emits no event when afterSpend fails", function()
+	it("cancels without balance flicker or events when afterSpend fails", function()
 		resetState()
 		local before = profile.diamonds
 		ShopService._transactionHook = function(stage)
-			if stage == "afterSpend" then error("injected afterSpend") end
+			if stage == "afterSpend" then
+				expect(profile.diamonds):toBe(before)
+				expect(#currencyEvents):toBe(0)
+				error("injected afterSpend")
+			end
 		end
 		local success = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
 		expect(success):toBeFalse()
 		expect(profile.diamonds):toBe(before)
 		expect(profile.potionInventory.LuckPotion):toBeNil()
-		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 100 } })
+		expect(rollbackCalls):toEqual({ { currency = "diamonds", amount = 100 } })
 		expect(#currencyEvents):toBe(0)
 		expect(#eventPayloads):toBe(0)
 		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
 	end)
 
-	it("restores an absent inventory key, refunds exactly, and emits no event after mutation failure", function()
+	it("restores an absent inventory key and cancels without debit after mutation failure", function()
 		resetState()
 		local before = profile.diamonds
 		ShopService._transactionHook = function(stage)
-			if stage == "afterMutation" then error("injected afterMutation") end
+			if stage == "afterMutation" then
+				expect(profile.diamonds):toBe(before)
+				expect(profile.potionInventory.LuckPotion):toBe(1)
+				error("injected afterMutation")
+			end
 		end
 		local success = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
 		expect(success):toBeFalse()
 		expect(profile.diamonds):toBe(before)
 		expect(profile.potionInventory.LuckPotion):toBeNil()
-		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 100 } })
+		expect(rollbackCalls):toEqual({ { currency = "diamonds", amount = 100 } })
 		expect(#currencyEvents):toBe(0)
 		expect(#eventPayloads):toBe(0)
+	end)
+
+	it("retains central ownership when currency rollback fails and settles on retry", function()
+		resetState()
+		local before = profile.diamonds
+		rollbackFailuresRemaining = 1
+		ShopService._transactionHook = function(stage)
+			if stage == "afterMutation" then error("injected afterMutation") end
+		end
+
+		local success, message = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase rollback failed")
+		expect(profile.diamonds):toBe(before)
+		expect(profile.potionInventory.LuckPotion):toBeNil()
+		expect(centralOwner ~= nil):toBeTrue()
+		expect(centralOwner.ownerName):toBe("ShopService")
+		expect(#rollbackCalls):toBe(1)
+		expect(ShopService._purchaseLocks[player.UserId]):toBeTrue()
+
+		-- Both the Shop owner and shared Potion lease remain retained until the
+		-- exact rollback closure succeeds.
+		ShopService._transactionHook = nil
+		expect(ShopService.purchaseItem(player, potionRequest("SpeedPotion"))):toBeFalse()
+		expect(profile.diamonds):toBe(before)
+		expect(profile.potionInventory.SpeedPotion):toBeNil()
+		expect(#spendCalls):toBe(1)
+		expect(settleCentralOwner()):toBeTrue()
+		expect(centralOwner):toBeNil()
+		expect(#rollbackCalls):toBe(2)
+		expect(profile.diamonds):toBe(before)
+		expect(#currencyEvents):toBe(0)
+
+		expect(ShopService.purchaseItem(player, potionRequest("SpeedPotion"))):toBeTrue()
+		expect(profile.diamonds):toBe(before - 50)
+	end)
+
+	it("does not release central ownership until mutation undo succeeds", function()
+		resetState()
+		local before = profile.diamonds
+		local inventory = profile.potionInventory
+		ShopService._transactionHook = function(stage)
+			if stage == "afterMutation" then
+				rawset(inventory, "LuckPotion", nil)
+				setmetatable(inventory, {
+					__newindex = function()
+						error("injected undo failure")
+					end,
+				})
+				error("injected transaction failure")
+			end
+		end
+
+		local success, message = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		expect(success):toBeFalse()
+		expect(message):toBe("Purchase rollback failed")
+		expect(profile.diamonds):toBe(before)
+		expect(centralOwner ~= nil):toBeTrue()
+		-- Currency rollback must not run while the profile undo is failing.
+		expect(#rollbackCalls):toBe(0)
+		expect(#currencyEvents):toBe(0)
+
+		setmetatable(inventory, nil)
+		expect(settleCentralOwner()):toBeTrue()
+		expect(centralOwner):toBeNil()
+		expect(#rollbackCalls):toBe(1)
+		expect(profile.diamonds):toBe(before)
+		expect(profile.potionInventory.LuckPotion):toBeNil()
 	end)
 
 	it("commits before a protected event and returns independent DTO copies", function()
@@ -327,7 +491,7 @@ describe("ShopService QOF-13 transaction boundaries", function()
 		expect(ShopService.getShopMultiplier(player, "speed")):toBe(1)
 	end)
 
-	it("rolls back debit and inventory when authoritative state construction fails", function()
+	it("cancels reservation and inventory when authoritative state construction fails", function()
 		resetState()
 		local before = profile.diamonds
 		local calls = 0
@@ -345,7 +509,7 @@ describe("ShopService QOF-13 transaction boundaries", function()
 		expect(message):toBe("Purchase failed")
 		expect(profile.diamonds):toBe(before)
 		expect(profile.potionInventory.LuckPotion):toBeNil()
-		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 100 } })
+		expect(rollbackCalls):toEqual({ { currency = "diamonds", amount = 100 } })
 		expect(#currencyEvents):toBe(0)
 		expect(#eventPayloads):toBe(0)
 		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
@@ -394,7 +558,7 @@ describe("ShopService retained shop contracts", function()
 		expect(ShopService.purchaseItem(player, "ExtraEquipSlot")):toBeFalse()
 		expect(profile.shopPurchases.extraEquipSlots):toBe(0)
 		expect(profile.diamonds):toBe(100000)
-		expect(refundCalls):toEqual({ { currency = "diamonds", amount = 1000 } })
+		expect(rollbackCalls):toEqual({ { currency = "diamonds", amount = 1000 } })
 		expect(#currencyEvents):toBe(0)
 		expect(#eventPayloads):toBe(0)
 	end)
@@ -435,14 +599,14 @@ describe("ShopService retained shop contracts", function()
 		expect(potionReads):toBe(1)
 	end)
 
-	it("clears only transient locks and legacy buffs on player removal", function()
+	it("never guesses an ownerless Shop lock stale on player removal", function()
 		resetState()
 		profile.potionInventory.LuckPotion = 3
 		ShopService._purchaseLocks[player.UserId] = true
 		ShopService._activeBuffs[player.UserId] = { luck = os.clock() + 60 }
-		ShopService.onPlayerRemoving(player)
-		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
-		expect(ShopService._activeBuffs[player.UserId]):toBeNil()
+		expect(ShopService.onPlayerRemoving(player)):toBeFalse()
+		expect(ShopService._purchaseLocks[player.UserId]):toBeTrue()
+		expect(ShopService._activeBuffs[player.UserId] ~= nil):toBeTrue()
 		expect(profile.potionInventory.LuckPotion):toBe(3)
 	end)
 end)
@@ -473,5 +637,56 @@ describe("ShopData QOF-18 presentation", function()
 			expect(item.cost):toBe(potion.cost.amount)
 			expect(item.currency):toBe(potion.cost.currency)
 		end
+	end)
+end)
+
+
+describe("ShopService QOF-26 shared Potion lease and lifecycle", function()
+	it("returns BUSY before currency work while a Hatch owns the Potion lease", function()
+		resetState()
+		local hatchLease = potionService.beginMutation(player, "EggService.ShinyReservation")
+		local success, reason = ShopService.purchaseItem(player, potionRequest("ShinyPotion"))
+		expect(success):toBeFalse()
+		expect(reason):toBe("BUSY")
+		expect(#spendCalls):toBe(0)
+		expect(profile.potionInventory.ShinyPotion):toBeNil()
+		expect(potionService.endMutation(player, hatchLease)):toBeTrue()
+	end)
+
+	it("retains ExtraEquipSlot ownership until a failed rollback can settle", function()
+		resetState()
+		rollbackFailuresRemaining = 1
+		ShopService._transactionHook = function(stage)
+			if stage == "afterMutation" then error("injected extra-slot failure") end
+		end
+		local success, reason = ShopService.purchaseItem(player, "ExtraEquipSlot")
+		expect(success):toBeFalse()
+		expect(reason):toBe("Purchase rollback failed")
+		expect(profile.shopPurchases.extraEquipSlots):toBe(0)
+		expect(ShopService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+		expect(ShopService._purchaseLocks[player.UserId]):toBeTrue()
+		expect(ShopService.onPlayerRemoving(player)):toBeTrue()
+		expect(ShopService._activeTransactions[player.UserId]):toBeNil()
+		expect(ShopService._purchaseLocks[player.UserId]):toBeNil()
+		expect(profile.diamonds):toBe(100000)
+	end)
+
+	it("closes new Shop admission at shutdown without discarding retained owners", function()
+		resetState()
+		rollbackFailuresRemaining = 1
+		ShopService._transactionHook = function(stage)
+			if stage == "afterMutation" then error("injected retained purchase") end
+		end
+		local success = ShopService.purchaseItem(player, potionRequest("LuckPotion"))
+		expect(success):toBeFalse()
+		expect(ShopService._activeTransactions[player.UserId] ~= nil):toBeTrue()
+		ShopService.beginShutdown()
+		local blocked, reason = ShopService.purchaseItem(player, "ExtraEquipSlot")
+		expect(blocked):toBeFalse()
+		expect(reason):toBe("SERVICE_UNAVAILABLE")
+		expect(ShopService.prepareForShutdown()):toBeTrue()
+		expect(ShopService._activeTransactions[player.UserId]):toBeNil()
+		expect(currentPotionLease):toBeNil()
+		expect(profile.potionInventory.LuckPotion):toBeNil()
 	end)
 end)

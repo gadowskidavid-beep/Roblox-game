@@ -17,6 +17,7 @@ EggService._currencyService = nil
 EggService._petService = nil
 EggService._questService = nil
 EggService._upgradeTreeService = nil
+EggService._profileTransactionService = nil
 EggService._potionService = nil
 EggService._hatchLock = {}
 EggService._activeTransactions = {}
@@ -53,11 +54,18 @@ local function isValidTransactionCount(value, maximum)
 		and value <= maximum
 end
 
-function EggService.init(dataService, currencyService, petService, upgradeTreeService)
+function EggService.init(
+	dataService,
+	currencyService,
+	petService,
+	upgradeTreeService,
+	profileTransactionService
+)
 	EggService._dataService = dataService
 	EggService._currencyService = currencyService
 	EggService._petService = petService
 	EggService._upgradeTreeService = upgradeTreeService
+	EggService._profileTransactionService = profileTransactionService
 	EggService._hatchLock = {}
 	EggService._activeTransactions = {}
 	EggService._shuttingDown = false
@@ -381,17 +389,45 @@ local function makeBatchId(player)
 	return tostring(player.UserId or "player") .. ":" .. tostring(EggService._nextBatchId)
 end
 
+local function restoreCampaignClaim(transaction)
+	local claim = transaction.campaignClaim
+	if not claim or claim.restored then return true end
+	local ok, restored = pcall(function()
+		local currentData = EggService._dataService.getPlayerData(transaction.player)
+		if currentData ~= claim.profile then return false end
+		if claim.originalWasTable then
+			if currentData.campaignBossRewards ~= claim.originalField
+				or rawget(claim.originalField, claim.key) ~= true then
+				return false
+			end
+			claim.originalField[claim.key] = claim.oldValue
+			return rawget(claim.originalField, claim.key) == claim.oldValue
+		end
+		if currentData.campaignBossRewards ~= claim.writtenField then return false end
+		currentData.campaignBossRewards = claim.originalField
+		return currentData.campaignBossRewards == claim.originalField
+	end)
+	if not ok or restored ~= true then return false end
+	claim.restored = true
+	return true
+end
+
 local function rollbackTransaction(transaction)
 	if transaction.committed then return true end
+	local claimRestored = restoreCampaignClaim(transaction)
 	local inventoryRestored = true
 	if transaction.prepared then
 		if transaction.prepared.mutationStarted then
-			local ok, restored = pcall(
-				EggService._petService.rollbackHatchBatch,
-				transaction.prepared,
-				transaction.inventoryLease
-			)
-			inventoryRestored = ok and restored == true
+			if not claimRestored then
+				inventoryRestored = false
+			else
+				local ok, restored = pcall(
+					EggService._petService.rollbackHatchBatch,
+					transaction.prepared,
+					transaction.inventoryLease
+				)
+				inventoryRestored = ok and restored == true
+			end
 		end
 		if inventoryRestored then
 			transaction.prepared = nil
@@ -409,24 +445,57 @@ local function rollbackTransaction(transaction)
 		end
 	end
 	local currencyRestored = true
-	if transaction.spent and transaction.totalCost > 0 then
-		local ok, restored = pcall(
-			EggService._currencyService.creditRaw,
-			transaction.player,
-			"coins",
-			transaction.totalCost
-		)
-		currencyRestored = ok and restored == true
-		if currencyRestored then
-			transaction.spent = false
+	if transaction.spendTransaction then
+		-- Keep the silent currency reservation until every other reversible resource
+		-- has been restored. Its registered central settler retries this same function.
+		if inventoryRestored and chargesRestored then
+			local ok, restored = pcall(
+				EggService._currencyService.rollbackSpendTransaction,
+				transaction.spendTransaction
+			)
+			currencyRestored = ok and restored == true
+			if currencyRestored then
+				transaction.spendTransaction = nil
+			end
+		else
+			currencyRestored = false
 		end
 	end
-	return inventoryRestored and chargesRestored and currencyRestored
+	local ownerReleased = true
+	if transaction.profileOwner then
+		if inventoryRestored and chargesRestored and currencyRestored then
+			local ok, released = pcall(
+				EggService._profileTransactionService.commit,
+				transaction.profileOwner
+			)
+			ownerReleased = ok and released == true
+			if ownerReleased then transaction.profileOwner = nil end
+		else
+			ownerReleased = false
+		end
+	end
+	return claimRestored and inventoryRestored and chargesRestored
+		and currencyRestored and ownerReleased
+end
+
+local function finalizeCommittedTransaction(transaction)
+	if not transaction.shinyChargeTransaction then return true end
+	local ok, committed = pcall(
+		EggService._potionService.commitShinyChargeTransaction,
+		transaction.shinyChargeTransaction
+	)
+	if not ok or committed ~= true then return false end
+	transaction.shinyChargeTransaction = nil
+	return true
 end
 
 local function settleTransaction(transaction)
 	if transaction.executing then return false end
-	if not rollbackTransaction(transaction) then return false end
+	if transaction.committed then
+		if not finalizeCommittedTransaction(transaction) then return false end
+	elseif not rollbackTransaction(transaction) then
+		return false
+	end
 	local ok, released = pcall(
 		EggService._petService.endInventoryMutation,
 		transaction.player,
@@ -475,6 +544,16 @@ local function notifyCommittedBatch(player, result)
 	end
 end
 
+local function notifyCommittedCampaignReward(player, result)
+	-- CampaignVictory owns presentation for this reward. Keep only the canonical
+	-- inventory replication here and never increment the ordinary hatch quest or
+	-- emit the manual EggHatchStart/EggHatchResult cinematic pair.
+	for _, pet in ipairs(result.pets or {}) do
+		pet.isNewDiscovery = nil
+	end
+	pcall(EggService._petService.replicateInventory, player)
+end
+
 -- options is server-owned. Manual remote calls pass { bypassStation = false };
 -- auto-hatch passes true and still pays the full batch price.
 purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
@@ -516,7 +595,9 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		prepared = nil,
 		shinyChargeTransaction = nil,
 		shinyBoostCount = 0,
-		spent = false,
+		spendTransaction = nil,
+		profileOwner = nil,
+		campaignClaim = nil,
 		totalCost = 0,
 		committed = false,
 	}
@@ -531,7 +612,7 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		if not data then
 			return nil, "No player data"
 		end
-		if not isUnlockedZone(data, eggDef.zone) then
+		if options.bypassZoneUnlock ~= true and not isUnlockedZone(data, eggDef.zone) then
 			return nil, "Zone not unlocked for this egg type"
 		end
 		local hasSpace, capacityError = EggService._petService.canAddPets(player, validatedCount)
@@ -544,13 +625,63 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 			return nil, "No valid coin cost for egg zone"
 		end
 
+		transaction.totalCost = options.skipCharge == true and 0 or unitCost * validatedCount
+		if transaction.totalCost > 0 then
+			local spendTransaction = EggService._currencyService.beginSpendTransaction(
+				player,
+				"coins",
+				transaction.totalCost,
+				"EggService"
+			)
+			if not spendTransaction then
+				return nil, "Not enough coins for x" .. tostring(validatedCount)
+			end
+			transaction.spendTransaction = spendTransaction
+			local settlerRegistered = EggService._currencyService.setSpendSettler(
+				spendTransaction,
+				function(currentSpendTransaction)
+					if transaction.executing
+						or currentSpendTransaction ~= transaction.spendTransaction then
+						return false
+					end
+					return rollbackTransaction(transaction)
+				end
+			)
+			if settlerRegistered ~= true then
+				return nil, "Hatch failed safely"
+			end
+		else
+			-- Explicitly free hatch rewards still mutate the live inventory. They own
+			-- the profile directly so autosave cannot snapshot a partial batch.
+			local coordinator = EggService._profileTransactionService
+			if type(coordinator) ~= "table"
+				or type(coordinator.begin) ~= "function"
+				or type(coordinator.setSettler) ~= "function"
+				or type(coordinator.commit) ~= "function" then
+				return nil, "Hatch transaction service unavailable"
+			end
+			local owner = coordinator.begin(player, "EggService")
+			if not owner then return nil, "Hatch transaction busy" end
+			transaction.profileOwner = owner
+			local registered = coordinator.setSettler(owner, function()
+				if transaction.executing then return false end
+				return rollbackTransaction(transaction)
+			end)
+			if registered ~= true then return nil, "Hatch failed safely" end
+		end
+
 		local consumeShinyCharges = options.consumeShinyCharges
 		if consumeShinyCharges == nil then
 			consumeShinyCharges = options.bypassStation ~= true and options.skipCharge ~= true
 		end
 		if consumeShinyCharges == true and EggService._potionService then
-			transaction.shinyChargeTransaction, transaction.shinyBoostCount =
+			local shinyHandle, shinyReserved, shinyError =
 				EggService._potionService.beginShinyChargeTransaction(player, validatedCount)
+			if shinyError ~= nil then
+				return nil, shinyError
+			end
+			transaction.shinyChargeTransaction = shinyHandle
+			transaction.shinyBoostCount = shinyReserved
 		end
 
 		local prepared, prepareError = EggService._petService.prepareHatchBatch(
@@ -564,14 +695,7 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		end
 		transaction.prepared = prepared
 		runTransactionHook("afterPrepare", transaction)
-
-		transaction.totalCost = options.skipCharge == true and 0 or unitCost * validatedCount
-		if transaction.totalCost > 0 then
-			local spent = EggService._currencyService.spend(player, "coins", transaction.totalCost)
-			if not spent then
-				return nil, "Not enough coins for x" .. tostring(validatedCount)
-			end
-			transaction.spent = true
+		if transaction.spendTransaction then
 			runTransactionHook("afterSpend", transaction)
 		end
 
@@ -584,6 +708,34 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 			return nil, commitError
 		end
 		runTransactionHook("afterInventory", transaction)
+
+		if options.campaignClaimKey ~= nil then
+			local claimKey = options.campaignClaimKey
+			if type(claimKey) ~= "string" or claimKey == "" then
+				return nil, "Invalid campaign reward claim"
+			end
+			local originalField = rawget(data, "campaignBossRewards")
+			local originalWasTable = type(originalField) == "table"
+			if originalWasTable and rawget(originalField, claimKey) == true then
+				return nil, "Campaign reward already claimed"
+			end
+			local writtenField = originalWasTable and originalField or {}
+			transaction.campaignClaim = {
+				profile = data,
+				key = claimKey,
+				originalField = originalField,
+				originalWasTable = originalWasTable,
+				oldValue = originalWasTable and rawget(originalField, claimKey) or nil,
+				writtenField = writtenField,
+				restored = false,
+			}
+			if not originalWasTable then
+				data.campaignBossRewards = writtenField
+			end
+			writtenField[claimKey] = true
+			runTransactionHook("afterCampaignClaim", transaction)
+		end
+
 		return {
 			batchId = makeBatchId(player),
 			eggType = eggType,
@@ -599,33 +751,55 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		rollbackSucceeded = rollbackTransaction(transaction)
 	end
 
-	if callSucceeded and result and transaction.shinyChargeTransaction then
+	if callSucceeded and result and transaction.spendTransaction then
+		-- The authoritative result is already complete. This commit is the unique
+		-- paid point of no return and performs the only visible balance mutation.
 		local commitOk, committed = pcall(
-			EggService._potionService.commitShinyChargeTransaction,
-			transaction.shinyChargeTransaction
+			EggService._currencyService.commitSpendTransaction,
+			transaction.spendTransaction
 		)
 		if commitOk and committed == true then
-			transaction.shinyChargeTransaction = nil
+			transaction.spendTransaction = nil
+			transaction.committed = true
+			transaction.prepared = nil
+		else
+			result = nil
+			hatchError = "Hatch failed safely"
+			rollbackSucceeded = rollbackTransaction(transaction)
+		end
+	elseif callSucceeded and result then
+		-- Explicitly free hatches commit their direct central owner as the PONR.
+		local ownerCommitted = transaction.profileOwner == nil
+		if transaction.profileOwner then
+			local commitOk, committed = pcall(
+				EggService._profileTransactionService.commit,
+				transaction.profileOwner
+			)
+			ownerCommitted = commitOk and committed == true
+		end
+		if ownerCommitted then
+			transaction.profileOwner = nil
+			transaction.committed = true
+			transaction.prepared = nil
 		else
 			result = nil
 			hatchError = "Hatch failed safely"
 			rollbackSucceeded = rollbackTransaction(transaction)
 		end
 	end
-
-	if callSucceeded and result then
-		transaction.committed = true
-		transaction.prepared = nil
-		transaction.spent = false
-	end
 	transaction.executing = false
 	local settled = rollbackSucceeded and settleTransaction(transaction)
 
 	if not rollbackSucceeded or not settled then
-		-- Currency/pet commit is final. A post-commit lease-release failure retains
-		-- the owner for lifecycle retry but never turns a paid hatch into a retry.
+		-- The economic commit is final. A post-commit Shiny finalization or lease-
+		-- release failure retains the owner for lifecycle retry but never turns a
+		-- paid hatch into a retry.
 		if transaction.committed and result then
-			notifyCommittedBatch(player, result)
+			if options.campaignClaimKey ~= nil then
+				notifyCommittedCampaignReward(player, result)
+			else
+				notifyCommittedBatch(player, result)
+			end
 			return result, nil
 		end
 		return nil, "Hatch rollback failed"
@@ -637,13 +811,49 @@ purchaseAndHatchUnlocked = function(player, eggType, requestedCount, options)
 		return nil, hatchError
 	end
 
-	notifyCommittedBatch(player, result)
+	if options.campaignClaimKey ~= nil then
+		notifyCommittedCampaignReward(player, result)
+	else
+		notifyCommittedBatch(player, result)
+	end
 	return result, nil
 end
 
 function EggService.purchaseAndHatch(player, eggType, requestedCount, options)
 	return withHatchLock(player, function()
 		return purchaseAndHatchUnlocked(player, eggType, requestedCount, options)
+	end)
+end
+
+-- Server-only atomic campaign reward. The one-time claim marker and pet/discovery
+-- mutation share the same direct profile owner and retained inventory transaction.
+function EggService.claimCampaignBossReward(player, eggType, levelNum)
+	if not player or type(eggType) ~= "string" or eggType == ""
+		or not isFiniteNumber(levelNum) or levelNum % 1 ~= 0
+		or levelNum < 1 or levelNum > 48 then
+		return nil, "Invalid campaign reward"
+	end
+	return withHatchLock(player, function()
+		local data = getPlayerData(player)
+		if type(data) ~= "table" then return nil, "No player data" end
+		local claimKey = tostring(levelNum)
+		local claims = rawget(data, "campaignBossRewards")
+		if type(claims) == "table" and rawget(claims, claimKey) == true then
+			return { status = "ALREADY_CLAIMED" }, nil
+		end
+		local result, rewardError = purchaseAndHatchUnlocked(player, eggType, 1, {
+			bypassStation = true,
+			bypassZoneUnlock = true,
+			skipCharge = true,
+			consumeShinyCharges = false,
+			campaignClaimKey = claimKey,
+		})
+		if not result then return nil, rewardError end
+		local pet = result.pets and result.pets[1] or nil
+		return {
+			status = "CLAIMED",
+			petName = type(pet) == "table" and pet.name or nil,
+		}, nil
 	end)
 end
 

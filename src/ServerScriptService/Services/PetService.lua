@@ -60,6 +60,13 @@ local function isFiniteNumber(value)
 		and value ~= -math.huge
 end
 
+-- Damage multipliers are external/runtime values. Every finite strictly positive
+-- factor is meaningful (including reductions below 1); malformed factors are
+-- neutral instead of corrupting the authoritative damage chain.
+local function normalizedPositiveDamageFactor(value)
+	return isFiniteNumber(value) and value > 0 and value or 1
+end
+
 -- Capacity sources are external service/profile values. Slot bonuses are always
 -- non-negative whole numbers; malformed, negative, or non-finite values are inert.
 local function safeSlotBonus(value, maximum)
@@ -1318,8 +1325,10 @@ function PetService.getInventory(player)
 	return data.pets
 end
 
--- Calculate effective damage from canonical identity and apply active buffs once.
--- pet.damage is a replicated compatibility mirror and is never combat authority.
+-- Calculate effective damage from canonical identity and apply every active
+-- factor to one unrounded intermediate. pet.damage is a replicated compatibility
+-- mirror and is never combat authority. Invalid factors are neutral; an overflowed
+-- complete product fails closed to zero instead of entering combat state.
 function PetService.getPetDamage(pet, player)
 	if type(pet) ~= "table" or not player then
 		return 0
@@ -1329,16 +1338,14 @@ function PetService.getPetDamage(pet, player)
 	if not baseOk or not isFiniteNumber(baseDamage) or baseDamage < 0 then
 		return 0
 	end
-	local enchantOk, enchantMultiplier = pcall(PetEnchantMath.getDamageMultiplier, pet)
-	if not enchantOk or not isFiniteNumber(enchantMultiplier) or enchantMultiplier < 0 then
-		enchantMultiplier = 1
-	end
-	local enchantedDamage = baseDamage * enchantMultiplier
-	if isFiniteNumber(enchantedDamage) and enchantedDamage >= 0 then
-		baseDamage = enchantedDamage
+
+	local enchantMultiplier = 1
+	local enchantOk, enchantValue = pcall(PetEnchantMath.getDamageMultiplier, pet)
+	if enchantOk then
+		enchantMultiplier = normalizedPositiveDamageFactor(enchantValue)
 	end
 
-	local strongBonus = 0
+	local questMultiplier = 1
 	if type(PetService._upgradeService) == "table"
 		and type(PetService._upgradeService.getUpgradeBonus) == "function" then
 		local bonusOk, bonus = pcall(
@@ -1346,33 +1353,29 @@ function PetService.getPetDamage(pet, player)
 			player,
 			"StrongPets"
 		)
-		if bonusOk and isFiniteNumber(bonus) and bonus > 0 then
-			strongBonus = bonus
-		end
-	end
-	if strongBonus > 0 then
-		local candidate = baseDamage * strongBonus
-		if isFiniteNumber(candidate) and candidate >= 0 then
-			baseDamage = math.floor(candidate)
+		if bonusOk then
+			questMultiplier = normalizedPositiveDamageFactor(bonus)
 		end
 	end
 
+	local shopMultiplier = 1
 	if type(PetService._shopService) == "table"
 		and type(PetService._shopService.getShopMultiplier) == "function" then
-		local multiplierOk, shopDamageMultiplier = pcall(
+		local multiplierOk, multiplier = pcall(
 			PetService._shopService.getShopMultiplier,
 			player,
 			"damage"
 		)
-		if multiplierOk and isFiniteNumber(shopDamageMultiplier) and shopDamageMultiplier > 1 then
-			local candidate = baseDamage * shopDamageMultiplier
-			if isFiniteNumber(candidate) and candidate >= 0 then
-				baseDamage = math.floor(candidate)
-			end
+		if multiplierOk then
+			shopMultiplier = normalizedPositiveDamageFactor(multiplier)
 		end
 	end
 
-	return isFiniteNumber(baseDamage) and baseDamage >= 0 and baseDamage or 0
+	local completeDamage = baseDamage
+		* enchantMultiplier
+		* questMultiplier
+		* shopMultiplier
+	return isFiniteNumber(completeDamage) and completeDamage >= 0 and completeDamage or 0
 end
 
 -- Campaign lane movement is snapshotted by CampaignService at deploy. It uses

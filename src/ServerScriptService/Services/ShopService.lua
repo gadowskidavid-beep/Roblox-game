@@ -34,6 +34,8 @@ ShopService._activeBuffs = {}
 -- One in-flight purchase per player. Tests may inject faults through
 -- _transactionHook(stage, context) at afterSpend and afterMutation.
 ShopService._purchaseLocks = {}
+ShopService._activeTransactions = {}
+ShopService._shuttingDown = false
 ShopService._transactionHook = nil
 
 -- Compatibility alias. Potion purchases do not consult this legacy catalog.
@@ -118,6 +120,7 @@ end
 function ShopService.init(dataService, currencyService)
 	ShopService._dataService = dataService
 	ShopService._currencyService = currencyService
+	ShopService._shuttingDown = false
 
 	-- QOF-18 is owned exclusively by AutoHatchService. This legacy highest-zone
 	-- scheduler is intentionally never started, even while the new feature gate is
@@ -239,53 +242,149 @@ function ShopService.getShopState(player)
 	}
 end
 
-local function rollbackPendingPurchase(currencyTransaction, rollbackMutation)
-	local mutationRollbackOk = pcall(rollbackMutation)
-	local currencyRollbackCallOk, currencyRolledBack = pcall(function()
-		return ShopService._currencyService.rollbackSpendTransaction(currencyTransaction)
-	end)
-	return mutationRollbackOk and currencyRollbackCallOk and currencyRolledBack == true
+local function finishTransaction(transaction)
+	if transaction.potionLease then
+		local released = ShopService._potionService
+			and ShopService._potionService.endMutation(
+				transaction.player,
+				transaction.potionLease
+			)
+		if released ~= true then return false end
+		transaction.potionLease = nil
+	end
+	local userId = transaction.userId
+	if ShopService._activeTransactions[userId] == transaction then
+		ShopService._activeTransactions[userId] = nil
+		ShopService._purchaseLocks[userId] = nil
+	end
+	return true
 end
 
-local function executePurchase(player, context, mutate, rollbackMutation)
+local function rollbackPendingPurchase(transaction, currentCurrencyTransaction)
+	if transaction.committed then return false end
+	if transaction.rolledBack then return finishTransaction(transaction) end
+	if transaction.executing or currentCurrencyTransaction ~= transaction.currencyTransaction then
+		return false
+	end
+	-- Never release the central profile owner or Potion lease until the exact Shop
+	-- mutation has been restored. The same idempotent closure remains retryable.
+	if not transaction.domainRestored then
+		local mutationRollbackCallOk, mutationRolledBack = pcall(transaction.rollbackMutation)
+		if not mutationRollbackCallOk or mutationRolledBack ~= true then return false end
+		transaction.domainRestored = true
+	end
+	local currencyRollbackCallOk, currencyRolledBack = pcall(function()
+		return ShopService._currencyService.rollbackSpendTransaction(
+			transaction.currencyTransaction
+		)
+	end)
+	if not currencyRollbackCallOk or currencyRolledBack ~= true then return false end
+	transaction.currencyTransaction = nil
+	transaction.rolledBack = true
+	return finishTransaction(transaction)
+end
+
+local function settleTransaction(transaction)
+	if transaction.executing then return false end
+	if not transaction.committed then
+		return rollbackPendingPurchase(transaction, transaction.currencyTransaction)
+	end
+	if transaction.potionLease and not transaction.potionPublished then
+		local publishOk, potionState = pcall(
+			ShopService._potionService.notifyInventoryChanged,
+			transaction.player,
+			transaction.potionLease
+		)
+		if not publishOk or type(potionState) ~= "table" then return false end
+		transaction.potionPublished = true
+		if type(transaction.state) == "table" then
+			transaction.state.potionState = potionState
+		end
+	end
+	return finishTransaction(transaction)
+end
+
+local function executePurchase(player, context, mutate, rollbackMutation, potionLease)
+	local userId = player.UserId
+	local transaction = {
+		player = player,
+		userId = userId,
+		potionLease = potionLease,
+		rollbackMutation = rollbackMutation,
+		executing = true,
+		committed = false,
+		rolledBack = false,
+		domainRestored = false,
+		potionPublished = false,
+		currencyTransaction = nil,
+		state = nil,
+	}
+	ShopService._activeTransactions[userId] = transaction
+	transaction.settle = function() return settleTransaction(transaction) end
+
 	local beginCallOk, currencyTransaction = pcall(function()
 		return ShopService._currencyService.beginSpendTransaction(
 			player,
 			context.currency,
-			context.amount
+			context.amount,
+			"ShopService"
 		)
 	end)
-	if not beginCallOk then
-		return false, "Purchase failed"
-	end
-	if type(currencyTransaction) ~= "table" then
+	if not beginCallOk or type(currencyTransaction) ~= "table" then
+		transaction.executing = false
+		transaction.rolledBack = true
+		finishTransaction(transaction)
+		if not beginCallOk then return false, "Purchase failed" end
 		return false, "Not enough " .. tostring(context.currency) .. " (need " .. tostring(context.amount) .. ")"
 	end
+	transaction.currencyTransaction = currencyTransaction
 	context.currencyTransaction = currencyTransaction
 
-	local state = nil
-	local transactionOk = pcall(function()
-		invokeTransactionHook("afterSpend", context)
-		mutate()
-		invokeTransactionHook("afterMutation", context)
-		-- Construct the complete authoritative DTO before the commit boundary. If
-		-- this fails, both the profile mutation and silent debit are rolled back.
-		state = ShopService.getShopState(player)
-		if ShopService._currencyService.commitSpendTransaction(currencyTransaction) ~= true then
-			error("currency commit failed")
-		end
-		context.committed = true
+	local function settlePendingPurchase(currentCurrencyTransaction)
+		return rollbackPendingPurchase(transaction, currentCurrencyTransaction)
+	end
+	local settlerCallOk, settlerRegistered = pcall(function()
+		return ShopService._currencyService.setSpendSettler(
+			currencyTransaction,
+			settlePendingPurchase
+		)
 	end)
-	if not transactionOk then
-		if not rollbackPendingPurchase(currencyTransaction, rollbackMutation) then
+	if not settlerCallOk or settlerRegistered ~= true then
+		transaction.executing = false
+		if not settlePendingPurchase(currencyTransaction) then
 			return false, "Purchase rollback failed"
 		end
 		return false, "Purchase failed"
 	end
-	return true, nil, state
+
+	local transactionOk = pcall(function()
+		invokeTransactionHook("afterSpend", context)
+		mutate()
+		invokeTransactionHook("afterMutation", context)
+		-- Build the complete Shop projection before the currency PONR. Potion's own
+		-- revision/event is published only after the paid commit is final.
+		transaction.state = ShopService.getShopState(player)
+		if ShopService._currencyService.commitSpendTransaction(currencyTransaction) ~= true then
+			error("currency commit failed")
+		end
+		transaction.currencyTransaction = nil
+		transaction.committed = true
+		context.committed = true
+	end)
+	transaction.executing = false
+	if not transactionOk or not transaction.committed then
+		if not settlePendingPurchase(currencyTransaction) then
+			return false, "Purchase rollback failed"
+		end
+		return false, "Purchase failed"
+	end
+	-- Paid success is terminal. A transient Potion publication/release fault keeps
+	-- this strong owner for lifecycle retry but never rolls the purchase back.
+	settleTransaction(transaction)
+	return true, nil, transaction.state
 end
 
-local function purchasePotion(player, request, data)
+local function purchasePotion(player, request, data, potionLease)
 	if BalanceConfig.Potions.RuntimeEnabled ~= true then
 		return false, "Potion purchases are not available yet"
 	end
@@ -329,7 +428,8 @@ local function purchasePotion(player, request, data)
 	end, function()
 		-- Preserve absence rather than materializing a zero key on rollback.
 		data.potionInventory[itemId] = oldValue
-	end)
+		return true
+	end, potionLease)
 end
 
 local function purchaseExtraEquipSlot(player, data)
@@ -375,20 +475,18 @@ local function purchaseExtraEquipSlot(player, data)
 		else
 			data.shopPurchases.extraEquipSlots = oldValue
 		end
+		return true
 	end)
 end
 
 -- Canonical potion purchases accept only the exact V2 DTO. ExtraEquipSlot is the
 -- sole retained string purchase contract; AutoHatch remains specifically gated.
 function ShopService.purchaseItem(player, request)
-	if not player or player.UserId == nil then
-		return false, "Invalid parameters"
-	end
-	if request == "AutoHatch" then
-		return false, "Auto-Hatch is not available yet"
-	end
+	if not player or player.UserId == nil then return false, "Invalid parameters" end
+	if request == "AutoHatch" then return false, "Auto-Hatch is not available yet" end
+	if ShopService._shuttingDown then return false, "SERVICE_UNAVAILABLE" end
 
-	local purchaseKind = nil
+	local purchaseKind
 	if request == "ExtraEquipSlot" then
 		purchaseKind = "extraEquipSlot"
 	elseif isExactPotionRequest(request) then
@@ -398,31 +496,51 @@ function ShopService.purchaseItem(player, request)
 	end
 
 	local userId = player.UserId
-	if ShopService._purchaseLocks[userId] then
-		return false, "Purchase already in progress"
+	if ShopService._purchaseLocks[userId] or ShopService._activeTransactions[userId] then
+		return false, "BUSY"
 	end
 	ShopService._purchaseLocks[userId] = true
 
-	local success = false
-	local message = nil
-	local state = nil
+	local potionLease = nil
+	if purchaseKind == "potion" then
+		if not ShopService._potionService
+			or type(ShopService._potionService.beginMutation) ~= "function"
+			or type(ShopService._potionService.endMutation) ~= "function" then
+			ShopService._purchaseLocks[userId] = nil
+			return false, "Shop service unavailable"
+		end
+		local lease, leaseError = ShopService._potionService.beginMutation(player, "ShopService.purchasePotion")
+		if not lease then
+			ShopService._purchaseLocks[userId] = nil
+			return false, leaseError or "BUSY"
+		end
+		potionLease = lease
+	end
+
+	local success, message, state = false, nil, nil
 	local callOk, callError = pcall(function()
 		if not ShopService._dataService or not ShopService._currencyService then
 			message = "Shop service unavailable"
 			return
 		end
 		local data = ShopService._dataService.getPlayerData(player)
-		if type(data) ~= "table" then
-			message = "No player data"
-			return
-		end
+		if type(data) ~= "table" then message = "No player data"; return end
 		if purchaseKind == "potion" then
-			success, message, state = purchasePotion(player, request, data)
+			success, message, state = purchasePotion(player, request, data, potionLease)
 		else
 			success, message, state = purchaseExtraEquipSlot(player, data)
 		end
 	end)
-	ShopService._purchaseLocks[userId] = nil
+
+	-- Preflight failures happen before executePurchase creates a retained record.
+	-- Release only the exact lease owned by this call; never clear a retained owner.
+	if ShopService._activeTransactions[userId] == nil then
+		if potionLease and ShopService._potionService.isMutationCurrent
+			and ShopService._potionService.isMutationCurrent(player, potionLease) then
+			ShopService._potionService.endMutation(player, potionLease)
+		end
+		ShopService._purchaseLocks[userId] = nil
+	end
 
 	if not callOk then
 		if type(warn) == "function" then
@@ -430,19 +548,7 @@ function ShopService.purchaseItem(player, request)
 		end
 		return false, "Purchase failed"
 	end
-	if not success then
-		return false, message
-	end
-
-	if purchaseKind == "potion" and ShopService._potionService then
-		local notifyOk, potionState = pcall(
-			ShopService._potionService.notifyInventoryChanged,
-			player
-		)
-		if notifyOk and type(potionState) == "table" then
-			state.potionState = potionState
-		end
-	end
+	if not success then return false, message end
 	fireShopUpdate(player, state)
 	return true, nil, state
 end
@@ -470,12 +576,40 @@ function ShopService.getShopMultiplier(player, buffType)
 	return 1
 end
 
-function ShopService.onPlayerRemoving(player)
-	if not player then
-		return
+function ShopService.cleanup(player)
+	if not player or player.UserId == nil then return false end
+	local userId = player.UserId
+	local transaction = ShopService._activeTransactions[userId]
+	if transaction then
+		if transaction.executing or type(transaction.settle) ~= "function"
+			or transaction.settle() ~= true then return false end
 	end
-	ShopService._purchaseLocks[player.UserId] = nil
-	ShopService._activeBuffs[player.UserId] = nil
+	if ShopService._purchaseLocks[userId] ~= nil then
+		-- An ownerless lock is never guessed stale during leave/shutdown.
+		return false
+	end
+	ShopService._activeBuffs[userId] = nil
+	return true
+end
+
+ShopService.onPlayerRemoving = ShopService.cleanup
+
+function ShopService.beginShutdown()
+	ShopService._shuttingDown = true
+end
+
+function ShopService.prepareForShutdown()
+	ShopService.beginShutdown()
+	local settled = true
+	local transactions = {}
+	for _, transaction in pairs(ShopService._activeTransactions) do
+		table.insert(transactions, transaction)
+	end
+	for _, transaction in ipairs(transactions) do
+		if transaction.executing or type(transaction.settle) ~= "function"
+			or transaction.settle() ~= true then settled = false end
+	end
+	return settled
 end
 
 -- Rolling compatibility symbol only. QOF-18 never reads legacy buffs, chooses a
