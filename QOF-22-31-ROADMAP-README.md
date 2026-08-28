@@ -151,7 +151,7 @@ Keine Aufgabe wird nur aufgrund eines erfolgreichen Exitcodes als fertig markier
 
 | QOF | Paket | Status | Abhängigkeit | Nächste Aktion | Studio-Gate | Evidenz: Commit / Artefakt-SHA / CI |
 |---|---|---|---|---|---|---|
-| QOF-22 | Baseline und Pflicht-Toolchain | IN ARBEIT | QOF-21 | Reviewfixes und Abschlusscommit | n/a | Fresh-QOF-21: `9f7c765…`; Lock: `dfcc08b…` |
+| QOF-22 | Baseline und Pflicht-Toolchain | ABGESCHLOSSEN | QOF-21 | auf ausdrückliches `Weiter` für QOF-23 warten | n/a | Implementierung: `8e5a37c6b8560d7f87a2f1943aad5cd7862299d5`; Fresh-QOF-21-RBXL: `9f7c7653b982a564da415b3ba3bb8e48370a559d9e3c1552df2403d57daccaaf`; Lock: `dfcc08b6bc1c5ef8333513a1130bd050d84a51e19c8eb1f4288263d5659600c1`; Tests 345/345 normal + reverse; Compile 77/77 |
 | QOF-23 | DataSchema V12 und hostile Save-Normalisierung | OFFEN | QOF-22 | nach Abschluss QOF-22 | separat | – |
 | QOF-24 | Kanonische Schadenspräzision | OFFEN | QOF-23 | nach Abschluss QOF-23 | separat | – |
 | QOF-25 | Zentrale atomare Profil-/Currency-Transaktionen | OFFEN | QOF-23 | nach Abschluss QOF-23 | separat | – |

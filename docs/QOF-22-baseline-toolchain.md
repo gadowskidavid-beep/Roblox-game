@@ -1,6 +1,6 @@
 # QOF-22 – Baseline und Pflicht-Toolchain
 
-Status: **In Arbeit – Reviewfixes verifiziert, Abschlusscommit ausstehend**
+Status: **Abgeschlossen – Studio-Gate n/a**
 
 QOF-22 verändert kein Gameplay. Es bindet die vollständige QOF-01–21-Baseline an einen reproduzierbaren, gegen repository-eigene SHA-256-Werte verifizierten Linux-amd64-Werkzeugpfad, bevor Schema-, Wirtschafts- oder UI-Code weiterentwickelt wird.
 
@@ -9,6 +9,7 @@ QOF-22 verändert kein Gameplay. Es bindet die vollständige QOF-01–21-Baselin
 - Arbeitsbranch: `qof-22-31-stabilization-release`
 - Unveränderliche QOF-01–21-Basis: `6f453131ea6d9cd9ae59321e476987107791f25e`
 - Bootstrap-Roadmap-Commit: `565c649f046aad4f1773b12036f9d1ddaedcfa46`
+- QOF-22-Implementierungscommit: `8e5a37c6b8560d7f87a2f1943aad5cd7862299d5`
 - `565c649^` ist exakt die genannte Basis; der Bootstrap-Diff enthält nur `QOF-22-31-ROADMAP-README.md`.
 - DataSchema vor QOF-23: V11.
 - Alle 21 QOF-Dokumente sind vorhanden.
