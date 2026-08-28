@@ -6,59 +6,30 @@
 	and require DataSchema directly.
 ]]
 
--- Mock game.ReplicatedStorage.Shared.Config
+-- Mock Roblox shared dependencies while loading production modules.
+local originalRequire = require
 local Config = {
 	MaxExtraEquipSlots = 5,
 	MaxPetInventoryBase = 100,
 	MaxPetInventoryAbsolute = 250,
 	MaxEquippedPetsAbsolute = 12,
 }
-
-local BalanceConfig = {
-	Potions = {
-		Persistence = {
-			MaxInventoryPerPotion = 999,
-			MaxTimedBuffSeconds = 30 * 24 * 60 * 60,
-		},
-		Catalog = {
-			LuckPotion = { buffType = "luck", durationSeconds = 600 },
-			MegaLuckPotion = { buffType = "luck", durationSeconds = 300 },
-			SpeedPotion = { buffType = "speed", durationSeconds = 300 },
-			CoinPotion = { buffType = "coins", durationSeconds = 600 },
-			ShinyPotion = { buffType = "shinyChance", hatchCharges = 3 },
-		},
-		Upgrades = {
-			BaseSlots = 2,
-			MaxSlots = 5,
-			Duration = { {}, {}, {}, {} },
-			MaxShinyCharges = 30,
-		},
-	},
+local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
+local PetData = originalRequire("src/ReplicatedStorage/Shared/PetData")
+local SharedMock = {
+	Config = Config,
+	BalanceConfig = BalanceConfig,
+	PetData = PetData,
 }
-
--- Patch the global `game` to provide shared dependencies.
-local SharedMock = {}
-SharedMock.Config = Config
-SharedMock.BalanceConfig = BalanceConfig
-
 local ReplicatedStorageMock = { Shared = SharedMock }
+rawset(_G, "game", { ReplicatedStorage = ReplicatedStorageMock })
+rawset(_G, "script", { Parent = SharedMock })
 
--- Create a mock game tree that supports indexing
-local gameMock = { ReplicatedStorage = ReplicatedStorageMock }
-rawset(_G, "game", gameMock)
-
--- Override require to intercept the Config dependency
-local originalRequire = require
 local function mockRequire(path)
-	-- When DataSchema does require(game.ReplicatedStorage.Shared.Config),
-	-- the path argument will be our Config table (since the mock returns it).
-	-- In that case, just return Config itself.
-	if path == Config then
-		return Config
-	end
-	if path == BalanceConfig then
-		return BalanceConfig
-	end
+	if path == Config then return Config end
+	if path == BalanceConfig then return BalanceConfig end
+	if path == PetData then return PetData end
+	if path == SharedMock.PetVariantMath then return SharedMock.PetVariantMath end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -72,7 +43,8 @@ if not math.clamp then
 	end
 end
 
--- Now load DataSchema
+local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
+SharedMock.PetVariantMath = PetVariantMath
 local DataSchema = originalRequire("src/ServerScriptService/Services/DataSchema")
 
 -- Restore require
@@ -308,12 +280,12 @@ describe("V6 pet migration", function()
 		local data = DataSchema.migrate({
 			schemaVersion = 5,
 			pets = {
-				{ id = "normal", petId = "Dog", name = "Dog", damage = 5, variant = "Normal" },
-				{ id = "gold", petId = "Dog", name = "Golden Dog", damage = 10, variant = "Golden" },
-				{ id = "goldMirror", petId = "Dog", name = "Golden Dog", damage = 10, variant = "Rainbow", golden = true },
-				{ id = "rainbow", petId = "Dog", name = "Rainbow Dog", damage = 25, variant = "Rainbow" },
-				{ id = "shiny", petId = "Dog", name = "Shiny Dog", damage = 15, variant = "Shiny" },
-				{ id = "invalid", petId = "Dog", name = "Dog", damage = 5, variant = "Mythic", shiny = true },
+				{ id = "normal", petId = "Buddy", name = "Buddy", damage = 999, variant = "Normal" },
+				{ id = "gold", petId = "Buddy", name = "Golden Buddy", damage = 999, variant = "Golden" },
+				{ id = "goldMirror", petId = "Buddy", name = "Golden Buddy", damage = 999, variant = "Rainbow", golden = true },
+				{ id = "rainbow", petId = "Buddy", name = "Rainbow Buddy", damage = 999, variant = "Rainbow" },
+				{ id = "shiny", petId = "Buddy", name = "Shiny Buddy", damage = 999, variant = "Shiny" },
+				{ id = "invalid", petId = "Buddy", name = "Buddy", damage = 999, variant = "Mythic", shiny = true },
 			},
 			equippedPets = {},
 		}, 1000)
@@ -321,25 +293,31 @@ describe("V6 pet migration", function()
 		expect(data.schemaVersion):toBe(6)
 		expect(data.pets[1].variant):toBe("Normal")
 		expect(data.pets[1].shiny):toBeFalse()
+		expect(data.pets[1].damage):toBe(1)
 		expect(data.pets[2].variant):toBe("Golden")
 		expect(data.pets[2].golden):toBeTrue()
+		expect(data.pets[2].damage):toBe(2)
 		expect(data.pets[3].variant):toBe("Golden")
 		expect(data.pets[3].shiny):toBeFalse()
+		expect(data.pets[3].damage):toBe(2)
 		expect(data.pets[4].variant):toBe("Rainbow")
+		expect(data.pets[4].damage):toBe(5)
 		expect(data.pets[5].variant):toBe("Normal")
 		expect(data.pets[5].shiny):toBeTrue()
+		expect(data.pets[5].damage):toBe(1.5)
 		expect(data.pets[6].variant):toBe("Normal")
 		expect(data.pets[6].shiny):toBeTrue()
+		expect(data.pets[6].damage):toBe(1.5)
 	end)
 
-	it("preserves V6 combined variant state and baked compatibility damage", function()
+	it("recalculates V6 combined variant damage from canonical identity", function()
 		local data = DataSchema.migrate({
 			schemaVersion = 6,
 			pets = {
 				{
 					id = "rainbowShiny",
-					petId = "Phoenix",
-					name = "Rainbow Shiny Phoenix",
+					petId = "Splash",
+					name = "Rainbow Shiny Splash",
 					damage = 75,
 					variant = "Rainbow",
 					shiny = true,
@@ -352,7 +330,7 @@ describe("V6 pet migration", function()
 		local pet = data.pets[1]
 		expect(pet.variant):toBe("Rainbow")
 		expect(pet.shiny):toBeTrue()
-		expect(pet.damage):toBe(75)
+		expect(pet.damage):toBe(22.5)
 		expect(pet.favorite):toBeTrue()
 		expect(pet.equipped):toBeTrue()
 	end)
@@ -463,22 +441,24 @@ end)
 
 
 describe("V6 rolling-server and magnitude safety", function()
-	it("preserves shiny through a V6 to V5 stamped profile round trip", function()
+	it("restores canonical Shiny after a rolling QOF-03 floor and save", function()
 		local v6 = DataSchema.migrate({
 			schemaVersion = 5,
 			pets = {
-				{ id = "shiny", petId = "Dog", name = "Shiny Dog", damage = 15, variant = "Shiny" },
+				{ id = "shiny", petId = "Buddy", name = "Shiny Buddy", damage = 15, variant = "Shiny" },
 			},
 			equippedPets = {},
 		}, 1000)
 
-		-- A rolling V5 server keeps unknown fields but stamps its own version.
-		local rollingV5Save = DataSchema.deepCopy(v6)
-		rollingV5Save.schemaVersion = 5
-		local reloaded = DataSchema.migrate(rollingV5Save, 1000)
+		-- QOF-03 retains the independent flag but floors the mirror and stamps V6.
+		-- QOF-04 must recover canonical damage after all old servers are drained.
+		local rollingQof03Save = DataSchema.deepCopy(v6)
+		rollingQof03Save.pets[1].damage = math.floor(rollingQof03Save.pets[1].damage)
+		rollingQof03Save.schemaVersion = 6
+		local reloaded = DataSchema.migrate(rollingQof03Save, 1000)
 		expect(reloaded.pets[1].variant):toBe("Normal")
 		expect(reloaded.pets[1].shiny):toBeTrue()
-		expect(reloaded.pets[1].damage):toBe(15)
+		expect(reloaded.pets[1].damage):toBe(1.5)
 	end)
 
 	it("caps huge finite potion quantities and timed expiries", function()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds the QOF-03 runtime sources."""
+"""Verify that the generated Battle Pets place embeds the QOF-05 runtime sources."""
 
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -11,6 +11,8 @@ EXPECTED_SOURCES = {
     "Config": "src/ReplicatedStorage/Shared/Config.lua",
     "ShopData": "src/ReplicatedStorage/Shared/ShopData.lua",
     "upgradeTreeData": "src/ReplicatedStorage/modules/upgradeTree/upgradeTreeData.lua",
+    "PetVariantMath": "src/ReplicatedStorage/Shared/PetVariantMath.lua",
+    "PetVariantPresentation": "src/ReplicatedStorage/Shared/PetVariantPresentation.lua",
     "PetService": "src/ServerScriptService/Services/PetService.lua",
     "DataSchema": "src/ServerScriptService/Services/DataSchema.lua",
     "DataService": "src/ServerScriptService/Services/DataService.lua",
@@ -18,7 +20,13 @@ EXPECTED_SOURCES = {
     "EffectsController": "src/StarterPlayer/StarterPlayerScripts/EffectsController.lua",
     "PetController": "src/StarterPlayer/StarterPlayerScripts/PetController.lua",
 }
-EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 58, "Script": 1, "LocalScript": 1}
+EXPECTED_SCRIPT_COUNTS = {"ModuleScript": 60, "Script": 1, "LocalScript": 1}
+EXPECTED_DUPLICATE_NAME_SOURCES = {
+    "Main": [
+        "src/ServerScriptService/Main.server.lua",
+        "src/StarterPlayer/StarterPlayerScripts/Main.client.lua",
+    ],
+}
 
 
 def main() -> None:
@@ -47,11 +55,22 @@ def main() -> None:
             f"generated source differs from {relative_path}"
         )
 
+    for script_name, relative_paths in EXPECTED_DUPLICATE_NAME_SOURCES.items():
+        generated_sources = scripts.get(script_name, [])
+        assert len(generated_sources) == len(relative_paths), (
+            f"expected {len(relative_paths)} {script_name} scripts, found {len(generated_sources)}"
+        )
+        for relative_path in relative_paths:
+            expected_source = (ROOT / relative_path).read_text()
+            assert generated_sources.count(expected_source) == 1, (
+                f"generated source differs from or duplicates {relative_path}"
+            )
+
     actual_counts = {name: counts.get(name, 0) for name in EXPECTED_SCRIPT_COUNTS}
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds all QOF-03 sources exactly once")
+    print("PASS: generated place embeds all QOF-05 sources exactly once")
     print(f"PASS: generated script counts are {actual_counts}")
 
 

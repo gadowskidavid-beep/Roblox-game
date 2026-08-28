@@ -69,7 +69,7 @@ local BalanceConfig = {
 
 	-- Approved target model. Activated with the V6 pet migration in QOF-03/QOF-04.
 	Variants = {
-		RuntimeEnabled = false,
+		RuntimeEnabled = true,
 		Base = {
 			Normal = { displayName = "Normal", damageMultiplier = 1 },
 			Golden = { displayName = "Gold", damageMultiplier = 2 },
@@ -381,8 +381,8 @@ local function validateIncreasingCosts(levels, context)
 end
 
 function BalanceConfig.Validate()
+	assert(BalanceConfig.Variants.RuntimeEnabled == true, "Variants must be enabled in QOF-04")
 	local futureSections = {
-		Variants = BalanceConfig.Variants,
 		Hatch = BalanceConfig.Hatch,
 		Machines = BalanceConfig.Machines,
 		CoreUpgrades = BalanceConfig.CoreUpgrades,
