@@ -12,6 +12,7 @@ local DataService = require(script.Parent.Services.DataService)
 local CurrencyService = require(script.Parent.Services.CurrencyService)
 local UpgradeService = require(script.Parent.Services.UpgradeService)
 local PetService = require(script.Parent.Services.PetService)
+local MachineService = require(script.Parent.Services.MachineService)
 local ZoneService = require(script.Parent.Services.ZoneService)
 local CampaignService = require(script.Parent.Services.CampaignService)
 local EggService = require(script.Parent.Services.EggService)
@@ -189,6 +190,10 @@ PetService.init(DataService, CurrencyService, UpgradeService)
 PetService.setMasteryService(MasteryService)
 PetService.setShopService(ShopService)
 PetService.setUpgradeTreeService(UpgradeTreeService)
+MachineService.init(DataService, CurrencyService, PetService)
+MachineService.setQuestService(QuestService)
+-- QOF-15 intentionally supplies no activation validator: with the runtime gate
+-- disabled and no world authority injected, every machine attempt fails closed.
 EggService.init(DataService, CurrencyService, PetService, UpgradeTreeService)
 EggService.setQuestService(QuestService)
 EggService.setPotionService(PotionService)
@@ -801,6 +806,10 @@ Players.PlayerRemoving:Connect(function(player)
 
 	-- Cleanup QOF-09 transient hatch locks/cache; the profile preference persists
 	EggService.onPlayerRemoving(player)
+
+	-- Cleanup QOF-15 machine locks before profile persistence. No activation
+	-- validator, remote, station, prompt, event, or client UI is wired yet.
+	MachineService.cleanup(player)
 
 	-- Cleanup QOF-14 potion locks/reservations before profile persistence.
 	PotionService.onPlayerRemoving(player)
