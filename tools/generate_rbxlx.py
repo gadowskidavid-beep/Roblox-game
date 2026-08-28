@@ -14,6 +14,7 @@ that Roblox Studio requires:
 - Color3uint8 format for colors
 """
 
+import json
 import os
 import sys
 
@@ -114,7 +115,7 @@ def make_part_xml(name, class_name, x, y, z, sx, sy, sz, r, g, b, material=256,
     )
 
 
-def make_script_xml(class_name, name, source_code, lvl=2):
+def make_script_xml(class_name, name, source_code, lvl=2, children_str=""):
     """Generate a Script/LocalScript/ModuleScript Item XML block."""
     ref = next_ref()
     ind = indent(lvl)
@@ -136,11 +137,12 @@ def make_script_xml(class_name, name, source_code, lvl=2):
 
     props_str = "\n".join(props_lines)
 
+    children_xml = f"\n{children_str}" if children_str else ""
     return (
         f'{ind}<Item class="{class_name}" referent="{ref}">\n'
         f'{ind1}<Properties>\n'
         f'{props_str}\n'
-        f'{ind1}</Properties>\n'
+        f'{ind1}</Properties>{children_xml}\n'
         f'{ind}</Item>'
     )
 
@@ -209,6 +211,22 @@ def make_remote_function_xml(name, lvl=4):
         f'{ind}<Item class="RemoteFunction" referent="{ref}">\n'
         f'{ind1}<Properties>\n'
         f'{ind2}<string name="Name">{xml_escape(name)}</string>\n'
+        f'{ind1}</Properties>\n'
+        f'{ind}</Item>'
+    )
+
+
+def make_sound_xml(name, sound_id, lvl=2):
+    """Generate a Sound Item with an asset-backed SoundId."""
+    ref = next_ref()
+    ind = indent(lvl)
+    ind1 = indent(lvl + 1)
+    ind2 = indent(lvl + 2)
+    return (
+        f'{ind}<Item class="Sound" referent="{ref}">\n'
+        f'{ind1}<Properties>\n'
+        f'{ind2}<string name="Name">{xml_escape(name)}</string>\n'
+        f'{ind2}<Content name="SoundId"><url>{xml_escape(sound_id)}</url></Content>\n'
         f'{ind1}</Properties>\n'
         f'{ind}</Item>'
     )
@@ -435,27 +453,69 @@ def build_lighting():
 
 
 def build_replicated_storage():
-    """Build ReplicatedStorage with Shared modules only.
-
-    NOTE: The Remotes folder is NOT included here. The server Main.server.lua
-    creates it at runtime via Instance.new("Folder") with all RemoteEvents and
-    RemoteFunctions. Including it in the .rbxlx would create a duplicate folder
-    that conflicts with the server-created one. The client uses WaitForChild("Remotes")
-    which correctly waits for the server to create it.
-    """
-    # Shared folder with ModuleScripts
+    """Build ReplicatedStorage with shared game data and the imported Vide tree."""
     shared_modules = []
-    module_names = ["Config", "PetData", "ZoneData", "CampaignData", "QuestData", "MasteryData", "ShopData"]
+    module_names = [
+        "BalanceConfig", "Config", "PetData", "PetVariantMath", "PetVariantPresentation",
+        "ZoneData", "CampaignData", "QuestData", "MasteryData", "ShopData",
+    ]
     for mod_name in module_names:
         filepath = os.path.join(SRC_DIR, "ReplicatedStorage", "Shared", f"{mod_name}.lua")
         source = read_source(filepath)
         shared_modules.append(make_script_xml("ModuleScript", mod_name, source, lvl=4))
+    shared_folder = make_folder_xml("Shared", "\n".join(shared_modules), lvl=3)
 
-    shared_children = "\n".join(shared_modules)
-    shared_folder = make_folder_xml("Shared", shared_children, lvl=3)
+    vide_dir = os.path.join(SRC_DIR, "ReplicatedStorage", "packages", "vide")
+    vide_child_names = sorted(
+        filename[:-4]
+        for filename in os.listdir(vide_dir)
+        if filename.endswith(".lua") and filename != "init.lua"
+    )
+    vide_children = []
+    for mod_name in vide_child_names:
+        source = read_source(os.path.join(vide_dir, f"{mod_name}.lua"))
+        vide_children.append(make_script_xml("ModuleScript", mod_name, source, lvl=5))
+    vide_source = read_source(os.path.join(vide_dir, "init.lua"))
+    vide_module = make_script_xml(
+        "ModuleScript", "vide", vide_source, lvl=4, children_str="\n".join(vide_children)
+    )
+    packages_folder = make_folder_xml("packages", vide_module, lvl=3)
 
-    # ReplicatedStorage contains only the Shared folder
-    return make_service_xml("ReplicatedStorage", "ReplicatedStorage", shared_folder)
+    upgrade_tree_dir = os.path.join(SRC_DIR, "ReplicatedStorage", "modules", "upgradeTree")
+    tree_modules = []
+    tree_module_names = sorted(
+        filename[:-4]
+        for filename in os.listdir(upgrade_tree_dir)
+        if filename.endswith(".lua")
+    )
+    for mod_name in tree_module_names:
+        source = read_source(os.path.join(upgrade_tree_dir, f"{mod_name}.lua"))
+        tree_modules.append(make_script_xml("ModuleScript", mod_name, source, lvl=5))
+
+    sounds_model_path = os.path.join(upgrade_tree_dir, "sounds.model.json")
+    with open(sounds_model_path, "r", encoding="utf-8") as sounds_file:
+        sounds_model = json.load(sounds_file)
+    sounds = []
+    for child in sounds_model.get("Children", []):
+        if child.get("ClassName") != "Sound":
+            continue
+        sounds.append((child["Name"], child.get("Properties", {}).get("SoundId", "")))
+    sounds.sort(key=lambda sound: sound[0])
+    sound_children = [make_sound_xml(name, sound_id, lvl=6) for name, sound_id in sounds]
+    sounds_folder = make_folder_xml("sounds", "\n".join(sound_children), lvl=5)
+    upgrade_tree_children = "\n".join(tree_modules + [sounds_folder])
+    upgrade_tree_folder = make_folder_xml("upgradeTree", upgrade_tree_children, lvl=4)
+
+    format_number_source = read_source(
+        os.path.join(SRC_DIR, "ReplicatedStorage", "modules", "formatNumber.lua")
+    )
+    format_number = make_script_xml("ModuleScript", "formatNumber", format_number_source, lvl=4)
+    modules_folder = make_folder_xml(
+        "modules", f"{format_number}\n{upgrade_tree_folder}", lvl=3
+    )
+
+    children = "\n".join([shared_folder, packages_folder, modules_folder])
+    return make_service_xml("ReplicatedStorage", "ReplicatedStorage", children)
 
 
 def build_server_script_service():
@@ -464,7 +524,7 @@ def build_server_script_service():
     service_names = [
         "DataSchema", "DataService", "CurrencyService", "PetService",
         "UpgradeService", "ZoneService", "CampaignService", "EggService",
-        "QuestService", "MasteryService", "ShopService"
+        "QuestService", "MasteryService", "ShopService", "UpgradeTreeService"
     ]
     service_scripts = []
     for svc_name in service_names:
@@ -489,7 +549,10 @@ def build_server_script_service():
 def build_starter_player():
     """Build StarterPlayer with StarterPlayerScripts (flattened structure - no Client/ subfolder)."""
     # Controller ModuleScripts
-    controller_names = ["UIController", "PetController", "CampaignController", "EffectsController", "MusicController"]
+    controller_names = [
+        "UIController", "PetController", "CampaignController", "EffectsController",
+        "MusicController", "UpgradeTreeController",
+    ]
     controller_scripts = []
     for ctrl_name in controller_names:
         filepath = os.path.join(SRC_DIR, "StarterPlayer", "StarterPlayerScripts", f"{ctrl_name}.lua")

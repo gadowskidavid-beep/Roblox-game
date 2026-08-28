@@ -6,33 +6,30 @@
 	and require DataSchema directly.
 ]]
 
--- Mock game.ReplicatedStorage.Shared.Config
+-- Mock Roblox shared dependencies while loading production modules.
+local originalRequire = require
 local Config = {
 	MaxExtraEquipSlots = 5,
 	MaxPetInventoryBase = 100,
 	MaxPetInventoryAbsolute = 250,
 	MaxEquippedPetsAbsolute = 12,
 }
-
--- Patch the global `game` to provide Config when DataSchema requires it
-local SharedMock = {}
-SharedMock.Config = Config
-
+local BalanceConfig = originalRequire("src/ReplicatedStorage/Shared/BalanceConfig")
+local PetData = originalRequire("src/ReplicatedStorage/Shared/PetData")
+local SharedMock = {
+	Config = Config,
+	BalanceConfig = BalanceConfig,
+	PetData = PetData,
+}
 local ReplicatedStorageMock = { Shared = SharedMock }
+rawset(_G, "game", { ReplicatedStorage = ReplicatedStorageMock })
+rawset(_G, "script", { Parent = SharedMock })
 
--- Create a mock game tree that supports indexing
-local gameMock = { ReplicatedStorage = ReplicatedStorageMock }
-rawset(_G, "game", gameMock)
-
--- Override require to intercept the Config dependency
-local originalRequire = require
 local function mockRequire(path)
-	-- When DataSchema does require(game.ReplicatedStorage.Shared.Config),
-	-- the path argument will be our Config table (since the mock returns it).
-	-- In that case, just return Config itself.
-	if path == Config then
-		return Config
-	end
+	if path == Config then return Config end
+	if path == BalanceConfig then return BalanceConfig end
+	if path == PetData then return PetData end
+	if path == SharedMock.PetVariantMath then return SharedMock.PetVariantMath end
 	return originalRequire(path)
 end
 rawset(_G, "require", mockRequire)
@@ -46,7 +43,8 @@ if not math.clamp then
 	end
 end
 
--- Now load DataSchema
+local PetVariantMath = originalRequire("src/ReplicatedStorage/Shared/PetVariantMath")
+SharedMock.PetVariantMath = PetVariantMath
 local DataSchema = originalRequire("src/ServerScriptService/Services/DataSchema")
 
 -- Restore require
@@ -73,6 +71,15 @@ describe("DataSchema.getDefaultData", function()
 		expect(#data.pets):toBe(1)
 		expect(data.pets[1].petId):toBe("Buddy")
 		expect(data.pets[1].rarity):toBe("Common")
+		expect(data.pets[1].variant):toBe("Normal")
+		expect(data.pets[1].shiny):toBeFalse()
+	end)
+
+	it("creates empty future potion state with bounded defaults", function()
+		local data = DataSchema.getDefaultData()
+		expect(data.potionInventory):toEqual({})
+		expect(data.activeBuffs):toEqual({})
+		expect(data.potionUpgrades):toEqual({ slots = 2, durationLevel = 0, autoDrink = false })
 	end)
 
 	it("has unlockedZones containing zone 1", function()
@@ -264,5 +271,211 @@ describe("DataSchema.deepCopy", function()
 		expect(DataSchema.deepCopy(42)):toBe(42)
 		expect(DataSchema.deepCopy("hello")):toBe("hello")
 		expect(DataSchema.deepCopy(true)):toBe(true)
+	end)
+end)
+
+
+describe("V6 pet migration", function()
+	it("maps every V5 variant into base variant plus independent shiny", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 5,
+			pets = {
+				{ id = "normal", petId = "Buddy", name = "Buddy", damage = 999, variant = "Normal" },
+				{ id = "gold", petId = "Buddy", name = "Golden Buddy", damage = 999, variant = "Golden" },
+				{ id = "goldMirror", petId = "Buddy", name = "Golden Buddy", damage = 999, variant = "Rainbow", golden = true },
+				{ id = "rainbow", petId = "Buddy", name = "Rainbow Buddy", damage = 999, variant = "Rainbow" },
+				{ id = "shiny", petId = "Buddy", name = "Shiny Buddy", damage = 999, variant = "Shiny" },
+				{ id = "invalid", petId = "Buddy", name = "Buddy", damage = 999, variant = "Mythic", shiny = true },
+			},
+			equippedPets = {},
+		}, 1000)
+
+		expect(data.schemaVersion):toBe(6)
+		expect(data.pets[1].variant):toBe("Normal")
+		expect(data.pets[1].shiny):toBeFalse()
+		expect(data.pets[1].damage):toBe(1)
+		expect(data.pets[2].variant):toBe("Golden")
+		expect(data.pets[2].golden):toBeTrue()
+		expect(data.pets[2].damage):toBe(2)
+		expect(data.pets[3].variant):toBe("Golden")
+		expect(data.pets[3].shiny):toBeFalse()
+		expect(data.pets[3].damage):toBe(2)
+		expect(data.pets[4].variant):toBe("Rainbow")
+		expect(data.pets[4].damage):toBe(5)
+		expect(data.pets[5].variant):toBe("Normal")
+		expect(data.pets[5].shiny):toBeTrue()
+		expect(data.pets[5].damage):toBe(1.5)
+		expect(data.pets[6].variant):toBe("Normal")
+		expect(data.pets[6].shiny):toBeTrue()
+		expect(data.pets[6].damage):toBe(1.5)
+	end)
+
+	it("recalculates V6 combined variant damage from canonical identity", function()
+		local data = DataSchema.migrate({
+			schemaVersion = 6,
+			pets = {
+				{
+					id = "rainbowShiny",
+					petId = "Splash",
+					name = "Rainbow Shiny Splash",
+					damage = 75,
+					variant = "Rainbow",
+					shiny = true,
+					favorite = true,
+					equipped = true,
+				},
+			},
+			equippedPets = { "rainbowShiny" },
+		}, 1000)
+		local pet = data.pets[1]
+		expect(pet.variant):toBe("Rainbow")
+		expect(pet.shiny):toBeTrue()
+		expect(pet.damage):toBe(22.5)
+		expect(pet.favorite):toBeTrue()
+		expect(pet.equipped):toBeTrue()
+	end)
+end)
+
+describe("V6 potion persistence normalization", function()
+	it("whitelists inventory, removes expired buffs, and caps charge state", function()
+		local data = DataSchema.migrate({
+			potionInventory = {
+				LuckPotion = 4.9,
+				ShinyPotion = 2,
+				UnknownPotion = 999,
+				SpeedPotion = -3,
+			},
+			activeBuffs = {
+				luck = 1200.9,
+				speed = 999,
+				coins = "later",
+				shinyChance = { charges = 99 },
+				unknown = 9000,
+			},
+			potionUpgrades = {
+				slots = 99,
+				durationLevel = 99,
+				autoDrink = 1,
+			},
+		}, 1000)
+
+		expect(data.potionInventory):toEqual({ LuckPotion = 4, ShinyPotion = 2 })
+		expect(data.activeBuffs):toEqual({
+			luck = 1200,
+			shinyChance = { charges = 30 },
+		})
+		expect(data.potionUpgrades):toEqual({ slots = 5, durationLevel = 4, autoDrink = false })
+	end)
+
+	it("restores safe potion upgrade defaults from malformed values", function()
+		local data = DataSchema.migrate({
+			potionInventory = "invalid",
+			activeBuffs = "invalid",
+			potionUpgrades = {
+				slots = -4,
+				durationLevel = -2,
+				autoDrink = true,
+			},
+		}, 1000)
+		expect(data.potionInventory):toEqual({})
+		expect(data.activeBuffs):toEqual({})
+		expect(data.potionUpgrades):toEqual({ slots = 2, durationLevel = 0, autoDrink = true })
+	end)
+end)
+
+describe("V6 compatibility guarantees", function()
+	it("preserves discovery and upgrade tree purchases while removing malformed entries", function()
+		local data = DataSchema.migrate({
+			discoveredPets = {
+				Dog = true,
+				Golden_Dog = true,
+				Shiny_Dog = true,
+				Rainbow_Dog = true,
+				Ignored = false,
+				[12] = true,
+			},
+			upgradeTreePurchases = {
+				["Eggs I"] = true,
+				["luck I"] = true,
+				Ignored = false,
+			},
+		}, 1000)
+		expect(data.discoveredPets):toEqual({
+			Dog = true,
+			Golden_Dog = true,
+			Shiny_Dog = true,
+			Rainbow_Dog = true,
+		})
+		expect(data.upgradeTreePurchases):toEqual({ ["Eggs I"] = true, ["luck I"] = true })
+	end)
+
+	it("is idempotent for migrated V6 profiles", function()
+		local once = DataSchema.migrate({
+			schemaVersion = 5,
+			pets = {
+				{ id = "shiny", petId = "Dog", name = "Shiny Dog", damage = 15, variant = "Shiny" },
+			},
+			equippedPets = {},
+			potionInventory = { LuckPotion = 2 },
+			activeBuffs = { luck = 1500, shinyChance = { charges = 3 } },
+			upgradeTreePurchases = { ["Eggs I"] = true },
+		}, 1000)
+		local twice = DataSchema.migrate(once, 1000)
+		expect(twice):toEqual(once)
+	end)
+
+	it("cloneForPersistence deep-copies and removes expired or transient state", function()
+		local live = DataSchema.migrate({
+			activeBuffs = { luck = 1500 },
+			potionInventory = { LuckPotion = 2 },
+			xpNeeded = 999,
+		}, 1000)
+		local snapshot = DataSchema.cloneForPersistence(live, 1600)
+		expect(snapshot.activeBuffs):toEqual({})
+		expect(snapshot.xpNeeded):toBeNil()
+		expect(snapshot.potionInventory):toEqual({ LuckPotion = 2 })
+		snapshot.potionInventory.LuckPotion = 1
+		expect(live.potionInventory.LuckPotion):toBe(2)
+	end)
+end)
+
+
+describe("V6 rolling-server and magnitude safety", function()
+	it("restores canonical Shiny after a rolling QOF-03 floor and save", function()
+		local v6 = DataSchema.migrate({
+			schemaVersion = 5,
+			pets = {
+				{ id = "shiny", petId = "Buddy", name = "Shiny Buddy", damage = 15, variant = "Shiny" },
+			},
+			equippedPets = {},
+		}, 1000)
+
+		-- QOF-03 retains the independent flag but floors the mirror and stamps V6.
+		-- QOF-04 must recover canonical damage after all old servers are drained.
+		local rollingQof03Save = DataSchema.deepCopy(v6)
+		rollingQof03Save.pets[1].damage = math.floor(rollingQof03Save.pets[1].damage)
+		rollingQof03Save.schemaVersion = 6
+		local reloaded = DataSchema.migrate(rollingQof03Save, 1000)
+		expect(reloaded.pets[1].variant):toBe("Normal")
+		expect(reloaded.pets[1].shiny):toBeTrue()
+		expect(reloaded.pets[1].damage):toBe(1.5)
+	end)
+
+	it("caps huge finite potion quantities and timed expiries", function()
+		local data = DataSchema.migrate({
+			potionInventory = { LuckPotion = 1e300 },
+			activeBuffs = { luck = 1e300 },
+		}, 1000)
+		expect(data.potionInventory.LuckPotion):toBe(999)
+		expect(data.activeBuffs.luck):toBe(2593000)
+	end)
+
+	it("drops non-finite potion quantities and timed expiries", function()
+		local data = DataSchema.migrate({
+			potionInventory = { LuckPotion = math.huge, CoinPotion = 0 / 0 },
+			activeBuffs = { luck = math.huge, coins = 0 / 0 },
+		}, 1000)
+		expect(data.potionInventory):toEqual({})
+		expect(data.activeBuffs):toEqual({})
 	end)
 end)

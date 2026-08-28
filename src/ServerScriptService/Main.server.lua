@@ -18,6 +18,7 @@ local EggService = require(script.Parent.Services.EggService)
 local QuestService = require(script.Parent.Services.QuestService)
 local MasteryService = require(script.Parent.Services.MasteryService)
 local ShopService = require(script.Parent.Services.ShopService)
+local UpgradeTreeService = require(script.Parent.Services.UpgradeTreeService)
 
 ----------------------------------------------
 -- Central Rate Limiter
@@ -84,6 +85,7 @@ local remoteEvents = {
 	"QuestProgressUpdated",
 	"MasteryUpdated",
 	"ShopBuffsUpdated",
+	"UpgradeTreeUpdated",
 }
 
 for _, eventName in ipairs(remoteEvents) do
@@ -116,6 +118,8 @@ local remoteFunctions = {
 	"GetDiscoveredPets",
 	"PurchaseShopItem",
 	"GetShopBuffs",
+	"PurchaseTreeUpgrade",
+	"GetUpgradeTreeState",
 }
 
 for _, funcName in ipairs(remoteFunctions) do
@@ -138,6 +142,7 @@ CurrencyService._upgradeService = UpgradeService
 QuestService.init(DataService, CurrencyService)
 MasteryService.init(DataService)
 ShopService.init(DataService, CurrencyService)
+UpgradeTreeService.init(DataService, CurrencyService)
 
 -- Set cross-references
 UpgradeService.setQuestService(QuestService)
@@ -381,6 +386,31 @@ getRemoteFunction("GetMasteryState").OnServerInvoke = function(player)
 	end
 	if not canCall(player, "GetMasteryState", 0.25) then return {} end
 	return MasteryService.getMasteryState(player)
+end
+
+-- GetUpgradeTreeState
+getRemoteFunction("GetUpgradeTreeState").OnServerInvoke = function(player)
+	if not player or not player:IsA("Player") then
+		return { currency = { coins = 0 }, purchased = {} }
+	end
+	if not canCall(player, "GetUpgradeTreeState", 0.25) then
+		return nil
+	end
+	return UpgradeTreeService.getState(player)
+end
+
+-- PurchaseTreeUpgrade (server validates canonical ID, prerequisites, and coin cost)
+getRemoteFunction("PurchaseTreeUpgrade").OnServerInvoke = function(player, upgradeId)
+	if not player or not player:IsA("Player") then
+		return false, "Invalid player", { currency = { coins = 0 }, purchased = {} }
+	end
+	if not canCall(player, "PurchaseTreeUpgrade", 0.35) then
+		return false, "Please wait before purchasing again", UpgradeTreeService.getState(player)
+	end
+	if not isValidIdentifier(upgradeId) then
+		return false, "Invalid upgrade ID", UpgradeTreeService.getState(player)
+	end
+	return UpgradeTreeService.purchase(player, upgradeId)
 end
 
 -- ConvertToGoldenPet (2 second cooldown)

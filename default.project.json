@@ -17,6 +17,12 @@
       "$className": "ReplicatedStorage",
       "Shared": {
         "$path": "src/ReplicatedStorage/Shared"
+      },
+      "packages": {
+        "$path": "src/ReplicatedStorage/packages"
+      },
+      "modules": {
+        "$path": "src/ReplicatedStorage/modules"
       }
     },
     "Workspace": {

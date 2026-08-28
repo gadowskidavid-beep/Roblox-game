@@ -27,6 +27,7 @@ local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
 local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local ShopData = require(Shared:WaitForChild("ShopData"))
+local PetVariantPresentation = require(Shared:WaitForChild("PetVariantPresentation"))
 
 local UIController = {}
 UIController.__index = UIController
@@ -62,13 +63,6 @@ local RARITY_COLORS = {
 	Legendary = Color3.fromRGB(255, 200, 0),
 }
 
-local VARIANT_COLORS = {
-	Normal = Color3.fromRGB(160, 170, 190),
-	Golden = Color3.fromRGB(255, 200, 0),
-	Shiny = Color3.fromRGB(80, 230, 255),
-	Rainbow = Color3.fromRGB(255, 100, 210),
-}
-
 local PET_SORT_MODES = { "Default", "Rarity", "Variant", "Damage" }
 local PET_VARIANT_FILTERS = { "All", "Normal", "Golden", "Shiny", "Rainbow" }
 local RARITY_RANK = {
@@ -86,10 +80,11 @@ local VARIANT_RANK = {
 }
 
 local function resolvePetVariant(petData)
-	if petData.golden == true then return "Golden" end
-	local variant = petData.variant
-	if VARIANT_RANK[variant] then return variant end
-	return "Normal"
+	return PetVariantPresentation.resolve(petData).legacyCategory
+end
+
+local function rgbToColor(rgb)
+	return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
 end
 
 local function getPetDamage(petData)
@@ -906,12 +901,14 @@ end
 function UIController:_buildPetDisplayList()
 	local displayPets = {}
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
-		local variant = resolvePetVariant(petData)
+		local presentation = PetVariantPresentation.resolve(petData)
+		local variant = presentation.legacyCategory
 		if self._petVariantFilter == "All" or variant == self._petVariantFilter then
 			table.insert(displayPets, {
 				pet = petData,
 				sourceIndex = sourceIndex,
 				variant = variant,
+				presentation = presentation,
 			})
 		end
 	end
@@ -1039,6 +1036,11 @@ function UIController:_refreshPetGrid()
 	local displayPets = self:_buildPetDisplayList()
 	for displayIndex, entry in ipairs(displayPets) do
 		local petData = entry.pet
+		local presentation = entry.presentation
+		local baseAccent = presentation.baseVariant == "Normal"
+			and (RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common)
+			or rgbToColor(presentation.accentRGB)
+		local shinyAccent = rgbToColor(presentation.shinyRGB)
 		local card = Instance.new("Frame")
 		card.Name = "PetCard_" .. tostring(petData.uniqueId or petData.id or displayIndex)
 		card.BackgroundColor3 = COLORS.DarkBg
@@ -1052,15 +1054,27 @@ function UIController:_refreshPetGrid()
 		local rarityColor = RARITY_COLORS[petData.rarity or "Common"] or RARITY_COLORS.Common
 		local cardStroke = Instance.new("UIStroke")
 		cardStroke.Thickness = 3
-		cardStroke.Color = rarityColor
+		cardStroke.Color = presentation.isShiny and shinyAccent or baseAccent
 		cardStroke.Parent = card
 
 		local petIcon = Instance.new("Frame")
 		petIcon.Name = "PetIcon"
 		petIcon.Size = UDim2.fromScale(0.45, 0.35)
 		petIcon.Position = UDim2.fromScale(0.275, 0.05)
-		petIcon.BackgroundColor3 = rarityColor
+		petIcon.BackgroundColor3 = baseAccent
 		petIcon.Parent = card
+
+		if presentation.baseVariant == "Rainbow" then
+			local rainbowGradient = Instance.new("UIGradient")
+			rainbowGradient.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 90, 120)),
+				ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255, 225, 80)),
+				ColorSequenceKeypoint.new(0.66, Color3.fromRGB(70, 220, 255)),
+				ColorSequenceKeypoint.new(1, Color3.fromRGB(210, 90, 255)),
+			})
+			rainbowGradient.Rotation = 25
+			rainbowGradient.Parent = petIcon
+		end
 
 		local iconCorner = Instance.new("UICorner")
 		iconCorner.CornerRadius = UDim.new(1, 0)
@@ -1068,19 +1082,43 @@ function UIController:_refreshPetGrid()
 
 		local nameLabel = Instance.new("TextLabel")
 		nameLabel.Name = "PetName"
-		nameLabel.Size = UDim2.fromScale(0.9, 0.15)
-		nameLabel.Position = UDim2.fromScale(0.05, 0.42)
+		nameLabel.Size = UDim2.fromScale(0.9, 0.13)
+		nameLabel.Position = UDim2.fromScale(0.05, 0.4)
 		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = petData.name or "Pet"
+		nameLabel.Text = presentation.displayPetName
 		nameLabel.TextColor3 = COLORS.White
 		nameLabel.Font = Enum.Font.GothamBold
 		nameLabel.TextScaled = true
 		nameLabel.Parent = card
 
+		local variantBadge = Instance.new("TextLabel")
+		variantBadge.Name = "VariantBadge"
+		variantBadge.Size = UDim2.fromScale(0.8, 0.1)
+		variantBadge.Position = UDim2.fromScale(0.1, 0.54)
+		variantBadge.BackgroundColor3 = baseAccent
+		variantBadge.BackgroundTransparency = 0.08
+		variantBadge.BorderSizePixel = 0
+		variantBadge.Text = presentation.variantLabel
+		variantBadge.TextColor3 = COLORS.DarkBg
+		variantBadge.Font = Enum.Font.GothamBold
+		variantBadge.TextScaled = true
+		variantBadge.Parent = card
+
+		local variantCorner = Instance.new("UICorner")
+		variantCorner.CornerRadius = UDim.new(0, 6)
+		variantCorner.Parent = variantBadge
+
+		if presentation.isShiny then
+			local shinyStroke = Instance.new("UIStroke")
+			shinyStroke.Thickness = 2
+			shinyStroke.Color = shinyAccent
+			shinyStroke.Parent = variantBadge
+		end
+
 		local dmgLabel = Instance.new("TextLabel")
 		dmgLabel.Name = "DmgStat"
-		dmgLabel.Size = UDim2.fromScale(0.9, 0.12)
-		dmgLabel.Position = UDim2.fromScale(0.05, 0.58)
+		dmgLabel.Size = UDim2.fromScale(0.9, 0.1)
+		dmgLabel.Position = UDim2.fromScale(0.05, 0.65)
 		dmgLabel.BackgroundTransparency = 1
 		dmgLabel.Text = tostring(petData.damage or petData.baseDamage or 5)
 		dmgLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -1116,7 +1154,7 @@ function UIController:_refreshPetGrid()
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
-			selectBox.Position = UDim2.fromScale(0.1, 0.75)
+			selectBox.Position = UDim2.fromScale(0.1, 0.8)
 			selectBox.BackgroundColor3 = isFavorite and Color3.fromRGB(150, 120, 35)
 				or (isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110))
 			selectBox.Text = isFavorite and "Favorite" or (isSelected and "Selected" or "Select")
@@ -1146,7 +1184,7 @@ function UIController:_refreshPetGrid()
 			local equipBtn = Instance.new("TextButton")
 			equipBtn.Name = "EquipBtn"
 			equipBtn.Size = UDim2.fromScale(0.8, 0.16)
-			equipBtn.Position = UDim2.fromScale(0.1, 0.75)
+			equipBtn.Position = UDim2.fromScale(0.1, 0.8)
 			equipBtn.BackgroundColor3 = isEquipped and COLORS.ButtonRed or COLORS.ButtonGreen
 			equipBtn.Text = isEquipped and "Unequip" or "Equip"
 			equipBtn.TextColor3 = COLORS.White
@@ -1309,8 +1347,12 @@ function UIController:_showGoldenConversionConfirm()
 					self:_showGoldenError("Favorite pets are protected!")
 					return
 				end
-				if pet.golden then
+				if pet.golden == true or pet.variant == "Golden" then
 					self:_showGoldenError("Cannot use golden pets!")
+					return
+				end
+				if pet.shiny == true or pet.variant == "Shiny" then
+					self:_showGoldenError("Shiny pets are protected!")
 					return
 				end
 				local variant = pet.variant or "Normal"
@@ -3305,11 +3347,15 @@ end
 function UIController:enqueueDiscoveryToast(petData)
 	if not self._playerGui or type(petData) ~= "table" then return end
 
-	local variant = petData.variant or (petData.golden and "Golden") or "Normal"
+	local presentation = PetVariantPresentation.resolve(petData)
 	table.insert(self._discoveryToastQueue, {
-		name = petData.name or "Pet",
+		name = presentation.displayPetName,
 		rarity = petData.rarity or "Common",
-		variant = variant,
+		variantLabel = presentation.variantLabel,
+		baseVariant = presentation.baseVariant,
+		isShiny = presentation.isShiny,
+		accentRGB = presentation.accentRGB,
+		shinyRGB = presentation.shinyRGB,
 	})
 	self:_showNextDiscoveryToast()
 end
@@ -3320,6 +3366,10 @@ function UIController:_showNextDiscoveryToast()
 	local petData = table.remove(self._discoveryToastQueue, 1)
 	if not petData then return end
 	self._discoveryToastActive = true
+
+	local rarityColor = RARITY_COLORS[petData.rarity] or RARITY_COLORS.Common
+	local baseAccent = petData.baseVariant == "Normal" and rarityColor or rgbToColor(petData.accentRGB)
+	local shinyAccent = rgbToColor(petData.shinyRGB)
 
 	local toast = Instance.new("ScreenGui")
 	toast.Name = "DiscoveryToast"
@@ -3344,7 +3394,7 @@ function UIController:_showNextDiscoveryToast()
 
 	local cardStroke = Instance.new("UIStroke")
 	cardStroke.Thickness = 3
-	cardStroke.Color = RARITY_COLORS[petData.rarity] or RARITY_COLORS.Common
+	cardStroke.Color = petData.isShiny and shinyAccent or baseAccent
 	cardStroke.Parent = card
 
 	local title = Instance.new("TextLabel")
@@ -3365,20 +3415,19 @@ function UIController:_showNextDiscoveryToast()
 	petName.Position = UDim2.fromScale(0.05, 0.5)
 	petName.BackgroundTransparency = 1
 	petName.Text = petData.name
-	petName.TextColor3 = RARITY_COLORS[petData.rarity] or COLORS.White
+	petName.TextColor3 = baseAccent
 	petName.Font = Enum.Font.GothamBold
 	petName.TextScaled = true
 	petName.TextXAlignment = Enum.TextXAlignment.Left
 	petName.Parent = card
 
-	local variantColor = VARIANT_COLORS[petData.variant] or VARIANT_COLORS.Normal
 	local variantBadge = Instance.new("TextLabel")
 	variantBadge.Name = "VariantBadge"
 	variantBadge.Size = UDim2.fromScale(0.22, 0.42)
 	variantBadge.Position = UDim2.fromScale(0.74, 0.29)
-	variantBadge.BackgroundColor3 = variantColor
+	variantBadge.BackgroundColor3 = baseAccent
 	variantBadge.BorderSizePixel = 0
-	variantBadge.Text = string.upper(petData.variant)
+	variantBadge.Text = string.upper(petData.variantLabel)
 	variantBadge.TextColor3 = COLORS.DarkBg
 	variantBadge.Font = Enum.Font.GothamBold
 	variantBadge.TextScaled = true
@@ -3387,6 +3436,13 @@ function UIController:_showNextDiscoveryToast()
 	local badgeCorner = Instance.new("UICorner")
 	badgeCorner.CornerRadius = UDim.new(0, 9)
 	badgeCorner.Parent = variantBadge
+
+	if petData.isShiny then
+		local badgeStroke = Instance.new("UIStroke")
+		badgeStroke.Thickness = 2
+		badgeStroke.Color = shinyAccent
+		badgeStroke.Parent = variantBadge
+	end
 
 	local badgePadding = Instance.new("UIPadding")
 	badgePadding.PaddingLeft = UDim.new(0, 5)
@@ -3446,8 +3502,8 @@ function UIController:_showHatchToast(petData)
 	labelStroke.Color = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
 	labelStroke.Parent = label
 
-	local petName = petData and petData.name or "Pet"
-	label.Text = "Hatched: " .. petName
+	local presentation = PetVariantPresentation.resolve(petData)
+	label.Text = "Hatched: " .. presentation.displayPetName .. " • " .. presentation.variantLabel
 	label.TextColor3 = COLORS.White
 	label.Font = Enum.Font.GothamBold
 	label.TextScaled = true
@@ -3462,6 +3518,10 @@ end
 
 function UIController:showEggHatch(petData, isNewDiscovery)
 	if not self._playerGui then return end
+	local presentation = PetVariantPresentation.resolve(petData)
+	local rarityColor = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
+	local baseAccent = presentation.baseVariant == "Normal" and rarityColor or rgbToColor(presentation.accentRGB)
+	local shinyAccent = rgbToColor(presentation.shinyRGB)
 
 	-- If not a new discovery, show a brief toast confirming the hatch
 	if not isNewDiscovery then
@@ -3491,10 +3551,9 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	panelCorner.CornerRadius = UDim.new(0, 16)
 	panelCorner.Parent = panel
 
-	local rarityColor = RARITY_COLORS[petData and petData.rarity or "Common"] or RARITY_COLORS.Common
 	local panelStroke = Instance.new("UIStroke")
 	panelStroke.Thickness = 4
-	panelStroke.Color = rarityColor
+	panelStroke.Color = presentation.isShiny and shinyAccent or baseAccent
 	panelStroke.Parent = panel
 
 	local newPetText = Instance.new("TextLabel")
@@ -3510,8 +3569,19 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	local petIcon = Instance.new("Frame")
 	petIcon.Size = UDim2.fromScale(0.35, 0.35)
 	petIcon.Position = UDim2.fromScale(0.325, 0.22)
-	petIcon.BackgroundColor3 = rarityColor
+	petIcon.BackgroundColor3 = baseAccent
 	petIcon.Parent = panel
+
+	if presentation.baseVariant == "Rainbow" then
+		local rainbowGradient = Instance.new("UIGradient")
+		rainbowGradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 90, 120)),
+			ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255, 225, 80)),
+			ColorSequenceKeypoint.new(0.66, Color3.fromRGB(70, 220, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(210, 90, 255)),
+		})
+		rainbowGradient.Parent = petIcon
+	end
 
 	local petIconCorner = Instance.new("UICorner")
 	petIconCorner.CornerRadius = UDim.new(1, 0)
@@ -3521,8 +3591,8 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	petName.Size = UDim2.fromScale(0.8, 0.12)
 	petName.Position = UDim2.fromScale(0.1, 0.6)
 	petName.BackgroundTransparency = 1
-	petName.Text = petData and petData.name or "Pet"
-	petName.TextColor3 = rarityColor
+	petName.Text = presentation.displayPetName
+	petName.TextColor3 = baseAccent
 	petName.Font = Enum.Font.GothamBold
 	petName.TextScaled = true
 	petName.Parent = panel
@@ -3531,8 +3601,8 @@ function UIController:showEggHatch(petData, isNewDiscovery)
 	rarityText.Size = UDim2.fromScale(0.8, 0.08)
 	rarityText.Position = UDim2.fromScale(0.1, 0.73)
 	rarityText.BackgroundTransparency = 1
-	rarityText.Text = petData and petData.rarity or "Common"
-	rarityText.TextColor3 = rarityColor
+	rarityText.Text = presentation.variantLabel .. " • " .. (petData and petData.rarity or "Common")
+	rarityText.TextColor3 = presentation.isShiny and shinyAccent or baseAccent
 	rarityText.Font = Enum.Font.GothamBold
 	rarityText.TextScaled = true
 	rarityText.Parent = panel

@@ -1,0 +1,34 @@
+{
+  "Name": "sounds",
+  "ClassName": "Folder",
+  "Children": [
+    {
+      "Name": "upgrade",
+      "ClassName": "Sound",
+      "Properties": {
+        "SoundId": "rbxassetid://72362215248423"
+      }
+    },
+    {
+      "Name": "open",
+      "ClassName": "Sound",
+      "Properties": {
+        "SoundId": "rbxassetid://72320208051245"
+      }
+    },
+    {
+      "Name": "close",
+      "ClassName": "Sound",
+      "Properties": {
+        "SoundId": "rbxassetid://134438769993456"
+      }
+    },
+    {
+      "Name": "hover",
+      "ClassName": "Sound",
+      "Properties": {
+        "SoundId": "rbxassetid://86397706758188"
+      }
+    }
+  ]
+}

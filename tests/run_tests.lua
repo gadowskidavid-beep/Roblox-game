@@ -115,13 +115,30 @@ _G.expect = expect
 -- Load and run spec files
 -- In pure Luau CLI context we use a simple require approach
 local specFiles = {
+	"tests/BalanceConfig.spec",
+	"tests/PetVariantMath.spec",
+	"tests/PetVariantPresentation.spec",
 	"tests/DataSchema.spec",
+	"tests/PetService.spec",
 }
+
+local function loadSpec(specPath)
+	-- Standard Lua treats the dot in `*.spec` as a path separator, so load the
+	-- exact filename when loadfile is available. Luau keeps its native require.
+	if loadfile then
+		local chunk, loadError = loadfile(specPath .. ".lua")
+		if not chunk then
+			error(loadError)
+		end
+		return chunk()
+	end
+	return require(specPath)
+end
 
 for _, specPath in ipairs(specFiles) do
 	print(string.format("\nRunning: %s", specPath))
 	local ok, err = pcall(function()
-		require(specPath)
+		loadSpec(specPath)
 	end)
 	if not ok then
 		print(string.format("  ERROR loading spec: %s", tostring(err)))
