@@ -1,6 +1,6 @@
 # QOF-25 – Zentrale atomare Profil-/Currency-Transaktionen
 
-Status: **Code-verifiziert – Studio-Test ausstehend**
+Status: **Abgeschlossen – Fortsetzung durch ausdrückliches Nutzer-`Weiter`; Studio-Ergebnis nicht separat gemeldet**
 
 Implementierungscommit: `b25979fb0ce38250a9c6079a535a35e1dfe6d093`
 
@@ -124,3 +124,8 @@ Die RBXL beginnt mit der exakten binären Roblox-Signatur `<roblox!\x89\xff\r\n\
 ## Bekannte Grenzen
 
 Der echte Roblox-Studio-Playtest, DataStore-Rejoin, Netzwerk-/Physikpfad und ein harter Prozessabbruch können im Linux-Sandbox-Build nicht ausgeführt werden. QOF-25 verändert bewusst nicht die Potion-/Shiny-/AutoDrink-Lease-Races (QOF-26), die verbindliche Maschinenreihenfolge `Inputs entfernen → RNG` (QOF-27) oder Auto-Hatch Contract V2 mit x1/x3/x9 und HUD-Flow (QOF-28). Direkte Reward-Credits bleiben additive autoritative Mutationen; QOF-25 serialisiert Composite Owner und verhindert Snapshots, führt aber kein allgemeines Event-Sourcing-Ledger ein.
+
+
+## Abschluss
+
+Der Nutzer hat nach dem gebundenen QOF-25-Handoff ausdrücklich `Weiter` geschrieben und damit die Fortsetzung zu QOF-26 freigegeben. Ein separates positives Roblox-Studio-Ergebnis wurde nicht gemeldet und wird deshalb nicht behauptet.
