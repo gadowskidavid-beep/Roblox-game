@@ -1,8 +1,8 @@
 --[[
-	MachineService.lua - QOF-16 server-authoritative machine transactions.
-	Owns Gold payment, pet consumption, chance rolls, rollback, and post-commit
-	quest semantics. The global gate is active, Gold is enabled per definition,
-	and Rainbow remains explicitly dormant before all activation/economic work.
+	MachineService.lua - QOF-17 server-authoritative machine transactions.
+	Owns shared Gold/Rainbow payment, pet consumption, chance rolls, rollback,
+	and Gold-only post-commit quest semantics. Both machine definitions use this
+	same transaction path; machine-specific economics remain server-owned.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -279,9 +279,8 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	if not machine then
 		return nil, "Unknown machine"
 	end
-	-- Definition dormancy is checked before token/list validation, profile access,
-	-- world validation, pet preparation, RNG, or currency work. In particular,
-	-- Rainbow cannot become reachable merely because the global runtime is live.
+	-- Per-definition dormancy is checked before token/list validation, profile
+	-- access, world validation, pet preparation, RNG, or currency work.
 	if machine.RuntimeEnabled ~= true then
 		return nil, "Machine is not available"
 	end

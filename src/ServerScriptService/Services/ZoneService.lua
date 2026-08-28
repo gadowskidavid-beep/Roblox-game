@@ -53,11 +53,26 @@ local DESTRUCTIBLES_PER_ZONE = 20
 -- Minimum distance between spawned destructibles (studs) - prevents overlap between all types
 local MIN_SPAWN_DISTANCE = 15
 
--- QOF-16 machine authority. This registry is intentionally module-private: a
--- replicated name, attribute, or token copied onto another Instance can never
--- replace the exact server-created references retained here.
-local GOLD_MACHINE_MAX_DISTANCE = 12
-local GOLD_MACHINE_ANCHOR_SIZE = Vector3.new(12, 6, 8)
+-- QOF-17 machine authority. This registry is intentionally module-private: a
+-- replicated name, attribute, token, or cloned station can never replace the
+-- exact server-created references retained here.
+local MACHINE_MAX_DISTANCE = 12
+local MACHINE_PRESENTATION = {
+	Gold = {
+		objectText = "Gold Machine",
+		anchorSize = Vector3.new(12, 6, 8),
+		anchorColor = Color3.fromRGB(255, 194, 32),
+		anchorMaterial = Enum.Material.Metal,
+		anchorCanCollide = true,
+	},
+	Rainbow = {
+		objectText = "Rainbow Machine",
+		anchorSize = Vector3.new(12, 6, 8),
+		anchorColor = Color3.fromRGB(170, 80, 255),
+		anchorMaterial = Enum.Material.Neon,
+		anchorCanCollide = true,
+	},
+}
 local machineRegistry = {}
 
 local function profileHasUnlockedZone(data, zoneId)
@@ -72,44 +87,69 @@ local function profileHasUnlockedZone(data, zoneId)
 	return false
 end
 
-local function spawnGoldMachineStation(zonesFolder)
-	local definition = BalanceConfig.Machines.Gold
+local function registryContainsToken(identityToken)
+	for _, record in pairs(machineRegistry) do
+		if record.identityToken == identityToken then
+			return true
+		end
+	end
+	return false
+end
+
+local function spawnMachineStation(zonesFolder, machineType)
+	local definition = BalanceConfig.Machines[machineType]
+	local presentation = MACHINE_PRESENTATION[machineType]
 	if BalanceConfig.Machines.RuntimeEnabled ~= true
 		or type(definition) ~= "table"
-		or definition.RuntimeEnabled ~= true then
-		error("Gold machine runtime configuration is unavailable")
+		or definition.RuntimeEnabled ~= true
+		or type(presentation) ~= "table" then
+		error(tostring(machineType) .. " machine runtime configuration is unavailable")
+	end
+	if machineRegistry[definition.id] then
+		error("Duplicate machine registry ID: " .. tostring(definition.id))
 	end
 
 	local zoneFolder = zonesFolder:FindFirstChild("Zone_" .. tostring(definition.zoneId))
-	if not zoneFolder then
-		error("Gold machine zone was not generated")
+	if not zoneFolder
+		or zoneFolder.Name ~= "Zone_" .. tostring(definition.zoneId)
+		or zoneFolder.Parent ~= zonesFolder then
+		error(tostring(machineType) .. " machine zone was not generated")
+	end
+	if zoneFolder:FindFirstChild(definition.id) then
+		error(tostring(machineType) .. " machine station already exists")
+	end
+
+	local identityToken = HttpService:GenerateGUID(false)
+	if type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128
+		or registryContainsToken(identityToken) then
+		error(tostring(machineType) .. " machine identity generation failed")
 	end
 
 	local model = Instance.new("Model")
 	model.Name = definition.id
 	model:SetAttribute("MachineId", definition.id)
 	model:SetAttribute("MachineZoneId", definition.zoneId)
-	local identityToken = HttpService:GenerateGUID(false)
 	model:SetAttribute("MachineIdentityToken", identityToken)
 
 	local anchor = Instance.new("Part")
 	anchor.Name = "Anchor"
+	anchor.Shape = Enum.PartType.Block
 	anchor.Anchored = true
-	anchor.CanCollide = true
-	anchor.Size = GOLD_MACHINE_ANCHOR_SIZE
+	anchor.CanCollide = presentation.anchorCanCollide
+	anchor.Size = presentation.anchorSize
 	anchor.CFrame = CFrame.new((definition.zoneId - 1) * ZONE_SPACING, 3, -55)
-	anchor.Color = Color3.fromRGB(255, 194, 32)
-	anchor.Material = Enum.Material.Metal
+	anchor.Color = presentation.anchorColor
+	anchor.Material = presentation.anchorMaterial
 	anchor.Parent = model
 	model.PrimaryPart = anchor
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "UseMachinePrompt"
 	prompt.ActionText = "Use Machine"
-	prompt.ObjectText = "Gold Machine"
+	prompt.ObjectText = presentation.objectText
 	prompt.Enabled = true
 	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = GOLD_MACHINE_MAX_DISTANCE
+	prompt.MaxActivationDistance = MACHINE_MAX_DISTANCE
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = anchor
 
@@ -123,13 +163,41 @@ local function spawnGoldMachineStation(zonesFolder)
 		machineId = definition.id,
 		zoneId = definition.zoneId,
 		identityToken = identityToken,
+		anchorShape = Enum.PartType.Block,
+		anchorSize = presentation.anchorSize,
 		anchorCFrame = anchor.CFrame,
+		anchorColor = presentation.anchorColor,
+		anchorMaterial = presentation.anchorMaterial,
+		anchorCanCollide = presentation.anchorCanCollide,
+		promptActionText = "Use Machine",
+		promptObjectText = presentation.objectText,
+		maxActivationDistance = MACHINE_MAX_DISTANCE,
 	}
+end
+
+local function hasConflictingStationIdentity(record)
+	if not record.zonesFolder or not record.zonesFolder:IsA("Folder") then
+		return true
+	end
+	for _, candidate in ipairs(record.zonesFolder:GetDescendants()) do
+		if candidate:IsA("Model") and candidate ~= record.model then
+			if candidate.Name == record.machineId
+				or candidate:GetAttribute("MachineId") == record.machineId
+				or candidate:GetAttribute("MachineIdentityToken") == record.identityToken then
+				return true
+			end
+		elseif candidate:IsA("ProximityPrompt")
+			and candidate ~= record.prompt
+			and candidate:IsDescendantOf(record.model) then
+			return true
+		end
+	end
+	return false
 end
 
 local function validateMachineActivation(player, machineId, activationToken)
 	local record = machineRegistry[machineId]
-	if not record or machineId ~= BalanceConfig.Machines.Gold.id then
+	if not record or record.machineId ~= machineId then
 		return false, "Machine activation denied"
 	end
 	if type(activationToken) ~= "string" or activationToken ~= record.identityToken then
@@ -142,11 +210,17 @@ local function validateMachineActivation(player, machineId, activationToken)
 	local model = record.model
 	local anchor = record.anchor
 	local prompt = record.prompt
-	if not model or not model:IsA("Model")
+	if hasConflictingStationIdentity(record) then
+		return false, "Machine station integrity check failed"
+	end
+	if not record.zonesFolder or not record.zoneFolder
+		or record.zoneFolder.Name ~= "Zone_" .. tostring(record.zoneId)
+		or record.zoneFolder.Parent ~= record.zonesFolder
+		or record.zonesFolder:FindFirstChild(record.zoneFolder.Name) ~= record.zoneFolder
+		or not model or not model:IsA("Model")
 		or model.Name ~= record.machineId
 		or model.Parent ~= record.zoneFolder
 		or not model:IsDescendantOf(record.zonesFolder)
-		or record.zonesFolder:FindFirstChild("Zone_" .. tostring(record.zoneId)) ~= record.zoneFolder
 		or model.PrimaryPart ~= anchor
 		or model:GetAttribute("MachineId") ~= record.machineId
 		or model:GetAttribute("MachineZoneId") ~= record.zoneId
@@ -157,9 +231,13 @@ local function validateMachineActivation(player, machineId, activationToken)
 		or anchor.Name ~= "Anchor"
 		or anchor.Parent ~= model
 		or not anchor:IsDescendantOf(model)
+		or anchor.Shape ~= record.anchorShape
 		or anchor.Anchored ~= true
-		or anchor.Size ~= GOLD_MACHINE_ANCHOR_SIZE
-		or anchor.CFrame ~= record.anchorCFrame then
+		or anchor.CanCollide ~= record.anchorCanCollide
+		or anchor.Size ~= record.anchorSize
+		or anchor.CFrame ~= record.anchorCFrame
+		or anchor.Color ~= record.anchorColor
+		or anchor.Material ~= record.anchorMaterial then
 		return false, "Machine station integrity check failed"
 	end
 	if not prompt or not prompt:IsA("ProximityPrompt")
@@ -169,9 +247,9 @@ local function validateMachineActivation(player, machineId, activationToken)
 		or prompt.Enabled ~= true
 		or prompt.HoldDuration ~= 0
 		or prompt.RequiresLineOfSight ~= false
-		or prompt.MaxActivationDistance ~= GOLD_MACHINE_MAX_DISTANCE
-		or prompt.ActionText ~= "Use Machine"
-		or prompt.ObjectText ~= "Gold Machine" then
+		or prompt.MaxActivationDistance ~= record.maxActivationDistance
+		or prompt.ActionText ~= record.promptActionText
+		or prompt.ObjectText ~= record.promptObjectText then
 		return false, "Machine prompt integrity check failed"
 	end
 
@@ -185,7 +263,7 @@ local function validateMachineActivation(player, machineId, activationToken)
 		return false, "Character is unavailable"
 	end
 	local distance = (root.Position - anchor.Position).Magnitude
-	if distance ~= distance or distance > GOLD_MACHINE_MAX_DISTANCE then
+	if distance ~= distance or distance > record.maxActivationDistance then
 		return false, "Too far from machine"
 	end
 	return true
@@ -231,7 +309,8 @@ function ZoneService.init(dataService, currencyService, petService)
 	-- Publish the validator only after every world-generation step completed.
 	-- Main wires this returned closure atomically; any init failure leaves
 	-- MachineService without world authority.
-	spawnGoldMachineStation(zonesFolder)
+	spawnMachineStation(zonesFolder, "Gold")
+	spawnMachineStation(zonesFolder, "Rainbow")
 	return validateMachineActivation
 end
 

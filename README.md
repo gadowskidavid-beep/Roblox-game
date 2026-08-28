@@ -16,7 +16,7 @@ Open `BATTLE_PETS.rbxlx` in Roblox Studio to play or edit the game directly.
 - Unlock new zones by spending coins at zone gates
 - Upgrade your pets, speed, luck, and more through the upgrade system
 - Buy and drink persistent potions with timed Luck, Speed, Coin, and Shiny-charge effects
-- Use the live Gold Machine in Zone 3 for server-authoritative paid conversions; Rainbow remains dormant
+- Use the live Gold Machine in Zone 3 (Normal → Golden, 750 Diamonds) and Rainbow Machine in Zone 6 (Golden → Rainbow, 2,500 Diamonds)
 
 ### Side Mode: Campaign (Battle Cats-style)
 - Accessible through a portal in the main world
@@ -56,7 +56,7 @@ src/
       DataService.lua             -- Save/load with DataStore + session locking
       DataSchema.lua              -- Versioned player data schema and migrations
       PetService.lua              -- Pet hatching, inventory, canonical conversion mutations
-      MachineService.lua          -- Atomic Gold Machine payment, roll, conversion, and rollback authority
+      MachineService.lua          -- Atomic shared Gold/Rainbow payment, roll, conversion, and rollback authority
       EggService.lua              -- Egg station logic and hatching
       ShopService.lua             -- Inventory-only shop purchases
       PotionService.lua           -- Potion consumption, effects, upgrades, Auto-Drink
@@ -106,11 +106,11 @@ The game uses a server-authoritative architecture where all state mutations happ
 | **DataService** | Loads/saves player data via DataStore with session locking and auto-save |
 | **DataSchema** | Defines the canonical player data shape, handles migrations and normalization |
 | **PetService** | Manages pet inventory and canonical mutation-free conversion preparation/rollback |
-| **MachineService** | Owns active Gold Machine admission, payment, consumption, roll, rollback, and post-commit quest progress; Rainbow remains dormant |
+| **MachineService** | Owns active Gold and Rainbow Machine admission, payment, consumption, roll, rollback, and Gold-only post-commit quest progress |
 | **EggService** | Handles egg hatching with rarity rolls and variant chances |
 | **ShopService** | Retains purchase ownership; potion purchases only add inventory |
 | **PotionService** | Owns timed potion sources, Shiny charges, upgrades, Auto-Drink, and effect state |
-| **ZoneService** | Spawns all zones plus the private-authority Zone 3 Gold Machine station, gates, egg stations, and destructibles |
+| **ZoneService** | Spawns all zones plus private-authority Zone 3 Gold and Zone 6 Rainbow Machine stations, gates, egg stations, and destructibles |
 | **CampaignService** | Runs campaign battles, energy system, and boss encounters |
 | **CurrencyService** | Awards and deducts coins/diamonds with validation |
 | **QuestService** | Tracks quest progress and distributes rewards |
@@ -157,6 +157,14 @@ luau tests/run_tests.lua
 ```
 
 The runner provides `describe`, `it`, and `expect` helpers and prints results to stdout. It exits with code 1 on any failure.
+
+Verify a freshly generated place against every runtime source with:
+
+```bash
+python3 tests/verify_generated_place.py
+```
+
+QOF-17's machine coverage includes both station registries, exact machine economics and chances, business-failure consumption, technical rollback, Shiny propagation, Gold-only quest progress, client generations, generic prompt routing, and byte-exact generated-place source parity.
 
 ### Linting
 

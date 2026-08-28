@@ -4033,10 +4033,10 @@ return PetService
 						<string name="Name">MachineService</string>
 						<Content name="LinkedSource"><null></null></Content>
 						<ProtectedString name="Source"><![CDATA[--[[
-	MachineService.lua - QOF-16 server-authoritative machine transactions.
-	Owns Gold payment, pet consumption, chance rolls, rollback, and post-commit
-	quest semantics. The global gate is active, Gold is enabled per definition,
-	and Rainbow remains explicitly dormant before all activation/economic work.
+	MachineService.lua - QOF-17 server-authoritative machine transactions.
+	Owns shared Gold/Rainbow payment, pet consumption, chance rolls, rollback,
+	and Gold-only post-commit quest semantics. Both machine definitions use this
+	same transaction path; machine-specific economics remain server-owned.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -4313,9 +4313,8 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	if not machine then
 		return nil, "Unknown machine"
 	end
-	-- Definition dormancy is checked before token/list validation, profile access,
-	-- world validation, pet preparation, RNG, or currency work. In particular,
-	-- Rainbow cannot become reachable merely because the global runtime is live.
+	-- Per-definition dormancy is checked before token/list validation, profile
+	-- access, world validation, pet preparation, RNG, or currency work.
 	if machine.RuntimeEnabled ~= true then
 		return nil, "Machine is not available"
 	end
@@ -4545,11 +4544,26 @@ local DESTRUCTIBLES_PER_ZONE = 20
 -- Minimum distance between spawned destructibles (studs) - prevents overlap between all types
 local MIN_SPAWN_DISTANCE = 15
 
--- QOF-16 machine authority. This registry is intentionally module-private: a
--- replicated name, attribute, or token copied onto another Instance can never
--- replace the exact server-created references retained here.
-local GOLD_MACHINE_MAX_DISTANCE = 12
-local GOLD_MACHINE_ANCHOR_SIZE = Vector3.new(12, 6, 8)
+-- QOF-17 machine authority. This registry is intentionally module-private: a
+-- replicated name, attribute, token, or cloned station can never replace the
+-- exact server-created references retained here.
+local MACHINE_MAX_DISTANCE = 12
+local MACHINE_PRESENTATION = {
+	Gold = {
+		objectText = "Gold Machine",
+		anchorSize = Vector3.new(12, 6, 8),
+		anchorColor = Color3.fromRGB(255, 194, 32),
+		anchorMaterial = Enum.Material.Metal,
+		anchorCanCollide = true,
+	},
+	Rainbow = {
+		objectText = "Rainbow Machine",
+		anchorSize = Vector3.new(12, 6, 8),
+		anchorColor = Color3.fromRGB(170, 80, 255),
+		anchorMaterial = Enum.Material.Neon,
+		anchorCanCollide = true,
+	},
+}
 local machineRegistry = {}
 
 local function profileHasUnlockedZone(data, zoneId)
@@ -4564,44 +4578,69 @@ local function profileHasUnlockedZone(data, zoneId)
 	return false
 end
 
-local function spawnGoldMachineStation(zonesFolder)
-	local definition = BalanceConfig.Machines.Gold
+local function registryContainsToken(identityToken)
+	for _, record in pairs(machineRegistry) do
+		if record.identityToken == identityToken then
+			return true
+		end
+	end
+	return false
+end
+
+local function spawnMachineStation(zonesFolder, machineType)
+	local definition = BalanceConfig.Machines[machineType]
+	local presentation = MACHINE_PRESENTATION[machineType]
 	if BalanceConfig.Machines.RuntimeEnabled ~= true
 		or type(definition) ~= "table"
-		or definition.RuntimeEnabled ~= true then
-		error("Gold machine runtime configuration is unavailable")
+		or definition.RuntimeEnabled ~= true
+		or type(presentation) ~= "table" then
+		error(tostring(machineType) .. " machine runtime configuration is unavailable")
+	end
+	if machineRegistry[definition.id] then
+		error("Duplicate machine registry ID: " .. tostring(definition.id))
 	end
 
 	local zoneFolder = zonesFolder:FindFirstChild("Zone_" .. tostring(definition.zoneId))
-	if not zoneFolder then
-		error("Gold machine zone was not generated")
+	if not zoneFolder
+		or zoneFolder.Name ~= "Zone_" .. tostring(definition.zoneId)
+		or zoneFolder.Parent ~= zonesFolder then
+		error(tostring(machineType) .. " machine zone was not generated")
+	end
+	if zoneFolder:FindFirstChild(definition.id) then
+		error(tostring(machineType) .. " machine station already exists")
+	end
+
+	local identityToken = HttpService:GenerateGUID(false)
+	if type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128
+		or registryContainsToken(identityToken) then
+		error(tostring(machineType) .. " machine identity generation failed")
 	end
 
 	local model = Instance.new("Model")
 	model.Name = definition.id
 	model:SetAttribute("MachineId", definition.id)
 	model:SetAttribute("MachineZoneId", definition.zoneId)
-	local identityToken = HttpService:GenerateGUID(false)
 	model:SetAttribute("MachineIdentityToken", identityToken)
 
 	local anchor = Instance.new("Part")
 	anchor.Name = "Anchor"
+	anchor.Shape = Enum.PartType.Block
 	anchor.Anchored = true
-	anchor.CanCollide = true
-	anchor.Size = GOLD_MACHINE_ANCHOR_SIZE
+	anchor.CanCollide = presentation.anchorCanCollide
+	anchor.Size = presentation.anchorSize
 	anchor.CFrame = CFrame.new((definition.zoneId - 1) * ZONE_SPACING, 3, -55)
-	anchor.Color = Color3.fromRGB(255, 194, 32)
-	anchor.Material = Enum.Material.Metal
+	anchor.Color = presentation.anchorColor
+	anchor.Material = presentation.anchorMaterial
 	anchor.Parent = model
 	model.PrimaryPart = anchor
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "UseMachinePrompt"
 	prompt.ActionText = "Use Machine"
-	prompt.ObjectText = "Gold Machine"
+	prompt.ObjectText = presentation.objectText
 	prompt.Enabled = true
 	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = GOLD_MACHINE_MAX_DISTANCE
+	prompt.MaxActivationDistance = MACHINE_MAX_DISTANCE
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = anchor
 
@@ -4615,13 +4654,41 @@ local function spawnGoldMachineStation(zonesFolder)
 		machineId = definition.id,
 		zoneId = definition.zoneId,
 		identityToken = identityToken,
+		anchorShape = Enum.PartType.Block,
+		anchorSize = presentation.anchorSize,
 		anchorCFrame = anchor.CFrame,
+		anchorColor = presentation.anchorColor,
+		anchorMaterial = presentation.anchorMaterial,
+		anchorCanCollide = presentation.anchorCanCollide,
+		promptActionText = "Use Machine",
+		promptObjectText = presentation.objectText,
+		maxActivationDistance = MACHINE_MAX_DISTANCE,
 	}
+end
+
+local function hasConflictingStationIdentity(record)
+	if not record.zonesFolder or not record.zonesFolder:IsA("Folder") then
+		return true
+	end
+	for _, candidate in ipairs(record.zonesFolder:GetDescendants()) do
+		if candidate:IsA("Model") and candidate ~= record.model then
+			if candidate.Name == record.machineId
+				or candidate:GetAttribute("MachineId") == record.machineId
+				or candidate:GetAttribute("MachineIdentityToken") == record.identityToken then
+				return true
+			end
+		elseif candidate:IsA("ProximityPrompt")
+			and candidate ~= record.prompt
+			and candidate:IsDescendantOf(record.model) then
+			return true
+		end
+	end
+	return false
 end
 
 local function validateMachineActivation(player, machineId, activationToken)
 	local record = machineRegistry[machineId]
-	if not record or machineId ~= BalanceConfig.Machines.Gold.id then
+	if not record or record.machineId ~= machineId then
 		return false, "Machine activation denied"
 	end
 	if type(activationToken) ~= "string" or activationToken ~= record.identityToken then
@@ -4634,11 +4701,17 @@ local function validateMachineActivation(player, machineId, activationToken)
 	local model = record.model
 	local anchor = record.anchor
 	local prompt = record.prompt
-	if not model or not model:IsA("Model")
+	if hasConflictingStationIdentity(record) then
+		return false, "Machine station integrity check failed"
+	end
+	if not record.zonesFolder or not record.zoneFolder
+		or record.zoneFolder.Name ~= "Zone_" .. tostring(record.zoneId)
+		or record.zoneFolder.Parent ~= record.zonesFolder
+		or record.zonesFolder:FindFirstChild(record.zoneFolder.Name) ~= record.zoneFolder
+		or not model or not model:IsA("Model")
 		or model.Name ~= record.machineId
 		or model.Parent ~= record.zoneFolder
 		or not model:IsDescendantOf(record.zonesFolder)
-		or record.zonesFolder:FindFirstChild("Zone_" .. tostring(record.zoneId)) ~= record.zoneFolder
 		or model.PrimaryPart ~= anchor
 		or model:GetAttribute("MachineId") ~= record.machineId
 		or model:GetAttribute("MachineZoneId") ~= record.zoneId
@@ -4649,9 +4722,13 @@ local function validateMachineActivation(player, machineId, activationToken)
 		or anchor.Name ~= "Anchor"
 		or anchor.Parent ~= model
 		or not anchor:IsDescendantOf(model)
+		or anchor.Shape ~= record.anchorShape
 		or anchor.Anchored ~= true
-		or anchor.Size ~= GOLD_MACHINE_ANCHOR_SIZE
-		or anchor.CFrame ~= record.anchorCFrame then
+		or anchor.CanCollide ~= record.anchorCanCollide
+		or anchor.Size ~= record.anchorSize
+		or anchor.CFrame ~= record.anchorCFrame
+		or anchor.Color ~= record.anchorColor
+		or anchor.Material ~= record.anchorMaterial then
 		return false, "Machine station integrity check failed"
 	end
 	if not prompt or not prompt:IsA("ProximityPrompt")
@@ -4661,9 +4738,9 @@ local function validateMachineActivation(player, machineId, activationToken)
 		or prompt.Enabled ~= true
 		or prompt.HoldDuration ~= 0
 		or prompt.RequiresLineOfSight ~= false
-		or prompt.MaxActivationDistance ~= GOLD_MACHINE_MAX_DISTANCE
-		or prompt.ActionText ~= "Use Machine"
-		or prompt.ObjectText ~= "Gold Machine" then
+		or prompt.MaxActivationDistance ~= record.maxActivationDistance
+		or prompt.ActionText ~= record.promptActionText
+		or prompt.ObjectText ~= record.promptObjectText then
 		return false, "Machine prompt integrity check failed"
 	end
 
@@ -4677,7 +4754,7 @@ local function validateMachineActivation(player, machineId, activationToken)
 		return false, "Character is unavailable"
 	end
 	local distance = (root.Position - anchor.Position).Magnitude
-	if distance ~= distance or distance > GOLD_MACHINE_MAX_DISTANCE then
+	if distance ~= distance or distance > record.maxActivationDistance then
 		return false, "Too far from machine"
 	end
 	return true
@@ -4723,7 +4800,8 @@ function ZoneService.init(dataService, currencyService, petService)
 	-- Publish the validator only after every world-generation step completed.
 	-- Main wires this returned closure atomically; any init failure leaves
 	-- MachineService without world authority.
-	spawnGoldMachineStation(zonesFolder)
+	spawnMachineStation(zonesFolder, "Gold")
+	spawnMachineStation(zonesFolder, "Rainbow")
 	return validateMachineActivation
 end
 
@@ -11660,12 +11738,16 @@ uiController:setHatchPurchaseCallbacks(
 	requestFreshHatchQuote
 )
 
--- QOF-16 Gold Machine sessions are created only by the central runtime prompt
--- router. Attributes are UX routing data; the server independently validates the
--- private station registry, token, unlock, exact instances, and live distance.
+-- QOF-17 Machine sessions are created only by the central runtime prompt router.
+-- Attributes are UX routing data; the server independently validates the private
+-- station registry, token, unlock, exact instances, and live distance.
 local machineSession = MachineClientSession.new()
+local ACCEPTED_MACHINE_IDS = {
+	GoldMachine = true,
+	RainbowMachine = true,
+}
 
-local function getGoldMachinePromptData(prompt)
+local function getMachinePromptData(prompt)
 	if not prompt or prompt.Name ~= "UseMachinePrompt" or not prompt.Parent then
 		return nil
 	end
@@ -11674,24 +11756,25 @@ local function getGoldMachinePromptData(prompt)
 	if not model or not model:IsA("Model") then return nil end
 	local machineId = model:GetAttribute("MachineId")
 	local identityToken = model:GetAttribute("MachineIdentityToken")
-	if machineId ~= "GoldMachine" or type(identityToken) ~= "string" or identityToken == "" then
+	if ACCEPTED_MACHINE_IDS[machineId] ~= true
+		or type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128 then
 		return nil
 	end
 	return machineId, identityToken
 end
 
-local function closeGoldMachineSession()
+local function closeMachineSession()
 	MachineClientSession.close(machineSession)
-	uiController:closeGoldMachineSelection()
+	uiController:closeMachineSelection()
 end
 
-local function confirmGoldMachine(selectedIds)
+local function confirmMachine(selectedIds)
 	local prompt = machineSession.prompt
 	local machineId = machineSession.machineId
 	local identityToken = machineSession.identityToken
-	local routedId, routedToken = getGoldMachinePromptData(prompt)
+	local routedId, routedToken = getMachinePromptData(prompt)
 	if routedId ~= machineId or routedToken ~= identityToken then
-		closeGoldMachineSession()
+		closeMachineSession()
 		return
 	end
 	local operation = MachineClientSession.beginRequest(machineSession)
@@ -11704,14 +11787,14 @@ local function confirmGoldMachine(selectedIds)
 			return
 		end
 		if invoked and type(result) == "table" then
-			uiController:showGoldMachineResult(result, nil)
+			uiController:showMachineResult(result, nil)
 		else
-			uiController:showGoldMachineResult(nil, invoked and machineError or result)
+			uiController:showMachineResult(nil, invoked and machineError or result)
 		end
 	end)
 end
 
-uiController:setGoldMachineCallbacks(confirmGoldMachine, closeGoldMachineSession)
+uiController:setMachineCallbacks(confirmMachine, closeMachineSession)
 
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
@@ -11732,7 +11815,7 @@ end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
 	if prompt == machineSession.prompt then
-		closeGoldMachineSession()
+		closeMachineSession()
 		return
 	end
 	if prompt ~= activeEggPrompt then return end
@@ -11755,13 +11838,16 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 		uiController:openScreen("ShopScreen")
 		return
 	end
-	local machineId, identityToken = getGoldMachinePromptData(prompt)
+	local machineId, identityToken = getMachinePromptData(prompt)
 	if machineId then
-		if machineSession.prompt and machineSession.prompt ~= prompt then
-			closeGoldMachineSession()
+		-- Retriggering even the same station revokes every old overlay/callback
+		-- generation before a fresh capability is installed.
+		if machineSession.prompt then
+			closeMachineSession()
 		end
-		MachineClientSession.start(machineSession, prompt, machineId, identityToken)
-		uiController:openGoldMachineSelection()
+		if MachineClientSession.start(machineSession, prompt, machineId, identityToken) then
+			uiController:openMachineSelection(machineId)
+		end
 		return
 	end
 	local eggType = getEggTypeFromPrompt(prompt)
@@ -12345,6 +12431,35 @@ local VARIANT_RANK = {
 	Rainbow = 4,
 }
 
+local MACHINE_UI_BY_ID = {
+	GoldMachine = {
+		machineType = "Gold",
+		displayName = "Gold",
+		outputLabel = "Golden",
+		buttonColor = Color3.fromRGB(255, 200, 0),
+		buttonTextColor = Color3.fromRGB(40, 30, 0),
+		strokeColor = Color3.fromRGB(180, 140, 0),
+	},
+	RainbowMachine = {
+		machineType = "Rainbow",
+		displayName = "Rainbow",
+		outputLabel = "Rainbow",
+		buttonColor = Color3.fromRGB(170, 80, 255),
+		buttonTextColor = Color3.fromRGB(255, 255, 255),
+		strokeColor = Color3.fromRGB(100, 220, 255),
+	},
+}
+
+local function resolveMachineUi(machineId)
+	local ui = MACHINE_UI_BY_ID[machineId]
+	local definition = ui and BalanceConfig.Machines[ui.machineType]
+	if not ui or type(definition) ~= "table"
+		or definition.RuntimeEnabled ~= true or definition.id ~= machineId then
+		return nil
+	end
+	return ui, definition
+end
+
 local function resolvePetVariant(petData)
 	return PetVariantPresentation.resolve(petData).legacyCategory
 end
@@ -12477,12 +12592,15 @@ function UIController.new()
 	self._equippedBar = nil
 	self._multiSelectMode = false
 	self._selectedPets = {}
-	self._goldMachineSessionActive = false
-	self._goldMachineCallbacks = {}
-	self._goldMachineOverlay = nil
-	self._goldMachineResultLabel = nil
-	self._goldMachineConfirmButton = nil
-	self._goldMachineCancelButton = nil
+	self._machineSessionActive = false
+	self._machineId = nil
+	self._machineUi = nil
+	self._machineDefinition = nil
+	self._machineCallbacks = {}
+	self._machineOverlay = nil
+	self._machineResultLabel = nil
+	self._machineConfirmButton = nil
+	self._machineCancelButton = nil
 	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
@@ -13564,7 +13682,7 @@ function UIController:_createPetInventory()
 	closeBtnCorner.Parent = closeBtn
 
 	closeBtn.MouseButton1Click:Connect(function()
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 		self:closeScreen("PetInventory")
 	end)
 
@@ -13643,6 +13761,7 @@ function UIController:_createPetInventory()
 	filterCorner.Parent = filterBtn
 
 	filterBtn.MouseButton1Click:Connect(function()
+		if self._machineSessionActive then return end
 		local currentIndex = table.find(PET_VARIANT_FILTERS, self._petVariantFilter) or 1
 		self._petVariantFilter = PET_VARIANT_FILTERS[(currentIndex % #PET_VARIANT_FILTERS) + 1]
 		filterBtn.Text = "Variant: " .. self._petVariantFilter
@@ -13669,39 +13788,40 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
-	-- Gold Machine action is visible only during a server-world prompt session.
-	local goldenBtn = Instance.new("TextButton")
-	goldenBtn.Name = "UseGoldMachineBtn"
-	goldenBtn.Size = UDim2.fromScale(0.15, 0.06)
-	goldenBtn.Position = UDim2.fromScale(0.18, 0.92)
-	goldenBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-	goldenBtn.Text = "Use Gold Machine"
-	goldenBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
-	goldenBtn.Font = Enum.Font.GothamBold
-	goldenBtn.TextScaled = true
-	goldenBtn.Visible = false
-	goldenBtn.Parent = mainFrame
+	-- One generic action is visible only during a server-world machine session.
+	-- Its station-bound identity controls label, color, source variant, and price.
+	local machineBtn = Instance.new("TextButton")
+	machineBtn.Name = "UseMachineBtn"
+	machineBtn.Size = UDim2.fromScale(0.15, 0.06)
+	machineBtn.Position = UDim2.fromScale(0.18, 0.92)
+	machineBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
+	machineBtn.Text = "Use Machine"
+	machineBtn.TextColor3 = COLORS.White
+	machineBtn.Font = Enum.Font.GothamBold
+	machineBtn.TextScaled = true
+	machineBtn.Visible = false
+	machineBtn.Parent = mainFrame
 
-	local goldenCorner = Instance.new("UICorner")
-	goldenCorner.CornerRadius = UDim.new(0, 8)
-	goldenCorner.Parent = goldenBtn
+	local machineCorner = Instance.new("UICorner")
+	machineCorner.CornerRadius = UDim.new(0, 8)
+	machineCorner.Parent = machineBtn
 
-	local goldenStroke = Instance.new("UIStroke")
-	goldenStroke.Thickness = 2
-	goldenStroke.Color = Color3.fromRGB(180, 140, 0)
-	goldenStroke.Parent = goldenBtn
+	local machineStroke = Instance.new("UIStroke")
+	machineStroke.Thickness = 2
+	machineStroke.Color = Color3.fromRGB(80, 80, 100)
+	machineStroke.Parent = machineBtn
 
-	goldenBtn.MouseButton1Click:Connect(function()
-		self:_showGoldMachineConfirm()
+	machineBtn.MouseButton1Click:Connect(function()
+		self:_showMachineConfirm()
 	end)
 
-	goldenBtn.MouseEnter:Connect(function()
-		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+	machineBtn.MouseEnter:Connect(function()
+		TweenService:Create(machineBtn, TweenInfo.new(0.1), {
 			Size = UDim2.fromScale(0.16, 0.065),
 		}):Play()
 	end)
-	goldenBtn.MouseLeave:Connect(function()
-		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+	machineBtn.MouseLeave:Connect(function()
+		TweenService:Create(machineBtn, TweenInfo.new(0.1), {
 			Size = UDim2.fromScale(0.15, 0.06),
 		}):Play()
 	end)
@@ -13835,10 +13955,16 @@ end
 
 function UIController:_buildPetDisplayList()
 	local displayPets = {}
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
 		local presentation = PetVariantPresentation.resolve(petData)
 		local variant = presentation.legacyCategory
-		if self._petVariantFilter == "All" or variant == self._petVariantFilter then
+		local matchesMachine = machineInputVariant == nil
+			or presentation.baseVariant == machineInputVariant
+		local matchesVariantFilter = machineInputVariant ~= nil
+			or self._petVariantFilter == "All" or variant == self._petVariantFilter
+		if matchesMachine and matchesVariantFilter then
 			table.insert(displayPets, {
 				pet = petData,
 				sourceIndex = sourceIndex,
@@ -13896,12 +14022,22 @@ end
 function UIController:_selectDuplicatePets()
 	if not self._multiSelectMode then return end
 
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	local groupCounts = {}
 	local keepers = {}
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
 		local petType = petData.petId
 		local petId = petData.uniqueId or petData.id
-		if type(petType) == "string" and petType ~= "" and type(petId) == "string" and petId ~= "" then
+		local presentation = PetVariantPresentation.resolve(petData)
+		local machineEligible = machineInputVariant == nil
+			or presentation.baseVariant == machineInputVariant
+		local protected = machineInputVariant ~= nil and (
+			petData.favorite == true or self:_isPetEquipped(petId)
+		)
+		if machineEligible and not protected
+			and type(petType) == "string" and petType ~= ""
+			and type(petId) == "string" and petId ~= "" then
 			groupCounts[petType] = (groupCounts[petType] or 0) + 1
 			local candidate = {
 				pet = petData,
@@ -13930,7 +14066,11 @@ function UIController:_selectDuplicatePets()
 		local keeper = petType and keepers[petType]
 		if type(petType) == "string" and groupCounts[petType] and groupCounts[petType] > 1
 			and petId and keeper and petId ~= keeper.id
-			and petData.favorite ~= true then
+			and petData.favorite ~= true
+			and (machineInputVariant == nil or (
+				PetVariantPresentation.resolve(petData).baseVariant == machineInputVariant
+				and not self:_isPetEquipped(petId)
+			)) then
 			selectedPets[petId] = true
 		end
 	end
@@ -13952,9 +14092,27 @@ function UIController:_refreshPetGrid()
 		deleteBtn.Visible = self._multiSelectMode
 	end
 
-	local goldenBtn = mainFrame:FindFirstChild("UseGoldMachineBtn")
-	if goldenBtn then
-		goldenBtn.Visible = self._multiSelectMode and self._goldMachineSessionActive
+	local machineBtn = mainFrame:FindFirstChild("UseMachineBtn")
+	if machineBtn then
+		machineBtn.Visible = self._multiSelectMode and self._machineSessionActive
+		if self._machineSessionActive and self._machineUi then
+			machineBtn.Text = "Use " .. self._machineUi.displayName .. " Machine"
+			machineBtn.BackgroundColor3 = self._machineUi.buttonColor
+			machineBtn.TextColor3 = self._machineUi.buttonTextColor
+			local stroke = machineBtn:FindFirstChildOfClass("UIStroke")
+			if stroke then stroke.Color = self._machineUi.strokeColor end
+		end
+	end
+	if self._petVariantFilterButton then
+		if self._machineSessionActive and self._machineDefinition then
+			self._petVariantFilterButton.Text = "Machine: " .. self._machineDefinition.inputVariant
+			self._petVariantFilterButton.Active = false
+			self._petVariantFilterButton.AutoButtonColor = false
+		else
+			self._petVariantFilterButton.Text = "Variant: " .. self._petVariantFilter
+			self._petVariantFilterButton.Active = true
+			self._petVariantFilterButton.AutoButtonColor = true
+		end
 	end
 
 	local duplicatesBtn = mainFrame:FindFirstChild("SelectDuplicatesBtn")
@@ -14085,19 +14243,22 @@ function UIController:_refreshPetGrid()
 		end)
 
 		if self._multiSelectMode then
-			local isSelected = not isFavorite and self._selectedPets[petUniqueId] ~= nil
+			local machineProtected = self._machineSessionActive and self:_isPetEquipped(petUniqueId)
+			local selectionProtected = isFavorite or machineProtected
+			local isSelected = not selectionProtected and self._selectedPets[petUniqueId] ~= nil
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
 			selectBox.Position = UDim2.fromScale(0.1, 0.8)
-			selectBox.BackgroundColor3 = isFavorite and Color3.fromRGB(150, 120, 35)
+			selectBox.BackgroundColor3 = selectionProtected and Color3.fromRGB(150, 120, 35)
 				or (isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110))
-			selectBox.Text = isFavorite and "Favorite" or (isSelected and "Selected" or "Select")
+			selectBox.Text = isFavorite and "Favorite"
+				or (machineProtected and "Equipped" or (isSelected and "Selected" or "Select"))
 			selectBox.TextColor3 = COLORS.White
 			selectBox.Font = Enum.Font.GothamBold
 			selectBox.TextScaled = true
-			selectBox.Active = not isFavorite
-			selectBox.AutoButtonColor = not isFavorite
+			selectBox.Active = not selectionProtected
+			selectBox.AutoButtonColor = not selectionProtected
 			selectBox.Parent = card
 
 			local selectCorner = Instance.new("UICorner")
@@ -14106,7 +14267,7 @@ function UIController:_refreshPetGrid()
 
 			local petId = petUniqueId
 			selectBox.MouseButton1Click:Connect(function()
-				if isFavorite or not petId then return end
+				if selectionProtected or not petId then return end
 				if self._selectedPets[petId] then
 					self._selectedPets[petId] = nil
 				else
@@ -14257,11 +14418,13 @@ function UIController:_deleteSelectedPets()
 end
 
 --------------------------------------------------------------------------------
--- GOLD MACHINE CONFIRM PANEL (available only from the Zone 3 prompt session)
+-- MACHINE CONFIRM PANEL (available only from a registered station session)
 --------------------------------------------------------------------------------
-function UIController:_showGoldMachineConfirm()
-	if not self._goldMachineSessionActive then
-		self:_showGoldenError("Use the Gold Machine in Zone 3 first!")
+function UIController:_showMachineConfirm()
+	local machineUi = self._machineUi
+	local definition = self._machineDefinition
+	if not self._machineSessionActive or not machineUi or not definition then
+		self:_showGoldenError("Use a machine station first!")
 		return
 	end
 
@@ -14295,8 +14458,9 @@ function UIController:_showGoldMachineConfirm()
 			return
 		end
 		local presentation = PetVariantPresentation.resolve(selectedPet)
-		if presentation.baseVariant ~= "Normal" then
-			self:_showGoldenError("Only normal pets can become Golden!")
+		if presentation.baseVariant ~= definition.inputVariant then
+			self:_showGoldenError("Only " .. definition.inputVariant
+				.. " pets can become " .. machineUi.outputLabel .. "!")
 			return
 		end
 		if selectedPet.equipped == true or self:_isPetEquipped(selId) then
@@ -14321,7 +14485,7 @@ function UIController:_showGoldMachineConfirm()
 
 	local count = #selectedIds
 	local chance = math.floor((BalanceConfig.Machines.SuccessChanceByInput[count] or 0) * 100 + 0.5)
-	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
+	self:_createMachineConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
 end
 
 function UIController:_showGoldenError(message)
@@ -14354,18 +14518,21 @@ function UIController:_showGoldenError(message)
 	end)
 end
 
-function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
+function UIController:_createMachineConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
 	if not self._playerGui then return end
+	local machineUi = self._machineUi
+	local definition = self._machineDefinition
+	if not self._machineSessionActive or not machineUi or not definition then return end
 
-	-- Remove old overlay if exists
-	local existing = self._playerGui:FindFirstChild("GoldenConfirmOverlay")
+	-- Remove only the prior generic machine overlay, never an unrelated screen.
+	local existing = self._playerGui:FindFirstChild("MachineConfirmOverlay")
 	if existing then existing:Destroy() end
 
 	local overlay = Instance.new("ScreenGui")
-	overlay.Name = "GoldenConfirmOverlay"
+	overlay.Name = "MachineConfirmOverlay"
 	overlay.ResetOnSpawn = false
 	overlay.Parent = self._playerGui
-	self._goldMachineOverlay = overlay
+	self._machineOverlay = overlay
 
 	local bg = Instance.new("Frame")
 	bg.Size = UDim2.fromScale(1, 1)
@@ -14386,7 +14553,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 
 	local panelStroke = Instance.new("UIStroke")
 	panelStroke.Thickness = 4
-	panelStroke.Color = Color3.fromRGB(255, 200, 0)
+	panelStroke.Color = machineUi.strokeColor
 	panelStroke.Parent = panel
 
 	-- Title
@@ -14394,8 +14561,8 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	titleLabel.Size = UDim2.fromScale(0.8, 0.12)
 	titleLabel.Position = UDim2.fromScale(0.1, 0.03)
 	titleLabel.BackgroundTransparency = 1
-	titleLabel.Text = "MAKE GOLDEN"
-	titleLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+	titleLabel.Text = "MAKE " .. string.upper(machineUi.outputLabel)
+	titleLabel.TextColor3 = machineUi.buttonColor
 	titleLabel.Font = Enum.Font.GothamBold
 	titleLabel.TextScaled = true
 	titleLabel.Parent = panel
@@ -14406,7 +14573,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	infoLabel.Position = UDim2.fromScale(0.1, 0.17)
 	infoLabel.BackgroundTransparency = 1
 	infoLabel.Text = "Sacrifice " .. tostring(count) .. "x " .. tostring(petId)
-		.. "  •  " .. tostring(BalanceConfig.Machines.Gold.cost.amount) .. " Diamonds"
+		.. "  •  " .. tostring(definition.cost.amount) .. " Diamonds"
 	infoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
 	infoLabel.Font = Enum.Font.GothamBold
 	infoLabel.TextScaled = true
@@ -14436,7 +14603,8 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
 	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
 	warnLabel.BackgroundTransparency = 1
-	warnLabel.Text = "WARNING: Pets and 750 Diamonds are consumed even on failure!"
+	warnLabel.Text = "WARNING: Pets and " .. tostring(definition.cost.amount)
+		.. " Diamonds are consumed even on failure!"
 	if shinyCount > 1 then
 		warnLabel.Text ..= " Shiny does not stack."
 	end
@@ -14450,9 +14618,9 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	confirmBtn.Name = "ConfirmBtn"
 	confirmBtn.Size = UDim2.fromScale(0.35, 0.14)
 	confirmBtn.Position = UDim2.fromScale(0.08, 0.68)
-	confirmBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	confirmBtn.BackgroundColor3 = machineUi.buttonColor
 	confirmBtn.Text = "CONVERT!"
-	confirmBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
+	confirmBtn.TextColor3 = machineUi.buttonTextColor
 	confirmBtn.Font = Enum.Font.GothamBold
 	confirmBtn.TextScaled = true
 	confirmBtn.Parent = panel
@@ -14488,19 +14656,19 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	resultLabel.Font = Enum.Font.GothamBold
 	resultLabel.TextScaled = true
 	resultLabel.Parent = panel
-	self._goldMachineResultLabel = resultLabel
-	self._goldMachineConfirmButton = confirmBtn
-	self._goldMachineCancelButton = cancelBtn
+	self._machineResultLabel = resultLabel
+	self._machineConfirmButton = confirmBtn
+	self._machineCancelButton = cancelBtn
 
 	cancelBtn.MouseButton1Click:Connect(function()
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end)
 
 	confirmBtn.MouseButton1Click:Connect(function()
-		if not self._goldMachineSessionActive then return end
-		local onConfirm = self._goldMachineCallbacks.onConfirm
+		if not self._machineSessionActive then return end
+		local onConfirm = self._machineCallbacks.onConfirm
 		if type(onConfirm) ~= "function" then
-			self:showGoldMachineResult(nil, "Machine request is unavailable")
+			self:showMachineResult(nil, "Machine request is unavailable")
 			return
 		end
 		confirmBtn.Active = false
@@ -14513,33 +14681,36 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	end)
 end
 
-function UIController:showGoldMachineResult(result, requestError)
-	local resultLabel = self._goldMachineResultLabel
+function UIController:showMachineResult(result, requestError)
+	local resultLabel = self._machineResultLabel
 	if not resultLabel or not resultLabel.Parent then return end
 	if requestError then
 		resultLabel.Text = "Error: " .. tostring(requestError)
 		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-		if self._goldMachineConfirmButton then
-			self._goldMachineConfirmButton.Active = true
-			self._goldMachineConfirmButton.AutoButtonColor = true
-			self._goldMachineConfirmButton.Text = "TRY AGAIN"
-			self._goldMachineConfirmButton.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+		if self._machineConfirmButton then
+			self._machineConfirmButton.Active = true
+			self._machineConfirmButton.AutoButtonColor = true
+			self._machineConfirmButton.Text = "TRY AGAIN"
+			self._machineConfirmButton.BackgroundColor3 = self._machineUi
+				and self._machineUi.buttonColor or Color3.fromRGB(100, 100, 120)
 		end
-		if self._goldMachineCancelButton then
-			self._goldMachineCancelButton.Active = true
-			self._goldMachineCancelButton.Visible = true
+		if self._machineCancelButton then
+			self._machineCancelButton.Active = true
+			self._machineCancelButton.Visible = true
 		end
 		return
 	end
 
-	if type(result) ~= "table" then
-		self:showGoldMachineResult(nil, "Machine request failed safely")
+	if type(result) ~= "table" or result.machineId ~= self._machineId then
+		self:showMachineResult(nil, "Machine request failed safely")
 		return
 	end
 	if result.success then
-		local outputName = result.outputPet and result.outputPet.name or "Golden Pet"
+		local outputName = result.outputPet and result.outputPet.name
+			or ((self._machineUi and self._machineUi.outputLabel or "Converted") .. " Pet")
 		resultLabel.Text = "SUCCESS! Got " .. outputName .. "!"
-		resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		resultLabel.TextColor3 = self._machineUi
+			and self._machineUi.buttonColor or Color3.fromRGB(255, 220, 0)
 		if result.outputPet and result.isNewDiscovery == true then
 			self:enqueueDiscoveryToast(result.outputPet)
 		end
@@ -14548,18 +14719,18 @@ function UIController:showGoldMachineResult(result, requestError)
 		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	end
 	self._selectedPets = {}
-	local completedOverlay = self._goldMachineOverlay
+	local completedOverlay = self._machineOverlay
 	task.delay(3, function()
 		-- Delayed work owns only the overlay generation that scheduled it. A newer
 		-- prompt/session may already have installed another confirmation.
-		if self._goldMachineOverlay ~= completedOverlay then return end
+		if self._machineOverlay ~= completedOverlay then return end
 		if completedOverlay and completedOverlay.Parent then
 			completedOverlay:Destroy()
 		end
-		self._goldMachineOverlay = nil
-		self._goldMachineResultLabel = nil
-		self._goldMachineConfirmButton = nil
-		self._goldMachineCancelButton = nil
+		self._machineOverlay = nil
+		self._machineResultLabel = nil
+		self._machineConfirmButton = nil
+		self._machineCancelButton = nil
 		self:_refreshPetGrid()
 	end)
 end
@@ -16543,45 +16714,60 @@ end
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
-function UIController:_requestGoldMachineCancel()
-	if not self._goldMachineSessionActive then return end
-	local onCancel = self._goldMachineCallbacks.onCancel
+function UIController:_requestMachineCancel()
+	if not self._machineSessionActive then return end
+	local onCancel = self._machineCallbacks.onCancel
 	if type(onCancel) == "function" then
 		pcall(onCancel)
 	end
 	-- A callback is advisory; the UI always closes its local capability even if
 	-- the owner throws, is absent, or neglects to clear it.
-	if self._goldMachineSessionActive then
-		self:closeGoldMachineSelection()
+	if self._machineSessionActive then
+		self:closeMachineSelection()
 	end
 end
 
-function UIController:setGoldMachineCallbacks(onConfirm, onCancel)
-	self._goldMachineCallbacks = {
+function UIController:setMachineCallbacks(onConfirm, onCancel)
+	self._machineCallbacks = {
 		onConfirm = type(onConfirm) == "function" and onConfirm or nil,
 		onCancel = type(onCancel) == "function" and onCancel or nil,
 	}
 end
 
-function UIController:openGoldMachineSelection()
-	self._goldMachineSessionActive = true
+function UIController:openMachineSelection(machineId)
+	local machineUi, definition = resolveMachineUi(machineId)
+	if not machineUi or not definition then
+		self:closeMachineSelection()
+		return false
+	end
+	if self._machineSessionActive then
+		self:closeMachineSelection()
+	end
+	self._machineSessionActive = true
+	self._machineId = machineId
+	self._machineUi = machineUi
+	self._machineDefinition = definition
 	self._selectedPets = {}
 	self._multiSelectMode = true
 	self:openScreen("PetInventory")
 	self:_refreshPetGrid()
+	return true
 end
 
-function UIController:closeGoldMachineSelection()
-	self._goldMachineSessionActive = false
+function UIController:closeMachineSelection()
+	self._machineSessionActive = false
+	self._machineId = nil
+	self._machineUi = nil
+	self._machineDefinition = nil
 	self._selectedPets = {}
 	self._multiSelectMode = false
-	if self._goldMachineOverlay and self._goldMachineOverlay.Parent then
-		self._goldMachineOverlay:Destroy()
+	if self._machineOverlay and self._machineOverlay.Parent then
+		self._machineOverlay:Destroy()
 	end
-	self._goldMachineOverlay = nil
-	self._goldMachineResultLabel = nil
-	self._goldMachineConfirmButton = nil
-	self._goldMachineCancelButton = nil
+	self._machineOverlay = nil
+	self._machineResultLabel = nil
+	self._machineConfirmButton = nil
+	self._machineCancelButton = nil
 	self:_refreshPetGrid()
 end
 
@@ -16608,9 +16794,17 @@ function UIController:updatePetInventory(pets)
 	-- Drop stale or newly protected selections while preserving valid selections
 	-- across sorting and filtering refreshes.
 	local selectableIds = {}
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	for _, petData in ipairs(self._petInventoryData) do
 		local id = petData.uniqueId or petData.id
-		if id and petData.favorite ~= true then
+		local presentation = PetVariantPresentation.resolve(petData)
+		if id and petData.favorite ~= true
+			and (machineInputVariant == nil or (
+				presentation.baseVariant == machineInputVariant
+				and petData.equipped ~= true
+				and not self:_isPetEquipped(id)
+			)) then
 			selectableIds[id] = true
 		end
 	end
@@ -16642,6 +16836,9 @@ function UIController:updateEquippedPets(equippedPets)
 		local id = petData.uniqueId or petData.id
 		if id then
 			petData.equipped = equippedIdSet[id] or false
+			if self._machineSessionActive and petData.equipped then
+				self._selectedPets[id] = nil
+			end
 		end
 	end
 	self:_refreshCapacityUI()
@@ -17184,7 +17381,7 @@ function UIController:openScreen(screenName)
 	-- Leaving a machine-owned inventory surface revokes the prompt capability and
 	-- its selection before another screen becomes interactive.
 	if screenName ~= "PetInventory" then
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end
 	-- Navigation always dismisses a pending manual hatch flow and invalidates its
 	-- async request through Main's registered cancel callback.
@@ -17248,7 +17445,7 @@ end
 
 function UIController:closeScreen(screenName)
 	if screenName == "PetInventory" then
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end
 	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
@@ -22260,8 +22457,8 @@ local BalanceConfig = {
 	},
 
 	Machines = {
-		-- QOF-16 activates the machine runtime while retaining an explicit
-		-- per-definition gate. Gold is live; Rainbow remains fail-closed.
+		-- QOF-17 activates both paid conversion stations while retaining explicit
+		-- per-definition gates and the global emergency kill switch.
 		RuntimeEnabled = true,
 		MinInputs = 1,
 		MaxInputs = 7,
@@ -22283,7 +22480,7 @@ local BalanceConfig = {
 			cost = { currency = "diamonds", amount = 750 },
 		},
 		Rainbow = {
-			RuntimeEnabled = false,
+			RuntimeEnabled = true,
 			id = "RainbowMachine",
 			zoneId = 6,
 			inputVariant = "Golden",
@@ -22677,10 +22874,10 @@ function BalanceConfig.Validate()
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
 
-	-- QOF-16 exposes only the Gold machine. The global gate remains an emergency
-	-- kill switch and each definition has an independent activation gate.
+	-- QOF-17 exposes the Gold and Rainbow machines. The global gate remains an
+	-- emergency kill switch and each definition has an independent activation gate.
 	local machines = BalanceConfig.Machines
-	assert(machines.RuntimeEnabled == true, "Machines must be globally enabled in QOF-16")
+	assert(machines.RuntimeEnabled == true, "Machines must be globally enabled in QOF-17")
 	assert(machines.MinInputs == 1 and machines.MaxInputs == 7, "machine input bounds must be 1..7")
 	local expectedMachineChances = { 0.13, 0.26, 0.39, 0.50, 0.63, 0.88, 1.00 }
 	for count, expectedChance in ipairs(expectedMachineChances) do
@@ -22694,7 +22891,7 @@ function BalanceConfig.Validate()
 	end
 	local expectedMachines = {
 		Gold = { runtimeEnabled = true, id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
-		Rainbow = { runtimeEnabled = false, id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
+		Rainbow = { runtimeEnabled = true, id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
 	}
 	for machineType, expected in pairs(expectedMachines) do
 		local machine = machines[machineType]
@@ -24749,9 +24946,21 @@ return ShopData
 					<Properties>
 						<string name="Name">MachineClientSession</string>
 						<Content name="LinkedSource"><null></null></Content>
-						<ProtectedString name="Source"><![CDATA[-- MachineClientSession.lua - Pure generation ownership for QOF-16 prompt sessions.
+						<ProtectedString name="Source"><![CDATA[-- MachineClientSession.lua - Pure generation ownership for QOF-17 prompt sessions.
 
 local MachineClientSession = {}
+
+local ACCEPTED_MACHINE_IDS = {
+	GoldMachine = true,
+	RainbowMachine = true,
+}
+
+local function clear(state)
+	state.prompt = nil
+	state.machineId = nil
+	state.identityToken = nil
+	state.inFlight = false
+end
 
 function MachineClientSession.new()
 	return {
@@ -24764,12 +24973,18 @@ function MachineClientSession.new()
 end
 
 function MachineClientSession.start(state, prompt, machineId, identityToken)
-	if type(state) ~= "table" or prompt == nil
-		or machineId ~= "GoldMachine"
-		or type(identityToken) ~= "string" or identityToken == "" then
+	if type(state) ~= "table" then
 		return false
 	end
 	state.generation = (state.generation or 0) + 1
+	if prompt == nil
+		or ACCEPTED_MACHINE_IDS[machineId] ~= true
+		or type(identityToken) ~= "string"
+		or identityToken == ""
+		or #identityToken > 128 then
+		clear(state)
+		return false
+	end
 	state.prompt = prompt
 	state.machineId = machineId
 	state.identityToken = identityToken
@@ -24780,16 +24995,14 @@ end
 function MachineClientSession.close(state)
 	if type(state) ~= "table" then return end
 	state.generation = (state.generation or 0) + 1
-	state.prompt = nil
-	state.machineId = nil
-	state.identityToken = nil
-	state.inFlight = false
+	clear(state)
 end
 
 function MachineClientSession.beginRequest(state)
 	if type(state) ~= "table" or state.inFlight
-		or state.prompt == nil or state.machineId ~= "GoldMachine"
-		or type(state.identityToken) ~= "string" or state.identityToken == "" then
+		or state.prompt == nil or ACCEPTED_MACHINE_IDS[state.machineId] ~= true
+		or type(state.identityToken) ~= "string" or state.identityToken == ""
+		or #state.identityToken > 128 then
 		return nil
 	end
 	state.generation = (state.generation or 0) + 1

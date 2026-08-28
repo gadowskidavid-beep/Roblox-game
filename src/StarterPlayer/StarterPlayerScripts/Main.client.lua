@@ -495,12 +495,16 @@ uiController:setHatchPurchaseCallbacks(
 	requestFreshHatchQuote
 )
 
--- QOF-16 Gold Machine sessions are created only by the central runtime prompt
--- router. Attributes are UX routing data; the server independently validates the
--- private station registry, token, unlock, exact instances, and live distance.
+-- QOF-17 Machine sessions are created only by the central runtime prompt router.
+-- Attributes are UX routing data; the server independently validates the private
+-- station registry, token, unlock, exact instances, and live distance.
 local machineSession = MachineClientSession.new()
+local ACCEPTED_MACHINE_IDS = {
+	GoldMachine = true,
+	RainbowMachine = true,
+}
 
-local function getGoldMachinePromptData(prompt)
+local function getMachinePromptData(prompt)
 	if not prompt or prompt.Name ~= "UseMachinePrompt" or not prompt.Parent then
 		return nil
 	end
@@ -509,24 +513,25 @@ local function getGoldMachinePromptData(prompt)
 	if not model or not model:IsA("Model") then return nil end
 	local machineId = model:GetAttribute("MachineId")
 	local identityToken = model:GetAttribute("MachineIdentityToken")
-	if machineId ~= "GoldMachine" or type(identityToken) ~= "string" or identityToken == "" then
+	if ACCEPTED_MACHINE_IDS[machineId] ~= true
+		or type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128 then
 		return nil
 	end
 	return machineId, identityToken
 end
 
-local function closeGoldMachineSession()
+local function closeMachineSession()
 	MachineClientSession.close(machineSession)
-	uiController:closeGoldMachineSelection()
+	uiController:closeMachineSelection()
 end
 
-local function confirmGoldMachine(selectedIds)
+local function confirmMachine(selectedIds)
 	local prompt = machineSession.prompt
 	local machineId = machineSession.machineId
 	local identityToken = machineSession.identityToken
-	local routedId, routedToken = getGoldMachinePromptData(prompt)
+	local routedId, routedToken = getMachinePromptData(prompt)
 	if routedId ~= machineId or routedToken ~= identityToken then
-		closeGoldMachineSession()
+		closeMachineSession()
 		return
 	end
 	local operation = MachineClientSession.beginRequest(machineSession)
@@ -539,14 +544,14 @@ local function confirmGoldMachine(selectedIds)
 			return
 		end
 		if invoked and type(result) == "table" then
-			uiController:showGoldMachineResult(result, nil)
+			uiController:showMachineResult(result, nil)
 		else
-			uiController:showGoldMachineResult(nil, invoked and machineError or result)
+			uiController:showMachineResult(nil, invoked and machineError or result)
 		end
 	end)
 end
 
-uiController:setGoldMachineCallbacks(confirmGoldMachine, closeGoldMachineSession)
+uiController:setMachineCallbacks(confirmMachine, closeMachineSession)
 
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
@@ -567,7 +572,7 @@ end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
 	if prompt == machineSession.prompt then
-		closeGoldMachineSession()
+		closeMachineSession()
 		return
 	end
 	if prompt ~= activeEggPrompt then return end
@@ -590,13 +595,16 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 		uiController:openScreen("ShopScreen")
 		return
 	end
-	local machineId, identityToken = getGoldMachinePromptData(prompt)
+	local machineId, identityToken = getMachinePromptData(prompt)
 	if machineId then
-		if machineSession.prompt and machineSession.prompt ~= prompt then
-			closeGoldMachineSession()
+		-- Retriggering even the same station revokes every old overlay/callback
+		-- generation before a fresh capability is installed.
+		if machineSession.prompt then
+			closeMachineSession()
 		end
-		MachineClientSession.start(machineSession, prompt, machineId, identityToken)
-		uiController:openGoldMachineSelection()
+		if MachineClientSession.start(machineSession, prompt, machineId, identityToken) then
+			uiController:openMachineSelection(machineId)
+		end
 		return
 	end
 	local eggType = getEggTypeFromPrompt(prompt)

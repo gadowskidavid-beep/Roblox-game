@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the generated Battle Pets place embeds every QOF-16 runtime source."""
+"""Verify that a generated Battle Pets place embeds every QOF-17 runtime source."""
 
 from collections import Counter
 from pathlib import Path
@@ -105,12 +105,12 @@ def main() -> None:
     balance_source = (
         ROOT / "src/ReplicatedStorage/Shared/BalanceConfig.lua"
     ).read_bytes()
-    assert b"Machines = {\n\t\t-- QOF-16" in balance_source
+    assert b"Machines = {\n\t\t-- QOF-17" in balance_source
     assert b"Gold = {\n\t\t\tRuntimeEnabled = true," in balance_source, (
-        "QOF-16 Gold machine gate is not active"
+        "QOF-17 Gold machine gate is not active"
     )
-    assert b"Rainbow = {\n\t\t\tRuntimeEnabled = false," in balance_source, (
-        "Rainbow must remain dormant in QOF-16"
+    assert b"Rainbow = {\n\t\t\tRuntimeEnabled = true," in balance_source, (
+        "QOF-17 Rainbow machine gate is not active"
     )
 
     machine_service_source = (
@@ -130,19 +130,25 @@ def main() -> None:
         b"rollbackVariantConversion",
         b'"goldenPetsConverted"',
     ):
-        assert required in machine_service_source, f"missing QOF-16 machine authority: {required!r}"
+        assert required in machine_service_source, f"missing QOF-17 machine authority: {required!r}"
 
     zone_service_source = (
         ROOT / "src/ServerScriptService/Services/ZoneService.lua"
     ).read_bytes()
     for required in (
-        b"spawnGoldMachineStation",
+        b"local function spawnMachineStation",
         b"validateMachineActivation",
         b'prompt.Name = "UseMachinePrompt"',
         b'identityToken = HttpService:GenerateGUID(false)',
-        b"GOLD_MACHINE_MAX_DISTANCE",
+        b"MACHINE_MAX_DISTANCE",
+        b"hasConflictingStationIdentity",
+        b"anchor.Shape ~= record.anchorShape",
+        b"anchor.Color ~= record.anchorColor",
+        b"anchor.Material ~= record.anchorMaterial",
+        b'spawnMachineStation(zonesFolder, "Gold")',
+        b'spawnMachineStation(zonesFolder, "Rainbow")',
     ):
-        assert required in zone_service_source, f"missing QOF-16 world authority: {required!r}"
+        assert required in zone_service_source, f"missing QOF-17 world authority: {required!r}"
     assert b"spawnRainbowMachineStation" not in zone_service_source
 
     client_source = (
@@ -150,12 +156,15 @@ def main() -> None:
     ).read_bytes()
     for required in (
         b'WaitForChild("UseMachine")',
-        b"getGoldMachinePromptData",
+        b"getMachinePromptData",
+        b"GoldMachine = true",
+        b"RainbowMachine = true",
         b"UseMachine:InvokeServer(machineId, identityToken, selectedIds)",
         b"MachineClientSession.finishRequest(machineSession, operation)",
         b"prompt == machineSession.prompt",
+        b"uiController:openMachineSelection(machineId)",
     ):
-        assert required in client_source, f"missing QOF-16 client prompt routing: {required!r}"
+        assert required in client_source, f"missing QOF-17 client prompt routing: {required!r}"
     assert b'WaitForChild("ConvertToGoldenPet")' not in client_source
 
     purchase_handler = main_source.split(
@@ -215,15 +224,22 @@ def main() -> None:
     ):
         assert required in ui_source, f"missing QOF-13 inventory UI contract: {required!r}"
     for required in (
-        b'goldenBtn.Name = "UseGoldMachineBtn"',
-        b"self._multiSelectMode and self._goldMachineSessionActive",
+        b'machineBtn.Name = "UseMachineBtn"',
+        b"self._multiSelectMode and self._machineSessionActive",
+        b"presentation.baseVariant == machineInputVariant",
+        b"PetVariantPresentation.resolve(petData).baseVariant == machineInputVariant",
+        b"presentation.baseVariant ~= definition.inputVariant",
         b"BalanceConfig.Machines.SuccessChanceByInput[count]",
-        b"Pets and 750 Diamonds are consumed even on failure",
+        b"tostring(definition.cost.amount)",
+        b'outputLabel = "Golden"',
+        b'outputLabel = "Rainbow"',
+        b"Diamonds are consumed even on failure",
         b"result.outputPet",
-        b"self:_requestGoldMachineCancel()",
-        b"self._goldMachineOverlay ~= completedOverlay",
+        b"self:_requestMachineCancel()",
+        b"self._machineOverlay ~= completedOverlay",
     ):
-        assert required in ui_source, f"missing QOF-16 machine UI contract: {required!r}"
+        assert required in ui_source, f"missing QOF-17 machine UI contract: {required!r}"
+    assert b'FindFirstChild("UseRainbowMachineBtn")' not in ui_source
     assert b'FindFirstChild("MakeGoldenBtn")' not in ui_source
     assert b'FindFirstChild("ConvertToGoldenPet")' not in ui_source
 
@@ -284,7 +300,7 @@ def main() -> None:
     assert actual_counts == EXPECTED_SCRIPT_COUNTS, (
         f"generated script counts changed: {actual_counts}"
     )
-    print("PASS: generated place embeds every QOF-16 runtime source exactly once")
+    print("PASS: generated place embeds every QOF-17 runtime source exactly once")
     print("PASS: all 70 generated script sources have byte-exact source parity")
     print(f"PASS: generated script counts are {actual_counts}")
 

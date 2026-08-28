@@ -80,6 +80,35 @@ local VARIANT_RANK = {
 	Rainbow = 4,
 }
 
+local MACHINE_UI_BY_ID = {
+	GoldMachine = {
+		machineType = "Gold",
+		displayName = "Gold",
+		outputLabel = "Golden",
+		buttonColor = Color3.fromRGB(255, 200, 0),
+		buttonTextColor = Color3.fromRGB(40, 30, 0),
+		strokeColor = Color3.fromRGB(180, 140, 0),
+	},
+	RainbowMachine = {
+		machineType = "Rainbow",
+		displayName = "Rainbow",
+		outputLabel = "Rainbow",
+		buttonColor = Color3.fromRGB(170, 80, 255),
+		buttonTextColor = Color3.fromRGB(255, 255, 255),
+		strokeColor = Color3.fromRGB(100, 220, 255),
+	},
+}
+
+local function resolveMachineUi(machineId)
+	local ui = MACHINE_UI_BY_ID[machineId]
+	local definition = ui and BalanceConfig.Machines[ui.machineType]
+	if not ui or type(definition) ~= "table"
+		or definition.RuntimeEnabled ~= true or definition.id ~= machineId then
+		return nil
+	end
+	return ui, definition
+end
+
 local function resolvePetVariant(petData)
 	return PetVariantPresentation.resolve(petData).legacyCategory
 end
@@ -212,12 +241,15 @@ function UIController.new()
 	self._equippedBar = nil
 	self._multiSelectMode = false
 	self._selectedPets = {}
-	self._goldMachineSessionActive = false
-	self._goldMachineCallbacks = {}
-	self._goldMachineOverlay = nil
-	self._goldMachineResultLabel = nil
-	self._goldMachineConfirmButton = nil
-	self._goldMachineCancelButton = nil
+	self._machineSessionActive = false
+	self._machineId = nil
+	self._machineUi = nil
+	self._machineDefinition = nil
+	self._machineCallbacks = {}
+	self._machineOverlay = nil
+	self._machineResultLabel = nil
+	self._machineConfirmButton = nil
+	self._machineCancelButton = nil
 	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
@@ -1299,7 +1331,7 @@ function UIController:_createPetInventory()
 	closeBtnCorner.Parent = closeBtn
 
 	closeBtn.MouseButton1Click:Connect(function()
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 		self:closeScreen("PetInventory")
 	end)
 
@@ -1378,6 +1410,7 @@ function UIController:_createPetInventory()
 	filterCorner.Parent = filterBtn
 
 	filterBtn.MouseButton1Click:Connect(function()
+		if self._machineSessionActive then return end
 		local currentIndex = table.find(PET_VARIANT_FILTERS, self._petVariantFilter) or 1
 		self._petVariantFilter = PET_VARIANT_FILTERS[(currentIndex % #PET_VARIANT_FILTERS) + 1]
 		filterBtn.Text = "Variant: " .. self._petVariantFilter
@@ -1404,39 +1437,40 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
-	-- Gold Machine action is visible only during a server-world prompt session.
-	local goldenBtn = Instance.new("TextButton")
-	goldenBtn.Name = "UseGoldMachineBtn"
-	goldenBtn.Size = UDim2.fromScale(0.15, 0.06)
-	goldenBtn.Position = UDim2.fromScale(0.18, 0.92)
-	goldenBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-	goldenBtn.Text = "Use Gold Machine"
-	goldenBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
-	goldenBtn.Font = Enum.Font.GothamBold
-	goldenBtn.TextScaled = true
-	goldenBtn.Visible = false
-	goldenBtn.Parent = mainFrame
+	-- One generic action is visible only during a server-world machine session.
+	-- Its station-bound identity controls label, color, source variant, and price.
+	local machineBtn = Instance.new("TextButton")
+	machineBtn.Name = "UseMachineBtn"
+	machineBtn.Size = UDim2.fromScale(0.15, 0.06)
+	machineBtn.Position = UDim2.fromScale(0.18, 0.92)
+	machineBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
+	machineBtn.Text = "Use Machine"
+	machineBtn.TextColor3 = COLORS.White
+	machineBtn.Font = Enum.Font.GothamBold
+	machineBtn.TextScaled = true
+	machineBtn.Visible = false
+	machineBtn.Parent = mainFrame
 
-	local goldenCorner = Instance.new("UICorner")
-	goldenCorner.CornerRadius = UDim.new(0, 8)
-	goldenCorner.Parent = goldenBtn
+	local machineCorner = Instance.new("UICorner")
+	machineCorner.CornerRadius = UDim.new(0, 8)
+	machineCorner.Parent = machineBtn
 
-	local goldenStroke = Instance.new("UIStroke")
-	goldenStroke.Thickness = 2
-	goldenStroke.Color = Color3.fromRGB(180, 140, 0)
-	goldenStroke.Parent = goldenBtn
+	local machineStroke = Instance.new("UIStroke")
+	machineStroke.Thickness = 2
+	machineStroke.Color = Color3.fromRGB(80, 80, 100)
+	machineStroke.Parent = machineBtn
 
-	goldenBtn.MouseButton1Click:Connect(function()
-		self:_showGoldMachineConfirm()
+	machineBtn.MouseButton1Click:Connect(function()
+		self:_showMachineConfirm()
 	end)
 
-	goldenBtn.MouseEnter:Connect(function()
-		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+	machineBtn.MouseEnter:Connect(function()
+		TweenService:Create(machineBtn, TweenInfo.new(0.1), {
 			Size = UDim2.fromScale(0.16, 0.065),
 		}):Play()
 	end)
-	goldenBtn.MouseLeave:Connect(function()
-		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+	machineBtn.MouseLeave:Connect(function()
+		TweenService:Create(machineBtn, TweenInfo.new(0.1), {
 			Size = UDim2.fromScale(0.15, 0.06),
 		}):Play()
 	end)
@@ -1570,10 +1604,16 @@ end
 
 function UIController:_buildPetDisplayList()
 	local displayPets = {}
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
 		local presentation = PetVariantPresentation.resolve(petData)
 		local variant = presentation.legacyCategory
-		if self._petVariantFilter == "All" or variant == self._petVariantFilter then
+		local matchesMachine = machineInputVariant == nil
+			or presentation.baseVariant == machineInputVariant
+		local matchesVariantFilter = machineInputVariant ~= nil
+			or self._petVariantFilter == "All" or variant == self._petVariantFilter
+		if matchesMachine and matchesVariantFilter then
 			table.insert(displayPets, {
 				pet = petData,
 				sourceIndex = sourceIndex,
@@ -1631,12 +1671,22 @@ end
 function UIController:_selectDuplicatePets()
 	if not self._multiSelectMode then return end
 
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	local groupCounts = {}
 	local keepers = {}
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
 		local petType = petData.petId
 		local petId = petData.uniqueId or petData.id
-		if type(petType) == "string" and petType ~= "" and type(petId) == "string" and petId ~= "" then
+		local presentation = PetVariantPresentation.resolve(petData)
+		local machineEligible = machineInputVariant == nil
+			or presentation.baseVariant == machineInputVariant
+		local protected = machineInputVariant ~= nil and (
+			petData.favorite == true or self:_isPetEquipped(petId)
+		)
+		if machineEligible and not protected
+			and type(petType) == "string" and petType ~= ""
+			and type(petId) == "string" and petId ~= "" then
 			groupCounts[petType] = (groupCounts[petType] or 0) + 1
 			local candidate = {
 				pet = petData,
@@ -1665,7 +1715,11 @@ function UIController:_selectDuplicatePets()
 		local keeper = petType and keepers[petType]
 		if type(petType) == "string" and groupCounts[petType] and groupCounts[petType] > 1
 			and petId and keeper and petId ~= keeper.id
-			and petData.favorite ~= true then
+			and petData.favorite ~= true
+			and (machineInputVariant == nil or (
+				PetVariantPresentation.resolve(petData).baseVariant == machineInputVariant
+				and not self:_isPetEquipped(petId)
+			)) then
 			selectedPets[petId] = true
 		end
 	end
@@ -1687,9 +1741,27 @@ function UIController:_refreshPetGrid()
 		deleteBtn.Visible = self._multiSelectMode
 	end
 
-	local goldenBtn = mainFrame:FindFirstChild("UseGoldMachineBtn")
-	if goldenBtn then
-		goldenBtn.Visible = self._multiSelectMode and self._goldMachineSessionActive
+	local machineBtn = mainFrame:FindFirstChild("UseMachineBtn")
+	if machineBtn then
+		machineBtn.Visible = self._multiSelectMode and self._machineSessionActive
+		if self._machineSessionActive and self._machineUi then
+			machineBtn.Text = "Use " .. self._machineUi.displayName .. " Machine"
+			machineBtn.BackgroundColor3 = self._machineUi.buttonColor
+			machineBtn.TextColor3 = self._machineUi.buttonTextColor
+			local stroke = machineBtn:FindFirstChildOfClass("UIStroke")
+			if stroke then stroke.Color = self._machineUi.strokeColor end
+		end
+	end
+	if self._petVariantFilterButton then
+		if self._machineSessionActive and self._machineDefinition then
+			self._petVariantFilterButton.Text = "Machine: " .. self._machineDefinition.inputVariant
+			self._petVariantFilterButton.Active = false
+			self._petVariantFilterButton.AutoButtonColor = false
+		else
+			self._petVariantFilterButton.Text = "Variant: " .. self._petVariantFilter
+			self._petVariantFilterButton.Active = true
+			self._petVariantFilterButton.AutoButtonColor = true
+		end
 	end
 
 	local duplicatesBtn = mainFrame:FindFirstChild("SelectDuplicatesBtn")
@@ -1820,19 +1892,22 @@ function UIController:_refreshPetGrid()
 		end)
 
 		if self._multiSelectMode then
-			local isSelected = not isFavorite and self._selectedPets[petUniqueId] ~= nil
+			local machineProtected = self._machineSessionActive and self:_isPetEquipped(petUniqueId)
+			local selectionProtected = isFavorite or machineProtected
+			local isSelected = not selectionProtected and self._selectedPets[petUniqueId] ~= nil
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
 			selectBox.Position = UDim2.fromScale(0.1, 0.8)
-			selectBox.BackgroundColor3 = isFavorite and Color3.fromRGB(150, 120, 35)
+			selectBox.BackgroundColor3 = selectionProtected and Color3.fromRGB(150, 120, 35)
 				or (isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110))
-			selectBox.Text = isFavorite and "Favorite" or (isSelected and "Selected" or "Select")
+			selectBox.Text = isFavorite and "Favorite"
+				or (machineProtected and "Equipped" or (isSelected and "Selected" or "Select"))
 			selectBox.TextColor3 = COLORS.White
 			selectBox.Font = Enum.Font.GothamBold
 			selectBox.TextScaled = true
-			selectBox.Active = not isFavorite
-			selectBox.AutoButtonColor = not isFavorite
+			selectBox.Active = not selectionProtected
+			selectBox.AutoButtonColor = not selectionProtected
 			selectBox.Parent = card
 
 			local selectCorner = Instance.new("UICorner")
@@ -1841,7 +1916,7 @@ function UIController:_refreshPetGrid()
 
 			local petId = petUniqueId
 			selectBox.MouseButton1Click:Connect(function()
-				if isFavorite or not petId then return end
+				if selectionProtected or not petId then return end
 				if self._selectedPets[petId] then
 					self._selectedPets[petId] = nil
 				else
@@ -1992,11 +2067,13 @@ function UIController:_deleteSelectedPets()
 end
 
 --------------------------------------------------------------------------------
--- GOLD MACHINE CONFIRM PANEL (available only from the Zone 3 prompt session)
+-- MACHINE CONFIRM PANEL (available only from a registered station session)
 --------------------------------------------------------------------------------
-function UIController:_showGoldMachineConfirm()
-	if not self._goldMachineSessionActive then
-		self:_showGoldenError("Use the Gold Machine in Zone 3 first!")
+function UIController:_showMachineConfirm()
+	local machineUi = self._machineUi
+	local definition = self._machineDefinition
+	if not self._machineSessionActive or not machineUi or not definition then
+		self:_showGoldenError("Use a machine station first!")
 		return
 	end
 
@@ -2030,8 +2107,9 @@ function UIController:_showGoldMachineConfirm()
 			return
 		end
 		local presentation = PetVariantPresentation.resolve(selectedPet)
-		if presentation.baseVariant ~= "Normal" then
-			self:_showGoldenError("Only normal pets can become Golden!")
+		if presentation.baseVariant ~= definition.inputVariant then
+			self:_showGoldenError("Only " .. definition.inputVariant
+				.. " pets can become " .. machineUi.outputLabel .. "!")
 			return
 		end
 		if selectedPet.equipped == true or self:_isPetEquipped(selId) then
@@ -2056,7 +2134,7 @@ function UIController:_showGoldMachineConfirm()
 
 	local count = #selectedIds
 	local chance = math.floor((BalanceConfig.Machines.SuccessChanceByInput[count] or 0) * 100 + 0.5)
-	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
+	self:_createMachineConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
 end
 
 function UIController:_showGoldenError(message)
@@ -2089,18 +2167,21 @@ function UIController:_showGoldenError(message)
 	end)
 end
 
-function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
+function UIController:_createMachineConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
 	if not self._playerGui then return end
+	local machineUi = self._machineUi
+	local definition = self._machineDefinition
+	if not self._machineSessionActive or not machineUi or not definition then return end
 
-	-- Remove old overlay if exists
-	local existing = self._playerGui:FindFirstChild("GoldenConfirmOverlay")
+	-- Remove only the prior generic machine overlay, never an unrelated screen.
+	local existing = self._playerGui:FindFirstChild("MachineConfirmOverlay")
 	if existing then existing:Destroy() end
 
 	local overlay = Instance.new("ScreenGui")
-	overlay.Name = "GoldenConfirmOverlay"
+	overlay.Name = "MachineConfirmOverlay"
 	overlay.ResetOnSpawn = false
 	overlay.Parent = self._playerGui
-	self._goldMachineOverlay = overlay
+	self._machineOverlay = overlay
 
 	local bg = Instance.new("Frame")
 	bg.Size = UDim2.fromScale(1, 1)
@@ -2121,7 +2202,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 
 	local panelStroke = Instance.new("UIStroke")
 	panelStroke.Thickness = 4
-	panelStroke.Color = Color3.fromRGB(255, 200, 0)
+	panelStroke.Color = machineUi.strokeColor
 	panelStroke.Parent = panel
 
 	-- Title
@@ -2129,8 +2210,8 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	titleLabel.Size = UDim2.fromScale(0.8, 0.12)
 	titleLabel.Position = UDim2.fromScale(0.1, 0.03)
 	titleLabel.BackgroundTransparency = 1
-	titleLabel.Text = "MAKE GOLDEN"
-	titleLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+	titleLabel.Text = "MAKE " .. string.upper(machineUi.outputLabel)
+	titleLabel.TextColor3 = machineUi.buttonColor
 	titleLabel.Font = Enum.Font.GothamBold
 	titleLabel.TextScaled = true
 	titleLabel.Parent = panel
@@ -2141,7 +2222,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	infoLabel.Position = UDim2.fromScale(0.1, 0.17)
 	infoLabel.BackgroundTransparency = 1
 	infoLabel.Text = "Sacrifice " .. tostring(count) .. "x " .. tostring(petId)
-		.. "  •  " .. tostring(BalanceConfig.Machines.Gold.cost.amount) .. " Diamonds"
+		.. "  •  " .. tostring(definition.cost.amount) .. " Diamonds"
 	infoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
 	infoLabel.Font = Enum.Font.GothamBold
 	infoLabel.TextScaled = true
@@ -2171,7 +2252,8 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
 	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
 	warnLabel.BackgroundTransparency = 1
-	warnLabel.Text = "WARNING: Pets and 750 Diamonds are consumed even on failure!"
+	warnLabel.Text = "WARNING: Pets and " .. tostring(definition.cost.amount)
+		.. " Diamonds are consumed even on failure!"
 	if shinyCount > 1 then
 		warnLabel.Text ..= " Shiny does not stack."
 	end
@@ -2185,9 +2267,9 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	confirmBtn.Name = "ConfirmBtn"
 	confirmBtn.Size = UDim2.fromScale(0.35, 0.14)
 	confirmBtn.Position = UDim2.fromScale(0.08, 0.68)
-	confirmBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	confirmBtn.BackgroundColor3 = machineUi.buttonColor
 	confirmBtn.Text = "CONVERT!"
-	confirmBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
+	confirmBtn.TextColor3 = machineUi.buttonTextColor
 	confirmBtn.Font = Enum.Font.GothamBold
 	confirmBtn.TextScaled = true
 	confirmBtn.Parent = panel
@@ -2223,19 +2305,19 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	resultLabel.Font = Enum.Font.GothamBold
 	resultLabel.TextScaled = true
 	resultLabel.Parent = panel
-	self._goldMachineResultLabel = resultLabel
-	self._goldMachineConfirmButton = confirmBtn
-	self._goldMachineCancelButton = cancelBtn
+	self._machineResultLabel = resultLabel
+	self._machineConfirmButton = confirmBtn
+	self._machineCancelButton = cancelBtn
 
 	cancelBtn.MouseButton1Click:Connect(function()
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end)
 
 	confirmBtn.MouseButton1Click:Connect(function()
-		if not self._goldMachineSessionActive then return end
-		local onConfirm = self._goldMachineCallbacks.onConfirm
+		if not self._machineSessionActive then return end
+		local onConfirm = self._machineCallbacks.onConfirm
 		if type(onConfirm) ~= "function" then
-			self:showGoldMachineResult(nil, "Machine request is unavailable")
+			self:showMachineResult(nil, "Machine request is unavailable")
 			return
 		end
 		confirmBtn.Active = false
@@ -2248,33 +2330,36 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	end)
 end
 
-function UIController:showGoldMachineResult(result, requestError)
-	local resultLabel = self._goldMachineResultLabel
+function UIController:showMachineResult(result, requestError)
+	local resultLabel = self._machineResultLabel
 	if not resultLabel or not resultLabel.Parent then return end
 	if requestError then
 		resultLabel.Text = "Error: " .. tostring(requestError)
 		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-		if self._goldMachineConfirmButton then
-			self._goldMachineConfirmButton.Active = true
-			self._goldMachineConfirmButton.AutoButtonColor = true
-			self._goldMachineConfirmButton.Text = "TRY AGAIN"
-			self._goldMachineConfirmButton.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+		if self._machineConfirmButton then
+			self._machineConfirmButton.Active = true
+			self._machineConfirmButton.AutoButtonColor = true
+			self._machineConfirmButton.Text = "TRY AGAIN"
+			self._machineConfirmButton.BackgroundColor3 = self._machineUi
+				and self._machineUi.buttonColor or Color3.fromRGB(100, 100, 120)
 		end
-		if self._goldMachineCancelButton then
-			self._goldMachineCancelButton.Active = true
-			self._goldMachineCancelButton.Visible = true
+		if self._machineCancelButton then
+			self._machineCancelButton.Active = true
+			self._machineCancelButton.Visible = true
 		end
 		return
 	end
 
-	if type(result) ~= "table" then
-		self:showGoldMachineResult(nil, "Machine request failed safely")
+	if type(result) ~= "table" or result.machineId ~= self._machineId then
+		self:showMachineResult(nil, "Machine request failed safely")
 		return
 	end
 	if result.success then
-		local outputName = result.outputPet and result.outputPet.name or "Golden Pet"
+		local outputName = result.outputPet and result.outputPet.name
+			or ((self._machineUi and self._machineUi.outputLabel or "Converted") .. " Pet")
 		resultLabel.Text = "SUCCESS! Got " .. outputName .. "!"
-		resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		resultLabel.TextColor3 = self._machineUi
+			and self._machineUi.buttonColor or Color3.fromRGB(255, 220, 0)
 		if result.outputPet and result.isNewDiscovery == true then
 			self:enqueueDiscoveryToast(result.outputPet)
 		end
@@ -2283,18 +2368,18 @@ function UIController:showGoldMachineResult(result, requestError)
 		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	end
 	self._selectedPets = {}
-	local completedOverlay = self._goldMachineOverlay
+	local completedOverlay = self._machineOverlay
 	task.delay(3, function()
 		-- Delayed work owns only the overlay generation that scheduled it. A newer
 		-- prompt/session may already have installed another confirmation.
-		if self._goldMachineOverlay ~= completedOverlay then return end
+		if self._machineOverlay ~= completedOverlay then return end
 		if completedOverlay and completedOverlay.Parent then
 			completedOverlay:Destroy()
 		end
-		self._goldMachineOverlay = nil
-		self._goldMachineResultLabel = nil
-		self._goldMachineConfirmButton = nil
-		self._goldMachineCancelButton = nil
+		self._machineOverlay = nil
+		self._machineResultLabel = nil
+		self._machineConfirmButton = nil
+		self._machineCancelButton = nil
 		self:_refreshPetGrid()
 	end)
 end
@@ -4278,45 +4363,60 @@ end
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
-function UIController:_requestGoldMachineCancel()
-	if not self._goldMachineSessionActive then return end
-	local onCancel = self._goldMachineCallbacks.onCancel
+function UIController:_requestMachineCancel()
+	if not self._machineSessionActive then return end
+	local onCancel = self._machineCallbacks.onCancel
 	if type(onCancel) == "function" then
 		pcall(onCancel)
 	end
 	-- A callback is advisory; the UI always closes its local capability even if
 	-- the owner throws, is absent, or neglects to clear it.
-	if self._goldMachineSessionActive then
-		self:closeGoldMachineSelection()
+	if self._machineSessionActive then
+		self:closeMachineSelection()
 	end
 end
 
-function UIController:setGoldMachineCallbacks(onConfirm, onCancel)
-	self._goldMachineCallbacks = {
+function UIController:setMachineCallbacks(onConfirm, onCancel)
+	self._machineCallbacks = {
 		onConfirm = type(onConfirm) == "function" and onConfirm or nil,
 		onCancel = type(onCancel) == "function" and onCancel or nil,
 	}
 end
 
-function UIController:openGoldMachineSelection()
-	self._goldMachineSessionActive = true
+function UIController:openMachineSelection(machineId)
+	local machineUi, definition = resolveMachineUi(machineId)
+	if not machineUi or not definition then
+		self:closeMachineSelection()
+		return false
+	end
+	if self._machineSessionActive then
+		self:closeMachineSelection()
+	end
+	self._machineSessionActive = true
+	self._machineId = machineId
+	self._machineUi = machineUi
+	self._machineDefinition = definition
 	self._selectedPets = {}
 	self._multiSelectMode = true
 	self:openScreen("PetInventory")
 	self:_refreshPetGrid()
+	return true
 end
 
-function UIController:closeGoldMachineSelection()
-	self._goldMachineSessionActive = false
+function UIController:closeMachineSelection()
+	self._machineSessionActive = false
+	self._machineId = nil
+	self._machineUi = nil
+	self._machineDefinition = nil
 	self._selectedPets = {}
 	self._multiSelectMode = false
-	if self._goldMachineOverlay and self._goldMachineOverlay.Parent then
-		self._goldMachineOverlay:Destroy()
+	if self._machineOverlay and self._machineOverlay.Parent then
+		self._machineOverlay:Destroy()
 	end
-	self._goldMachineOverlay = nil
-	self._goldMachineResultLabel = nil
-	self._goldMachineConfirmButton = nil
-	self._goldMachineCancelButton = nil
+	self._machineOverlay = nil
+	self._machineResultLabel = nil
+	self._machineConfirmButton = nil
+	self._machineCancelButton = nil
 	self:_refreshPetGrid()
 end
 
@@ -4343,9 +4443,17 @@ function UIController:updatePetInventory(pets)
 	-- Drop stale or newly protected selections while preserving valid selections
 	-- across sorting and filtering refreshes.
 	local selectableIds = {}
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	for _, petData in ipairs(self._petInventoryData) do
 		local id = petData.uniqueId or petData.id
-		if id and petData.favorite ~= true then
+		local presentation = PetVariantPresentation.resolve(petData)
+		if id and petData.favorite ~= true
+			and (machineInputVariant == nil or (
+				presentation.baseVariant == machineInputVariant
+				and petData.equipped ~= true
+				and not self:_isPetEquipped(id)
+			)) then
 			selectableIds[id] = true
 		end
 	end
@@ -4377,6 +4485,9 @@ function UIController:updateEquippedPets(equippedPets)
 		local id = petData.uniqueId or petData.id
 		if id then
 			petData.equipped = equippedIdSet[id] or false
+			if self._machineSessionActive and petData.equipped then
+				self._selectedPets[id] = nil
+			end
 		end
 	end
 	self:_refreshCapacityUI()
@@ -4919,7 +5030,7 @@ function UIController:openScreen(screenName)
 	-- Leaving a machine-owned inventory surface revokes the prompt capability and
 	-- its selection before another screen becomes interactive.
 	if screenName ~= "PetInventory" then
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end
 	-- Navigation always dismisses a pending manual hatch flow and invalidates its
 	-- async request through Main's registered cancel callback.
@@ -4983,7 +5094,7 @@ end
 
 function UIController:closeScreen(screenName)
 	if screenName == "PetInventory" then
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end
 	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]

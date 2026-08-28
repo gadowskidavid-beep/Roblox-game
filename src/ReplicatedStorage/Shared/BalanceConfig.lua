@@ -231,8 +231,8 @@ local BalanceConfig = {
 	},
 
 	Machines = {
-		-- QOF-16 activates the machine runtime while retaining an explicit
-		-- per-definition gate. Gold is live; Rainbow remains fail-closed.
+		-- QOF-17 activates both paid conversion stations while retaining explicit
+		-- per-definition gates and the global emergency kill switch.
 		RuntimeEnabled = true,
 		MinInputs = 1,
 		MaxInputs = 7,
@@ -254,7 +254,7 @@ local BalanceConfig = {
 			cost = { currency = "diamonds", amount = 750 },
 		},
 		Rainbow = {
-			RuntimeEnabled = false,
+			RuntimeEnabled = true,
 			id = "RainbowMachine",
 			zoneId = 6,
 			inputVariant = "Golden",
@@ -648,10 +648,10 @@ function BalanceConfig.Validate()
 		assert(section.RuntimeEnabled == false, name .. " must remain disabled until its owning QOF")
 	end
 
-	-- QOF-16 exposes only the Gold machine. The global gate remains an emergency
-	-- kill switch and each definition has an independent activation gate.
+	-- QOF-17 exposes the Gold and Rainbow machines. The global gate remains an
+	-- emergency kill switch and each definition has an independent activation gate.
 	local machines = BalanceConfig.Machines
-	assert(machines.RuntimeEnabled == true, "Machines must be globally enabled in QOF-16")
+	assert(machines.RuntimeEnabled == true, "Machines must be globally enabled in QOF-17")
 	assert(machines.MinInputs == 1 and machines.MaxInputs == 7, "machine input bounds must be 1..7")
 	local expectedMachineChances = { 0.13, 0.26, 0.39, 0.50, 0.63, 0.88, 1.00 }
 	for count, expectedChance in ipairs(expectedMachineChances) do
@@ -665,7 +665,7 @@ function BalanceConfig.Validate()
 	end
 	local expectedMachines = {
 		Gold = { runtimeEnabled = true, id = "GoldMachine", zoneId = 3, inputVariant = "Normal", outputVariant = "Golden", amount = 750 },
-		Rainbow = { runtimeEnabled = false, id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
+		Rainbow = { runtimeEnabled = true, id = "RainbowMachine", zoneId = 6, inputVariant = "Golden", outputVariant = "Rainbow", amount = 2500 },
 	}
 	for machineType, expected in pairs(expectedMachines) do
 		local machine = machines[machineType]
