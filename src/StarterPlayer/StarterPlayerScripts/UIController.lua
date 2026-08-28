@@ -79,6 +79,57 @@ local VARIANT_RANK = {
 	Shiny = 3,
 	Rainbow = 4,
 }
+local ENCHANT_DISPLAY_NAMES = {
+	StrongI = "Strong I",
+	StrongII = "Strong II",
+	StrongIII = "Strong III",
+	AgileI = "Agile I",
+	AgileII = "Agile II",
+	AgileIII = "Agile III",
+}
+local ENCHANT_REASON_TEXT = {
+	RUNTIME_DISABLED = "Enchanting is currently unavailable.",
+	SERVICE_UNAVAILABLE = "Enchanting is currently unavailable.",
+	PROFILE_UNAVAILABLE = "Your pet profile is unavailable.",
+	PET_NOT_FOUND = "This pet is no longer available.",
+	INVALID_PET_STATE = "This pet cannot be enchanted safely.",
+	STALE_STATE = "Pet state changed. Review the refreshed details.",
+	INSUFFICIENT_BALANCE = "Not enough Diamonds.",
+	BUSY = "Another enchanting request is already running.",
+	RATE_LIMITED = "Please wait a moment and try again.",
+	TECHNICAL_FAILURE = "Enchanting failed safely. Please try again.",
+	ROLLBACK_FAILED = "Enchanting is unavailable. Please refresh.",
+	INVALID_REQUEST = "Enchanting request was rejected safely.",
+}
+
+local MACHINE_UI_BY_ID = {
+	GoldMachine = {
+		machineType = "Gold",
+		displayName = "Gold",
+		outputLabel = "Golden",
+		buttonColor = Color3.fromRGB(255, 200, 0),
+		buttonTextColor = Color3.fromRGB(40, 30, 0),
+		strokeColor = Color3.fromRGB(180, 140, 0),
+	},
+	RainbowMachine = {
+		machineType = "Rainbow",
+		displayName = "Rainbow",
+		outputLabel = "Rainbow",
+		buttonColor = Color3.fromRGB(170, 80, 255),
+		buttonTextColor = Color3.fromRGB(255, 255, 255),
+		strokeColor = Color3.fromRGB(100, 220, 255),
+	},
+}
+
+local function resolveMachineUi(machineId)
+	local ui = MACHINE_UI_BY_ID[machineId]
+	local definition = ui and BalanceConfig.Machines[ui.machineType]
+	if not ui or type(definition) ~= "table"
+		or definition.RuntimeEnabled ~= true or definition.id ~= machineId then
+		return nil
+	end
+	return ui, definition
+end
 
 local function resolvePetVariant(petData)
 	return PetVariantPresentation.resolve(petData).legacyCategory
@@ -194,6 +245,32 @@ function UIController.new()
 	self._hatchPurchaseCallbacks = {}
 	self._hatchPurchaseConnections = {}
 	self._activeHatchPurchaseEggType = nil
+	self._autoHatchState = {
+		contractVersion = 0,
+		stateRevision = -1,
+		serverTime = 0,
+		runtimeEnabled = false,
+		economy = {},
+		expiresAt = 0,
+		remainingSeconds = 0,
+		selectedCount = 1,
+		maximumCount = 1,
+		availableCounts = { 1, 2, 5, 10 },
+		generation = 0,
+		status = "STOPPED",
+		station = nil,
+		nextHatchAt = nil,
+		pauseReason = nil,
+		actionFeedback = nil,
+		inFlight = false,
+	}
+	self._autoHatchStateRevision = -1
+	self._autoHatchServerOffset = 0
+	self._autoHatchCallbacks = {}
+	self._autoHatchControls = {}
+	self._autoHatchLocalStation = nil
+	self._autoHatchActionInFlight = nil
+	self._autoHatchUiGeneration = 0
 	self._xpFill = nil
 	self._xpLevelLabel = nil
 	self._petInventoryData = {}
@@ -212,12 +289,26 @@ function UIController.new()
 	self._equippedBar = nil
 	self._multiSelectMode = false
 	self._selectedPets = {}
-	self._goldMachineSessionActive = false
-	self._goldMachineCallbacks = {}
-	self._goldMachineOverlay = nil
-	self._goldMachineResultLabel = nil
-	self._goldMachineConfirmButton = nil
-	self._goldMachineCancelButton = nil
+	self._machineSessionActive = false
+	self._machineId = nil
+	self._machineUi = nil
+	self._machineDefinition = nil
+	self._machineCallbacks = {}
+	self._machineOverlay = nil
+	self._machineResultLabel = nil
+	self._machineConfirmButton = nil
+	self._machineCancelButton = nil
+	self._enchantingCallbacks = {}
+	self._petDetailPetId = nil
+	self._petDetailOverlay = nil
+	self._petDetailNameLabel = nil
+	self._petDetailEnchantLabel = nil
+	self._petDetailCostLabel = nil
+	self._petDetailOutcomesFrame = nil
+	self._petDetailFeedbackLabel = nil
+	self._petDetailActionButton = nil
+	self._petDetailState = nil
+	self._enchantingBusy = false
 	self._favoriteRequests = {}
 	self._currentZone = 1
 	self._initialized = false
@@ -339,11 +430,13 @@ function UIController:init(remotes, playerData)
 			if self._screens.ShopScreen and self._screens.ShopScreen.Enabled then
 				self:_updateShopCardStates()
 			end
+			self:_updateAutoHatchControls()
 		end
 	end)
 
 	self:_refreshShopStateFromServer()
 	self:_refreshPotionStateFromServer()
+	self:_refreshAutoHatchStateFromServer()
 	self._initialized = true
 end
 
@@ -615,6 +708,93 @@ function UIController:_createHatchPurchaseDialog()
 		}
 	end
 
+	-- QOF-18 reuses this one station-owned surface; no second modal or hatch
+	-- presentation path is created. Closing it only clears local configuration.
+	optionContainer.CanvasSize = UDim2.fromOffset(0, 440)
+	local autoPanel = Instance.new("Frame")
+	autoPanel.Name = "AutoHatchControls"
+	autoPanel.Size = UDim2.new(1, -8, 0, 210)
+	autoPanel.BackgroundColor3 = Color3.fromRGB(28, 48, 82)
+	autoPanel.BorderSizePixel = 0
+	autoPanel.Parent = optionContainer
+	local autoCorner = Instance.new("UICorner")
+	autoCorner.CornerRadius = UDim.new(0, 12)
+	autoCorner.Parent = autoPanel
+
+	local autoTitle = Instance.new("TextLabel")
+	autoTitle.Name = "Target"
+	autoTitle.Size = UDim2.new(1, -16, 0, 32)
+	autoTitle.Position = UDim2.fromOffset(8, 6)
+	autoTitle.BackgroundTransparency = 1
+	autoTitle.Text = "AUTO-HATCH • SELECT THIS STATION"
+	autoTitle.TextColor3 = COLORS.DiamondCyan
+	autoTitle.Font = Enum.Font.GothamBlack
+	autoTitle.TextScaled = true
+	autoTitle.Parent = autoPanel
+	self._autoHatchControls.target = autoTitle
+
+	local autoStatus = Instance.new("TextLabel")
+	autoStatus.Name = "Status"
+	autoStatus.Size = UDim2.new(1, -16, 0, 42)
+	autoStatus.Position = UDim2.fromOffset(8, 40)
+	autoStatus.BackgroundTransparency = 1
+	autoStatus.Text = "Auto-Hatch state is syncing…"
+	autoStatus.TextColor3 = COLORS.White
+	autoStatus.Font = Enum.Font.GothamBold
+	autoStatus.TextScaled = true
+	autoStatus.TextWrapped = true
+	autoStatus.Parent = autoPanel
+	self._autoHatchControls.status = autoStatus
+
+	for index, count in ipairs({ 1, 2, 5, 10 }) do
+		local tier = Instance.new("TextButton")
+		tier.Name = "AutoHatchTier" .. tostring(count)
+		tier.Size = UDim2.new(0.22, 0, 0, 38)
+		tier.Position = UDim2.new(0.025 + (index - 1) * 0.245, 0, 0, 88)
+		tier.BackgroundColor3 = COLORS.NavSettings
+		tier.Text = "x" .. tostring(count)
+		tier.TextColor3 = COLORS.White
+		tier.Font = Enum.Font.GothamBlack
+		tier.TextScaled = true
+		tier.AutoButtonColor = false
+		tier.Parent = autoPanel
+		local tierCorner = Instance.new("UICorner")
+		tierCorner.CornerRadius = UDim.new(0, 9)
+		tierCorner.Parent = tier
+		tier.Activated:Connect(function()
+			if tier.Active and self._autoHatchCallbacks.setBatch then
+				self._autoHatchCallbacks.setBatch(count)
+			end
+		end)
+		self._autoHatchControls["tier" .. tostring(count)] = tier
+	end
+
+	for index, definition in ipairs({
+		{ key = "buy", text = "BUY ◆500" },
+		{ key = "start", text = "START" },
+		{ key = "stop", text = "STOP" },
+	}) do
+		local actionButton = Instance.new("TextButton")
+		actionButton.Name = "AutoHatch" .. string.upper(string.sub(definition.key, 1, 1)) .. string.sub(definition.key, 2)
+		actionButton.Size = UDim2.new(0.3, 0, 0, 52)
+		actionButton.Position = UDim2.new(0.025 + (index - 1) * 0.325, 0, 0, 143)
+		actionButton.BackgroundColor3 = index == 3 and COLORS.ButtonRed or COLORS.ButtonGreen
+		actionButton.Text = definition.text
+		actionButton.TextColor3 = COLORS.White
+		actionButton.Font = Enum.Font.GothamBlack
+		actionButton.TextScaled = true
+		actionButton.AutoButtonColor = false
+		actionButton.Parent = autoPanel
+		local actionCorner = Instance.new("UICorner")
+		actionCorner.CornerRadius = UDim.new(0, 10)
+		actionCorner.Parent = actionButton
+		actionButton.Activated:Connect(function()
+			local callback = self._autoHatchCallbacks[definition.key]
+			if actionButton.Active and callback then callback() end
+		end)
+		self._autoHatchControls[definition.key] = actionButton
+	end
+
 	local feedback = Instance.new("TextLabel")
 	feedback.Name = "Feedback"
 	feedback.Size = UDim2.new(1, -28, 0.075, 0)
@@ -716,6 +896,188 @@ function UIController:_createHatchPurchaseDialog()
 			self:_requestHatchPurchaseCancel()
 		end
 	end))
+end
+
+local AUTO_HATCH_REASON_TEXT = {
+	REJOIN_REQUIRES_STATION = "Choose a nearby egg station again after rejoining.",
+	BATCH_NOT_ENTITLED = "Selected tier is no longer entitled; choose an entitled tier.",
+	INSUFFICIENT_COINS = "Paused: not enough Coins for the full selected batch.",
+	INVENTORY_FULL = "Paused: not enough pet inventory slots for the full batch.",
+	HATCH_LOCKED = "Paused: another hatch is currently committing.",
+	STATION_INVALID = "Paused: the selected egg station failed integrity checks.",
+	ZONE_LOCKED = "Paused: the station zone is no longer unlocked.",
+	ACCESS_REQUIRED = "Buy Auto-Hatch Access before starting.",
+	ACCESS_EXPIRED = "Auto-Hatch Access expired.",
+	TOO_FAR = "Move closer to this exact egg station to start.",
+	CHARACTER_UNAVAILABLE = "Character is unavailable; try again after spawning.",
+	TECHNICAL_ERROR = "Paused safely after a technical error; retrying next tick.",
+	RATE_LIMITED = "Please wait before trying that Auto-Hatch action again.",
+	RUNTIME_UNAVAILABLE = "Auto-Hatch is temporarily unavailable on this server.",
+}
+
+function UIController:isAutoHatchRuntimeEnabled()
+	return self._autoHatchState.runtimeEnabled == true
+end
+
+function UIController:setAutoHatchCallbacks(callbacks)
+	self._autoHatchCallbacks = type(callbacks) == "table" and callbacks or {}
+end
+
+function UIController:setAutoHatchLocalStation(eggType, stationId)
+	self._autoHatchUiGeneration += 1
+	self._autoHatchState.actionFeedback = nil
+	self._autoHatchLocalStation = type(eggType) == "string" and type(stationId) == "string" and {
+		eggType = eggType,
+		stationId = stationId,
+	} or nil
+	self:_updateAutoHatchControls()
+end
+
+function UIController:clearAutoHatchLocalStation()
+	self._autoHatchUiGeneration += 1
+	self._autoHatchState.actionFeedback = nil
+	self._autoHatchLocalStation = nil
+	self:_updateAutoHatchControls()
+end
+
+function UIController:_applyAutoHatchState(payload)
+	if type(payload) ~= "table" or payload.contractVersion ~= ShopData.AutoHatchContractVersion then
+		return false
+	end
+	local revision = tonumber(payload.stateRevision)
+	if not revision or revision ~= revision or revision % 1 ~= 0 or revision < 0
+		or revision <= self._autoHatchStateRevision then
+		return false
+	end
+	self._autoHatchStateRevision = revision
+	self._autoHatchServerOffset = (tonumber(payload.serverTime) or os.time()) - os.time()
+	self._autoHatchState = {
+		contractVersion = ShopData.AutoHatchContractVersion,
+		stateRevision = revision,
+		serverTime = tonumber(payload.serverTime) or os.time(),
+		runtimeEnabled = payload.runtimeEnabled == true,
+		economy = type(payload.economy) == "table" and payload.economy or {},
+		expiresAt = tonumber(payload.expiresAt) or 0,
+		remainingSeconds = tonumber(payload.remainingSeconds) or 0,
+		selectedCount = tonumber(payload.selectedCount) or 1,
+		maximumCount = tonumber(payload.maximumCount) or 1,
+		availableCounts = type(payload.availableCounts) == "table" and payload.availableCounts or { 1, 2, 5, 10 },
+		generation = tonumber(payload.generation) or 0,
+		status = type(payload.status) == "string" and payload.status or "STOPPED",
+		station = type(payload.station) == "table" and payload.station or nil,
+		nextHatchAt = tonumber(payload.nextHatchAt),
+		pauseReason = type(payload.pauseReason) == "string" and payload.pauseReason or nil,
+		actionFeedback = type(payload.actionFeedback) == "table"
+			and payload.actionFeedback.action == "START"
+			and type(payload.actionFeedback.reason) == "string"
+			and type(payload.actionFeedback.stationId) == "string"
+			and {
+				action = "START",
+				reason = payload.actionFeedback.reason,
+				stationId = payload.actionFeedback.stationId,
+			} or nil,
+		inFlight = payload.inFlight == true,
+	}
+	self:_updateAutoHatchControls()
+	self:_updateShopCardStates()
+	return true
+end
+
+function UIController:updateAutoHatchState(payload)
+	return self:_applyAutoHatchState(payload)
+end
+
+function UIController:_refreshAutoHatchStateFromServer()
+	if not self._remotes then return end
+	local remote = self._remotes:FindFirstChild("GetAutoHatchState")
+	if not remote then
+		self:_updateAutoHatchControls()
+		return
+	end
+	local generation = self._autoHatchUiGeneration
+	task.spawn(function()
+		local ok, success, _, state = pcall(function()
+			return remote:InvokeServer({
+				contractVersion = ShopData.AutoHatchContractVersion,
+				action = "GET_STATE",
+			})
+		end)
+		if generation ~= self._autoHatchUiGeneration then
+			return
+		end
+		if ok and success and type(state) == "table" then
+			-- Revision and prompt generation jointly protect local action feedback.
+			self:_applyAutoHatchState(state)
+		else
+			self:_updateAutoHatchControls()
+		end
+	end)
+end
+
+function UIController:_updateAutoHatchControls()
+	local state = self._autoHatchState or {}
+	local now = os.time() + self._autoHatchServerOffset
+	local remaining = math.max(0, math.ceil((tonumber(state.expiresAt) or 0) - now))
+	local nextSeconds = state.nextHatchAt and math.max(0, math.ceil(state.nextHatchAt - now)) or nil
+	local station = self._autoHatchLocalStation
+	local actionFeedback = state.actionFeedback
+	local reason = actionFeedback and station
+		and actionFeedback.stationId == station.stationId
+		and actionFeedback.reason or state.pauseReason
+	local reasonText = AUTO_HATCH_REASON_TEXT[reason] or reason
+	if self._autoHatchControls.target then
+		self._autoHatchControls.target.Text = station
+			and ("AUTO-HATCH TARGET • " .. tostring(station.eggType))
+			or "AUTO-HATCH • SELECT THIS STATION"
+	end
+	if self._autoHatchControls.status then
+		local countdown = string.format("%d:%02d", math.floor(remaining / 60), remaining % 60)
+		local statusText = tostring(state.status or "STOPPED") .. " • ACCESS " .. countdown
+		if nextSeconds then statusText ..= " • NEXT " .. tostring(nextSeconds) .. "s" end
+		if state.inFlight then statusText ..= " • BATCH IN FLIGHT" end
+		if reasonText then statusText ..= "\n" .. reasonText end
+		self._autoHatchControls.status.Text = statusText
+	end
+	local busy = self._autoHatchActionInFlight ~= nil
+	local runtimeEnabled = state.runtimeEnabled == true
+	for _, count in ipairs({ 1, 2, 5, 10 }) do
+		local button = self._autoHatchControls["tier" .. tostring(count)]
+		if button then
+			local entitled = count <= (tonumber(state.maximumCount) or 1)
+			button.Active = runtimeEnabled and entitled and not busy
+			button.Selectable = button.Active
+			button.BackgroundColor3 = count == state.selectedCount and runtimeEnabled and COLORS.DiamondCyan
+				or (runtimeEnabled and entitled and COLORS.NavSettings or Color3.fromRGB(90, 95, 108))
+		end
+	end
+	local buy = self._autoHatchControls.buy
+	local start = self._autoHatchControls.start
+	local stop = self._autoHatchControls.stop
+	if buy then
+		buy.Active = state.runtimeEnabled == true and remaining <= 0 and not busy and self._diamonds >= 500
+		buy.Selectable = buy.Active
+		buy.Text = busy == "buy" and "BUYING…"
+			or (not runtimeEnabled and "UNAVAILABLE" or (remaining > 0 and "ACCESS ACTIVE" or "BUY ◆500"))
+	end
+	if start then
+		start.Active = runtimeEnabled and remaining > 0 and station ~= nil and not busy
+		start.Selectable = start.Active
+		start.Text = busy == "start" and "STARTING…" or "START"
+	end
+	if stop then
+		stop.Active = runtimeEnabled and (state.status == "RUNNING" or state.status == "PAUSED") and not busy
+		stop.Selectable = stop.Active
+		stop.Text = busy == "stop" and "STOPPING…" or "STOP"
+	end
+end
+
+function UIController:setAutoHatchActionInFlight(action)
+	self._autoHatchActionInFlight = action
+	if action ~= nil then
+		self._autoHatchState.actionFeedback = nil
+	end
+	self:_updateAutoHatchControls()
+	self:_updateShopCardStates()
 end
 
 function UIController:setHatchPurchaseCallbacks(confirmCallback, cancelCallback, refreshCallback)
@@ -1299,7 +1661,7 @@ function UIController:_createPetInventory()
 	closeBtnCorner.Parent = closeBtn
 
 	closeBtn.MouseButton1Click:Connect(function()
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 		self:closeScreen("PetInventory")
 	end)
 
@@ -1378,6 +1740,7 @@ function UIController:_createPetInventory()
 	filterCorner.Parent = filterBtn
 
 	filterBtn.MouseButton1Click:Connect(function()
+		if self._machineSessionActive then return end
 		local currentIndex = table.find(PET_VARIANT_FILTERS, self._petVariantFilter) or 1
 		self._petVariantFilter = PET_VARIANT_FILTERS[(currentIndex % #PET_VARIANT_FILTERS) + 1]
 		filterBtn.Text = "Variant: " .. self._petVariantFilter
@@ -1404,39 +1767,40 @@ function UIController:_createPetInventory()
 		self:_deleteSelectedPets()
 	end)
 
-	-- Gold Machine action is visible only during a server-world prompt session.
-	local goldenBtn = Instance.new("TextButton")
-	goldenBtn.Name = "UseGoldMachineBtn"
-	goldenBtn.Size = UDim2.fromScale(0.15, 0.06)
-	goldenBtn.Position = UDim2.fromScale(0.18, 0.92)
-	goldenBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-	goldenBtn.Text = "Use Gold Machine"
-	goldenBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
-	goldenBtn.Font = Enum.Font.GothamBold
-	goldenBtn.TextScaled = true
-	goldenBtn.Visible = false
-	goldenBtn.Parent = mainFrame
+	-- One generic action is visible only during a server-world machine session.
+	-- Its station-bound identity controls label, color, source variant, and price.
+	local machineBtn = Instance.new("TextButton")
+	machineBtn.Name = "UseMachineBtn"
+	machineBtn.Size = UDim2.fromScale(0.15, 0.06)
+	machineBtn.Position = UDim2.fromScale(0.18, 0.92)
+	machineBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
+	machineBtn.Text = "Use Machine"
+	machineBtn.TextColor3 = COLORS.White
+	machineBtn.Font = Enum.Font.GothamBold
+	machineBtn.TextScaled = true
+	machineBtn.Visible = false
+	machineBtn.Parent = mainFrame
 
-	local goldenCorner = Instance.new("UICorner")
-	goldenCorner.CornerRadius = UDim.new(0, 8)
-	goldenCorner.Parent = goldenBtn
+	local machineCorner = Instance.new("UICorner")
+	machineCorner.CornerRadius = UDim.new(0, 8)
+	machineCorner.Parent = machineBtn
 
-	local goldenStroke = Instance.new("UIStroke")
-	goldenStroke.Thickness = 2
-	goldenStroke.Color = Color3.fromRGB(180, 140, 0)
-	goldenStroke.Parent = goldenBtn
+	local machineStroke = Instance.new("UIStroke")
+	machineStroke.Thickness = 2
+	machineStroke.Color = Color3.fromRGB(80, 80, 100)
+	machineStroke.Parent = machineBtn
 
-	goldenBtn.MouseButton1Click:Connect(function()
-		self:_showGoldMachineConfirm()
+	machineBtn.MouseButton1Click:Connect(function()
+		self:_showMachineConfirm()
 	end)
 
-	goldenBtn.MouseEnter:Connect(function()
-		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+	machineBtn.MouseEnter:Connect(function()
+		TweenService:Create(machineBtn, TweenInfo.new(0.1), {
 			Size = UDim2.fromScale(0.16, 0.065),
 		}):Play()
 	end)
-	goldenBtn.MouseLeave:Connect(function()
-		TweenService:Create(goldenBtn, TweenInfo.new(0.1), {
+	machineBtn.MouseLeave:Connect(function()
+		TweenService:Create(machineBtn, TweenInfo.new(0.1), {
 			Size = UDim2.fromScale(0.15, 0.06),
 		}):Play()
 	end)
@@ -1570,10 +1934,16 @@ end
 
 function UIController:_buildPetDisplayList()
 	local displayPets = {}
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
 		local presentation = PetVariantPresentation.resolve(petData)
 		local variant = presentation.legacyCategory
-		if self._petVariantFilter == "All" or variant == self._petVariantFilter then
+		local matchesMachine = machineInputVariant == nil
+			or presentation.baseVariant == machineInputVariant
+		local matchesVariantFilter = machineInputVariant ~= nil
+			or self._petVariantFilter == "All" or variant == self._petVariantFilter
+		if matchesMachine and matchesVariantFilter then
 			table.insert(displayPets, {
 				pet = petData,
 				sourceIndex = sourceIndex,
@@ -1631,12 +2001,22 @@ end
 function UIController:_selectDuplicatePets()
 	if not self._multiSelectMode then return end
 
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	local groupCounts = {}
 	local keepers = {}
 	for sourceIndex, petData in ipairs(self._petInventoryData) do
 		local petType = petData.petId
 		local petId = petData.uniqueId or petData.id
-		if type(petType) == "string" and petType ~= "" and type(petId) == "string" and petId ~= "" then
+		local presentation = PetVariantPresentation.resolve(petData)
+		local machineEligible = machineInputVariant == nil
+			or presentation.baseVariant == machineInputVariant
+		local protected = machineInputVariant ~= nil and (
+			petData.favorite == true or self:_isPetEquipped(petId)
+		)
+		if machineEligible and not protected
+			and type(petType) == "string" and petType ~= ""
+			and type(petId) == "string" and petId ~= "" then
 			groupCounts[petType] = (groupCounts[petType] or 0) + 1
 			local candidate = {
 				pet = petData,
@@ -1665,7 +2045,11 @@ function UIController:_selectDuplicatePets()
 		local keeper = petType and keepers[petType]
 		if type(petType) == "string" and groupCounts[petType] and groupCounts[petType] > 1
 			and petId and keeper and petId ~= keeper.id
-			and petData.favorite ~= true then
+			and petData.favorite ~= true
+			and (machineInputVariant == nil or (
+				PetVariantPresentation.resolve(petData).baseVariant == machineInputVariant
+				and not self:_isPetEquipped(petId)
+			)) then
 			selectedPets[petId] = true
 		end
 	end
@@ -1687,9 +2071,27 @@ function UIController:_refreshPetGrid()
 		deleteBtn.Visible = self._multiSelectMode
 	end
 
-	local goldenBtn = mainFrame:FindFirstChild("UseGoldMachineBtn")
-	if goldenBtn then
-		goldenBtn.Visible = self._multiSelectMode and self._goldMachineSessionActive
+	local machineBtn = mainFrame:FindFirstChild("UseMachineBtn")
+	if machineBtn then
+		machineBtn.Visible = self._multiSelectMode and self._machineSessionActive
+		if self._machineSessionActive and self._machineUi then
+			machineBtn.Text = "Use " .. self._machineUi.displayName .. " Machine"
+			machineBtn.BackgroundColor3 = self._machineUi.buttonColor
+			machineBtn.TextColor3 = self._machineUi.buttonTextColor
+			local stroke = machineBtn:FindFirstChildOfClass("UIStroke")
+			if stroke then stroke.Color = self._machineUi.strokeColor end
+		end
+	end
+	if self._petVariantFilterButton then
+		if self._machineSessionActive and self._machineDefinition then
+			self._petVariantFilterButton.Text = "Machine: " .. self._machineDefinition.inputVariant
+			self._petVariantFilterButton.Active = false
+			self._petVariantFilterButton.AutoButtonColor = false
+		else
+			self._petVariantFilterButton.Text = "Variant: " .. self._petVariantFilter
+			self._petVariantFilterButton.Active = true
+			self._petVariantFilterButton.AutoButtonColor = true
+		end
 	end
 
 	local duplicatesBtn = mainFrame:FindFirstChild("SelectDuplicatesBtn")
@@ -1820,19 +2222,22 @@ function UIController:_refreshPetGrid()
 		end)
 
 		if self._multiSelectMode then
-			local isSelected = not isFavorite and self._selectedPets[petUniqueId] ~= nil
+			local machineProtected = self._machineSessionActive and self:_isPetEquipped(petUniqueId)
+			local selectionProtected = isFavorite or machineProtected
+			local isSelected = not selectionProtected and self._selectedPets[petUniqueId] ~= nil
 			local selectBox = Instance.new("TextButton")
 			selectBox.Name = "SelectBox"
 			selectBox.Size = UDim2.fromScale(0.8, 0.16)
 			selectBox.Position = UDim2.fromScale(0.1, 0.8)
-			selectBox.BackgroundColor3 = isFavorite and Color3.fromRGB(150, 120, 35)
+			selectBox.BackgroundColor3 = selectionProtected and Color3.fromRGB(150, 120, 35)
 				or (isSelected and Color3.fromRGB(200, 100, 0) or Color3.fromRGB(60, 70, 110))
-			selectBox.Text = isFavorite and "Favorite" or (isSelected and "Selected" or "Select")
+			selectBox.Text = isFavorite and "Favorite"
+				or (machineProtected and "Equipped" or (isSelected and "Selected" or "Select"))
 			selectBox.TextColor3 = COLORS.White
 			selectBox.Font = Enum.Font.GothamBold
 			selectBox.TextScaled = true
-			selectBox.Active = not isFavorite
-			selectBox.AutoButtonColor = not isFavorite
+			selectBox.Active = not selectionProtected
+			selectBox.AutoButtonColor = not selectionProtected
 			selectBox.Parent = card
 
 			local selectCorner = Instance.new("UICorner")
@@ -1841,7 +2246,7 @@ function UIController:_refreshPetGrid()
 
 			local petId = petUniqueId
 			selectBox.MouseButton1Click:Connect(function()
-				if isFavorite or not petId then return end
+				if selectionProtected or not petId then return end
 				if self._selectedPets[petId] then
 					self._selectedPets[petId] = nil
 				else
@@ -1851,10 +2256,40 @@ function UIController:_refreshPetGrid()
 			end)
 		else
 			local isEquipped = self:_isPetEquipped(petUniqueId)
+			local petId = petUniqueId
+			local detailsBtn = Instance.new("TextButton")
+			detailsBtn.Name = "PetDetailsBtn"
+			detailsBtn.Size = UDim2.fromScale(0.38, 0.14)
+			detailsBtn.Position = UDim2.fromScale(0.08, 0.81)
+			detailsBtn.BackgroundColor3 = Color3.fromRGB(85, 105, 175)
+			detailsBtn.Text = "Details"
+			detailsBtn.TextColor3 = COLORS.White
+			detailsBtn.Font = Enum.Font.GothamBold
+			detailsBtn.TextScaled = true
+			detailsBtn.Active = type(petId) == "string" and petId ~= ""
+			detailsBtn.AutoButtonColor = detailsBtn.Active
+			detailsBtn.Parent = card
+
+			local detailsCorner = Instance.new("UICorner")
+			detailsCorner.CornerRadius = UDim.new(0, 6)
+			detailsCorner.Parent = detailsBtn
+
+			detailsBtn.MouseButton1Click:Connect(function()
+				if not petId then return end
+				self:openPetEnchanting(petId)
+				local onOpen = self._enchantingCallbacks.onOpen
+				if type(onOpen) == "function" then
+					local called = pcall(onOpen, petId)
+					if not called then self:showEnchantingUnavailable("UNAVAILABLE") end
+				else
+					self:showEnchantingUnavailable("UNAVAILABLE")
+				end
+			end)
+
 			local equipBtn = Instance.new("TextButton")
 			equipBtn.Name = "EquipBtn"
-			equipBtn.Size = UDim2.fromScale(0.8, 0.16)
-			equipBtn.Position = UDim2.fromScale(0.1, 0.8)
+			equipBtn.Size = UDim2.fromScale(0.42, 0.14)
+			equipBtn.Position = UDim2.fromScale(0.5, 0.81)
 			equipBtn.BackgroundColor3 = isEquipped and COLORS.ButtonRed or COLORS.ButtonGreen
 			equipBtn.Text = isEquipped and "Unequip" or "Equip"
 			equipBtn.TextColor3 = COLORS.White
@@ -1866,7 +2301,6 @@ function UIController:_refreshPetGrid()
 			equipCorner.CornerRadius = UDim.new(0, 6)
 			equipCorner.Parent = equipBtn
 
-			local petId = petUniqueId
 			equipBtn.MouseButton1Click:Connect(function()
 				if isEquipped then
 					self:_unequipPet(petId)
@@ -1877,12 +2311,12 @@ function UIController:_refreshPetGrid()
 
 			equipBtn.MouseEnter:Connect(function()
 				TweenService:Create(equipBtn, TweenInfo.new(0.1), {
-					Size = UDim2.fromScale(0.84, 0.17),
+					Size = UDim2.fromScale(0.44, 0.15),
 				}):Play()
 			end)
 			equipBtn.MouseLeave:Connect(function()
 				TweenService:Create(equipBtn, TweenInfo.new(0.1), {
-					Size = UDim2.fromScale(0.8, 0.16),
+					Size = UDim2.fromScale(0.42, 0.14),
 				}):Play()
 			end)
 		end
@@ -1992,11 +2426,347 @@ function UIController:_deleteSelectedPets()
 end
 
 --------------------------------------------------------------------------------
--- GOLD MACHINE CONFIRM PANEL (available only from the Zone 3 prompt session)
+-- INVENTORY PET DETAIL / ENCHANTING (server-authoritative Contract V1 state)
 --------------------------------------------------------------------------------
-function UIController:_showGoldMachineConfirm()
-	if not self._goldMachineSessionActive then
-		self:_showGoldenError("Use the Gold Machine in Zone 3 first!")
+function UIController:_findInventoryPet(petInstanceId)
+	for _, petData in ipairs(self._petInventoryData) do
+		if type(petData) == "table" and (petData.uniqueId or petData.id) == petInstanceId then
+			return petData
+		end
+	end
+	return nil
+end
+
+function UIController:_requestEnchantingClose()
+	if not self._petDetailPetId then return end
+	local onClose = self._enchantingCallbacks.onClose
+	if type(onClose) == "function" then
+		pcall(onClose)
+	end
+	if self._petDetailPetId then
+		self:closePetEnchanting()
+	end
+end
+
+function UIController:setEnchantingCallbacks(onOpen, onRoll, onClose)
+	self._enchantingCallbacks = {
+		onOpen = type(onOpen) == "function" and onOpen or nil,
+		onRoll = type(onRoll) == "function" and onRoll or nil,
+		onClose = type(onClose) == "function" and onClose or nil,
+	}
+end
+
+function UIController:openPetEnchanting(petInstanceId)
+	local petData = self:_findInventoryPet(petInstanceId)
+	if not petData then return false end
+	self:closePetEnchanting()
+	self._petDetailPetId = petInstanceId
+	self._petDetailState = nil
+	self._enchantingBusy = false
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "PetEnchantingDetail"
+	overlay.ResetOnSpawn = false
+	overlay.DisplayOrder = 20
+	overlay.Parent = self._playerGui
+	self._petDetailOverlay = overlay
+
+	local backdrop = Instance.new("Frame")
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	backdrop.BackgroundTransparency = 0.35
+	backdrop.BorderSizePixel = 0
+	backdrop.Parent = overlay
+
+	local panel = Instance.new("Frame")
+	panel.Name = "EnchantingPanel"
+	panel.Size = UDim2.fromScale(0.58, 0.8)
+	panel.Position = UDim2.fromScale(0.21, 0.1)
+	panel.BackgroundColor3 = COLORS.Background
+	panel.BorderSizePixel = 0
+	panel.Parent = backdrop
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 16)
+	panelCorner.Parent = panel
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Thickness = 4
+	panelStroke.Color = Color3.fromRGB(160, 95, 255)
+	panelStroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Name = "PetName"
+	title.Size = UDim2.fromScale(0.72, 0.08)
+	title.Position = UDim2.fromScale(0.14, 0.025)
+	title.BackgroundTransparency = 1
+	title.Text = tostring(petData.name or petData.petId or "Pet") .. " • Enchanting"
+	title.TextColor3 = COLORS.White
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.Parent = panel
+	self._petDetailNameLabel = title
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Name = "CloseBtn"
+	closeBtn.Size = UDim2.fromOffset(40, 40)
+	closeBtn.Position = UDim2.new(1, -50, 0, 10)
+	closeBtn.BackgroundColor3 = COLORS.CloseRed
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = COLORS.White
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 22
+	closeBtn.Parent = panel
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(1, 0)
+	closeCorner.Parent = closeBtn
+	closeBtn.MouseButton1Click:Connect(function()
+		self:_requestEnchantingClose()
+	end)
+
+	local enchantLabel = Instance.new("TextLabel")
+	enchantLabel.Name = "CurrentEnchant"
+	enchantLabel.Size = UDim2.fromScale(0.84, 0.07)
+	enchantLabel.Position = UDim2.fromScale(0.08, 0.12)
+	enchantLabel.BackgroundColor3 = COLORS.DarkBg
+	enchantLabel.Text = "Current Enchant: Loading…"
+	enchantLabel.TextColor3 = Color3.fromRGB(230, 210, 255)
+	enchantLabel.Font = Enum.Font.GothamBold
+	enchantLabel.TextScaled = true
+	enchantLabel.Parent = panel
+	local enchantCorner = Instance.new("UICorner")
+	enchantCorner.CornerRadius = UDim.new(0, 8)
+	enchantCorner.Parent = enchantLabel
+	self._petDetailEnchantLabel = enchantLabel
+
+	local costLabel = Instance.new("TextLabel")
+	costLabel.Name = "ServerCost"
+	costLabel.Size = UDim2.fromScale(0.84, 0.05)
+	costLabel.Position = UDim2.fromScale(0.08, 0.205)
+	costLabel.BackgroundTransparency = 1
+	costLabel.Text = "Cost: Loading from server…"
+	costLabel.TextColor3 = COLORS.DiamondCyan
+	costLabel.Font = Enum.Font.GothamBold
+	costLabel.TextScaled = true
+	costLabel.Parent = panel
+	self._petDetailCostLabel = costLabel
+
+	local outcomesTitle = Instance.new("TextLabel")
+	outcomesTitle.Size = UDim2.fromScale(0.84, 0.05)
+	outcomesTitle.Position = UDim2.fromScale(0.08, 0.27)
+	outcomesTitle.BackgroundTransparency = 1
+	outcomesTitle.Text = "Possible outcomes (server chances)"
+	outcomesTitle.TextColor3 = COLORS.White
+	outcomesTitle.Font = Enum.Font.GothamBold
+	outcomesTitle.TextScaled = true
+	outcomesTitle.Parent = panel
+
+	local outcomesFrame = Instance.new("Frame")
+	outcomesFrame.Name = "Outcomes"
+	outcomesFrame.Size = UDim2.fromScale(0.84, 0.31)
+	outcomesFrame.Position = UDim2.fromScale(0.08, 0.325)
+	outcomesFrame.BackgroundColor3 = COLORS.DarkBg
+	outcomesFrame.BorderSizePixel = 0
+	outcomesFrame.Parent = panel
+	local outcomesCorner = Instance.new("UICorner")
+	outcomesCorner.CornerRadius = UDim.new(0, 10)
+	outcomesCorner.Parent = outcomesFrame
+	local outcomesLayout = Instance.new("UIListLayout")
+	outcomesLayout.Padding = UDim.new(0.006, 0)
+	outcomesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	outcomesLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	outcomesLayout.Parent = outcomesFrame
+	self._petDetailOutcomesFrame = outcomesFrame
+
+	local warning = Instance.new("TextLabel")
+	warning.Name = "RerollWarning"
+	warning.Size = UDim2.fromScale(0.84, 0.085)
+	warning.Position = UDim2.fromScale(0.08, 0.65)
+	warning.BackgroundTransparency = 1
+	warning.Text = "Reroll replaces this one enchant slot. The old enchant cannot be kept."
+	warning.TextColor3 = Color3.fromRGB(255, 170, 90)
+	warning.Font = Enum.Font.GothamBold
+	warning.TextScaled = true
+	warning.TextWrapped = true
+	warning.Parent = panel
+
+	local feedback = Instance.new("TextLabel")
+	feedback.Name = "Feedback"
+	feedback.Size = UDim2.fromScale(0.84, 0.06)
+	feedback.Position = UDim2.fromScale(0.08, 0.745)
+	feedback.BackgroundTransparency = 1
+	feedback.Text = "Loading authoritative enchanting state…"
+	feedback.TextColor3 = Color3.fromRGB(190, 195, 220)
+	feedback.Font = Enum.Font.Gotham
+	feedback.TextScaled = true
+	feedback.TextWrapped = true
+	feedback.Parent = panel
+	self._petDetailFeedbackLabel = feedback
+
+	local actionBtn = Instance.new("TextButton")
+	actionBtn.Name = "EnchantActionBtn"
+	actionBtn.Size = UDim2.fromScale(0.56, 0.11)
+	actionBtn.Position = UDim2.fromScale(0.22, 0.84)
+	actionBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+	actionBtn.Text = "LOADING…"
+	actionBtn.TextColor3 = COLORS.White
+	actionBtn.Font = Enum.Font.GothamBold
+	actionBtn.TextScaled = true
+	actionBtn.Active = false
+	actionBtn.AutoButtonColor = false
+	actionBtn.Parent = panel
+	local actionCorner = Instance.new("UICorner")
+	actionCorner.CornerRadius = UDim.new(0, 10)
+	actionCorner.Parent = actionBtn
+	self._petDetailActionButton = actionBtn
+
+	actionBtn.MouseButton1Click:Connect(function()
+		if self._enchantingBusy or self._petDetailPetId ~= petInstanceId then return end
+		local onRoll = self._enchantingCallbacks.onRoll
+		if type(onRoll) ~= "function" then
+			self:showEnchantingUnavailable("UNAVAILABLE")
+			return
+		end
+		local called = pcall(onRoll)
+		if not called then self:showEnchantingUnavailable("UNAVAILABLE") end
+	end)
+	return true
+end
+
+function UIController:closePetEnchanting()
+	if self._petDetailOverlay and self._petDetailOverlay.Parent then
+		self._petDetailOverlay:Destroy()
+	end
+	self._petDetailPetId = nil
+	self._petDetailOverlay = nil
+	self._petDetailNameLabel = nil
+	self._petDetailEnchantLabel = nil
+	self._petDetailCostLabel = nil
+	self._petDetailOutcomesFrame = nil
+	self._petDetailFeedbackLabel = nil
+	self._petDetailActionButton = nil
+	self._petDetailState = nil
+	self._enchantingBusy = false
+end
+
+function UIController:setEnchantingBusy(isBusy)
+	if not self._petDetailPetId then return end
+	self._enchantingBusy = isBusy == true
+	local button = self._petDetailActionButton
+	if button and self._enchantingBusy then
+		button.Active = false
+		button.AutoButtonColor = false
+		button.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+		button.Text = "WORKING…"
+	end
+end
+
+function UIController:showEnchantingUnavailable(message)
+	if not self._petDetailPetId then return end
+	self._petDetailState = nil
+	self._enchantingBusy = false
+	if self._petDetailEnchantLabel then
+		self._petDetailEnchantLabel.Text = "Current Enchant: UNAVAILABLE"
+	end
+	if self._petDetailCostLabel then
+		self._petDetailCostLabel.Text = "Cost: UNAVAILABLE"
+	end
+	if self._petDetailFeedbackLabel then
+		self._petDetailFeedbackLabel.Text = tostring(message or "UNAVAILABLE")
+		self._petDetailFeedbackLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+	end
+	if self._petDetailActionButton then
+		self._petDetailActionButton.Text = "UNAVAILABLE"
+		self._petDetailActionButton.Active = false
+		self._petDetailActionButton.AutoButtonColor = false
+		self._petDetailActionButton.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+	end
+end
+
+function UIController:applyEnchantingState(state, actionSucceeded, reason, action)
+	if type(state) ~= "table" or type(state.pet) ~= "table"
+		or state.pet.instanceId ~= self._petDetailPetId then
+		return false
+	end
+	self._petDetailState = state
+	self._enchantingBusy = false
+	local petData = self:_findInventoryPet(self._petDetailPetId)
+	if not petData then
+		self:_requestEnchantingClose()
+		return false
+	end
+	if self._petDetailNameLabel then
+		self._petDetailNameLabel.Text = tostring(petData.name or petData.petId or "Pet") .. " • Enchanting"
+	end
+
+	local enchantId = state.pet.enchantId
+	local enchantName = enchantId == false and "None"
+		or ENCHANT_DISPLAY_NAMES[enchantId] or tostring(enchantId)
+	if self._petDetailEnchantLabel then
+		self._petDetailEnchantLabel.Text = "Current Enchant: " .. enchantName
+	end
+	if self._petDetailCostLabel then
+		self._petDetailCostLabel.Text = "Cost: " .. tostring(state.economy.price) .. " Diamonds"
+	end
+
+	if self._petDetailOutcomesFrame then
+		for _, child in ipairs(self._petDetailOutcomesFrame:GetChildren()) do
+			if child:IsA("TextLabel") then child:Destroy() end
+		end
+		for _, outcome in ipairs(state.outcomes) do
+			local row = Instance.new("TextLabel")
+			row.Name = "Outcome_" .. tostring(outcome.id)
+			row.Size = UDim2.fromScale(0.94, 0.145)
+			row.BackgroundTransparency = 1
+			local statName = outcome.stat == "damage" and "Damage" or "Speed"
+			row.Text = string.format("%s  •  %d%%  •  %s ×%.2f",
+				ENCHANT_DISPLAY_NAMES[outcome.id] or tostring(outcome.id),
+				outcome.weight, statName, outcome.multiplier)
+			row.TextColor3 = outcome.stat == "damage"
+				and Color3.fromRGB(255, 190, 100) or Color3.fromRGB(120, 220, 255)
+			row.Font = Enum.Font.GothamBold
+			row.TextScaled = true
+			row.Parent = self._petDetailOutcomesFrame
+		end
+	end
+
+	local canRoll = state.runtimeEnabled == true and state.availability.canRoll == true
+	if self._petDetailActionButton then
+		self._petDetailActionButton.Text = (state.isReroll and "REROLL" or "ENCHANT")
+			.. " • " .. tostring(state.economy.price) .. " DIAMONDS"
+		self._petDetailActionButton.Active = canRoll
+		self._petDetailActionButton.AutoButtonColor = canRoll
+		self._petDetailActionButton.BackgroundColor3 = canRoll
+			and Color3.fromRGB(160, 85, 235) or Color3.fromRGB(90, 90, 110)
+	end
+	if self._petDetailFeedbackLabel then
+		local feedbackText = "Ready."
+		local feedbackColor = Color3.fromRGB(170, 230, 190)
+		if reason then
+			feedbackText = ENCHANT_REASON_TEXT[reason] or "Enchanting is unavailable."
+			feedbackColor = Color3.fromRGB(255, 130, 110)
+		elseif action == "ROLL" and actionSucceeded then
+			-- A paid success remains the primary result even when the new balance
+			-- makes the next roll unavailable.
+			feedbackText = "Enchant applied: " .. enchantName .. "."
+		elseif state.availability.reason then
+			feedbackText = ENCHANT_REASON_TEXT[state.availability.reason]
+				or "Enchanting is unavailable."
+			feedbackColor = Color3.fromRGB(255, 130, 110)
+		end
+		self._petDetailFeedbackLabel.Text = feedbackText
+		self._petDetailFeedbackLabel.TextColor3 = feedbackColor
+	end
+	return true
+end
+
+--------------------------------------------------------------------------------
+-- MACHINE CONFIRM PANEL (available only from a registered station session)
+--------------------------------------------------------------------------------
+function UIController:_showMachineConfirm()
+	local machineUi = self._machineUi
+	local definition = self._machineDefinition
+	if not self._machineSessionActive or not machineUi or not definition then
+		self:_showGoldenError("Use a machine station first!")
 		return
 	end
 
@@ -2030,8 +2800,9 @@ function UIController:_showGoldMachineConfirm()
 			return
 		end
 		local presentation = PetVariantPresentation.resolve(selectedPet)
-		if presentation.baseVariant ~= "Normal" then
-			self:_showGoldenError("Only normal pets can become Golden!")
+		if presentation.baseVariant ~= definition.inputVariant then
+			self:_showGoldenError("Only " .. definition.inputVariant
+				.. " pets can become " .. machineUi.outputLabel .. "!")
 			return
 		end
 		if selectedPet.equipped == true or self:_isPetEquipped(selId) then
@@ -2056,7 +2827,7 @@ function UIController:_showGoldMachineConfirm()
 
 	local count = #selectedIds
 	local chance = math.floor((BalanceConfig.Machines.SuccessChanceByInput[count] or 0) * 100 + 0.5)
-	self:_createGoldenConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
+	self:_createMachineConfirmOverlay(count, chance, requiredPetId, selectedIds, shinyCount)
 end
 
 function UIController:_showGoldenError(message)
@@ -2089,18 +2860,21 @@ function UIController:_showGoldenError(message)
 	end)
 end
 
-function UIController:_createGoldenConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
+function UIController:_createMachineConfirmOverlay(count, chance, petId, selectedIds, shinyCount)
 	if not self._playerGui then return end
+	local machineUi = self._machineUi
+	local definition = self._machineDefinition
+	if not self._machineSessionActive or not machineUi or not definition then return end
 
-	-- Remove old overlay if exists
-	local existing = self._playerGui:FindFirstChild("GoldenConfirmOverlay")
+	-- Remove only the prior generic machine overlay, never an unrelated screen.
+	local existing = self._playerGui:FindFirstChild("MachineConfirmOverlay")
 	if existing then existing:Destroy() end
 
 	local overlay = Instance.new("ScreenGui")
-	overlay.Name = "GoldenConfirmOverlay"
+	overlay.Name = "MachineConfirmOverlay"
 	overlay.ResetOnSpawn = false
 	overlay.Parent = self._playerGui
-	self._goldMachineOverlay = overlay
+	self._machineOverlay = overlay
 
 	local bg = Instance.new("Frame")
 	bg.Size = UDim2.fromScale(1, 1)
@@ -2121,7 +2895,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 
 	local panelStroke = Instance.new("UIStroke")
 	panelStroke.Thickness = 4
-	panelStroke.Color = Color3.fromRGB(255, 200, 0)
+	panelStroke.Color = machineUi.strokeColor
 	panelStroke.Parent = panel
 
 	-- Title
@@ -2129,8 +2903,8 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	titleLabel.Size = UDim2.fromScale(0.8, 0.12)
 	titleLabel.Position = UDim2.fromScale(0.1, 0.03)
 	titleLabel.BackgroundTransparency = 1
-	titleLabel.Text = "MAKE GOLDEN"
-	titleLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+	titleLabel.Text = "MAKE " .. string.upper(machineUi.outputLabel)
+	titleLabel.TextColor3 = machineUi.buttonColor
 	titleLabel.Font = Enum.Font.GothamBold
 	titleLabel.TextScaled = true
 	titleLabel.Parent = panel
@@ -2141,7 +2915,7 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	infoLabel.Position = UDim2.fromScale(0.1, 0.17)
 	infoLabel.BackgroundTransparency = 1
 	infoLabel.Text = "Sacrifice " .. tostring(count) .. "x " .. tostring(petId)
-		.. "  •  " .. tostring(BalanceConfig.Machines.Gold.cost.amount) .. " Diamonds"
+		.. "  •  " .. tostring(definition.cost.amount) .. " Diamonds"
 	infoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
 	infoLabel.Font = Enum.Font.GothamBold
 	infoLabel.TextScaled = true
@@ -2168,16 +2942,19 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 
 	-- Warning text
 	local warnLabel = Instance.new("TextLabel")
-	warnLabel.Size = UDim2.fromScale(0.8, 0.1)
-	warnLabel.Position = UDim2.fromScale(0.1, 0.5)
+	warnLabel.Size = UDim2.fromScale(0.86, 0.15)
+	warnLabel.Position = UDim2.fromScale(0.07, 0.49)
 	warnLabel.BackgroundTransparency = 1
-	warnLabel.Text = "WARNING: Pets and 750 Diamonds are consumed even on failure!"
+	warnLabel.Text = "WARNING: Input pets and their enchants are always consumed. "
+		.. "Diamonds are also spent on a normal failure. "
+		.. "A successful output starts with no enchant."
 	if shinyCount > 1 then
 		warnLabel.Text ..= " Shiny does not stack."
 	end
 	warnLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	warnLabel.Font = Enum.Font.GothamBold
 	warnLabel.TextScaled = true
+	warnLabel.TextWrapped = true
 	warnLabel.Parent = panel
 
 	-- Confirm button
@@ -2185,9 +2962,9 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	confirmBtn.Name = "ConfirmBtn"
 	confirmBtn.Size = UDim2.fromScale(0.35, 0.14)
 	confirmBtn.Position = UDim2.fromScale(0.08, 0.68)
-	confirmBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+	confirmBtn.BackgroundColor3 = machineUi.buttonColor
 	confirmBtn.Text = "CONVERT!"
-	confirmBtn.TextColor3 = Color3.fromRGB(40, 30, 0)
+	confirmBtn.TextColor3 = machineUi.buttonTextColor
 	confirmBtn.Font = Enum.Font.GothamBold
 	confirmBtn.TextScaled = true
 	confirmBtn.Parent = panel
@@ -2223,19 +3000,19 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	resultLabel.Font = Enum.Font.GothamBold
 	resultLabel.TextScaled = true
 	resultLabel.Parent = panel
-	self._goldMachineResultLabel = resultLabel
-	self._goldMachineConfirmButton = confirmBtn
-	self._goldMachineCancelButton = cancelBtn
+	self._machineResultLabel = resultLabel
+	self._machineConfirmButton = confirmBtn
+	self._machineCancelButton = cancelBtn
 
 	cancelBtn.MouseButton1Click:Connect(function()
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end)
 
 	confirmBtn.MouseButton1Click:Connect(function()
-		if not self._goldMachineSessionActive then return end
-		local onConfirm = self._goldMachineCallbacks.onConfirm
+		if not self._machineSessionActive then return end
+		local onConfirm = self._machineCallbacks.onConfirm
 		if type(onConfirm) ~= "function" then
-			self:showGoldMachineResult(nil, "Machine request is unavailable")
+			self:showMachineResult(nil, "Machine request is unavailable")
 			return
 		end
 		confirmBtn.Active = false
@@ -2248,33 +3025,36 @@ function UIController:_createGoldenConfirmOverlay(count, chance, petId, selected
 	end)
 end
 
-function UIController:showGoldMachineResult(result, requestError)
-	local resultLabel = self._goldMachineResultLabel
+function UIController:showMachineResult(result, requestError)
+	local resultLabel = self._machineResultLabel
 	if not resultLabel or not resultLabel.Parent then return end
 	if requestError then
 		resultLabel.Text = "Error: " .. tostring(requestError)
 		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-		if self._goldMachineConfirmButton then
-			self._goldMachineConfirmButton.Active = true
-			self._goldMachineConfirmButton.AutoButtonColor = true
-			self._goldMachineConfirmButton.Text = "TRY AGAIN"
-			self._goldMachineConfirmButton.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+		if self._machineConfirmButton then
+			self._machineConfirmButton.Active = true
+			self._machineConfirmButton.AutoButtonColor = true
+			self._machineConfirmButton.Text = "TRY AGAIN"
+			self._machineConfirmButton.BackgroundColor3 = self._machineUi
+				and self._machineUi.buttonColor or Color3.fromRGB(100, 100, 120)
 		end
-		if self._goldMachineCancelButton then
-			self._goldMachineCancelButton.Active = true
-			self._goldMachineCancelButton.Visible = true
+		if self._machineCancelButton then
+			self._machineCancelButton.Active = true
+			self._machineCancelButton.Visible = true
 		end
 		return
 	end
 
-	if type(result) ~= "table" then
-		self:showGoldMachineResult(nil, "Machine request failed safely")
+	if type(result) ~= "table" or result.machineId ~= self._machineId then
+		self:showMachineResult(nil, "Machine request failed safely")
 		return
 	end
 	if result.success then
-		local outputName = result.outputPet and result.outputPet.name or "Golden Pet"
+		local outputName = result.outputPet and result.outputPet.name
+			or ((self._machineUi and self._machineUi.outputLabel or "Converted") .. " Pet")
 		resultLabel.Text = "SUCCESS! Got " .. outputName .. "!"
-		resultLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+		resultLabel.TextColor3 = self._machineUi
+			and self._machineUi.buttonColor or Color3.fromRGB(255, 220, 0)
 		if result.outputPet and result.isNewDiscovery == true then
 			self:enqueueDiscoveryToast(result.outputPet)
 		end
@@ -2283,18 +3063,18 @@ function UIController:showGoldMachineResult(result, requestError)
 		resultLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	end
 	self._selectedPets = {}
-	local completedOverlay = self._goldMachineOverlay
+	local completedOverlay = self._machineOverlay
 	task.delay(3, function()
 		-- Delayed work owns only the overlay generation that scheduled it. A newer
 		-- prompt/session may already have installed another confirmation.
-		if self._goldMachineOverlay ~= completedOverlay then return end
+		if self._machineOverlay ~= completedOverlay then return end
 		if completedOverlay and completedOverlay.Parent then
 			completedOverlay:Destroy()
 		end
-		self._goldMachineOverlay = nil
-		self._goldMachineResultLabel = nil
-		self._goldMachineConfirmButton = nil
-		self._goldMachineCancelButton = nil
+		self._machineOverlay = nil
+		self._machineResultLabel = nil
+		self._machineConfirmButton = nil
+		self._machineCancelButton = nil
 		self:_refreshPetGrid()
 	end)
 end
@@ -3660,14 +4440,25 @@ function UIController:_updateShopCardStates()
 		local item = ShopData.Items[itemId]
 		if item and card.button and card.button.Parent then
 			local isPotion = item.itemType == "potion"
+			local isAutoHatch = item.itemType == "autoHatch"
+			local autoNow = os.time() + self._autoHatchServerOffset
+			local autoRemaining = math.max(0, math.ceil(
+				(tonumber(self._autoHatchState.expiresAt) or 0) - autoNow
+			))
 			local potionCount = isPotion and safePotionCount(inventory[itemId], maxPotionInventory) or 0
 			local isMaxed = isPotion and potionCount >= maxPotionInventory
 				or item.permanent and ownedSlots >= maxSlots
-			local isPurchasing = self._shopPurchaseInFlight ~= nil
+			local isPurchasing = self._shopPurchaseInFlight ~= nil or self._autoHatchActionInFlight ~= nil
 			local isAffordable = self._diamonds >= item.cost
+			local autoRuntimeUnavailable = isAutoHatch
+				and self._autoHatchState.contractVersion == ShopData.AutoHatchContractVersion
+				and self._autoHatchState.runtimeEnabled ~= true
 			local contractBlocked = isPotion and not purchaseReady
-			local enabled = not contractBlocked and not isMaxed and not isPurchasing
+				or isAutoHatch and self._autoHatchState.contractVersion ~= ShopData.AutoHatchContractVersion
+			local enabled = not contractBlocked and not autoRuntimeUnavailable
+				and not isMaxed and not isPurchasing
 				and self._potionActionInFlight == nil and isAffordable
+				and (not isAutoHatch or autoRemaining <= 0)
 
 			if isPotion then
 				local buffState = activeBuffs[item.buffType]
@@ -3687,6 +4478,22 @@ function UIController:_updateShopCardStates()
 				card.status.Text = "OWNED " .. tostring(potionCount) .. " • " .. activeText
 				card.status.TextColor3 = activeText == "INACTIVE"
 					and Color3.fromRGB(70, 90, 105) or Color3.fromRGB(20, 115, 48)
+			elseif isAutoHatch then
+				if autoRuntimeUnavailable then
+					card.status.Text = "UNAVAILABLE • TRY ANOTHER SERVER"
+					card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
+				elseif autoRemaining > 0 then
+					card.status.Text = string.format(
+						"ACTIVE %d:%02d • %s",
+						math.floor(autoRemaining / 60),
+						autoRemaining % 60,
+						tostring(self._autoHatchState.status or "STOPPED")
+					)
+					card.status.TextColor3 = Color3.fromRGB(20, 115, 48)
+				else
+					card.status.Text = "INACTIVE • 10 MINUTES"
+					card.status.TextColor3 = Color3.fromRGB(70, 90, 105)
+				end
 			elseif isMaxed then
 				card.status.Text = "OWNED " .. tostring(ownedSlots) .. "/" .. tostring(maxSlots) .. " • MAXED"
 				card.status.TextColor3 = Color3.fromRGB(115, 44, 81)
@@ -3695,10 +4502,14 @@ function UIController:_updateShopCardStates()
 				card.status.TextColor3 = Color3.fromRGB(88, 52, 78)
 			end
 
-			if self._shopPurchaseInFlight == itemId then
+			if self._shopPurchaseInFlight == itemId or (isAutoHatch and self._autoHatchActionInFlight == "buy") then
 				card.button.Text = "BUYING..."
 			elseif contractBlocked then
 				card.button.Text = "SYNCING..."
+			elseif autoRuntimeUnavailable then
+				card.button.Text = "UNAVAILABLE"
+			elseif isAutoHatch and autoRemaining > 0 then
+				card.button.Text = "ACCESS ACTIVE"
 			elseif isMaxed then
 				card.button.Text = "MAXED"
 			elseif not isAffordable then
@@ -3940,6 +4751,16 @@ function UIController:_purchaseShopItem(itemId)
 	local item = ShopData.Items[itemId]
 	if not item or self._shopPurchaseInFlight then return end
 	local isPotion = item.itemType == "potion"
+	local isAutoHatch = item.itemType == "autoHatch"
+	if isAutoHatch then
+		if self._diamonds < item.cost then
+			self:_setShopFeedback("You need more diamonds!", COLORS.ButtonRed)
+			return
+		end
+		local callback = self._autoHatchCallbacks.buy
+		if callback then callback() end
+		return
+	end
 	if isPotion and (self._shopState.contractVersion ~= ShopData.ContractVersion
 		or self._shopState.purchaseMode ~= ShopData.PurchaseMode) then
 		self:_setShopFeedback("Potion inventory is still syncing.", COLORS.ButtonRed)
@@ -4278,45 +5099,63 @@ end
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
-function UIController:_requestGoldMachineCancel()
-	if not self._goldMachineSessionActive then return end
-	local onCancel = self._goldMachineCallbacks.onCancel
+function UIController:_requestMachineCancel()
+	if not self._machineSessionActive then return end
+	local onCancel = self._machineCallbacks.onCancel
 	if type(onCancel) == "function" then
 		pcall(onCancel)
 	end
 	-- A callback is advisory; the UI always closes its local capability even if
 	-- the owner throws, is absent, or neglects to clear it.
-	if self._goldMachineSessionActive then
-		self:closeGoldMachineSelection()
+	if self._machineSessionActive then
+		self:closeMachineSelection()
 	end
 end
 
-function UIController:setGoldMachineCallbacks(onConfirm, onCancel)
-	self._goldMachineCallbacks = {
+function UIController:setMachineCallbacks(onConfirm, onCancel)
+	self._machineCallbacks = {
 		onConfirm = type(onConfirm) == "function" and onConfirm or nil,
 		onCancel = type(onCancel) == "function" and onCancel or nil,
 	}
 end
 
-function UIController:openGoldMachineSelection()
-	self._goldMachineSessionActive = true
+function UIController:openMachineSelection(machineId)
+	-- A machine can consume the selected pet, so it always closes and invalidates
+	-- any enchanting detail/request before multi-selection starts.
+	self:_requestEnchantingClose()
+	local machineUi, definition = resolveMachineUi(machineId)
+	if not machineUi or not definition then
+		self:closeMachineSelection()
+		return false
+	end
+	if self._machineSessionActive then
+		self:closeMachineSelection()
+	end
+	self._machineSessionActive = true
+	self._machineId = machineId
+	self._machineUi = machineUi
+	self._machineDefinition = definition
 	self._selectedPets = {}
 	self._multiSelectMode = true
 	self:openScreen("PetInventory")
 	self:_refreshPetGrid()
+	return true
 end
 
-function UIController:closeGoldMachineSelection()
-	self._goldMachineSessionActive = false
+function UIController:closeMachineSelection()
+	self._machineSessionActive = false
+	self._machineId = nil
+	self._machineUi = nil
+	self._machineDefinition = nil
 	self._selectedPets = {}
 	self._multiSelectMode = false
-	if self._goldMachineOverlay and self._goldMachineOverlay.Parent then
-		self._goldMachineOverlay:Destroy()
+	if self._machineOverlay and self._machineOverlay.Parent then
+		self._machineOverlay:Destroy()
 	end
-	self._goldMachineOverlay = nil
-	self._goldMachineResultLabel = nil
-	self._goldMachineConfirmButton = nil
-	self._goldMachineCancelButton = nil
+	self._machineOverlay = nil
+	self._machineResultLabel = nil
+	self._machineConfirmButton = nil
+	self._machineCancelButton = nil
 	self:_refreshPetGrid()
 end
 
@@ -4340,12 +5179,33 @@ end
 function UIController:updatePetInventory(pets)
 	self._petInventoryData = type(pets) == "table" and pets or {}
 
+	-- The detail owns only a stable pet ID, never a stale table reference. Resolve
+	-- it against every authoritative inventory snapshot or close if deletion or a
+	-- machine consumed that exact pet.
+	if self._petDetailPetId then
+		local detailPet = self:_findInventoryPet(self._petDetailPetId)
+		if not detailPet then
+			self:_requestEnchantingClose()
+		elseif self._petDetailNameLabel then
+			self._petDetailNameLabel.Text = tostring(detailPet.name or detailPet.petId or "Pet")
+				.. " • Enchanting"
+		end
+	end
+
 	-- Drop stale or newly protected selections while preserving valid selections
 	-- across sorting and filtering refreshes.
 	local selectableIds = {}
+	local machineInputVariant = self._machineSessionActive
+		and self._machineDefinition and self._machineDefinition.inputVariant or nil
 	for _, petData in ipairs(self._petInventoryData) do
 		local id = petData.uniqueId or petData.id
-		if id and petData.favorite ~= true then
+		local presentation = PetVariantPresentation.resolve(petData)
+		if id and petData.favorite ~= true
+			and (machineInputVariant == nil or (
+				presentation.baseVariant == machineInputVariant
+				and petData.equipped ~= true
+				and not self:_isPetEquipped(id)
+			)) then
 			selectableIds[id] = true
 		end
 	end
@@ -4377,6 +5237,9 @@ function UIController:updateEquippedPets(equippedPets)
 		local id = petData.uniqueId or petData.id
 		if id then
 			petData.equipped = equippedIdSet[id] or false
+			if self._machineSessionActive and petData.equipped then
+				self._selectedPets[id] = nil
+			end
 		end
 	end
 	self:_refreshCapacityUI()
@@ -4912,14 +5775,20 @@ function UIController:_refreshScreenData(screenName)
 	elseif screenName == "ShopScreen" then
 		self:_refreshShopStateFromServer()
 		self:_refreshPotionStateFromServer()
+		self:_refreshAutoHatchStateFromServer()
 	end
 end
 
 function UIController:openScreen(screenName)
+	-- Pet detail is inventory-owned. Any navigation away invalidates its request
+	-- generation before another screen becomes interactive.
+	if screenName ~= "PetInventory" then
+		self:_requestEnchantingClose()
+	end
 	-- Leaving a machine-owned inventory surface revokes the prompt capability and
 	-- its selection before another screen becomes interactive.
 	if screenName ~= "PetInventory" then
-		self:_requestGoldMachineCancel()
+		self:_requestMachineCancel()
 	end
 	-- Navigation always dismisses a pending manual hatch flow and invalidates its
 	-- async request through Main's registered cancel callback.
@@ -4983,7 +5852,8 @@ end
 
 function UIController:closeScreen(screenName)
 	if screenName == "PetInventory" then
-		self:_requestGoldMachineCancel()
+		self:_requestEnchantingClose()
+		self:_requestMachineCancel()
 	end
 	self:_requestHatchPurchaseCancel()
 	local screen = self._screens[screenName]
@@ -5040,6 +5910,7 @@ function UIController:updateXP(level, xp, xpNeeded)
 end
 
 function UIController:cleanup()
+	self:_requestEnchantingClose()
 	self:_requestHatchPurchaseCancel()
 	self:closeHatchPurchaseDialog()
 	for _, connection in ipairs(self._hatchPurchaseConnections) do

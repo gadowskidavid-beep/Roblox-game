@@ -212,12 +212,18 @@ function CurrencyService.rollbackSpendTransaction(transaction)
 	if not pending then
 		return false
 	end
-	pendingSpendTransactions[transaction] = nil
 	local balance = pending.profile[pending.currency]
 	if not isFiniteNumber(balance) or balance < 0 then
 		return false
 	end
-	pending.profile[pending.currency] = balance + pending.amount
+	local restoredBalance = balance + pending.amount
+	if not isFiniteNumber(restoredBalance) or restoredBalance < balance then
+		return false
+	end
+	pending.profile[pending.currency] = restoredBalance
+	-- A failed restore must leave the opaque handle pending so lifecycle code can
+	-- retry it. Consume the handle only after the exact refund is observable.
+	pendingSpendTransactions[transaction] = nil
 	return true
 end
 

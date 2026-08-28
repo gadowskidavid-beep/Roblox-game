@@ -1,6 +1,18 @@
--- MachineClientSession.lua - Pure generation ownership for QOF-16 prompt sessions.
+-- MachineClientSession.lua - Pure generation ownership for QOF-17 prompt sessions.
 
 local MachineClientSession = {}
+
+local ACCEPTED_MACHINE_IDS = {
+	GoldMachine = true,
+	RainbowMachine = true,
+}
+
+local function clear(state)
+	state.prompt = nil
+	state.machineId = nil
+	state.identityToken = nil
+	state.inFlight = false
+end
 
 function MachineClientSession.new()
 	return {
@@ -13,12 +25,18 @@ function MachineClientSession.new()
 end
 
 function MachineClientSession.start(state, prompt, machineId, identityToken)
-	if type(state) ~= "table" or prompt == nil
-		or machineId ~= "GoldMachine"
-		or type(identityToken) ~= "string" or identityToken == "" then
+	if type(state) ~= "table" then
 		return false
 	end
 	state.generation = (state.generation or 0) + 1
+	if prompt == nil
+		or ACCEPTED_MACHINE_IDS[machineId] ~= true
+		or type(identityToken) ~= "string"
+		or identityToken == ""
+		or #identityToken > 128 then
+		clear(state)
+		return false
+	end
 	state.prompt = prompt
 	state.machineId = machineId
 	state.identityToken = identityToken
@@ -29,16 +47,14 @@ end
 function MachineClientSession.close(state)
 	if type(state) ~= "table" then return end
 	state.generation = (state.generation or 0) + 1
-	state.prompt = nil
-	state.machineId = nil
-	state.identityToken = nil
-	state.inFlight = false
+	clear(state)
 end
 
 function MachineClientSession.beginRequest(state)
 	if type(state) ~= "table" or state.inFlight
-		or state.prompt == nil or state.machineId ~= "GoldMachine"
-		or type(state.identityToken) ~= "string" or state.identityToken == "" then
+		or state.prompt == nil or ACCEPTED_MACHINE_IDS[state.machineId] ~= true
+		or type(state.identityToken) ~= "string" or state.identityToken == ""
+		or #state.identityToken > 128 then
 		return nil
 	end
 	state.generation = (state.generation or 0) + 1

@@ -29,6 +29,16 @@ local ZoneData = require(Shared:WaitForChild("ZoneData"))
 local QuestData = require(Shared:WaitForChild("QuestData"))
 local MasteryData = require(Shared:WaitForChild("MasteryData"))
 local MachineClientSession = require(Shared:WaitForChild("MachineClientSession"))
+-- Optional discovery keeps a QOF-18 client from waiting forever during rolling
+-- deployments where the server has not published the new contract yet.
+local autoHatchSessionModuleObject = Shared:FindFirstChild("AutoHatchClientSession")
+local AutoHatchClientSession = autoHatchSessionModuleObject and require(autoHatchSessionModuleObject) or nil
+-- QOF-19 is also optional during rolling deployment. Never wait for a client
+-- session module that an older server may not have replicated.
+local enchantingSessionModuleObject = Shared:FindFirstChild("EnchantingClientSession")
+local EnchantingClientSession = enchantingSessionModuleObject and require(enchantingSessionModuleObject) or nil
+local enchantingContractModuleObject = Shared:FindFirstChild("EnchantingClientContract")
+local EnchantingClientContract = enchantingContractModuleObject and require(enchantingContractModuleObject) or nil
 
 -- Require controllers
 local UIController = require(script.Parent:WaitForChild("UIController"))
@@ -80,6 +90,16 @@ local GetPotionState = Remotes:WaitForChild("GetPotionState")
 local ConsumePotion = Remotes:WaitForChild("ConsumePotion")
 local PurchasePotionUpgrade = Remotes:WaitForChild("PurchasePotionUpgrade")
 local SetAutoDrinkSelection = Remotes:WaitForChild("SetAutoDrinkSelection")
+-- QOF-18 remotes are optional during rolling deployment. Missing references keep
+-- paid Auto-Hatch unavailable without blocking the rest of client startup.
+local PurchaseAutoHatch = Remotes:FindFirstChild("PurchaseAutoHatch")
+local SetAutoHatchBatch = Remotes:FindFirstChild("SetAutoHatchBatch")
+local StartAutoHatch = Remotes:FindFirstChild("StartAutoHatch")
+local StopAutoHatch = Remotes:FindFirstChild("StopAutoHatch")
+-- Missing QOF-19 remotes make enchanting visibly unavailable without blocking
+-- the rest of client startup.
+local GetEnchantingState = Remotes:FindFirstChild("GetEnchantingState")
+local RollPetEnchant = Remotes:FindFirstChild("RollPetEnchant")
 
 -- RemoteEvents
 local CurrencyUpdated = Remotes:WaitForChild("CurrencyUpdated")
@@ -98,6 +118,7 @@ local UpgradeUpdated = Remotes:WaitForChild("UpgradeUpdated")
 local CollectCurrency = Remotes:WaitForChild("CollectCurrency")
 local ShopBuffsUpdated = Remotes:WaitForChild("ShopBuffsUpdated")
 local PotionStateUpdated = Remotes:WaitForChild("PotionStateUpdated")
+local AutoHatchStateUpdated = Remotes:FindFirstChild("AutoHatchStateUpdated")
 
 --------------------------------------------------------------------------------
 -- INITIALIZATION
@@ -382,17 +403,42 @@ local function getEggTypeFromPrompt(prompt)
 	return nil
 end
 
+local function getAutoHatchStationData(prompt)
+	local eggType = getEggTypeFromPrompt(prompt)
+	local egg = prompt and prompt.Parent
+	if not eggType or not egg then return nil end
+	local stationId = egg:GetAttribute("EggStationId")
+	local stationToken = egg:GetAttribute("EggStationIdentityToken")
+	local stationEggType = egg:GetAttribute("EggType")
+	if type(stationId) ~= "string" or #stationId < 1 or #stationId > 64
+		or type(stationToken) ~= "string" or #stationToken < 1 or #stationToken > 128
+		or stationEggType ~= eggType then
+		return nil
+	end
+	return stationId, stationToken, eggType
+end
+
 local activeEggPrompt = nil
 local activeEggType = nil
 local hatchOperationToken = 0
 local hatchQuoteInFlight = false
 local hatchPurchaseInFlight = false
+local autoHatchSession = nil
+local autoHatchGlobalToken = 0
 
 local function closeHatchPurchaseDialog()
 	hatchOperationToken += 1
 	hatchQuoteInFlight = false
 	hatchPurchaseInFlight = false
+	-- Cancel/navigation owns the same invalidation boundary as PromptHidden:
+	-- stale station actions and purchases cannot complete into a reopened UI.
+	if autoHatchSession and AutoHatchClientSession then
+		AutoHatchClientSession.close(autoHatchSession)
+	end
+	autoHatchGlobalToken += 1
+	uiController:setAutoHatchActionInFlight(nil)
 	uiController:closeHatchPurchaseDialog()
+	uiController:clearAutoHatchLocalStation()
 end
 
 local function describeHatchError(message, fallback)
@@ -495,12 +541,236 @@ uiController:setHatchPurchaseCallbacks(
 	requestFreshHatchQuote
 )
 
--- QOF-16 Gold Machine sessions are created only by the central runtime prompt
--- router. Attributes are UX routing data; the server independently validates the
--- private station registry, token, unlock, exact instances, and live distance.
-local machineSession = MachineClientSession.new()
+local AUTO_HATCH_CONTRACT_VERSION = 1
+autoHatchSession = AutoHatchClientSession and AutoHatchClientSession.new() or nil
 
-local function getGoldMachinePromptData(prompt)
+local function applyAutoHatchState(state)
+	if type(state) == "table" and state.contractVersion == AUTO_HATCH_CONTRACT_VERSION then
+		if autoHatchSession
+			and not AutoHatchClientSession.acceptState(autoHatchSession, state) then
+			return false
+		end
+		return uiController:updateAutoHatchState(state)
+	end
+	return false
+end
+
+local function finishAutoAction(operation, invoked, success, reason, state)
+	if operation and autoHatchSession
+		and not AutoHatchClientSession.finishRequest(autoHatchSession, operation) then
+		return
+	end
+	uiController:setAutoHatchActionInFlight(nil)
+	local applied = applyAutoHatchState(state)
+	if not invoked or not applied then
+		-- Transport failures and malformed/stale DTOs get a display-only refresh.
+		-- Valid semantic failures carry revisioned authoritative actionFeedback.
+		uiController:_refreshAutoHatchStateFromServer()
+	end
+end
+
+local function runStationAutoAction(action, selectedCount)
+	if not autoHatchSession or not autoHatchSession.prompt or not autoHatchSession.prompt.Parent then return end
+	local remote = action == "SET_BATCH" and SetAutoHatchBatch
+		or action == "START" and StartAutoHatch
+		or action == "STOP" and StopAutoHatch or nil
+	if not remote then return end
+	local operation = AutoHatchClientSession.beginRequest(autoHatchSession, action)
+	if not operation then return end
+	uiController:setAutoHatchActionInFlight(
+		action == "SET_BATCH" and "batch" or string.lower(action)
+	)
+	local request = nil
+	if action == "SET_BATCH" then
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "SET_BATCH",
+			selectedCount = selectedCount,
+		}
+	elseif action == "START" then
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "START",
+			stationId = operation.stationId,
+			stationToken = operation.stationToken,
+		}
+	else
+		request = {
+			contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+			action = "STOP",
+		}
+	end
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return remote:InvokeServer(request)
+		end)
+		finishAutoAction(operation, invoked, success, reason, state)
+	end)
+end
+
+local function purchaseAutoHatchAccess()
+	local remote = PurchaseAutoHatch
+	if not remote or not uiController:isAutoHatchRuntimeEnabled() then return end
+	autoHatchGlobalToken += 1
+	local token = autoHatchGlobalToken
+	uiController:setAutoHatchActionInFlight("buy")
+	task.spawn(function()
+		local invoked, success, _, state = pcall(function()
+			return remote:InvokeServer({
+				contractVersion = AUTO_HATCH_CONTRACT_VERSION,
+				action = "PURCHASE",
+			})
+		end)
+		if token ~= autoHatchGlobalToken then return end
+		uiController:setAutoHatchActionInFlight(nil)
+		applyAutoHatchState(state)
+		if not invoked or not success then
+			uiController:_refreshAutoHatchStateFromServer()
+		end
+	end)
+end
+
+uiController:setAutoHatchCallbacks({
+	buy = purchaseAutoHatchAccess,
+	setBatch = function(count) runStationAutoAction("SET_BATCH", count) end,
+	start = function() runStationAutoAction("START") end,
+	stop = function() runStationAutoAction("STOP") end,
+})
+
+if AutoHatchStateUpdated then
+	AutoHatchStateUpdated.OnClientEvent:Connect(applyAutoHatchState)
+end
+
+-- QOF-19 enchanting is an optional Contract V1 surface. Main constructs every
+-- request itself; the UI receives only fully validated, current authoritative
+-- state DTOs.
+local ENCHANTING_CONTRACT_VERSION = 1
+local ENCHANTING_REASON_CODES = {
+	INVALID_REQUEST = true,
+	RUNTIME_DISABLED = true,
+	SERVICE_UNAVAILABLE = true,
+	PROFILE_UNAVAILABLE = true,
+	PET_NOT_FOUND = true,
+	INVALID_PET_STATE = true,
+	STALE_STATE = true,
+	INSUFFICIENT_BALANCE = true,
+	BUSY = true,
+	RATE_LIMITED = true,
+	TECHNICAL_FAILURE = true,
+	ROLLBACK_FAILED = true,
+}
+local enchantingSession = EnchantingClientSession and EnchantingClientSession.new() or nil
+
+local function validEnchantingState(state, petInstanceId)
+	return EnchantingClientContract ~= nil
+		and EnchantingClientContract.validateState(state, petInstanceId) == true
+end
+
+local function closeEnchantingSession()
+	if enchantingSession then
+		EnchantingClientSession.close(enchantingSession)
+	end
+	uiController:closePetEnchanting()
+end
+
+local requestEnchantingState
+
+local function finishEnchantingRequest(operation, invoked, success, reason, state)
+	if not operation or not enchantingSession
+		or not EnchantingClientSession.isCurrent(enchantingSession, operation) then
+		return
+	end
+	local validResultTuple = type(success) == "boolean"
+		and ((success == true and reason == nil)
+			or (success == false and ENCHANTING_REASON_CODES[reason] == true))
+	if not invoked or not validResultTuple
+		or not validEnchantingState(state, operation.petInstanceId) then
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not EnchantingClientSession.acceptState(
+		enchantingSession,
+		operation,
+		state,
+		success == true
+	) then
+		-- The stale payload itself never mutates the UI. One fresh GET gets a
+		-- retry opportunity without permitting an attacker to create a loop.
+		EnchantingClientSession.finishRequest(enchantingSession, operation)
+		if operation.staleRefresh then
+			uiController:showEnchantingUnavailable("UNAVAILABLE")
+		else
+			requestEnchantingState(operation.petInstanceId, true)
+		end
+		return
+	end
+	uiController:applyEnchantingState(state, success == true, reason, operation.action)
+end
+
+requestEnchantingState = function(petInstanceId, staleRefresh)
+	if not enchantingSession
+		or not EnchantingClientSession.selectPet(enchantingSession, petInstanceId) then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	if not GetEnchantingState or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "GET_STATE")
+	if not operation then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	operation.staleRefresh = staleRefresh == true
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return GetEnchantingState:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "GET_STATE",
+				petInstanceId = operation.petInstanceId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+local function rollPetEnchant()
+	if not enchantingSession or not RollPetEnchant then
+		uiController:showEnchantingUnavailable("UNAVAILABLE")
+		return
+	end
+	local operation = EnchantingClientSession.beginRequest(enchantingSession, "ROLL")
+	if not operation then return end
+	uiController:setEnchantingBusy(true)
+	task.spawn(function()
+		local invoked, success, reason, state = pcall(function()
+			return RollPetEnchant:InvokeServer({
+				contractVersion = ENCHANTING_CONTRACT_VERSION,
+				action = "ROLL",
+				petInstanceId = operation.petInstanceId,
+				expectedStateRevision = operation.expectedStateRevision,
+				expectedEnchantId = operation.expectedEnchantId,
+			})
+		end)
+		finishEnchantingRequest(operation, invoked, success, reason, state)
+	end)
+end
+
+uiController:setEnchantingCallbacks(requestEnchantingState, rollPetEnchant, closeEnchantingSession)
+
+-- QOF-17 Machine sessions are created only by the central runtime prompt router.
+-- Attributes are UX routing data; the server independently validates the private
+-- station registry, token, unlock, exact instances, and live distance.
+local machineSession = MachineClientSession.new()
+local ACCEPTED_MACHINE_IDS = {
+	GoldMachine = true,
+	RainbowMachine = true,
+}
+
+local function getMachinePromptData(prompt)
 	if not prompt or prompt.Name ~= "UseMachinePrompt" or not prompt.Parent then
 		return nil
 	end
@@ -509,24 +779,25 @@ local function getGoldMachinePromptData(prompt)
 	if not model or not model:IsA("Model") then return nil end
 	local machineId = model:GetAttribute("MachineId")
 	local identityToken = model:GetAttribute("MachineIdentityToken")
-	if machineId ~= "GoldMachine" or type(identityToken) ~= "string" or identityToken == "" then
+	if ACCEPTED_MACHINE_IDS[machineId] ~= true
+		or type(identityToken) ~= "string" or identityToken == "" or #identityToken > 128 then
 		return nil
 	end
 	return machineId, identityToken
 end
 
-local function closeGoldMachineSession()
+local function closeMachineSession()
 	MachineClientSession.close(machineSession)
-	uiController:closeGoldMachineSelection()
+	uiController:closeMachineSelection()
 end
 
-local function confirmGoldMachine(selectedIds)
+local function confirmMachine(selectedIds)
 	local prompt = machineSession.prompt
 	local machineId = machineSession.machineId
 	local identityToken = machineSession.identityToken
-	local routedId, routedToken = getGoldMachinePromptData(prompt)
+	local routedId, routedToken = getMachinePromptData(prompt)
 	if routedId ~= machineId or routedToken ~= identityToken then
-		closeGoldMachineSession()
+		closeMachineSession()
 		return
 	end
 	local operation = MachineClientSession.beginRequest(machineSession)
@@ -539,14 +810,14 @@ local function confirmGoldMachine(selectedIds)
 			return
 		end
 		if invoked and type(result) == "table" then
-			uiController:showGoldMachineResult(result, nil)
+			uiController:showMachineResult(result, nil)
 		else
-			uiController:showGoldMachineResult(nil, invoked and machineError or result)
+			uiController:showMachineResult(nil, invoked and machineError or result)
 		end
 	end)
 end
 
-uiController:setGoldMachineCallbacks(confirmGoldMachine, closeGoldMachineSession)
+uiController:setMachineCallbacks(confirmMachine, closeMachineSession)
 
 ProximityPromptService.PromptShown:Connect(function(prompt)
 	local eggType = getEggTypeFromPrompt(prompt)
@@ -554,6 +825,9 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	if activeEggPrompt and activeEggPrompt ~= prompt then
 		local previousEggType = activeEggType
 		closeHatchPurchaseDialog()
+		if autoHatchSession then AutoHatchClientSession.close(autoHatchSession) end
+		-- Direct A-to-B prompt switches revoke both request and busy UI ownership.
+		uiController:setAutoHatchActionInFlight(nil)
 		activeEggPrompt = nil
 		activeEggType = nil
 		if previousEggType then
@@ -562,12 +836,19 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	end
 	activeEggPrompt = prompt
 	activeEggType = eggType
+	local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+	if autoHatchSession and stationId
+		and AutoHatchClientSession.start(autoHatchSession, prompt, stationId, stationToken, stationEggType) then
+		uiController:setAutoHatchLocalStation(stationEggType, stationId)
+	else
+		uiController:clearAutoHatchLocalStation()
+	end
 	uiController:showEggStationPrompt(eggType)
 end)
 
 ProximityPromptService.PromptHidden:Connect(function(prompt)
 	if prompt == machineSession.prompt then
-		closeGoldMachineSession()
+		closeMachineSession()
 		return
 	end
 	if prompt ~= activeEggPrompt then return end
@@ -575,6 +856,9 @@ ProximityPromptService.PromptHidden:Connect(function(prompt)
 	activeEggPrompt = nil
 	activeEggType = nil
 	closeHatchPurchaseDialog()
+	if autoHatchSession then AutoHatchClientSession.close(autoHatchSession) end
+	uiController:setAutoHatchActionInFlight(nil)
+	uiController:clearAutoHatchLocalStation()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end
@@ -590,13 +874,16 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 		uiController:openScreen("ShopScreen")
 		return
 	end
-	local machineId, identityToken = getGoldMachinePromptData(prompt)
+	local machineId, identityToken = getMachinePromptData(prompt)
 	if machineId then
-		if machineSession.prompt and machineSession.prompt ~= prompt then
-			closeGoldMachineSession()
+		-- Retriggering even the same station revokes every old overlay/callback
+		-- generation before a fresh capability is installed.
+		if machineSession.prompt then
+			closeMachineSession()
 		end
-		MachineClientSession.start(machineSession, prompt, machineId, identityToken)
-		uiController:openGoldMachineSelection()
+		if MachineClientSession.start(machineSession, prompt, machineId, identityToken) then
+			uiController:openMachineSelection(machineId)
+		end
 		return
 	end
 	local eggType = getEggTypeFromPrompt(prompt)
@@ -604,12 +891,33 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, triggeringPlayer
 	if activeEggPrompt ~= prompt then
 		local previousEggType = activeEggType
 		closeHatchPurchaseDialog()
+		uiController:setAutoHatchActionInFlight(nil)
 		if previousEggType then
 			uiController:hideEggStationPrompt(previousEggType)
 		end
 		activeEggPrompt = prompt
 		activeEggType = eggType
+		local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+		if autoHatchSession and stationId
+			and AutoHatchClientSession.start(autoHatchSession, prompt, stationId, stationToken, stationEggType) then
+			uiController:setAutoHatchLocalStation(stationEggType, stationId)
+		end
 		uiController:showEggStationPrompt(eggType)
+	elseif autoHatchSession then
+		-- Cancel/navigation closes the capability while Roblox may keep the same
+		-- prompt active; re-triggering must reinstall it before controls reopen.
+		if autoHatchSession.prompt ~= prompt then
+			local stationId, stationToken, stationEggType = getAutoHatchStationData(prompt)
+			if stationId and AutoHatchClientSession.start(
+				autoHatchSession, prompt, stationId, stationToken, stationEggType
+			) then
+				uiController:setAutoHatchLocalStation(stationEggType, stationId)
+			else
+				uiController:clearAutoHatchLocalStation()
+			end
+		else
+			uiController:setAutoHatchLocalStation(autoHatchSession.eggType, autoHatchSession.stationId)
+		end
 	end
 	requestFreshHatchQuote()
 end)
@@ -1078,6 +1386,7 @@ player.CharacterRemoving:Connect(function()
 	activeEggPrompt = nil
 	activeEggType = nil
 	closeHatchPurchaseDialog()
+	closeEnchantingSession()
 	if eggType then
 		uiController:hideEggStationPrompt(eggType)
 	end

@@ -457,8 +457,9 @@ def build_replicated_storage():
     shared_modules = []
     module_names = [
         "BalanceConfig", "Config", "PetData", "PetHatchMath", "PetVariantMath",
-        "PetVariantPresentation", "HatchCinematicPolicy", "ZoneData", "CampaignData", "QuestData",
-        "MasteryData", "ShopData", "MachineClientSession",
+        "PetVariantPresentation", "PetEnchantMath", "HatchCinematicPolicy", "ZoneData",
+        "CampaignData", "QuestData", "MasteryData", "ShopData", "MachineClientSession",
+        "AutoHatchClientSession", "EnchantingClientSession", "EnchantingClientContract",
     ]
     for mod_name in module_names:
         filepath = os.path.join(SRC_DIR, "ReplicatedStorage", "Shared", f"{mod_name}.lua")
@@ -524,8 +525,8 @@ def build_server_script_service():
     # Services folder with ModuleScripts
     service_names = [
         "DataSchema", "DataService", "CurrencyService", "PetService", "MachineService",
-        "MachineAuthorityBootstrap",
-        "UpgradeService", "ZoneService", "CampaignService", "EggService",
+        "EnchantingService", "MachineAuthorityBootstrap",
+        "UpgradeService", "ZoneService", "CampaignService", "EggService", "AutoHatchService",
         "QuestService", "MasteryService", "ShopService", "PotionService", "UpgradeTreeService",
         "MovementService", "PickupService",
     ]

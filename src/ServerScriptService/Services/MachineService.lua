@@ -1,8 +1,8 @@
 --[[
-	MachineService.lua - QOF-16 server-authoritative machine transactions.
-	Owns Gold payment, pet consumption, chance rolls, rollback, and post-commit
-	quest semantics. The global gate is active, Gold is enabled per definition,
-	and Rainbow remains explicitly dormant before all activation/economic work.
+	MachineService.lua - QOF-17 server-authoritative machine transactions.
+	Owns shared Gold/Rainbow payment, pet consumption, chance rolls, rollback,
+	and Gold-only post-commit quest semantics. Both machine definitions use this
+	same transaction path; machine-specific economics remain server-owned.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,6 +18,8 @@ MachineService._activationValidator = nil
 MachineService._randomSource = math.random
 MachineService._transactionHook = nil
 MachineService._playerLocks = {}
+MachineService._activeTransactions = {}
+MachineService._shuttingDown = false
 
 local function isFiniteNumber(value)
 	return type(value) == "number"
@@ -118,6 +120,8 @@ function MachineService.init(dataService, currencyService, petService)
 	MachineService._randomSource = math.random
 	MachineService._transactionHook = nil
 	MachineService._playerLocks = {}
+	MachineService._activeTransactions = {}
+	MachineService._shuttingDown = false
 end
 
 function MachineService.setQuestService(questService)
@@ -138,22 +142,37 @@ function MachineService.setTransactionHook(hook)
 	MachineService._transactionHook = type(hook) == "function" and hook or nil
 end
 
-local function rollbackTechnicalFailure(prepared, spendTransaction)
+local function restoreTransaction(transactionState)
+	if transactionState.committed then
+		return true
+	end
 	local petRolledBack = true
 	local currencyRolledBack = true
-	if prepared and prepared.mutationStarted then
-		local callSucceeded, rollbackSucceeded = pcall(
-			MachineService._petService.rollbackVariantConversion,
-			prepared
-		)
-		petRolledBack = callSucceeded and rollbackSucceeded == true
+	local prepared = transactionState.prepared
+	if prepared then
+		if prepared.mutationStarted then
+			local callSucceeded, rollbackSucceeded = pcall(
+				MachineService._petService.rollbackVariantConversion,
+				prepared,
+				transactionState.inventoryLease
+			)
+			petRolledBack = callSucceeded and rollbackSucceeded == true
+			if petRolledBack then
+				transactionState.prepared = nil
+			end
+		else
+			transactionState.prepared = nil
+		end
 	end
-	if spendTransaction then
+	if transactionState.spendTransaction then
 		local callSucceeded, rollbackSucceeded = pcall(
 			MachineService._currencyService.rollbackSpendTransaction,
-			spendTransaction
+			transactionState.spendTransaction
 		)
 		currencyRolledBack = callSucceeded and rollbackSucceeded == true
+		if currencyRolledBack then
+			transactionState.spendTransaction = nil
+		end
 	end
 	return petRolledBack and currencyRolledBack
 end
@@ -223,12 +242,11 @@ local function executeTransaction(player, machine, machineType, activationToken,
 	local committed, commitError = MachineService._petService.commitVariantConversion(
 		player,
 		prepared,
-		success
+		success,
+		transactionState.inventoryLease
 	)
 	if not committed then
-		local restored = rollbackTechnicalFailure(prepared, spendTransaction)
-		transactionState.prepared = nil
-		transactionState.spendTransaction = nil
+		local restored = restoreTransaction(transactionState)
 		if not restored then
 			return nil, "Conversion rollback failed"
 		end
@@ -248,15 +266,14 @@ local function executeTransaction(player, machine, machineType, activationToken,
 	safeHook("beforeCommit", context)
 
 	if MachineService._currencyService.commitSpendTransaction(spendTransaction) ~= true then
-		local restored = rollbackTechnicalFailure(prepared, spendTransaction)
-		transactionState.prepared = nil
-		transactionState.spendTransaction = nil
+		local restored = restoreTransaction(transactionState)
 		return nil, restored and "Conversion failed safely" or "Conversion rollback failed"
 	end
 	spendTransaction = nil
 	transactionState.spendTransaction = nil
-	transactionState.prepared = nil
 	prepared.transactionCommitted = true
+	transactionState.prepared = nil
+	transactionState.committed = true
 
 	-- Notifications are deliberately post-commit and protected. A transport or
 	-- quest event failure must never turn a completed economic transaction into a
@@ -272,6 +289,9 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	if BalanceConfig.Machines.RuntimeEnabled ~= true then
 		return nil, "Machines are not available"
 	end
+	if MachineService._shuttingDown then
+		return nil, "Machines are not available"
+	end
 	if not player or not isFiniteNumber(player.UserId) or player.UserId % 1 ~= 0 then
 		return nil, "Invalid player"
 	end
@@ -279,9 +299,8 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	if not machine then
 		return nil, "Unknown machine"
 	end
-	-- Definition dormancy is checked before token/list validation, profile access,
-	-- world validation, pet preparation, RNG, or currency work. In particular,
-	-- Rainbow cannot become reachable merely because the global runtime is live.
+	-- Per-definition dormancy is checked before token/list validation, profile
+	-- access, world validation, pet preparation, RNG, or currency work.
 	if machine.RuntimeEnabled ~= true then
 		return nil, "Machine is not available"
 	end
@@ -297,34 +316,103 @@ function MachineService.attemptConversion(player, machineId, activationToken, pe
 	end
 	if not MachineService._dataService
 		or not MachineService._currencyService
-		or not MachineService._petService then
+		or not MachineService._petService
+		or type(MachineService._petService.beginInventoryMutation) ~= "function"
+		or type(MachineService._petService.endInventoryMutation) ~= "function" then
 		return nil, "Machine service unavailable"
 	end
 	if MachineService._playerLocks[player.UserId] then
 		return nil, "Machine conversion already in progress"
 	end
 
+	local inventoryLease = MachineService._petService.beginInventoryMutation(player, "MachineService")
+	if not inventoryLease then
+		return nil, "Pet inventory mutation already in progress"
+	end
 	MachineService._playerLocks[player.UserId] = true
-	local transactionState = {}
+	local transactionState = {
+		player = player,
+		inventoryLease = inventoryLease,
+		executing = true,
+	}
+	MachineService._activeTransactions[player.UserId] = transactionState
 	local ok, result, transactionError = xpcall(function()
 		return executeTransaction(player, machine, machineType, activationToken, ids, transactionState)
 	end, debug.traceback)
-	MachineService._playerLocks[player.UserId] = nil
-
 	if not ok then
-		local restored = rollbackTechnicalFailure(
-			transactionState.prepared,
-			transactionState.spendTransaction
+		local restored = restoreTransaction(transactionState)
+		result = nil
+		transactionError = restored and "Conversion failed safely" or "Conversion rollback failed"
+	end
+	transactionState.executing = false
+
+	local unresolved = transactionState.prepared ~= nil
+		or transactionState.spendTransaction ~= nil
+	if not unresolved then
+		-- Lease release is post-commit bookkeeping. It must never turn an already
+		-- committed currency/pet conversion into a retryable client error. Keep a
+		-- terminal record if release itself fails so lifecycle cleanup can retry it.
+		local releaseOk, released = pcall(
+			MachineService._petService.endInventoryMutation,
+			player,
+			inventoryLease,
+			transactionState.committed == true
 		)
-		return nil, restored and "Conversion failed safely" or "Conversion rollback failed"
+		if releaseOk and released == true then
+			MachineService._activeTransactions[player.UserId] = nil
+			MachineService._playerLocks[player.UserId] = nil
+		end
 	end
 	return result, transactionError
 end
 
 function MachineService.cleanup(player)
-	if player and isFiniteNumber(player.UserId) then
-		MachineService._playerLocks[player.UserId] = nil
+	if not player or not isFiniteNumber(player.UserId) or player.UserId % 1 ~= 0 then
+		return false
 	end
+	local userId = player.UserId
+	local transactionState = MachineService._activeTransactions[userId]
+	if transactionState then
+		if transactionState.executing then
+			return false
+		end
+		if not restoreTransaction(transactionState) then
+			return false
+		end
+		local releaseOk, released = pcall(
+			MachineService._petService.endInventoryMutation,
+			player,
+			transactionState.inventoryLease,
+			transactionState.committed == true
+		)
+		if not releaseOk or released ~= true then
+			return false
+		end
+		MachineService._activeTransactions[userId] = nil
+	elseif MachineService._playerLocks[userId] ~= nil then
+		return false
+	end
+	MachineService._playerLocks[userId] = nil
+	return true
+end
+
+function MachineService.beginShutdown()
+	MachineService._shuttingDown = true
+end
+
+function MachineService.prepareForShutdown()
+	MachineService.beginShutdown()
+	local transactions = {}
+	for _, transactionState in pairs(MachineService._activeTransactions) do
+		table.insert(transactions, transactionState)
+	end
+	local settled = true
+	for _, transactionState in ipairs(transactions) do
+		if transactionState.executing or not MachineService.cleanup(transactionState.player) then
+			settled = false
+		end
+	end
+	return settled
 end
 
 MachineService.onPlayerRemoving = MachineService.cleanup
